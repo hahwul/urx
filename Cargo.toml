@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["hahwul"]
 description = "Extracts URLs from OSINT for security insights."
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1.32", features = ["full"] }
