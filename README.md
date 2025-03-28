@@ -51,11 +51,11 @@ cd urx
 cargo build --release
 ```
 
+The compiled binary will be available at `target/release/urx`.
+
 ### From Docker
 
 [ghcr.io/hahwul/urx](https://github.com/hahwul/urx/pkgs/container/urx)
-
-The compiled binary will be available at `target/release/urx`.
 
 ## Usage
 
