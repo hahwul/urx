@@ -1,0 +1,22 @@
+---
+tester:
+  - changed-files:
+      - any-glob-to-any-file: [src/testers/*]
+provider:
+  - changed-files:
+      - any-glob-to-any-file: [src/providers/*]
+progress:
+  - changed-files:
+      - any-glob-to-any-file: [src/progress/*]
+output:
+  - changed-files:
+      - any-glob-to-any-file: [src/output/*]
+cli:
+  - changed-files:
+      - any-glob-to-any-file: [src/cli/*]
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: [Cargo.toml, Cargo.lock]
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: [README.md, CODE_OF_CONDUCT.md, CONTRIBUTING.md, SECURITY.md]
