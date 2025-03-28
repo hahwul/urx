@@ -35,10 +35,6 @@ Urx is a command-line tool designed for collecting security-related URLs from OS
 cargo install urx
 ```
 
-### From Binary
-
-Precompiled binaries for various platforms are available on the [Releases](https://github.com/hahwul/urx/releases) page.
-
 ### From Source
 
 ```bash
