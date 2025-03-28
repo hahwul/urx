@@ -2,7 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[clap(name = "urx", about = "Fetch URLs for domains", version)]
+#[clap(name = "urx", about = "Extracts URLs from OSINT Archives for Security Insights.", version)]
 pub struct Args {
     /// Domains to fetch URLs for
     #[clap(name = "DOMAINS")]
