@@ -17,12 +17,12 @@ impl ProgressManager {
         )
         .unwrap()
         .progress_chars("=> ");
-        
+
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
         bar.set_prefix("Domains");
         bar.enable_steady_tick(std::time::Duration::from_millis(100));
-        
+
         bar
     }
 
@@ -32,10 +32,18 @@ impl ProgressManager {
         )
         .unwrap()
         .progress_chars("=> ")
-        .with_key("spinner", |state: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
-            write!(w, "{}", ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][state.pos() as usize % 10]).unwrap();
-        });
-        
+        .with_key(
+            "spinner",
+            |state: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
+                write!(
+                    w,
+                    "{}",
+                    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][state.pos() as usize % 10]
+                )
+                .unwrap();
+            },
+        );
+
         provider_names
             .iter()
             .map(|name| {
@@ -49,32 +57,30 @@ impl ProgressManager {
     }
 
     pub fn create_filter_bar(&self) -> ProgressBar {
-        let style = ProgressStyle::with_template(
-            "{prefix:.bold.dim} [{bar:40.yellow/white}] {wide_msg}",
-        )
-        .unwrap()
-        .progress_chars("=> ");
-        
+        let style =
+            ProgressStyle::with_template("{prefix:.bold.dim} [{bar:40.yellow/white}] {wide_msg}")
+                .unwrap()
+                .progress_chars("=> ");
+
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
         bar.set_prefix("Filtering");
         bar.enable_steady_tick(std::time::Duration::from_millis(100));
-        
+
         bar
     }
 
     pub fn create_transform_bar(&self) -> ProgressBar {
-        let style = ProgressStyle::with_template(
-            "{prefix:.bold.dim} [{bar:40.magenta/white}] {wide_msg}",
-        )
-        .unwrap()
-        .progress_chars("=> ");
-        
+        let style =
+            ProgressStyle::with_template("{prefix:.bold.dim} [{bar:40.magenta/white}] {wide_msg}")
+                .unwrap()
+                .progress_chars("=> ");
+
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
         bar.set_prefix("Transforming");
         bar.enable_steady_tick(std::time::Duration::from_millis(100));
-        
+
         bar
     }
 
@@ -84,12 +90,12 @@ impl ProgressManager {
         )
         .unwrap()
         .progress_chars("=> ");
-        
+
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
         bar.set_prefix("Testing URLs");
         bar.enable_steady_tick(std::time::Duration::from_millis(100));
-        
+
         bar
     }
 }
