@@ -1,19 +1,19 @@
 ---
 tester:
   - changed-files:
-      - any-glob-to-any-file: [src/testers/*]
+      - any-glob-to-any-file: [src/testers/**/*.rs]
 provider:
   - changed-files:
-      - any-glob-to-any-file: [src/providers/*]
+      - any-glob-to-any-file: [src/providers/**/*.rs]
 progress:
   - changed-files:
-      - any-glob-to-any-file: [src/progress/*]
+      - any-glob-to-any-file: [src/progress/**/*.rs]
 output:
   - changed-files:
-      - any-glob-to-any-file: [src/output/*]
+      - any-glob-to-any-file: [src/output/**/*.rs]
 cli:
   - changed-files:
-      - any-glob-to-any-file: [src/cli/*]
+      - any-glob-to-any-file: [src/cli/**/*.rs]
 dependencies:
   - changed-files:
       - any-glob-to-any-file: [Cargo.toml, Cargo.lock]
