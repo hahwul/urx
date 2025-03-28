@@ -1,0 +1,28 @@
+---
+    name: Homebrew tap Publish
+    on:
+      release:
+        types: [published]
+    jobs:
+      homebrew-releaser:
+        runs-on: ubuntu-latest
+        name: homebrew-releaser
+        steps:
+          - name: Release urx to Homebrew tap
+            uses: Justintime50/homebrew-releaser@v1
+            with:
+              homebrew_owner: hahwul
+              homebrew_tap: homebrew-urx
+              formula_folder: Formula
+              github_token: ${{ secrets.URX_PUBLISH_TOKEN }}
+              commit_owner: hahwul
+              commit_email: hahwul@gmail.com
+              depends_on: |
+                "rust"
+              install: |
+                system "cargo build --release"
+                bin.install "target/release/urx"
+              test: system "{bin}/urx", "-V"
+              update_readme_table: true
+              skip_commit: false
+              debug: false
