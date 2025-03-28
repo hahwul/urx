@@ -15,6 +15,16 @@ Urx is a command-line tool for discovering URLs associated with specific domains
 
 ## Installation
 
+### From Cargo (Recommended)
+
+```bash
+cargo install urx
+```
+
+### From Binary
+
+Precompiled binaries for various platforms are available on the [Releases](https://github.com/hahwul/urx/releases) page.
+
 ### From Source
 
 ```bash
