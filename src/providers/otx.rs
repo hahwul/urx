@@ -184,9 +184,9 @@ impl Provider for OTXProvider {
                 for entry in otx_result.url_list {
                     if self.include_subdomains {
                         let has_subdomain = domain.split('.').count() > 2;
-                        if !has_subdomain {
-                            all_urls.push(entry.url);
-                        } else if entry
+                        // Push the URL if we're not looking at a subdomain
+                        // or if looking at a subdomain and the hostname contains our domain
+                        if !has_subdomain || entry
                             .hostname
                             .to_lowercase()
                             .contains(&domain.to_lowercase())
