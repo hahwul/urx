@@ -23,9 +23,10 @@ Urx is a command-line tool designed for collecting security-related URLs from OS
 - Filter results by file extensions or patterns
 - Multiple output formats (plain, JSON, CSV)
 - Output to console or file
-- Configurable verbosity levels
 - Support for reading domains from stdin (pipeline integration)
 - URL testing capabilities (status checking, link extraction)
+
+![Preview](https://github.com/user-attachments/assets/292fee95-5a8a-4316-95f2-22ae22d5c070)
 
 ## Installation
 
@@ -180,9 +181,6 @@ echo "example.com" | urx | grep "login" > potential_targets.txt
 
 # Combine with other tools
 cat domains.txt | urx --patterns api | other-tool
-
-# Output JSON for further processing
-cat domains.txt | urx -f json | jq '.[] | select(.status == 200)'
 ```
 
 ## Inspiration
