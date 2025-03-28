@@ -3,7 +3,7 @@ name = "urx"
 version = "0.1.0"
 edition = "2021"
 authors = ["hahwul"]
-description = "A tool to fetch known URLs for domains from Wayback Machine and Common Crawl"
+description = "Extracts URLs from OSINT for security insights."
 
 [dependencies]
 tokio = { version = "1.32", features = ["full"] }
