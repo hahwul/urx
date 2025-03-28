@@ -1,6 +1,20 @@
-# Urx
+<div align="center">
+  <picture>
+    <img alt="URX Logo" src="https://github.com/user-attachments/assets/e147b5fb-84c1-428b-ab04-ceb70dd49339" width="300px;">
+  </picture>
+  <p>Extracts URLs from OSINT Archives for Security Insights.</p>
+</div>
 
-Urx is a command-line tool for discovering URLs associated with specific domains from the Wayback Machine, Common Crawl archives and more. It's built in Rust and leverages asynchronous processing to efficiently query multiple data sources concurrently.
+<p align="center">
+<a href="https://github.com/owasp-noir/noir/blob/main/CONTRIBUTING.md">
+<img src="https://img.shields.io/badge/CONTRIBUTIONS-WELCOME-000000?style=for-the-badge&labelColor=black"></a>
+<a href="https://github.com/owasp-noir/noir/releases">
+<!-- <img src="https://img.shields.io/github/v/release/hahwul/urx?style=for-the-badge&color=black&labelColor=black&logo=web"></a> -->
+<a href="https://rust-lang.org">
+<img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white"></a>
+</p>
+
+Urx is a command-line tool designed for collecting security-related URLs from OSINT archives, such as the Wayback Machine and Common Crawl. Built with Rust for efficiency, it uses asynchronous processing to quickly query multiple data sources. This tool streamlines the process of gathering and analyzing URL information, which is crucial for effective security testing.
 
 ## Features
 
