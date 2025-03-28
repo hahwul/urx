@@ -35,6 +35,13 @@ Urx is a command-line tool designed for collecting security-related URLs from OS
 cargo install urx
 ```
 
+### From Homebrew (Tap)
+
+```bash
+brew tap hahwul/urx
+brew install urx
+```
+
 ### From Source
 
 ```bash
@@ -42,6 +49,10 @@ git clone https://github.com/hahwul/urx.git
 cd urx
 cargo build --release
 ```
+
+### From Docker
+
+[ghcr.io/hahwul/urx](https://github.com/hahwul/urx/pkgs/container/urx)
 
 The compiled binary will be available at `target/release/urx`.
 
