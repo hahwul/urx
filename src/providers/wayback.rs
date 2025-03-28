@@ -211,11 +211,11 @@ impl Provider for WaybackMachineProvider {
     fn with_random_agent(&mut self, enabled: bool) {
         self.random_agent = enabled;
     }
-    
+
     fn with_parallel(&mut self, parallel: u32) {
         self.parallel = parallel;
     }
-    
+
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
         self.rate_limit = rate_limit;
     }

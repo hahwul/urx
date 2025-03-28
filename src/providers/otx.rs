@@ -186,10 +186,11 @@ impl Provider for OTXProvider {
                         let has_subdomain = domain.split('.').count() > 2;
                         // Push the URL if we're not looking at a subdomain
                         // or if looking at a subdomain and the hostname contains our domain
-                        if !has_subdomain || entry
-                            .hostname
-                            .to_lowercase()
-                            .contains(&domain.to_lowercase())
+                        if !has_subdomain
+                            || entry
+                                .hostname
+                                .to_lowercase()
+                                .contains(&domain.to_lowercase())
                         {
                             all_urls.push(entry.url);
                         }
@@ -233,11 +234,11 @@ impl Provider for OTXProvider {
     fn with_random_agent(&mut self, enabled: bool) {
         self.random_agent = enabled;
     }
-    
+
     fn with_parallel(&mut self, parallel: u32) {
         self.parallel = parallel;
     }
-    
+
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
         self.rate_limit = rate_limit;
     }

@@ -58,10 +58,10 @@ impl UrlFilter {
         // Apply extension filter
         if !self.extensions.is_empty() {
             filtered_urls.retain(|url| {
-                    let path = url.split('?').next().unwrap_or(url);
-                    let ext = path.split('.').last().unwrap_or("");
-                    self.extensions.iter().any(|e| e == ext)
-                });
+                let path = url.split('?').next().unwrap_or(url);
+                let ext = path.split('.').last().unwrap_or("");
+                self.extensions.iter().any(|e| e == ext)
+            });
         }
 
         // Apply pattern filter
@@ -72,20 +72,20 @@ impl UrlFilter {
         // Apply exclude extension filter
         if !self.exclude_extensions.is_empty() {
             filtered_urls.retain(|url| {
-                    let path = url.split('?').next().unwrap_or(url);
-                    let ext = path.split('.').last().unwrap_or("");
-                    !self.exclude_extensions.iter().any(|e| e == ext)
-                });
+                let path = url.split('?').next().unwrap_or(url);
+                let ext = path.split('.').last().unwrap_or("");
+                !self.exclude_extensions.iter().any(|e| e == ext)
+            });
         }
 
         // Apply exclude pattern filter
         if !self.exclude_patterns.is_empty() {
             filtered_urls.retain(|url| {
-                    !self
-                        .exclude_patterns
-                        .iter()
-                        .any(|pattern| url.contains(pattern))
-                });
+                !self
+                    .exclude_patterns
+                    .iter()
+                    .any(|pattern| url.contains(pattern))
+            });
         }
 
         // Apply minimum length filter

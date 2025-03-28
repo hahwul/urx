@@ -1,8 +1,8 @@
+use crate::output::Formatter;
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
-use crate::output::Formatter;
 
 // Outputter implementations for different formats
 use super::Outputter;
@@ -28,8 +28,7 @@ impl Outputter for PlainOutputter {
     fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()> {
         match output_path {
             Some(path) => {
-                let mut file = File::create(&path)
-                    .context("Failed to create output file")?;
+                let mut file = File::create(&path).context("Failed to create output file")?;
 
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
@@ -37,7 +36,7 @@ impl Outputter for PlainOutputter {
                         .context("Failed to write to output file")?;
                 }
                 Ok(())
-            },
+            }
             None => {
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
