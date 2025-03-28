@@ -3,7 +3,7 @@ name = "urx"
 version = "0.1.0"
 edition = "2021"
 authors = ["hahwul"]
-description = "Extracts URLs from OSINT for security insights."
+description = "Extracts URLs from OSINT Archives for Security Insights.
 license = "MIT"
 
 [dependencies]
