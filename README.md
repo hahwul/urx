@@ -1,6 +1,6 @@
-# Urx - URL Discovery Tool
+# Urx
 
-Urx is a command-line tool for discovering URLs associated with specific domains from the Wayback Machine and Common Crawl archives. It's built in Rust and leverages asynchronous processing to efficiently query multiple data sources concurrently.
+Urx is a command-line tool for discovering URLs associated with specific domains from the Wayback Machine, Common Crawl archives and more. It's built in Rust and leverages asynchronous processing to efficiently query multiple data sources concurrently.
 
 ## Features
 
