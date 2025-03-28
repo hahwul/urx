@@ -71,9 +71,7 @@ impl UrlFilter {
         if !self.patterns.is_empty() {
             filtered_urls = filtered_urls
                 .into_iter()
-                .filter(|url| {
-                    self.patterns.iter().any(|pattern| url.contains(pattern))
-                })
+                .filter(|url| self.patterns.iter().any(|pattern| url.contains(pattern)))
                 .collect();
         }
 
@@ -94,7 +92,10 @@ impl UrlFilter {
             filtered_urls = filtered_urls
                 .into_iter()
                 .filter(|url| {
-                    !self.exclude_patterns.iter().any(|pattern| url.contains(pattern))
+                    !self
+                        .exclude_patterns
+                        .iter()
+                        .any(|pattern| url.contains(pattern))
                 })
                 .collect();
         }
@@ -117,7 +118,7 @@ impl UrlFilter {
 
         // Sort for consistent output
         filtered_urls.sort();
-        
+
         filtered_urls
     }
 }
@@ -177,25 +178,25 @@ impl UrlTransformer {
 
     fn merge_endpoints(&self, urls: Vec<String>) -> Vec<String> {
         let mut path_groups: HashMap<String, Vec<String>> = HashMap::new();
-        
+
         for url_str in urls {
             if let Ok(url) = Url::parse(&url_str) {
                 // Create a key using host and path
-                let key = format!("{}{}",
-                    url.host_str().unwrap_or(""),
-                    url.path()
-                );
-                
+                let key = format!("{}{}", url.host_str().unwrap_or(""), url.path());
+
                 path_groups.entry(key).or_default().push(url_str);
             } else {
                 // If URL can't be parsed, keep it as is
-                path_groups.entry(url_str.clone()).or_default().push(url_str);
+                path_groups
+                    .entry(url_str.clone())
+                    .or_default()
+                    .push(url_str);
             }
         }
-        
+
         // Now create merged URLs
         let mut merged_urls = Vec::new();
-        
+
         for (_, group_urls) in path_groups {
             if group_urls.len() == 1 {
                 // If only one URL with this path, use it as is
@@ -205,7 +206,7 @@ impl UrlTransformer {
                 if let Ok(base_url) = Url::parse(&group_urls[0]) {
                     let mut merged_url = base_url.clone();
                     let mut all_params = Vec::new();
-                    
+
                     // Collect parameters from all URLs
                     for url_str in &group_urls {
                         if let Ok(url) = Url::parse(url_str) {
@@ -216,7 +217,7 @@ impl UrlTransformer {
                             }
                         }
                     }
-                    
+
                     // Set merged parameters
                     if !all_params.is_empty() {
                         let query_string = all_params
@@ -224,14 +225,14 @@ impl UrlTransformer {
                             .map(|(k, v)| format!("{}={}", k, v))
                             .collect::<Vec<_>>()
                             .join("&");
-                        
+
                         // Clear existing query and set merged query
                         merged_url.set_query(None);
                         if !query_string.is_empty() {
                             merged_url.set_query(Some(&query_string));
                         }
                     }
-                    
+
                     merged_urls.push(merged_url.to_string());
                 } else {
                     // If URL can't be parsed, use the first one
@@ -239,7 +240,7 @@ impl UrlTransformer {
                 }
             }
         }
-        
+
         // Sort again for consistency
         merged_urls.sort();
         merged_urls
@@ -247,7 +248,7 @@ impl UrlTransformer {
 
     fn extract_url_parts(&self, urls: Vec<String>) -> Vec<String> {
         let mut extracted_parts = Vec::new();
-        
+
         for url_str in urls {
             if let Ok(url) = Url::parse(&url_str) {
                 if self.show_only_host {
@@ -271,11 +272,11 @@ impl UrlTransformer {
                 extracted_parts.push(url_str);
             }
         }
-        
+
         // Remove duplicates that might have been created during transformation
         extracted_parts.sort();
         extracted_parts.dedup();
-        
+
         extracted_parts
     }
 }

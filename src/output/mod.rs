@@ -8,7 +8,6 @@ pub use formatter::*;
 pub use writer::*;
 
 pub trait Outputter: Send + Sync {
-    fn clone_box(&self) -> Box<dyn Outputter>;
     fn format(&self, url: &str, is_last: bool) -> String;
     fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()>;
 }

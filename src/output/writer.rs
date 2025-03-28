@@ -21,10 +21,6 @@ impl PlainOutputter {
 }
 
 impl Outputter for PlainOutputter {
-    fn clone_box(&self) -> Box<dyn Outputter> {
-        Box::new(self.clone())
-    }
-
     fn format(&self, url: &str, is_last: bool) -> String {
         self.formatter.format(url, is_last)
     }
@@ -67,10 +63,6 @@ impl JsonOutputter {
 }
 
 impl Outputter for JsonOutputter {
-    fn clone_box(&self) -> Box<dyn Outputter> {
-        Box::new(self.clone())
-    }
-
     fn format(&self, url: &str, is_last: bool) -> String {
         self.formatter.format(url, is_last)
     }
@@ -78,28 +70,29 @@ impl Outputter for JsonOutputter {
     fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()> {
         match output_path {
             Some(path) => {
-                let mut file = File::create(&path)
-                    .context("Failed to create output file")?;
-                
-                file.write_all(b"[").context("Failed to write JSON opening bracket")?;
-                
+                let mut file = File::create(&path).context("Failed to create output file")?;
+
+                file.write_all(b"[")
+                    .context("Failed to write JSON opening bracket")?;
+
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
                     file.write_all(formatted.as_bytes())
                         .context("Failed to write to output file")?;
                 }
-                
-                file.write_all(b"]").context("Failed to write JSON closing bracket")?;
+
+                file.write_all(b"]")
+                    .context("Failed to write JSON closing bracket")?;
                 Ok(())
-            },
+            }
             None => {
                 print!("[");
-                
+
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
                     print!("{}", formatted);
                 }
-                
+
                 println!("]");
                 Ok(())
             }
@@ -121,10 +114,6 @@ impl CsvOutputter {
 }
 
 impl Outputter for CsvOutputter {
-    fn clone_box(&self) -> Box<dyn Outputter> {
-        Box::new(self.clone())
-    }
-
     fn format(&self, url: &str, is_last: bool) -> String {
         self.formatter.format(url, is_last)
     }
@@ -132,27 +121,27 @@ impl Outputter for CsvOutputter {
     fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()> {
         match output_path {
             Some(path) => {
-                let mut file = File::create(&path)
-                    .context("Failed to create output file")?;
-                
-                file.write_all(b"url\n").context("Failed to write CSV header")?;
-                
+                let mut file = File::create(&path).context("Failed to create output file")?;
+
+                file.write_all(b"url\n")
+                    .context("Failed to write CSV header")?;
+
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
                     file.write_all(formatted.as_bytes())
                         .context("Failed to write to output file")?;
                 }
-                
+
                 Ok(())
-            },
+            }
             None => {
                 println!("url");
-                
+
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
                     print!("{}", formatted);
                 }
-                
+
                 Ok(())
             }
         }

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
-use rand::Rng;
 
 use super::Provider;
 
@@ -54,7 +54,7 @@ impl OTXProvider {
 
     fn format_url(&self, domain: &str, page: u32) -> String {
         let has_subdomain = domain.split('.').count() > 2;
-        
+
         if !has_subdomain {
             format!(
                 "https://otx.alienvault.com/api/v1/indicators/domain/{}/url_list?limit={}&page={}",
@@ -68,7 +68,7 @@ impl OTXProvider {
             } else {
                 domain.to_string()
             };
-            
+
             format!(
                 "https://otx.alienvault.com/api/v1/indicators/domain/{}/url_list?limit={}&page={}",
                 main_domain, OTX_RESULTS_LIMIT, page
@@ -94,14 +94,14 @@ impl Provider for OTXProvider {
         Box::pin(async move {
             let mut all_urls = Vec::new();
             let mut page = 0;
-            
+
             loop {
                 let url = self.format_url(domain, page);
-                
+
                 // Create client builder with proxy support
                 let mut client_builder = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(self.timeout));
-                
+
                 // Add random user agent if enabled
                 if self.random_agent {
                     let user_agents = [
@@ -115,27 +115,30 @@ impl Provider for OTXProvider {
                     let random_agent = user_agents[random_index];
                     client_builder = client_builder.user_agent(random_agent);
                 }
-                
+
                 // Add proxy if configured
                 if let Some(proxy_url) = &self.proxy {
-                    let mut proxy = reqwest::Proxy::all(proxy_url).context(format!("Invalid proxy URL: {}", proxy_url))?;
-                    
+                    let mut proxy = reqwest::Proxy::all(proxy_url)
+                        .context(format!("Invalid proxy URL: {}", proxy_url))?;
+
                     // Add proxy authentication if provided
                     if let Some(auth) = &self.proxy_auth {
                         if let Some((username, password)) = auth.split_once(':') {
                             proxy = proxy.basic_auth(username, password);
                         }
                     }
-                    
+
                     client_builder = client_builder.proxy(proxy);
                 }
-                
-                let client = client_builder.build().context("Failed to build HTTP client")?;
-                
+
+                let client = client_builder
+                    .build()
+                    .context("Failed to build HTTP client")?;
+
                 // Retry logic
                 let mut last_error = None;
                 let mut result = None;
-                
+
                 for attempt in 0..=self.retries {
                     match client.get(&url).send().await {
                         Ok(response) => {
@@ -146,29 +149,37 @@ impl Provider for OTXProvider {
                                         break;
                                     }
                                     Err(e) => {
-                                        last_error = Some(anyhow::anyhow!("Failed to parse OTX response: {}", e));
+                                        last_error = Some(anyhow::anyhow!(
+                                            "Failed to parse OTX response: {}",
+                                            e
+                                        ));
                                     }
                                 }
                             } else {
-                                last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
+                                last_error =
+                                    Some(anyhow::anyhow!("HTTP error: {}", response.status()));
                             }
                         }
                         Err(e) => {
                             last_error = Some(anyhow::anyhow!("Request error: {}", e));
                         }
                     }
-                    
+
                     // Don't sleep after the last attempt
                     if attempt < self.retries {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
-                
+
                 let otx_result = match result {
                     Some(r) => r,
-                    None => return Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to fetch OTX data after all retries"))),
+                    None => {
+                        return Err(last_error.unwrap_or_else(|| {
+                            anyhow::anyhow!("Failed to fetch OTX data after all retries")
+                        }))
+                    }
                 };
-                
+
                 // Process the results
                 for entry in otx_result.url_list {
                     if self.include_subdomains {
@@ -176,7 +187,11 @@ impl Provider for OTXProvider {
                         if !has_subdomain {
                             all_urls.push(entry.url);
                         } else {
-                            if entry.hostname.to_lowercase().contains(&domain.to_lowercase()) {
+                            if entry
+                                .hostname
+                                .to_lowercase()
+                                .contains(&domain.to_lowercase())
+                            {
                                 all_urls.push(entry.url);
                             }
                         }
@@ -186,43 +201,39 @@ impl Provider for OTXProvider {
                         }
                     }
                 }
-                
+
                 // Check if we should fetch the next page
                 if !otx_result.has_next {
                     break;
                 }
-                
+
                 page += 1;
             }
-            
+
             Ok(all_urls)
         })
     }
-    
-    fn supports_subdomains(&self) -> bool {
-        true
-    }
-    
+
     fn with_subdomains(&mut self, include: bool) {
         self.include_subdomains = include;
     }
-    
+
     fn with_proxy(&mut self, proxy: Option<String>) {
         self.proxy = proxy;
     }
-    
+
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
     }
-    
+
     fn with_timeout(&mut self, seconds: u64) {
         self.timeout = seconds;
     }
-    
+
     fn with_retries(&mut self, count: u32) {
         self.retries = count;
     }
-    
+
     fn with_random_agent(&mut self, enabled: bool) {
         self.random_agent = enabled;
     }
