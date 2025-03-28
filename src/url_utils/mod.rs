@@ -57,63 +57,45 @@ impl UrlFilter {
 
         // Apply extension filter
         if !self.extensions.is_empty() {
-            filtered_urls = filtered_urls
-                .into_iter()
-                .filter(|url| {
+            filtered_urls.retain(|url| {
                     let path = url.split('?').next().unwrap_or(url);
                     let ext = path.split('.').last().unwrap_or("");
                     self.extensions.iter().any(|e| e == ext)
-                })
-                .collect();
+                });
         }
 
         // Apply pattern filter
         if !self.patterns.is_empty() {
-            filtered_urls = filtered_urls
-                .into_iter()
-                .filter(|url| self.patterns.iter().any(|pattern| url.contains(pattern)))
-                .collect();
+            filtered_urls.retain(|url| self.patterns.iter().any(|pattern| url.contains(pattern)));
         }
 
         // Apply exclude extension filter
         if !self.exclude_extensions.is_empty() {
-            filtered_urls = filtered_urls
-                .into_iter()
-                .filter(|url| {
+            filtered_urls.retain(|url| {
                     let path = url.split('?').next().unwrap_or(url);
                     let ext = path.split('.').last().unwrap_or("");
                     !self.exclude_extensions.iter().any(|e| e == ext)
-                })
-                .collect();
+                });
         }
 
         // Apply exclude pattern filter
         if !self.exclude_patterns.is_empty() {
-            filtered_urls = filtered_urls
-                .into_iter()
-                .filter(|url| {
+            filtered_urls.retain(|url| {
                     !self
                         .exclude_patterns
                         .iter()
                         .any(|pattern| url.contains(pattern))
-                })
-                .collect();
+                });
         }
 
         // Apply minimum length filter
         if let Some(min_length) = self.min_length {
-            filtered_urls = filtered_urls
-                .into_iter()
-                .filter(|url| url.len() >= min_length)
-                .collect();
+            filtered_urls.retain(|url| url.len() >= min_length);
         }
 
         // Apply maximum length filter
         if let Some(max_length) = self.max_length {
-            filtered_urls = filtered_urls
-                .into_iter()
-                .filter(|url| url.len() <= max_length)
-                .collect();
+            filtered_urls.retain(|url| url.len() <= max_length);
         }
 
         // Sort for consistent output

@@ -186,19 +186,15 @@ impl Provider for OTXProvider {
                         let has_subdomain = domain.split('.').count() > 2;
                         if !has_subdomain {
                             all_urls.push(entry.url);
-                        } else {
-                            if entry
-                                .hostname
-                                .to_lowercase()
-                                .contains(&domain.to_lowercase())
-                            {
-                                all_urls.push(entry.url);
-                            }
-                        }
-                    } else {
-                        if domain.to_lowercase() == entry.hostname.to_lowercase() {
+                        } else if entry
+                            .hostname
+                            .to_lowercase()
+                            .contains(&domain.to_lowercase())
+                        {
                             all_urls.push(entry.url);
                         }
+                    } else if domain.to_lowercase() == entry.hostname.to_lowercase() {
+                        all_urls.push(entry.url);
                     }
                 }
 
