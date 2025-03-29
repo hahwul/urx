@@ -27,7 +27,7 @@ mod tests {
     #[test]
     fn test_create_outputter_json() {
         let outputter = create_outputter("json");
-        // Using type_id to check the type of the outputter
+        // Checks the output of the format method
         assert_eq!(
             outputter.format("https://example.com", false),
             "\"https://example.com\","
