@@ -156,22 +156,40 @@ mod tests {
     #[test]
     fn test_plain_outputter_format() {
         let outputter = PlainOutputter::new();
-        assert_eq!(outputter.format("https://example.com", false), "https://example.com\n");
-        assert_eq!(outputter.format("https://example.com", true), "https://example.com\n");
+        assert_eq!(
+            outputter.format("https://example.com", false),
+            "https://example.com\n"
+        );
+        assert_eq!(
+            outputter.format("https://example.com", true),
+            "https://example.com\n"
+        );
     }
 
     #[test]
     fn test_json_outputter_format() {
         let outputter = JsonOutputter::new();
-        assert_eq!(outputter.format("https://example.com", false), "\"https://example.com\",");
-        assert_eq!(outputter.format("https://example.com", true), "\"https://example.com\"\n");
+        assert_eq!(
+            outputter.format("https://example.com", false),
+            "\"https://example.com\","
+        );
+        assert_eq!(
+            outputter.format("https://example.com", true),
+            "\"https://example.com\"\n"
+        );
     }
 
     #[test]
     fn test_csv_outputter_format() {
         let outputter = CsvOutputter::new();
-        assert_eq!(outputter.format("https://example.com", false), "https://example.com\n");
-        assert_eq!(outputter.format("https://example.com", true), "https://example.com\n");
+        assert_eq!(
+            outputter.format("https://example.com", false),
+            "https://example.com\n"
+        );
+        assert_eq!(
+            outputter.format("https://example.com", true),
+            "https://example.com\n"
+        );
     }
 
     #[test]
@@ -181,18 +199,21 @@ mod tests {
             "https://example.com/page1".to_string(),
             "https://example.com/page2".to_string(),
         ];
-        
+
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
-        
+
         outputter.output(&urls, Some(temp_path.clone()))?;
-        
+
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
         file.read_to_string(&mut content)?;
-        
-        assert_eq!(content, "https://example.com/page1\nhttps://example.com/page2\n");
-        
+
+        assert_eq!(
+            content,
+            "https://example.com/page1\nhttps://example.com/page2\n"
+        );
+
         Ok(())
     }
 
@@ -203,18 +224,21 @@ mod tests {
             "https://example.com/page1".to_string(),
             "https://example.com/page2".to_string(),
         ];
-        
+
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
-        
+
         outputter.output(&urls, Some(temp_path.clone()))?;
-        
+
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
         file.read_to_string(&mut content)?;
-        
-        assert_eq!(content, "[\"https://example.com/page1\",\"https://example.com/page2\"\n]");
-        
+
+        assert_eq!(
+            content,
+            "[\"https://example.com/page1\",\"https://example.com/page2\"\n]"
+        );
+
         Ok(())
     }
 
@@ -225,18 +249,21 @@ mod tests {
             "https://example.com/page1".to_string(),
             "https://example.com/page2".to_string(),
         ];
-        
+
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
-        
+
         outputter.output(&urls, Some(temp_path.clone()))?;
-        
+
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
         file.read_to_string(&mut content)?;
-        
-        assert_eq!(content, "url\nhttps://example.com/page1\nhttps://example.com/page2\n");
-        
+
+        assert_eq!(
+            content,
+            "url\nhttps://example.com/page1\nhttps://example.com/page2\n"
+        );
+
         Ok(())
     }
 
@@ -244,18 +271,18 @@ mod tests {
     fn test_empty_urls() -> Result<()> {
         let outputter = PlainOutputter::new();
         let urls: Vec<String> = vec![];
-        
+
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
-        
+
         outputter.output(&urls, Some(temp_path.clone()))?;
-        
+
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
         file.read_to_string(&mut content)?;
-        
+
         assert_eq!(content, "");
-        
+
         Ok(())
     }
 }

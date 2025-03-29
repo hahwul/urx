@@ -60,7 +60,7 @@ mod tests {
             "https://example.com\n"
         );
     }
-    
+
     #[test]
     fn test_create_outputter_case_insensitive() {
         let json_outputter = create_outputter("JSON");
@@ -68,7 +68,7 @@ mod tests {
             json_outputter.format("https://example.com", false),
             "\"https://example.com\","
         );
-        
+
         let csv_outputter = create_outputter("CSV");
         assert_eq!(
             csv_outputter.format("https://example.com", false),

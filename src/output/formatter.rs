@@ -80,29 +80,47 @@ mod tests {
     #[test]
     fn test_plain_formatter() {
         let formatter = PlainFormatter::new();
-        assert_eq!(formatter.format("https://example.com", false), "https://example.com\n");
-        assert_eq!(formatter.format("https://example.com", true), "https://example.com\n");
+        assert_eq!(
+            formatter.format("https://example.com", false),
+            "https://example.com\n"
+        );
+        assert_eq!(
+            formatter.format("https://example.com", true),
+            "https://example.com\n"
+        );
     }
 
     #[test]
     fn test_json_formatter() {
         let formatter = JsonFormatter::new();
-        assert_eq!(formatter.format("https://example.com", false), "\"https://example.com\",");
-        assert_eq!(formatter.format("https://example.com", true), "\"https://example.com\"\n");
+        assert_eq!(
+            formatter.format("https://example.com", false),
+            "\"https://example.com\","
+        );
+        assert_eq!(
+            formatter.format("https://example.com", true),
+            "\"https://example.com\"\n"
+        );
     }
 
     #[test]
     fn test_csv_formatter() {
         let formatter = CsvFormatter::new();
-        assert_eq!(formatter.format("https://example.com", false), "https://example.com\n");
-        assert_eq!(formatter.format("https://example.com", true), "https://example.com\n");
+        assert_eq!(
+            formatter.format("https://example.com", false),
+            "https://example.com\n"
+        );
+        assert_eq!(
+            formatter.format("https://example.com", true),
+            "https://example.com\n"
+        );
     }
 
     #[test]
     fn test_formatter_clone() {
         let plain_formatter: Box<dyn Formatter> = Box::new(PlainFormatter::new());
         let cloned_formatter = plain_formatter.clone();
-        
+
         assert_eq!(
             plain_formatter.format("https://example.com", false),
             cloned_formatter.format("https://example.com", false)
