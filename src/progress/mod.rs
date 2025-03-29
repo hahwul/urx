@@ -99,3 +99,65 @@ impl ProgressManager {
         bar
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_progress_manager_creation() {
+        let manager = ProgressManager::new();
+        // Just verify it can be created without error
+        assert!(true);
+    }
+
+    #[test]
+    fn test_create_domain_bar() {
+        let manager = ProgressManager::new();
+        let bar = manager.create_domain_bar(10);
+
+        assert_eq!(bar.length(), Some(10));
+        assert_eq!(bar.position(), 0);
+    }
+
+    #[test]
+    fn test_create_provider_bars() {
+        let manager = ProgressManager::new();
+        let provider_names = vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()];
+
+        let bars = manager.create_provider_bars(&provider_names);
+
+        assert_eq!(bars.len(), provider_names.len());
+        for (_i, bar) in bars.iter().enumerate() {
+            assert_eq!(bar.length(), Some(100));
+            assert_eq!(bar.position(), 0);
+        }
+    }
+
+    #[test]
+    fn test_create_filter_bar() {
+        let manager = ProgressManager::new();
+        let bar = manager.create_filter_bar();
+
+        assert_eq!(bar.length(), Some(100));
+        assert_eq!(bar.position(), 0);
+    }
+
+    #[test]
+    fn test_create_transform_bar() {
+        let manager = ProgressManager::new();
+        let bar = manager.create_transform_bar();
+
+        assert_eq!(bar.length(), Some(100));
+        assert_eq!(bar.position(), 0);
+    }
+
+    #[test]
+    fn test_create_test_bar() {
+        let manager = ProgressManager::new();
+        let bar = manager.create_test_bar(50);
+
+        assert_eq!(bar.length(), Some(50));
+        assert_eq!(bar.position(), 0);
+    }
+}
