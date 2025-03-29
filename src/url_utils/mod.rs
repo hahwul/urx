@@ -262,3 +262,202 @@ impl UrlTransformer {
         extracted_parts
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_filter_extensions() {
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["js".to_string(), "php".to_string()]);
+
+        let urls = HashSet::from([
+            "https://example.com/script.js".to_string(),
+            "https://example.com/page.php".to_string(),
+            "https://example.com/page.html".to_string(),
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(filtered.contains(&"https://example.com/page.php".to_string()));
+        assert!(!filtered.contains(&"https://example.com/page.html".to_string()));
+    }
+
+    #[test]
+    fn test_url_filter_exclude_extensions() {
+        let mut filter = UrlFilter::new();
+        filter.with_exclude_extensions(vec!["html".to_string()]);
+
+        let urls = HashSet::from([
+            "https://example.com/script.js".to_string(),
+            "https://example.com/page.php".to_string(),
+            "https://example.com/page.html".to_string(),
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(filtered.contains(&"https://example.com/page.php".to_string()));
+        assert!(!filtered.contains(&"https://example.com/page.html".to_string()));
+    }
+
+    #[test]
+    fn test_url_filter_patterns() {
+        let mut filter = UrlFilter::new();
+        filter.with_patterns(vec!["admin".to_string()]);
+
+        let urls = HashSet::from([
+            "https://example.com/admin/dashboard".to_string(),
+            "https://example.com/admin/users".to_string(),
+            "https://example.com/public/page".to_string(),
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/admin/dashboard".to_string()));
+        assert!(filtered.contains(&"https://example.com/admin/users".to_string()));
+        assert!(!filtered.contains(&"https://example.com/public/page".to_string()));
+    }
+
+    #[test]
+    fn test_url_filter_exclude_patterns() {
+        let mut filter = UrlFilter::new();
+        filter.with_exclude_patterns(vec!["public".to_string()]);
+
+        let urls = HashSet::from([
+            "https://example.com/admin/dashboard".to_string(),
+            "https://example.com/admin/users".to_string(),
+            "https://example.com/public/page".to_string(),
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/admin/dashboard".to_string()));
+        assert!(filtered.contains(&"https://example.com/admin/users".to_string()));
+        assert!(!filtered.contains(&"https://example.com/public/page".to_string()));
+    }
+
+    #[test]
+    fn test_url_filter_min_length() {
+        let mut filter = UrlFilter::new();
+        filter.with_min_length(Some(30));
+
+        let urls = HashSet::from([
+            "https://example.com/short".to_string(),
+            "https://example.com/very/long/path/to/resource".to_string(),
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains(&"https://example.com/very/long/path/to/resource".to_string()));
+    }
+
+    #[test]
+    fn test_url_filter_max_length() {
+        let mut filter = UrlFilter::new();
+        filter.with_max_length(Some(30));
+
+        let urls = HashSet::from([
+            "https://example.com/short".to_string(),
+            "https://example.com/very/long/path/to/resource".to_string(),
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains(&"https://example.com/short".to_string()));
+    }
+
+    #[test]
+    fn test_url_filter_combined() {
+        let mut filter = UrlFilter::new();
+        filter
+            .with_extensions(vec!["php".to_string()])
+            .with_patterns(vec!["admin".to_string()])
+            .with_min_length(Some(36));
+
+        let urls = HashSet::from([
+            "https://example.com/admin/dashboard.php".to_string(),
+            "https://example.com/admin/user_login.php".to_string(),
+            "https://example.com/admin/short.php".to_string(), // too short
+            "https://example.com/public/page.php".to_string(), // no "admin"
+            "https://example.com/admin/page.html".to_string(), // not php
+        ]);
+
+        let filtered = filter.apply_filters(&urls);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/admin/dashboard.php".to_string()));
+        assert!(filtered.contains(&"https://example.com/admin/user_login.php".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_merge_endpoints() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "https://example.com/api?param1=value1".to_string(),
+            "https://example.com/api?param2=value2".to_string(),
+            "https://example.com/api?param3=value3".to_string(),
+            "https://other.com/path".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert!(transformed.contains(
+            &"https://example.com/api?param1=value1&param2=value2&param3=value3".to_string()
+        ));
+        assert!(transformed.contains(&"https://other.com/path".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_show_only_host() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_host(true);
+
+        let urls = vec![
+            "https://example.com/path1".to_string(),
+            "https://example.com/path2".to_string(),
+            "https://other.com/path".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 2); // Duplicates should be removed
+        assert!(transformed.contains(&"example.com".to_string()));
+        assert!(transformed.contains(&"other.com".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_show_only_path() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_path(true);
+
+        let urls = vec![
+            "https://example.com/path1".to_string(),
+            "https://example.com/path2".to_string(),
+            "https://other.com/path1".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 2); // Duplicates should be removed
+        assert!(transformed.contains(&"/path1".to_string()));
+        assert!(transformed.contains(&"/path2".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_show_only_param() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_param(true);
+
+        let urls = vec![
+            "https://example.com/api?param1=value1".to_string(),
+            "https://example.com/api?param2=value2".to_string(),
+            "https://other.com/api?param1=value1".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 2); // Duplicates should be removed
+        assert!(transformed.contains(&"param1=value1".to_string()));
+        assert!(transformed.contains(&"param2=value2".to_string()));
+    }
+}
