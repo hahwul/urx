@@ -2,11 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[clap(
-    name = "urx",
-    about = "Extracts URLs from OSINT Archives for Security Insights.",
-    version
-)]
+#[clap(name = "urx", version)]
 pub struct Args {
     /// Domains to fetch URLs for
     #[clap(name = "DOMAINS")]
@@ -46,6 +42,16 @@ pub struct Args {
     /// Show verbose output
     #[clap(short, long)]
     pub verbose: bool,
+
+    #[clap(help_heading = "Display Options")]
+    /// Silent mode (no output)
+    #[clap(long)]
+    pub silent: bool,
+
+    #[clap(help_heading = "Display Options")]
+    /// No progress bar
+    #[clap(long)]
+    pub no_progress: bool,
 
     #[clap(help_heading = "Filter Options")]
     /// Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")

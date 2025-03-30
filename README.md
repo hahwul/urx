@@ -95,7 +95,9 @@ Provider Options:
       --subs                   Include subdomains when searching
 
 Display Options:
-  -v, --verbose  Show verbose output
+  -v, --verbose      Show verbose output
+      --silent       Silent mode (no output)
+      --no-progress  No progress bar
 
 Filter Options:
   -e, --extensions <EXTENSIONS>
