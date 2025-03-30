@@ -25,7 +25,7 @@ impl Outputter for PlainOutputter {
         self.formatter.format(url, is_last)
     }
 
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()> {
+    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
@@ -38,6 +38,10 @@ impl Outputter for PlainOutputter {
                 Ok(())
             }
             None => {
+                if silent {
+                    return Ok(());
+                };
+
                 for (i, url) in urls.iter().enumerate() {
                     let formatted = self.format(url, i == urls.len() - 1);
                     print!("{}", formatted);
@@ -66,7 +70,7 @@ impl Outputter for JsonOutputter {
         self.formatter.format(url, is_last)
     }
 
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()> {
+    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
@@ -85,6 +89,10 @@ impl Outputter for JsonOutputter {
                 Ok(())
             }
             None => {
+                if silent {
+                    return Ok(());
+                };
+
                 print!("[");
 
                 for (i, url) in urls.iter().enumerate() {
@@ -117,7 +125,7 @@ impl Outputter for CsvOutputter {
         self.formatter.format(url, is_last)
     }
 
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()> {
+    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
@@ -134,6 +142,10 @@ impl Outputter for CsvOutputter {
                 Ok(())
             }
             None => {
+                if silent {
+                    return Ok(());
+                };
+
                 println!("url");
 
                 for (i, url) in urls.iter().enumerate() {
@@ -203,7 +215,7 @@ mod tests {
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
 
-        outputter.output(&urls, Some(temp_path.clone()))?;
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
 
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
@@ -228,7 +240,7 @@ mod tests {
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
 
-        outputter.output(&urls, Some(temp_path.clone()))?;
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
 
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
@@ -253,7 +265,7 @@ mod tests {
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
 
-        outputter.output(&urls, Some(temp_path.clone()))?;
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
 
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;
@@ -275,7 +287,7 @@ mod tests {
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
 
-        outputter.output(&urls, Some(temp_path.clone()))?;
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
 
         let mut content = String::new();
         let mut file = File::open(&temp_path)?;

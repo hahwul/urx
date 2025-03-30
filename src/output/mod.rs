@@ -9,7 +9,7 @@ pub use writer::*;
 
 pub trait Outputter: Send + Sync {
     fn format(&self, url: &str, is_last: bool) -> String;
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>) -> Result<()>;
+    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()>;
 }
 
 pub fn create_outputter(format: &str) -> Box<dyn Outputter> {

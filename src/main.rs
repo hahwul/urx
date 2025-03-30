@@ -31,7 +31,9 @@ async fn main() -> Result<()> {
     };
 
     if domains.is_empty() {
-        eprintln!("No domains provided. Please specify domains or pipe them through stdin.");
+        if !args.silent {
+            eprintln!("No domains provided. Please specify domains or pipe them through stdin.");
+        }
         return Ok(());
     }
 
@@ -40,7 +42,7 @@ async fn main() -> Result<()> {
     let mut provider_names: Vec<String> = Vec::new();
 
     if args.providers.iter().any(|p| p == "wayback") {
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Adding Wayback Machine provider");
             if args.subs {
                 println!("Subdomain inclusion enabled for Wayback Machine");
@@ -74,11 +76,11 @@ async fn main() -> Result<()> {
             wayback_provider.with_rate_limit(Some(rate));
         }
 
-        if args.verbose && args.random_agent {
+        if args.verbose && args.random_agent && !args.silent {
             println!("Random User-Agent enabled for Wayback Machine");
         }
 
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!(
                 "Timeout set to {} seconds for Wayback Machine",
                 args.timeout
@@ -101,7 +103,7 @@ async fn main() -> Result<()> {
     }
 
     if args.providers.iter().any(|p| p == "cc") {
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Adding Common Crawl provider with index: {}", args.cc_index);
             if args.subs {
                 println!("Subdomain inclusion enabled for Common Crawl");
@@ -135,11 +137,11 @@ async fn main() -> Result<()> {
             cc_provider.with_rate_limit(Some(rate));
         }
 
-        if args.verbose && args.random_agent {
+        if args.verbose && args.random_agent && !args.silent {
             println!("Random User-Agent enabled for Common Crawl");
         }
 
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Timeout set to {} seconds for Common Crawl", args.timeout);
             println!("Retries set to {} for Common Crawl", args.retries);
             println!(
@@ -159,7 +161,7 @@ async fn main() -> Result<()> {
     }
 
     if args.providers.iter().any(|p| p == "otx") {
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Adding OTX provider");
             if args.subs {
                 println!("Subdomain inclusion enabled for OTX");
@@ -190,11 +192,11 @@ async fn main() -> Result<()> {
             otx_provider.with_rate_limit(Some(rate));
         }
 
-        if args.verbose && args.random_agent {
+        if args.verbose && args.random_agent && !args.silent {
             println!("Random User-Agent enabled for OTX");
         }
 
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Timeout set to {} seconds for OTX", args.timeout);
             println!("Retries set to {} for OTX", args.retries);
             println!("Parallel requests set to {} for OTX", args.parallel);
@@ -208,12 +210,17 @@ async fn main() -> Result<()> {
     }
 
     if providers.is_empty() {
-        eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx)");
+        if !args.silent {
+            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx)");
+        }
         return Ok(());
     }
 
+    // Check for progress bar options
+    let progress_check = args.no_progress || args.silent;
+
     // Setup progress bars
-    let progress_manager = ProgressManager::new();
+    let progress_manager = ProgressManager::new(progress_check);
     let domain_bar = progress_manager.create_domain_bar(domains.len());
 
     // Process each domain
@@ -224,7 +231,7 @@ async fn main() -> Result<()> {
         domain_bar.set_position(idx as u64);
         domain_bar.set_message(format!("Processing {}", domain));
 
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!(
                 "Processing domain [{}/{}]: {}",
                 idx + 1,
@@ -286,13 +293,17 @@ async fn main() -> Result<()> {
                 }
                 Ok((Err(e), provider_name)) => {
                     provider_results.push(format!("{}: Error - {}", provider_name, e));
-                    eprintln!(
-                        "Error fetching URLs for {} from {}: {}",
-                        domain, provider_name, e
-                    );
+                    if !args.silent {
+                        eprintln!(
+                            "Error fetching URLs for {} from {}: {}",
+                            domain, provider_name, e
+                        );
+                    }
                 }
                 Err(e) => {
-                    eprintln!("Task error: {}", e);
+                    if !args.silent {
+                        eprintln!("Task error: {}", e);
+                    }
                 }
             }
         }
@@ -302,7 +313,7 @@ async fn main() -> Result<()> {
             bar.finish();
         }
 
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Results for {}:", domain);
             for result in &provider_results {
                 println!("  - {}", result);
@@ -344,7 +355,7 @@ async fn main() -> Result<()> {
         bar.finish_with_message(format!("Filtered to {} URLs", sorted_urls.len()));
     }
 
-    if args.verbose {
+    if args.verbose && !args.silent {
         println!("Total unique URLs after filtering: {}", sorted_urls.len());
     }
 
@@ -382,7 +393,7 @@ async fn main() -> Result<()> {
     let mut final_urls = transformed_urls.clone();
 
     if args.check_status || args.extract_links {
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Applying testing options...");
         }
 
@@ -394,7 +405,7 @@ async fn main() -> Result<()> {
         let mut testers: Vec<Box<dyn Tester>> = Vec::new();
 
         if args.check_status {
-            if args.verbose {
+            if args.verbose && !args.silent {
                 println!("Checking HTTP status codes for URLs");
             }
 
@@ -417,7 +428,7 @@ async fn main() -> Result<()> {
         }
 
         if args.extract_links {
-            if args.verbose {
+            if args.verbose && !args.silent {
                 println!("Extracting links from HTML content");
             }
 
@@ -474,7 +485,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                             Err(e) => {
-                                if verbose {
+                                if verbose && !args.silent {
                                     eprintln!("Error testing URL {}: {}", url, e);
                                 }
                             }
@@ -528,7 +539,9 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Task error: {}", e);
+                    if !args.silent {
+                        eprintln!("Task error: {}", e);
+                    }
                 }
             }
         }
@@ -542,21 +555,23 @@ async fn main() -> Result<()> {
 
         test_bar.finish_with_message(format!("Testing complete, found {} URLs", final_urls.len()));
 
-        if args.verbose {
+        if args.verbose && !args.silent {
             println!("Testing complete, final URL count: {}", final_urls.len());
         }
     }
 
-    match outputter.output(&final_urls, args.output.clone()) {
+    match outputter.output(&final_urls, args.output.clone(), args.silent) {
         Ok(_) => {
-            if args.verbose {
+            if args.verbose && !args.silent {
                 if let Some(path) = &args.output {
                     println!("Results written to: {}", path.display());
                 }
             }
         }
         Err(e) => {
-            eprintln!("Error writing output: {}", e);
+            if !args.silent {
+                eprintln!("Error writing output: {}", e);
+            }
         }
     }
 

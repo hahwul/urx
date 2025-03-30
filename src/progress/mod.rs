@@ -2,16 +2,25 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 pub struct ProgressManager {
     multi_progress: MultiProgress,
+    no_progress: bool,
 }
 
 impl ProgressManager {
-    pub fn new() -> Self {
+    pub fn new(no_progress: bool) -> Self {
         ProgressManager {
             multi_progress: MultiProgress::new(),
+            no_progress,
         }
     }
 
     pub fn create_domain_bar(&self, total: usize) -> ProgressBar {
+        if self.no_progress {
+            // Return a hidden progress bar when progress is disabled
+            let bar = ProgressBar::hidden();
+            bar.set_length(total as u64);
+            return bar;
+        }
+
         let style = ProgressStyle::with_template(
             "{prefix:.bold.dim} [{bar:40.cyan/blue}] {pos}/{len} {wide_msg}",
         )
@@ -27,6 +36,18 @@ impl ProgressManager {
     }
 
     pub fn create_provider_bars(&self, provider_names: &[String]) -> Vec<ProgressBar> {
+        if self.no_progress {
+            // Return hidden progress bars when progress is disabled
+            return provider_names
+                .iter()
+                .map(|_| {
+                    let bar = ProgressBar::hidden();
+                    bar.set_length(100);
+                    bar
+                })
+                .collect();
+        }
+
         let style = ProgressStyle::with_template(
             "{prefix:.bold.dim} [{bar:30.green/white}] {spinner} {wide_msg}",
         )
@@ -57,6 +78,13 @@ impl ProgressManager {
     }
 
     pub fn create_filter_bar(&self) -> ProgressBar {
+        if self.no_progress {
+            // Return a hidden progress bar when progress is disabled
+            let bar = ProgressBar::hidden();
+            bar.set_length(100);
+            return bar;
+        }
+
         let style =
             ProgressStyle::with_template("{prefix:.bold.dim} [{bar:40.yellow/white}] {wide_msg}")
                 .unwrap()
@@ -71,6 +99,13 @@ impl ProgressManager {
     }
 
     pub fn create_transform_bar(&self) -> ProgressBar {
+        if self.no_progress {
+            // Return a hidden progress bar when progress is disabled
+            let bar = ProgressBar::hidden();
+            bar.set_length(100);
+            return bar;
+        }
+
         let style =
             ProgressStyle::with_template("{prefix:.bold.dim} [{bar:40.magenta/white}] {wide_msg}")
                 .unwrap()
@@ -85,6 +120,13 @@ impl ProgressManager {
     }
 
     pub fn create_test_bar(&self, total: usize) -> ProgressBar {
+        if self.no_progress {
+            // Return a hidden progress bar when progress is disabled
+            let bar = ProgressBar::hidden();
+            bar.set_length(total as u64);
+            return bar;
+        }
+
         let style = ProgressStyle::with_template(
             "{prefix:.bold.dim} [{bar:40.blue/white}] {pos}/{len} {wide_msg}",
         )
@@ -106,14 +148,14 @@ mod tests {
 
     #[test]
     fn test_progress_manager_creation() {
-        let manager = ProgressManager::new();
+        let manager = ProgressManager::new(false);
         // Just verify it can be created without error
         assert!(true);
     }
 
     #[test]
     fn test_create_domain_bar() {
-        let manager = ProgressManager::new();
+        let manager = ProgressManager::new(false);
         let bar = manager.create_domain_bar(10);
 
         assert_eq!(bar.length(), Some(10));
@@ -122,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_create_provider_bars() {
-        let manager = ProgressManager::new();
+        let manager = ProgressManager::new(false);
         let provider_names = vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()];
 
         let bars = manager.create_provider_bars(&provider_names);
@@ -136,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_create_filter_bar() {
-        let manager = ProgressManager::new();
+        let manager = ProgressManager::new(false);
         let bar = manager.create_filter_bar();
 
         assert_eq!(bar.length(), Some(100));
@@ -145,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_create_transform_bar() {
-        let manager = ProgressManager::new();
+        let manager = ProgressManager::new(false);
         let bar = manager.create_transform_bar();
 
         assert_eq!(bar.length(), Some(100));
@@ -154,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_create_test_bar() {
-        let manager = ProgressManager::new();
+        let manager = ProgressManager::new(false);
         let bar = manager.create_test_bar(50);
 
         assert_eq!(bar.length(), Some(50));
