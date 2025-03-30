@@ -19,6 +19,13 @@ use providers::{CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvid
 use testers::{LinkExtractor, StatusChecker, Tester};
 use url_utils::{UrlFilter, UrlTransformer};
 
+/// Helper function to print verbose messages
+fn verbose_print(args: &Args, message: impl AsRef<str>) {
+    if args.verbose && !args.silent {
+        println!("{}", message.as_ref());
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -231,14 +238,15 @@ async fn main() -> Result<()> {
         domain_bar.set_position(idx as u64);
         domain_bar.set_message(format!("Processing {}", domain));
 
-        if args.verbose && !args.silent {
-            println!(
+        verbose_print(
+            &args,
+            format!(
                 "Processing domain [{}/{}]: {}",
                 idx + 1,
                 total_domains,
                 domain
-            );
-        }
+            ),
+        );
 
         let mut tasks = Vec::new();
         let provider_bars = progress_manager.create_provider_bars(&provider_names);
@@ -393,9 +401,7 @@ async fn main() -> Result<()> {
     let mut final_urls = transformed_urls.clone();
 
     if args.check_status || args.extract_links {
-        if args.verbose && !args.silent {
-            println!("Applying testing options...");
-        }
+        verbose_print(&args, "Applying testing options...");
 
         // Create progress bar for testing
         let test_bar = progress_manager.create_test_bar(transformed_urls.len());
@@ -405,10 +411,9 @@ async fn main() -> Result<()> {
         let mut testers: Vec<Box<dyn Tester>> = Vec::new();
 
         if args.check_status {
-            if args.verbose && !args.silent {
-                println!("Checking HTTP status codes for URLs");
-            }
+            verbose_print(&args, "Checking HTTP status codes for URLs");
 
+            // Apply network settings
             let mut status_checker = StatusChecker::new();
 
             // Apply network settings
