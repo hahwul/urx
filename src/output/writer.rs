@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 // Outputter implementations for different formats
-use super::Outputter;
+use super::{Outputter, UrlData};
 
 #[derive(Debug, Clone)]
 pub struct PlainOutputter {
@@ -21,17 +21,17 @@ impl PlainOutputter {
 }
 
 impl Outputter for PlainOutputter {
-    fn format(&self, url: &str, is_last: bool) -> String {
-        self.formatter.format(url, is_last)
+    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
+        self.formatter.format(url_data, is_last)
     }
 
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
 
-                for (i, url) in urls.iter().enumerate() {
-                    let formatted = self.format(url, i == urls.len() - 1);
+                for (i, url_data) in urls.iter().enumerate() {
+                    let formatted = self.format(url_data, i == urls.len() - 1);
                     file.write_all(formatted.as_bytes())
                         .context("Failed to write to output file")?;
                 }
@@ -42,8 +42,8 @@ impl Outputter for PlainOutputter {
                     return Ok(());
                 };
 
-                for (i, url) in urls.iter().enumerate() {
-                    let formatted = self.format(url, i == urls.len() - 1);
+                for (i, url_data) in urls.iter().enumerate() {
+                    let formatted = self.format(url_data, i == urls.len() - 1);
                     print!("{}", formatted);
                 }
                 Ok(())
@@ -66,11 +66,11 @@ impl JsonOutputter {
 }
 
 impl Outputter for JsonOutputter {
-    fn format(&self, url: &str, is_last: bool) -> String {
-        self.formatter.format(url, is_last)
+    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
+        self.formatter.format(url_data, is_last)
     }
 
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
@@ -78,8 +78,8 @@ impl Outputter for JsonOutputter {
                 file.write_all(b"[")
                     .context("Failed to write JSON opening bracket")?;
 
-                for (i, url) in urls.iter().enumerate() {
-                    let formatted = self.format(url, i == urls.len() - 1);
+                for (i, url_data) in urls.iter().enumerate() {
+                    let formatted = self.format(url_data, i == urls.len() - 1);
                     file.write_all(formatted.as_bytes())
                         .context("Failed to write to output file")?;
                 }
@@ -95,8 +95,8 @@ impl Outputter for JsonOutputter {
 
                 print!("[");
 
-                for (i, url) in urls.iter().enumerate() {
-                    let formatted = self.format(url, i == urls.len() - 1);
+                for (i, url_data) in urls.iter().enumerate() {
+                    let formatted = self.format(url_data, i == urls.len() - 1);
                     print!("{}", formatted);
                 }
 
@@ -121,20 +121,27 @@ impl CsvOutputter {
 }
 
 impl Outputter for CsvOutputter {
-    fn format(&self, url: &str, is_last: bool) -> String {
-        self.formatter.format(url, is_last)
+    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
+        self.formatter.format(url_data, is_last)
     }
 
-    fn output(&self, urls: &[String], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
 
-                file.write_all(b"url\n")
-                    .context("Failed to write CSV header")?;
+                // Write CSV header (including status if any URLs have status info)
+                let has_status = urls.iter().any(|url| url.status.is_some());
+                if has_status {
+                    file.write_all(b"url,status\n")
+                        .context("Failed to write CSV header")?;
+                } else {
+                    file.write_all(b"url\n")
+                        .context("Failed to write CSV header")?;
+                }
 
-                for (i, url) in urls.iter().enumerate() {
-                    let formatted = self.format(url, i == urls.len() - 1);
+                for (i, url_data) in urls.iter().enumerate() {
+                    let formatted = self.format(url_data, i == urls.len() - 1);
                     file.write_all(formatted.as_bytes())
                         .context("Failed to write to output file")?;
                 }
@@ -146,10 +153,16 @@ impl Outputter for CsvOutputter {
                     return Ok(());
                 };
 
-                println!("url");
+                // Determine if we should include status in header
+                let has_status = urls.iter().any(|url| url.status.is_some());
+                if has_status {
+                    println!("url,status");
+                } else {
+                    println!("url");
+                }
 
-                for (i, url) in urls.iter().enumerate() {
-                    let formatted = self.format(url, i == urls.len() - 1);
+                for (i, url_data) in urls.iter().enumerate() {
+                    let formatted = self.format(url_data, i == urls.len() - 1);
                     print!("{}", formatted);
                 }
 
@@ -168,39 +181,45 @@ mod tests {
     #[test]
     fn test_plain_outputter_format() {
         let outputter = PlainOutputter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
+
+        let url_data_status =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
         assert_eq!(
-            outputter.format("https://example.com", false),
-            "https://example.com\n"
-        );
-        assert_eq!(
-            outputter.format("https://example.com", true),
-            "https://example.com\n"
+            outputter.format(&url_data_status, true),
+            "https://example.com [200 OK]\n"
         );
     }
 
     #[test]
     fn test_json_outputter_format() {
         let outputter = JsonOutputter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(
-            outputter.format("https://example.com", false),
-            "\"https://example.com\","
+            outputter.format(&url_data, false),
+            "{\"url\":\"https://example.com\"},"
         );
+
+        let url_data_status =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
         assert_eq!(
-            outputter.format("https://example.com", true),
-            "\"https://example.com\"\n"
+            outputter.format(&url_data_status, true),
+            "{\"url\":\"https://example.com\",\"status\":\"200 OK\"}\n"
         );
     }
 
     #[test]
     fn test_csv_outputter_format() {
         let outputter = CsvOutputter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(outputter.format(&url_data, false), "https://example.com,\n");
+
+        let url_data_status =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
         assert_eq!(
-            outputter.format("https://example.com", false),
-            "https://example.com\n"
-        );
-        assert_eq!(
-            outputter.format("https://example.com", true),
-            "https://example.com\n"
+            outputter.format(&url_data_status, true),
+            "https://example.com,200 OK\n"
         );
     }
 
@@ -208,8 +227,11 @@ mod tests {
     fn test_plain_outputter_file_output() -> Result<()> {
         let outputter = PlainOutputter::new();
         let urls = vec![
-            "https://example.com/page1".to_string(),
-            "https://example.com/page2".to_string(),
+            UrlData::new("https://example.com/page1".to_string()),
+            UrlData::with_status(
+                "https://example.com/page2".to_string(),
+                "200 OK".to_string(),
+            ),
         ];
 
         let temp_file = NamedTempFile::new()?;
@@ -223,7 +245,7 @@ mod tests {
 
         assert_eq!(
             content,
-            "https://example.com/page1\nhttps://example.com/page2\n"
+            "https://example.com/page1\nhttps://example.com/page2 [200 OK]\n"
         );
 
         Ok(())
@@ -233,8 +255,11 @@ mod tests {
     fn test_json_outputter_file_output() -> Result<()> {
         let outputter = JsonOutputter::new();
         let urls = vec![
-            "https://example.com/page1".to_string(),
-            "https://example.com/page2".to_string(),
+            UrlData::new("https://example.com/page1".to_string()),
+            UrlData::with_status(
+                "https://example.com/page2".to_string(),
+                "200 OK".to_string(),
+            ),
         ];
 
         let temp_file = NamedTempFile::new()?;
@@ -248,7 +273,7 @@ mod tests {
 
         assert_eq!(
             content,
-            "[\"https://example.com/page1\",\"https://example.com/page2\"\n]"
+            "[{\"url\":\"https://example.com/page1\"},{\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]"
         );
 
         Ok(())
@@ -258,8 +283,11 @@ mod tests {
     fn test_csv_outputter_file_output() -> Result<()> {
         let outputter = CsvOutputter::new();
         let urls = vec![
-            "https://example.com/page1".to_string(),
-            "https://example.com/page2".to_string(),
+            UrlData::new("https://example.com/page1".to_string()),
+            UrlData::with_status(
+                "https://example.com/page2".to_string(),
+                "200 OK".to_string(),
+            ),
         ];
 
         let temp_file = NamedTempFile::new()?;
@@ -273,7 +301,7 @@ mod tests {
 
         assert_eq!(
             content,
-            "url\nhttps://example.com/page1\nhttps://example.com/page2\n"
+            "url,status\nhttps://example.com/page1,\nhttps://example.com/page2,200 OK\n"
         );
 
         Ok(())
@@ -282,7 +310,7 @@ mod tests {
     #[test]
     fn test_empty_urls() -> Result<()> {
         let outputter = PlainOutputter::new();
-        let urls: Vec<String> = vec![];
+        let urls: Vec<UrlData> = vec![];
 
         let temp_file = NamedTempFile::new()?;
         let temp_path = temp_file.path().to_path_buf();
