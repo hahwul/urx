@@ -1717,6 +1717,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "url",
 ]
