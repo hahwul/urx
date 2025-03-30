@@ -2,10 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[clap(
-    name = "urx",
-    version
-)]
+#[clap(name = "urx", version)]
 pub struct Args {
     /// Domains to fetch URLs for
     #[clap(name = "DOMAINS")]
