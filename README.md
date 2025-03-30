@@ -91,7 +91,7 @@ Output Options:
 
 Provider Options:
       --cc-index <CC_INDEX>    Common Crawl index to use (e.g., CC-MAIN-2025-08) [default: CC-MAIN-2025-08]
-      --providers <PROVIDERS>  Providers to use (comma-separated, e.g., "wayback,cc,otx") [default: wayback,cc]
+      --providers <PROVIDERS>  Providers to use (comma-separated, e.g., "wayback,cc,otx") [default: wayback,cc,otx]
       --subs                   Include subdomains when searching
 
 Display Options:

@@ -30,7 +30,7 @@ pub struct Args {
 
     /// Providers to use (comma-separated, e.g., "wayback,cc,otx")
     #[clap(help_heading = "Provider Options")]
-    #[clap(long, value_delimiter = ',', default_value = "wayback,cc")]
+    #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
     pub providers: Vec<String>,
 
     /// Include subdomains when searching

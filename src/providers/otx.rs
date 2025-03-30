@@ -30,9 +30,13 @@ struct OTXUrlEntry {
     domain: String,
     url: String,
     hostname: String,
+    #[serde(default)]
     httpcode: i32,
+    #[serde(default)]
     page_num: i32,
+    #[serde(default)]
     full_size: i32,
+    #[serde(default)]
     paged: bool,
 }
 
@@ -53,15 +57,20 @@ impl OTXProvider {
     }
 
     fn format_url(&self, domain: &str, page: u32) -> String {
-        let has_subdomain = domain.split('.').count() > 2;
+        // AlienVault OTX API pages start at 1, not 0
+        let page_number = page + 1;
 
-        if !has_subdomain {
+        // We should always use domain endpoint for second-level domains like example.com
+        // and hostname endpoint for subdomains like sub.example.com
+        if domain.split('.').count() <= 2 {
+            // This is a second-level domain like example.com
             format!(
                 "https://otx.alienvault.com/api/v1/indicators/domain/{}/url_list?limit={}&page={}",
-                domain, OTX_RESULTS_LIMIT, page
+                domain, OTX_RESULTS_LIMIT, page_number
             )
-        } else if has_subdomain && self.include_subdomains {
-            // Extract the main domain
+        } else if self.include_subdomains {
+            // This is a subdomain but we want to include all subdomains
+            // Extract the main domain (e.g., "example.com" from "sub.example.com")
             let parts: Vec<&str> = domain.split('.').collect();
             let main_domain = if parts.len() >= 2 {
                 parts[parts.len() - 2..].join(".")
@@ -71,12 +80,13 @@ impl OTXProvider {
 
             format!(
                 "https://otx.alienvault.com/api/v1/indicators/domain/{}/url_list?limit={}&page={}",
-                main_domain, OTX_RESULTS_LIMIT, page
+                main_domain, OTX_RESULTS_LIMIT, page_number
             )
         } else {
+            // This is a subdomain and we don't want to include other subdomains
             format!(
                 "https://otx.alienvault.com/api/v1/indicators/hostname/{}/url_list?limit={}&page={}",
-                domain, OTX_RESULTS_LIMIT, page
+                domain, OTX_RESULTS_LIMIT, page_number
             )
         }
     }
@@ -165,43 +175,27 @@ impl Provider for OTXProvider {
                         }
                     }
 
-                    // Don't sleep after the last attempt
+                    if result.is_some() {
+                        break;
+                    }
+
                     if attempt < self.retries {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
 
-                let otx_result = match result {
-                    Some(r) => r,
-                    None => {
-                        return Err(last_error.unwrap_or_else(|| {
-                            anyhow::anyhow!("Failed to fetch OTX data after all retries")
-                        }))
-                    }
-                };
+                if let Some(otx_result) = result {
+                    all_urls.extend(otx_result.url_list.into_iter().map(|entry| entry.url));
 
-                // Process the results
-                for entry in otx_result.url_list {
-                    if self.include_subdomains {
-                        let has_subdomain = domain.split('.').count() > 2;
-                        // Push the URL if we're not looking at a subdomain
-                        // or if looking at a subdomain and the hostname contains our domain
-                        if !has_subdomain
-                            || entry
-                                .hostname
-                                .to_lowercase()
-                                .contains(&domain.to_lowercase())
-                        {
-                            all_urls.push(entry.url);
-                        }
-                    } else if domain.to_lowercase() == entry.hostname.to_lowercase() {
-                        all_urls.push(entry.url);
+                    // Check for next page
+                    if !otx_result.has_next {
+                        break;
                     }
-                }
-
-                // Check if we should fetch the next page
-                if !otx_result.has_next {
-                    break;
+                } else {
+                    // If we couldn't get a result after all retries, return the error
+                    return Err(last_error.unwrap_or_else(|| {
+                        anyhow::anyhow!("Failed to fetch OTX data after all retries")
+                    }));
                 }
 
                 page += 1;
