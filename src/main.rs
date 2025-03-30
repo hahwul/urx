@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
     let outputter = create_outputter(&args.format);
 
     // Apply testers if requested
-    let mut final_urls = transformed_urls.clone();
+    let mut final_urls = Vec::with_capacity(transformed_urls.len());
 
     if args.check_status || args.extract_links {
         verbose_print(&args, "Applying testing options...");
@@ -469,6 +469,7 @@ async fn main() -> Result<()> {
             let verbose = args.verbose;
             let check_status = args.check_status;
             let extract_links = args.extract_links;
+            let silent = args.silent;
 
             let task = task::spawn(async move {
                 let mut result_urls = Vec::new();
@@ -490,31 +491,37 @@ async fn main() -> Result<()> {
                                 }
                             }
                             Err(e) => {
-                                if verbose && !args.silent {
+                                if verbose && !silent {
                                     eprintln!("Error testing URL {}: {}", url, e);
                                 }
                             }
                         }
                     }
 
-                    // If we have status information, add it to the result
+                    // Create UrlData for this URL
                     if let Some(status_urls) = status_result {
                         for status_url in status_urls {
-                            result_urls.push(status_url);
+                            // Parse the status URL (format: "{url} - {status}")
+                            result_urls.push(output::UrlData::from_string(status_url));
                         }
                     } else {
                         // If no status but URL should be included anyway
                         if check_status {
-                            result_urls.push(format!("{} - Status check failed", url));
+                            let url_data = output::UrlData::with_status(
+                                url.clone(),
+                                "Status check failed".to_string(),
+                            );
+                            result_urls.push(url_data);
                         } else {
-                            result_urls.push(url.clone());
+                            let url_data = output::UrlData::new(url.clone());
+                            result_urls.push(url_data);
                         }
                     }
 
                     // If we have extracted links, add them to the result
                     if let Some(link_urls) = links_result {
                         for link_url in link_urls {
-                            result_urls.push(link_url);
+                            result_urls.push(output::UrlData::new(link_url));
                         }
                     }
                 }
@@ -553,8 +560,8 @@ async fn main() -> Result<()> {
 
         // If we've tested URLs, replace the final list with the new processed URLs
         if !new_urls.is_empty() {
-            // Sort and deduplicate
-            new_urls.sort();
+            // Sort URLs by their URL field
+            new_urls.sort_by(|a, b| a.url.cmp(&b.url));
             final_urls = new_urls;
         }
 
@@ -563,6 +570,12 @@ async fn main() -> Result<()> {
         if args.verbose && !args.silent {
             println!("Testing complete, final URL count: {}", final_urls.len());
         }
+    } else {
+        // No testing, just convert the string URLs to UrlData
+        final_urls = transformed_urls
+            .iter()
+            .map(|url| output::UrlData::new(url.clone()))
+            .collect();
     }
 
     match outputter.output(&final_urls, args.output.clone(), args.silent) {
