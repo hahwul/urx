@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
     let outputter = create_outputter(&args.format);
 
     // Apply testers if requested
-    let mut final_urls = Vec::new();
+    let mut final_urls = Vec::with_capacity(transformed_urls.len());
 
     if args.check_status || args.extract_links {
         verbose_print(&args, "Applying testing options...");
