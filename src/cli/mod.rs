@@ -23,11 +23,6 @@ pub struct Args {
     #[clap(long)]
     pub merge_endpoint: bool,
 
-    #[clap(help_heading = "Provider Options")]
-    /// Common Crawl index to use (e.g., CC-MAIN-2025-08)
-    #[clap(long, default_value = "CC-MAIN-2025-08")]
-    pub cc_index: String,
-
     /// Providers to use (comma-separated, e.g., "wayback,cc,otx")
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
@@ -37,6 +32,11 @@ pub struct Args {
     #[clap(help_heading = "Provider Options")]
     #[clap(long)]
     pub subs: bool,
+
+    #[clap(help_heading = "Provider Options")]
+    /// Common Crawl index to use (e.g., CC-MAIN-2025-08)
+    #[clap(long, default_value = "CC-MAIN-2025-08")]
+    pub cc_index: String,
 
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
