@@ -14,13 +14,14 @@
 <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white"></a>
 </p>
 
-Urx is a command-line tool designed for collecting security-related URLs from OSINT archives, such as the Wayback Machine and Common Crawl. Built with Rust for efficiency, it uses asynchronous processing to quickly query multiple data sources. This tool streamlines the process of gathering and analyzing URL information, which is crucial for effective security testing.
+Urx is a command-line tool designed for collecting URLs from OSINT archives, such as the Wayback Machine and Common Crawl. Built with Rust for efficiency, it leverages asynchronous processing to rapidly query multiple data sources. This tool simplifies the process of gathering URL information for a specified domain, providing a comprehensive dataset that can be used for various purposes, including security testing and analysis.
 
 ## Features
 
 - Fetch URLs from multiple sources (Wayback Machine, Common Crawl, OTX)
 - Process multiple domains concurrently
 - Filter results by file extensions or patterns
+- Use presets (predefined filter sets) for convenience (like "no-image" to exclude all image-related extensions)
 - Multiple output formats (plain, JSON, CSV)
 - Output to console or file
 - Support for reading domains from stdin (pipeline integration)
