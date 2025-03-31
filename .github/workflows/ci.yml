@@ -28,12 +28,12 @@ jobs:
           override: true
           components: rustfmt, clippy
       - name: Run cargo fmt
-        uses: actions-rs/cargo@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           command: fmt
           args: --all -- --check
       - name: Run cargo clippy
-        uses: actions-rs/cargo@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           command: clippy
           args: -- -D warnings
@@ -51,9 +51,9 @@ jobs:
         env:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: -C instrument-coverage -Ccodegen-units=1 -Cinline-threshold=0
-            -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests
+            -Clink-dead-code -Coverflow-checks=off
           RUSTDOCFLAGS: -C instrument-coverage -Ccodegen-units=1 -Cinline-threshold=0
-            -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests
+            -Clink-dead-code -Coverflow-checks=off
       - name: Generate coverage report
         run: |
           grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
