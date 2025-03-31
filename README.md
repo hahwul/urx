@@ -100,6 +100,8 @@ Display Options:
       --no-progress  No progress bar
 
 Filter Options:
+  -p, --preset <PRESET>
+          Filter Presets (e.g., "no-resources,no-images,only-js,only-style")
   -e, --extensions <EXTENSIONS>
           Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
       --exclude-extensions <EXCLUDE_EXTENSIONS>
@@ -153,6 +155,9 @@ urx example.com --patterns api,v1,graphql
 
 # Exclude specific patterns
 urx example.com --exclude-patterns static,images
+
+# Use Fileter Preset (similar to --exclude-extensions=png,jpg,.....)
+urx example.com -p no-images
 
 # Use specific providers
 urx example.com --providers wayback,otx
