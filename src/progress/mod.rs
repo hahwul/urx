@@ -170,7 +170,7 @@ mod tests {
         let bars = manager.create_provider_bars(&provider_names);
 
         assert_eq!(bars.len(), provider_names.len());
-        for (_i, bar) in bars.iter().enumerate() {
+        for bar in bars.iter() {
             assert_eq!(bar.length(), Some(100));
             assert_eq!(bar.position(), 0);
         }
