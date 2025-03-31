@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use url::Url;
 
+/// Utility for transforming and manipulating URL collections
+///
+/// Provides methods for merging, filtering, and extracting parts of URLs.
 pub struct UrlTransformer {
     merge_endpoint: bool,
     show_only_host: bool,
@@ -9,6 +12,7 @@ pub struct UrlTransformer {
 }
 
 impl UrlTransformer {
+    /// Creates a new URL transformer with default settings
     pub fn new() -> Self {
         UrlTransformer {
             merge_endpoint: false,
@@ -18,26 +22,31 @@ impl UrlTransformer {
         }
     }
 
+    /// Enables or disables merging of endpoints with the same path but different parameters
     pub fn with_merge_endpoint(&mut self, merge: bool) -> &mut Self {
         self.merge_endpoint = merge;
         self
     }
 
+    /// When enabled, shows only the hostname part of URLs
     pub fn with_show_only_host(&mut self, show: bool) -> &mut Self {
         self.show_only_host = show;
         self
     }
 
+    /// When enabled, shows only the path part of URLs
     pub fn with_show_only_path(&mut self, show: bool) -> &mut Self {
         self.show_only_path = show;
         self
     }
 
+    /// When enabled, shows only the query parameters of URLs
     pub fn with_show_only_param(&mut self, show: bool) -> &mut Self {
         self.show_only_param = show;
         self
     }
 
+    /// Transforms a list of URLs according to the configured settings
     pub fn transform(&self, urls: Vec<String>) -> Vec<String> {
         let mut transformed_urls = urls;
 

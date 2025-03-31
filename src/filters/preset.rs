@@ -1,4 +1,4 @@
-/// Filter presets for common use cases
+/// Standard filter presets for common URL filtering scenarios
 pub enum FilterPreset {
     /// Excludes common web resource files (js, css, ico, ttf, etc.)
     NoResource,

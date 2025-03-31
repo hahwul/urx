@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use url::Url;
 use std::path::Path;
+use url::Url;
 
 use super::preset::FilterPreset;
 
@@ -33,7 +33,8 @@ impl UrlFilter {
             if let Some(preset) = FilterPreset::from_str(preset_str) {
                 // Merge preset extensions/patterns with existing ones
                 self.extensions.extend(preset.get_extensions());
-                self.exclude_extensions.extend(preset.get_exclude_extensions());
+                self.exclude_extensions
+                    .extend(preset.get_exclude_extensions());
                 self.patterns.extend(preset.get_patterns());
                 self.exclude_patterns.extend(preset.get_exclude_patterns());
             }
@@ -50,8 +51,6 @@ impl UrlFilter {
 
     /// Set extensions to exclude
     pub fn with_exclude_extensions(&mut self, exclude_extensions: Vec<String>) -> &mut Self {
-        println!("Excluding extensions: {:?}", exclude_extensions);
-        // Merge with existing exclude_extensions instead of replacing
         self.exclude_extensions.extend(exclude_extensions);
         self
     }
@@ -104,20 +103,34 @@ impl UrlFilter {
             let extension = match Url::parse(url) {
                 Ok(parsed_url) => {
                     // Get the path from the URL
-                    if let Some(path) = parsed_url.path_segments().and_then(|segments| segments.last()) {
+                    if let Some(path) = parsed_url
+                        .path_segments()
+                        .and_then(|segments| segments.last())
+                    {
                         // Extract extension from the last path segment
-                        Path::new(path).extension().and_then(|ext| ext.to_str()).map(|s| s.to_lowercase())
+                        Path::new(path)
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|s| s.to_lowercase())
                     } else {
                         None
                     }
-                },
+                }
                 Err(_) => {
                     // Fallback for invalid URLs - try to extract extension from the whole string
                     let parts: Vec<&str> = url.split('/').collect();
                     if let Some(last) = parts.last() {
                         let filename_parts: Vec<&str> = last.split('.').collect();
                         if filename_parts.len() > 1 {
-                            Some(filename_parts.last().unwrap().split('?').next().unwrap_or("").to_lowercase())
+                            Some(
+                                filename_parts
+                                    .last()
+                                    .unwrap()
+                                    .split('?')
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_lowercase(),
+                            )
                         } else {
                             None
                         }
@@ -131,7 +144,11 @@ impl UrlFilter {
             if !self.exclude_extensions.is_empty() {
                 if let Some(ext) = &extension {
                     let lowercase_ext = ext.to_lowercase();
-                    if self.exclude_extensions.iter().any(|excluded_ext| excluded_ext.to_lowercase() == lowercase_ext) {
+                    if self
+                        .exclude_extensions
+                        .iter()
+                        .any(|excluded_ext| excluded_ext.to_lowercase() == lowercase_ext)
+                    {
                         continue;
                     }
                 }
@@ -139,7 +156,11 @@ impl UrlFilter {
 
             if !self.exclude_patterns.is_empty() {
                 let url_lower = url.to_lowercase();
-                if self.exclude_patterns.iter().any(|pattern| url_lower.contains(&pattern.to_lowercase())) {
+                if self
+                    .exclude_patterns
+                    .iter()
+                    .any(|pattern| url_lower.contains(&pattern.to_lowercase()))
+                {
                     continue;
                 }
             }
@@ -150,7 +171,10 @@ impl UrlFilter {
             if !self.extensions.is_empty() {
                 if let Some(ext) = &extension {
                     let lowercase_ext = ext.to_lowercase();
-                    include = self.extensions.iter().any(|included_ext| included_ext.to_lowercase() == lowercase_ext);
+                    include = self
+                        .extensions
+                        .iter()
+                        .any(|included_ext| included_ext.to_lowercase() == lowercase_ext);
                 } else {
                     include = false; // No extension found but extensions filter is set
                 }
@@ -158,7 +182,10 @@ impl UrlFilter {
 
             if include && !self.patterns.is_empty() {
                 let url_lower = url.to_lowercase();
-                include = self.patterns.iter().any(|pattern| url_lower.contains(&pattern.to_lowercase()));
+                include = self
+                    .patterns
+                    .iter()
+                    .any(|pattern| url_lower.contains(&pattern.to_lowercase()));
             }
 
             if include {
