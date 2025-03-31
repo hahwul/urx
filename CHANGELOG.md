@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Added --silent, --no-progress flag
+- Added `--silent`, `--no-progress` flag
+- Added `-p (--preset)`
 
 ## 0.1.0
 

@@ -10,15 +10,19 @@ pub use writer::*;
 /// A structure to hold URL data with optional status information
 #[derive(Debug, Clone)]
 pub struct UrlData {
+    /// The URL string
     pub url: String,
+    /// Optional status information (e.g., HTTP status code)
     pub status: Option<String>,
 }
 
 impl UrlData {
+    /// Create a new URL data entry without status information
     pub fn new(url: String) -> Self {
         UrlData { url, status: None }
     }
 
+    /// Create a new URL data entry with status information
     pub fn with_status(url: String, status: String) -> Self {
         UrlData {
             url,
@@ -26,6 +30,9 @@ impl UrlData {
         }
     }
 
+    /// Parse a URL data entry from a string
+    ///
+    /// Can handle strings in the format "{url} - {status}" or plain URLs
     pub fn from_string(data: String) -> Self {
         // Parse strings in the format "{url} - {status}" if possible
         if let Some(idx) = data.find(" - ") {
@@ -46,11 +53,21 @@ impl UrlData {
     }
 }
 
+/// Interface for URL output handlers that can format and write URL data
 pub trait Outputter: Send + Sync {
+    /// Format a URL data entry to a string
     fn format(&self, url_data: &UrlData, is_last: bool) -> String;
+
+    /// Output URL data to console or file
     fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()>;
 }
 
+/// Create an appropriate outputter based on the specified format
+///
+/// Supported formats:
+/// - "json": JSON format with URL and optional status
+/// - "csv": CSV format with URL and optional status
+/// - any other value: Plain text format with one URL per line
 pub fn create_outputter(format: &str) -> Box<dyn Outputter> {
     match format.to_lowercase().as_str() {
         "json" => Box::new(JsonOutputter::new()),

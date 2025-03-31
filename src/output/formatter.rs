@@ -1,9 +1,16 @@
-// Implements different URL output formatters
+/// Implements different URL output formatters
 use super::UrlData;
 use std::fmt;
 
+/// Formatter trait for converting URL data to different output formats
 pub trait Formatter: fmt::Debug + Send + Sync {
+    /// Format a URL data entry to a string representation
+    ///
+    /// The is_last parameter indicates whether this is the last item
+    /// in a sequence, which can be important for certain formats like JSON
     fn format(&self, url_data: &UrlData, is_last: bool) -> String;
+
+    /// Create a boxed clone of this formatter
     fn clone_box(&self) -> Box<dyn Formatter>;
 }
 
@@ -13,10 +20,12 @@ impl Clone for Box<dyn Formatter> {
     }
 }
 
+/// Plain text formatter that outputs URLs one per line
 #[derive(Debug, Clone)]
 pub struct PlainFormatter;
 
 impl PlainFormatter {
+    /// Create a new plain text formatter
     pub fn new() -> Self {
         PlainFormatter
     }
@@ -35,10 +44,12 @@ impl Formatter for PlainFormatter {
     }
 }
 
+/// JSON formatter that outputs URLs as JSON objects
 #[derive(Debug, Clone)]
 pub struct JsonFormatter;
 
 impl JsonFormatter {
+    /// Create a new JSON formatter
     pub fn new() -> Self {
         JsonFormatter
     }
@@ -63,10 +74,12 @@ impl Formatter for JsonFormatter {
     }
 }
 
+/// CSV formatter that outputs URLs in comma-separated format
 #[derive(Debug, Clone)]
 pub struct CsvFormatter;
 
 impl CsvFormatter {
+    /// Create a new CSV formatter
     pub fn new() -> Self {
         CsvFormatter
     }

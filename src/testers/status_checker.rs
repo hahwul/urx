@@ -5,6 +5,7 @@ use std::pin::Pin;
 
 use super::Tester;
 
+/// HTTP status checker for URLs
 #[derive(Clone)]
 pub struct StatusChecker {
     proxy: Option<String>,
@@ -15,6 +16,7 @@ pub struct StatusChecker {
 }
 
 impl StatusChecker {
+    /// Creates a new StatusChecker with default settings
     pub fn new() -> Self {
         StatusChecker {
             proxy: None,
@@ -31,6 +33,7 @@ impl Tester for StatusChecker {
         Box::new(self.clone())
     }
 
+    /// Tests a URL by sending an HTTP request and returning the status code
     fn test_url<'a>(
         &'a self,
         url: &'a str,
@@ -103,22 +106,27 @@ impl Tester for StatusChecker {
         })
     }
 
+    /// Sets the request timeout in seconds
     fn with_timeout(&mut self, seconds: u64) {
         self.timeout = seconds;
     }
 
+    /// Sets the number of retry attempts for failed requests
     fn with_retries(&mut self, count: u32) {
         self.retries = count;
     }
 
+    /// Enables or disables the use of random User-Agent headers
     fn with_random_agent(&mut self, enabled: bool) {
         self.random_agent = enabled;
     }
 
+    /// Sets the proxy server for HTTP requests
     fn with_proxy(&mut self, proxy: Option<String>) {
         self.proxy = proxy;
     }
 
+    /// Sets the proxy authentication credentials (username:password)
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
     }

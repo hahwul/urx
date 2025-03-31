@@ -7,6 +7,7 @@ use url::Url;
 
 use super::Tester;
 
+/// HTML link extractor that finds URLs in web pages
 #[derive(Clone)]
 pub struct LinkExtractor {
     proxy: Option<String>,
@@ -17,6 +18,7 @@ pub struct LinkExtractor {
 }
 
 impl LinkExtractor {
+    /// Creates a new LinkExtractor with default settings
     pub fn new() -> Self {
         LinkExtractor {
             proxy: None,
@@ -33,6 +35,7 @@ impl Tester for LinkExtractor {
         Box::new(self.clone())
     }
 
+    /// Extracts links from a URL by downloading the page and parsing the HTML
     fn test_url<'a>(
         &'a self,
         url: &'a str,
@@ -126,22 +129,27 @@ impl Tester for LinkExtractor {
         })
     }
 
+    /// Sets the request timeout in seconds
     fn with_timeout(&mut self, seconds: u64) {
         self.timeout = seconds;
     }
 
+    /// Sets the number of retry attempts for failed requests
     fn with_retries(&mut self, count: u32) {
         self.retries = count;
     }
 
+    /// Enables or disables the use of random User-Agent headers
     fn with_random_agent(&mut self, enabled: bool) {
         self.random_agent = enabled;
     }
 
+    /// Sets the proxy server for HTTP requests
     fn with_proxy(&mut self, proxy: Option<String>) {
         self.proxy = proxy;
     }
 
+    /// Sets the proxy authentication credentials (username:password)
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
     }

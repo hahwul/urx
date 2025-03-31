@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::task;
 
 mod cli;
+mod filters;
 mod output;
 mod progress;
 mod providers;
@@ -13,13 +14,17 @@ mod testers;
 mod url_utils;
 
 use cli::{read_domains_from_stdin, Args};
+use filters::UrlFilter;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvider};
 use testers::{LinkExtractor, StatusChecker, Tester};
-use url_utils::{UrlFilter, UrlTransformer};
+use url_utils::UrlTransformer;
 
-/// Helper function to print verbose messages
+/// Prints messages only when verbose mode is enabled
+///
+/// This helper function is used throughout the application to conditionally
+/// print information messages based on the command-line arguments.
 fn verbose_print(args: &Args, message: impl AsRef<str>) {
     if args.verbose && !args.silent {
         println!("{}", message.as_ref());
@@ -349,6 +354,13 @@ async fn main() -> Result<()> {
 
     // Apply URL filtering
     let mut url_filter = UrlFilter::new();
+
+    // Apply presets if specified
+    if !args.preset.is_empty() {
+        url_filter.apply_presets(&args.preset);
+    }
+
+    // Apply additional filters (will be combined with preset filters)
     url_filter
         .with_extensions(args.extensions.clone())
         .with_exclude_extensions(args.exclude_extensions.clone())
