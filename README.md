@@ -1,17 +1,20 @@
 <div align="center">
   <picture>
-    <img alt="URX Logo" src="https://github.com/user-attachments/assets/e147b5fb-84c1-428b-ab04-ceb70dd49339" width="300px;">
+    <img alt="URX Logo" src="./docs/images/logo.png" width="300px;">
   </picture>
   <p>Extracts URLs from OSINT Archives for Security Insights.</p>
 </div>
 
 <p align="center">
-<a href="https://github.com/owasp-noir/noir/blob/main/CONTRIBUTING.md">
-<img src="https://img.shields.io/badge/CONTRIBUTIONS-WELCOME-000000?style=for-the-badge&labelColor=black"></a>
-<a href="https://github.com/owasp-noir/noir/releases">
-<!-- <img src="https://img.shields.io/github/v/release/hahwul/urx?style=for-the-badge&color=black&labelColor=black&logo=web"></a> -->
-<a href="https://rust-lang.org">
-<img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white"></a>
+  <a href="https://github.com/hahwul/urx/releases/latest">
+    <img src="https://img.shields.io/github/v/release/hahwul/urx?style=for-the-badge&logoColor=%23000000&label=urx&labelColor=%23000000&color=%23000000">
+  </a>
+  <a href="https://github.com/hahwul/urx/blob/main/CONTRIBUTING.md">
+    <img src="https://img.shields.io/badge/CONTRIBUTIONS-WELCOME-000000?style=for-the-badge&labelColor=000000">
+  </a>
+  <a href="https://rust-lang.org">
+    <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white">
+  </a>
 </p>
 
 Urx is a command-line tool designed for collecting URLs from OSINT archives, such as the Wayback Machine and Common Crawl. Built with Rust for efficiency, it leverages asynchronous processing to rapidly query multiple data sources. This tool simplifies the process of gathering URL information for a specified domain, providing a comprehensive dataset that can be used for various purposes, including security testing and analysis.
@@ -27,7 +30,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 - Support for reading domains from stdin (pipeline integration)
 - URL testing capabilities (status checking, link extraction)
 
-![Preview](https://github.com/user-attachments/assets/292fee95-5a8a-4316-95f2-22ae22d5c070)
+![Preview](./docs/images/preview.jpg)
 
 ## Installation
 
