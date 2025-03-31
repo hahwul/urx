@@ -38,6 +38,9 @@ pub struct Args {
     #[clap(long, default_value = "CC-MAIN-2025-08")]
     pub cc_index: String,
 
+    #[clap(long)]
+    pub subs: bool,
+
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
     #[clap(short, long)]
