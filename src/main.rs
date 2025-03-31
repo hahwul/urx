@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::task;
 
 mod cli;
+mod filters;
 mod output;
 mod progress;
 mod providers;
@@ -13,11 +14,12 @@ mod testers;
 mod url_utils;
 
 use cli::{read_domains_from_stdin, Args};
+use filters::UrlFilter;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvider};
 use testers::{LinkExtractor, StatusChecker, Tester};
-use url_utils::{UrlFilter, UrlTransformer};
+use url_utils::UrlTransformer;
 
 /// Helper function to print verbose messages
 fn verbose_print(args: &Args, message: impl AsRef<str>) {
@@ -349,6 +351,12 @@ async fn main() -> Result<()> {
 
     // Apply URL filtering
     let mut url_filter = UrlFilter::new();
+    
+    // Apply presets if specified
+    if !args.preset.is_empty() {
+        url_filter.apply_presets(&args.preset);
+    }
+    
     url_filter
         .with_extensions(args.extensions.clone())
         .with_exclude_extensions(args.exclude_extensions.clone())

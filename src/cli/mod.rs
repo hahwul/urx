@@ -53,6 +53,11 @@ pub struct Args {
     #[clap(long)]
     pub no_progress: bool,
 
+    /// Filter Presets (e.g., "no-resource,no-images,only-js")
+    #[clap(help_heading = "Filter Options")]
+    #[clap(short, long, value_delimiter = ',')]
+    pub preset: Vec<String>,
+
     /// Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
