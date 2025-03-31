@@ -130,3 +130,143 @@ impl FilterPreset {
         vec![]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_preset_from_str() {
+        // Test valid preset values
+        assert!(matches!(
+            FilterPreset::from_str("no-resources"),
+            Some(FilterPreset::NoResources)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-resource"),
+            Some(FilterPreset::NoResources)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-images"),
+            Some(FilterPreset::NoImages)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-image"),
+            Some(FilterPreset::NoImages)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-fonts"),
+            Some(FilterPreset::NoFonts)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-font"),
+            Some(FilterPreset::NoFonts)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("only-js"),
+            Some(FilterPreset::OnlyJs)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("only-style"),
+            Some(FilterPreset::OnlyStyle)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("only-styles"),
+            Some(FilterPreset::OnlyStyle)
+        ));
+
+        // Test case insensitivity
+        assert!(matches!(
+            FilterPreset::from_str("No-Resources"),
+            Some(FilterPreset::NoResources)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("ONLY-JS"),
+            Some(FilterPreset::OnlyJs)
+        ));
+
+        // Test invalid preset values
+        assert!(FilterPreset::from_str("invalid-preset").is_none());
+        assert!(FilterPreset::from_str("").is_none());
+    }
+
+    #[test]
+    fn test_no_resources_preset() {
+        let preset = FilterPreset::NoResources;
+        let extensions = preset.get_extensions();
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // NoResources should not include any extensions
+        assert!(extensions.is_empty());
+
+        // NoResources should exclude various resource types
+        assert!(exclude_extensions.contains(&"js".to_string()));
+        assert!(exclude_extensions.contains(&"css".to_string()));
+        assert!(exclude_extensions.contains(&"png".to_string()));
+        assert!(exclude_extensions.contains(&"pdf".to_string()));
+        assert!(exclude_extensions.contains(&"woff".to_string()));
+        assert!(exclude_extensions.contains(&"mp4".to_string()));
+    }
+
+    #[test]
+    fn test_no_images_preset() {
+        let preset = FilterPreset::NoImages;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // Should exclude all image extensions
+        assert!(exclude_extensions.contains(&"png".to_string()));
+        assert!(exclude_extensions.contains(&"jpg".to_string()));
+        assert!(exclude_extensions.contains(&"jpeg".to_string()));
+        assert!(exclude_extensions.contains(&"gif".to_string()));
+        assert!(exclude_extensions.contains(&"svg".to_string()));
+        assert!(exclude_extensions.contains(&"webp".to_string()));
+
+        // Should not exclude non-image extensions
+        let js_found = exclude_extensions.iter().any(|ext| ext == "js");
+        let css_found = exclude_extensions.iter().any(|ext| ext == "css");
+        assert!(!js_found);
+        assert!(!css_found);
+    }
+
+    #[test]
+    fn test_only_js_preset() {
+        let preset = FilterPreset::OnlyJs;
+        let extensions = preset.get_extensions();
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // Should include JS extensions
+        assert!(extensions.contains(&"js".to_string()));
+        assert!(extensions.contains(&"jsx".to_string()));
+        assert!(extensions.contains(&"ts".to_string()));
+        assert!(extensions.contains(&"tsx".to_string()));
+
+        // Should not exclude any extensions
+        assert!(exclude_extensions.is_empty());
+    }
+
+    #[test]
+    fn test_only_style_preset() {
+        let preset = FilterPreset::OnlyStyle;
+        let extensions = preset.get_extensions();
+
+        // Should include CSS extensions
+        assert!(extensions.contains(&"css".to_string()));
+        assert!(extensions.contains(&"scss".to_string()));
+        assert!(extensions.contains(&"sass".to_string()));
+        assert!(extensions.contains(&"less".to_string()));
+    }
+
+    #[test]
+    fn test_filter_preset_patterns() {
+        // Test that patterns are empty by default
+        for preset in [
+            FilterPreset::NoResources,
+            FilterPreset::NoImages,
+            FilterPreset::OnlyJs,
+            FilterPreset::OnlyStyle,
+        ] {
+            assert!(preset.get_patterns().is_empty());
+            assert!(preset.get_exclude_patterns().is_empty());
+        }
+    }
+}

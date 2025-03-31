@@ -198,3 +198,121 @@ impl UrlFilter {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn create_test_urls() -> HashSet<String> {
+        let urls = vec![
+            "https://example.com/index.html",
+            "https://example.com/script.js",
+            "https://example.com/style.css",
+            "https://example.com/image.png",
+            "https://example.com/document.pdf",
+            "https://example.com/font.woff2",
+            "https://example.com/video.mp4",
+            "https://example.com/admin/login.php",
+            "https://example.com/api/v1/users?id=123",
+            "https://example.com/very/long/path/to/resource/file.html",
+            "https://example.com/.git/config",
+        ];
+        urls.into_iter().map(String::from).collect()
+    }
+
+    #[test]
+    fn test_new_filter() {
+        let filter = UrlFilter::new();
+        assert!(filter.extensions.is_empty());
+        assert!(filter.exclude_extensions.is_empty());
+        assert!(filter.patterns.is_empty());
+        assert!(filter.exclude_patterns.is_empty());
+        assert_eq!(filter.min_length, None);
+        assert_eq!(filter.max_length, None);
+    }
+
+    #[test]
+    fn test_with_extensions() {
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["js".to_string(), "php".to_string()]);
+
+        let urls = create_test_urls();
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(filtered.contains(&"https://example.com/admin/login.php".to_string()));
+    }
+
+    #[test]
+    fn test_with_exclude_extensions() {
+        let mut filter = UrlFilter::new();
+        filter.with_exclude_extensions(vec![
+            "js".to_string(),
+            "css".to_string(),
+            "png".to_string(),
+        ]);
+
+        let urls = create_test_urls();
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 8);
+        assert!(!filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(!filtered.contains(&"https://example.com/style.css".to_string()));
+        assert!(!filtered.contains(&"https://example.com/image.png".to_string()));
+    }
+
+    #[test]
+    fn test_with_patterns() {
+        let mut filter = UrlFilter::new();
+        filter.with_patterns(vec!["admin".to_string(), "api".to_string()]);
+
+        let urls = create_test_urls();
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/admin/login.php".to_string()));
+        assert!(filtered.contains(&"https://example.com/api/v1/users?id=123".to_string()));
+    }
+
+    #[test]
+    fn test_with_exclude_patterns() {
+        let mut filter = UrlFilter::new();
+        filter.with_exclude_patterns(vec!["admin".to_string(), ".git".to_string()]);
+
+        let urls = create_test_urls();
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 9);
+        assert!(!filtered.contains(&"https://example.com/admin/login.php".to_string()));
+        assert!(!filtered.contains(&"https://example.com/.git/config".to_string()));
+    }
+
+    #[test]
+    fn test_with_length_filters() {
+        let mut filter = UrlFilter::new();
+        filter.with_min_length(Some(40));
+        filter.with_max_length(Some(60));
+
+        let urls = create_test_urls();
+        let filtered = filter.apply_filters(&urls);
+
+        for url in &filtered {
+            assert!(url.len() >= 40);
+            assert!(url.len() <= 60);
+        }
+    }
+
+    #[test]
+    fn test_apply_presets() {
+        let mut filter = UrlFilter::new();
+        filter.apply_presets(&["no-images".to_string(), "only-js".to_string()]);
+
+        let urls = create_test_urls();
+        let filtered = filter.apply_filters(&urls);
+
+        assert!(filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(!filtered.contains(&"https://example.com/image.png".to_string()));
+    }
+}
