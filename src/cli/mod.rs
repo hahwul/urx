@@ -38,9 +38,6 @@ pub struct Args {
     #[clap(long, default_value = "CC-MAIN-2025-08")]
     pub cc_index: String,
 
-    #[clap(long)]
-    pub subs: bool,
-
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
     #[clap(short, long)]
@@ -56,7 +53,6 @@ pub struct Args {
     #[clap(long)]
     pub no_progress: bool,
 
-    #[clap(help_heading = "Filter Options")]
     /// Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
