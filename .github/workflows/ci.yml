@@ -51,9 +51,9 @@ jobs:
         env:
           CARGO_INCREMENTAL: '0'
           RUSTFLAGS: -C instrument-coverage -Ccodegen-units=1 -Cinline-threshold=0
-            -Clink-dead-code -Coverflow-checks=off -Cpanic=abort
+            -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests
           RUSTDOCFLAGS: -C instrument-coverage -Ccodegen-units=1 -Cinline-threshold=0
-            -Clink-dead-code -Coverflow-checks=off -Cpanic=abort
+            -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests
       - name: Generate coverage report
         run: |
           grcov . --binary-path ./target/debug/ -s . -t lcov --branch --ignore-not-existing --ignore "/*" -o lcov.info
