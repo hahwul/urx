@@ -1,7 +1,7 @@
 /// Standard filter presets for common URL filtering scenarios
 pub enum FilterPreset {
     /// Excludes common web resource files (js, css, ico, ttf, etc.)
-    NoResource,
+    NoResources,
     /// Excludes image files (png, jpg, jpeg, gif, svg, etc.)
     NoImages,
     /// Only includes JavaScript files
@@ -66,7 +66,7 @@ impl FilterPreset {
     /// Parse a preset string into a FilterPreset enum
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "no-resource" | "no-resources" => Some(FilterPreset::NoResource),
+            "no-resource" | "no-resources" => Some(FilterPreset::NoResources),
             "no-image" | "no-images" => Some(FilterPreset::NoImages),
             "no-font" | "no-fonts" => Some(FilterPreset::NoFonts),
             "no-document" | "no-documents" => Some(FilterPreset::NoDocuments),
@@ -84,7 +84,7 @@ impl FilterPreset {
     /// Get excluded extensions for this preset
     pub fn get_exclude_extensions(&self) -> Vec<String> {
         match self {
-            FilterPreset::NoResource => {
+            FilterPreset::NoResources => {
                 let mut extensions = Vec::new();
                 extensions.extend(IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()));
                 extensions.extend(FONT_EXTENSIONS.iter().map(|&s| s.to_string()));
