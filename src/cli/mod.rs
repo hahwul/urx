@@ -53,7 +53,7 @@ pub struct Args {
     #[clap(long)]
     pub no_progress: bool,
 
-    /// Filter Presets (e.g., "no-resource,no-images,only-js")
+    /// Filter Presets (e.g., "no-resources,no-images,only-js,only-style")
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
     pub preset: Vec<String>,
