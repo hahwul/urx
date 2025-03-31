@@ -150,7 +150,6 @@ mod tests {
     fn test_progress_manager_creation() {
         let _manager = ProgressManager::new(false);
         // Just verify it can be created without error
-        assert!(true);
     }
 
     #[test]
