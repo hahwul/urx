@@ -45,12 +45,12 @@ impl Provider for WaybackMachineProvider {
             // Handle subdomain inclusion in URL construction
             let url = if self.include_subdomains {
                 format!(
-                    "http://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
+                    "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
                     domain
                 )
             } else {
                 format!(
-                    "http://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
+                    "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
                     domain
                 )
             };
