@@ -357,6 +357,7 @@ async fn main() -> Result<()> {
         url_filter.apply_presets(&args.preset);
     }
     
+    // Apply additional filters (will be combined with preset filters)
     url_filter
         .with_extensions(args.extensions.clone())
         .with_exclude_extensions(args.exclude_extensions.clone())

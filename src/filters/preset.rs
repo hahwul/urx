@@ -12,7 +12,7 @@ impl FilterPreset {
     /// Parse a preset string into a FilterPreset enum
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "no-resource" => Some(FilterPreset::NoResource),
+            "no-resource" | "no-resources" => Some(FilterPreset::NoResource),
             "no-images" => Some(FilterPreset::NoImages),
             "only-js" => Some(FilterPreset::OnlyJs),
             _ => None,
