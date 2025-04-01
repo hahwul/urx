@@ -59,120 +59,36 @@ async fn main() -> Result<()> {
     let mut provider_names: Vec<String> = Vec::new();
 
     if args.providers.iter().any(|p| p == "wayback") {
-        if args.verbose && !args.silent {
-            println!("Adding Wayback Machine provider");
-            if network_settings.include_subdomains {
-                println!("Subdomain inclusion enabled for Wayback Machine");
-            }
-            if network_settings.proxy.is_some() {
-                println!(
-                    "Using proxy for Wayback Machine: {}",
-                    network_settings.proxy.as_ref().unwrap()
-                );
-            }
-            if network_settings.random_agent && !args.silent {
-                println!("Random User-Agent enabled for Wayback Machine");
-            }
-            println!(
-                "Timeout set to {} seconds for Wayback Machine",
-                network_settings.timeout
-            );
-            println!(
-                "Retries set to {} for Wayback Machine",
-                network_settings.retries
-            );
-            println!(
-                "Parallel requests set to {} for Wayback Machine",
-                network_settings.parallel
-            );
-            if let Some(rate) = network_settings.rate_limit {
-                println!(
-                    "Rate limit set to {} requests/second for Wayback Machine",
-                    rate
-                );
-            }
-        }
-
-        let mut wayback_provider = WaybackMachineProvider::new();
-        apply_network_settings_to_provider(&mut wayback_provider, &network_settings);
-        providers.push(Box::new(wayback_provider));
-        provider_names.push("Wayback Machine".to_string());
+        add_provider(
+            &args,
+            &network_settings,
+            &mut providers,
+            &mut provider_names,
+            "Wayback Machine".to_string(),
+            WaybackMachineProvider::new,
+        );
     }
 
     if args.providers.iter().any(|p| p == "cc") {
-        if args.verbose && !args.silent {
-            println!("Adding Common Crawl provider with index: {}", args.cc_index);
-            if network_settings.include_subdomains {
-                println!("Subdomain inclusion enabled for Common Crawl");
-            }
-            if network_settings.proxy.is_some() {
-                println!(
-                    "Using proxy for Common Crawl: {}",
-                    network_settings.proxy.as_ref().unwrap()
-                );
-            }
-            if network_settings.random_agent && !args.silent {
-                println!("Random User-Agent enabled for Common Crawl");
-            }
-            println!(
-                "Timeout set to {} seconds for Common Crawl",
-                network_settings.timeout
-            );
-            println!(
-                "Retries set to {} for Common Crawl",
-                network_settings.retries
-            );
-            println!(
-                "Parallel requests set to {} for Common Crawl",
-                network_settings.parallel
-            );
-            if let Some(rate) = network_settings.rate_limit {
-                println!(
-                    "Rate limit set to {} requests/second for Common Crawl",
-                    rate
-                );
-            }
-        }
-
-        let mut cc_provider = CommonCrawlProvider::with_index(args.cc_index.clone());
-        apply_network_settings_to_provider(&mut cc_provider, &network_settings);
-        providers.push(Box::new(cc_provider));
-        provider_names.push(format!("Common Crawl ({})", args.cc_index));
+        add_provider(
+            &args,
+            &network_settings,
+            &mut providers,
+            &mut provider_names,
+            format!("Common Crawl ({})", args.cc_index),
+            || CommonCrawlProvider::with_index(args.cc_index.clone()),
+        );
     }
 
     if args.providers.iter().any(|p| p == "otx") {
-        if args.verbose && !args.silent {
-            println!("Adding OTX provider");
-            if network_settings.include_subdomains {
-                println!("Subdomain inclusion enabled for OTX");
-            }
-            if network_settings.proxy.is_some() {
-                println!(
-                    "Using proxy for OTX: {}",
-                    network_settings.proxy.as_ref().unwrap()
-                );
-            }
-            if network_settings.random_agent && !args.silent {
-                println!("Random User-Agent enabled for OTX");
-            }
-            println!(
-                "Timeout set to {} seconds for OTX",
-                network_settings.timeout
-            );
-            println!("Retries set to {} for OTX", network_settings.retries);
-            println!(
-                "Parallel requests set to {} for OTX",
-                network_settings.parallel
-            );
-            if let Some(rate) = network_settings.rate_limit {
-                println!("Rate limit set to {} requests/second for OTX", rate);
-            }
-        }
-
-        let mut otx_provider = OTXProvider::new();
-        apply_network_settings_to_provider(&mut otx_provider, &network_settings);
-        providers.push(Box::new(otx_provider));
-        provider_names.push("OTX".to_string());
+        add_provider(
+            &args,
+            &network_settings,
+            &mut providers,
+            &mut provider_names,
+            "OTX".to_string(),
+            OTXProvider::new,
+        );
     }
 
     if providers.is_empty() {
@@ -581,4 +497,53 @@ fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &NetworkS
             tester.with_proxy_auth(Some(auth.clone()));
         }
     }
+}
+
+fn add_provider<T: Provider + 'static>(
+    args: &cli::Args,
+    network_settings: &NetworkSettings,
+    providers: &mut Vec<Box<dyn Provider>>,
+    provider_names: &mut Vec<String>,
+    provider_name: String,
+    provider_builder: impl FnOnce() -> T,
+) {
+    if args.verbose && !args.silent {
+        println!("Adding {} provider", provider_name);
+        if network_settings.include_subdomains {
+            println!("Subdomain inclusion enabled for {}", provider_name);
+        }
+        if network_settings.proxy.is_some() {
+            println!(
+                "Using proxy for {}: {}",
+                provider_name,
+                network_settings.proxy.as_ref().unwrap()
+            );
+        }
+        if network_settings.random_agent && !args.silent {
+            println!("Random User-Agent enabled for {}", provider_name);
+        }
+        println!(
+            "Timeout set to {} seconds for {}",
+            network_settings.timeout, provider_name
+        );
+        println!(
+            "Retries set to {} for {}",
+            network_settings.retries, provider_name
+        );
+        println!(
+            "Parallel requests set to {} for {}",
+            network_settings.parallel, provider_name
+        );
+        if let Some(rate) = network_settings.rate_limit {
+            println!(
+                "Rate limit set to {} requests/second for {}",
+                rate, provider_name
+            );
+        }
+    }
+
+    let mut provider = provider_builder();
+    apply_network_settings_to_provider(&mut provider, network_settings);
+    providers.push(Box::new(provider));
+    provider_names.push(provider_name);
 }
