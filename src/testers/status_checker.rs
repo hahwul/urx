@@ -260,23 +260,23 @@ mod tests {
         let checker = StatusChecker::new();
 
         // Single pattern test
-        assert!(checker.matches_any_pattern(200, &vec!["200".to_string()]));
-        assert!(!checker.matches_any_pattern(404, &vec!["200".to_string()]));
+        assert!(checker.matches_any_pattern(200, &["200".to_string()]));
+        assert!(!checker.matches_any_pattern(404, &["200".to_string()]));
 
         // Multiple pattern test
-        assert!(checker.matches_any_pattern(200, &vec!["200".to_string(), "404".to_string()]));
-        assert!(checker.matches_any_pattern(404, &vec!["200".to_string(), "404".to_string()]));
-        assert!(!checker.matches_any_pattern(301, &vec!["200".to_string(), "404".to_string()]));
+        assert!(checker.matches_any_pattern(200, &["200".to_string(), "404".to_string()]));
+        assert!(checker.matches_any_pattern(404, &["200".to_string(), "404".to_string()]));
+        assert!(!checker.matches_any_pattern(301, &["200".to_string(), "404".to_string()]));
 
         // Wildcard pattern test
-        assert!(checker.matches_any_pattern(200, &vec!["2xx".to_string()]));
-        assert!(checker.matches_any_pattern(404, &vec!["2xx".to_string(), "4xx".to_string()]));
+        assert!(checker.matches_any_pattern(200, &["2xx".to_string()]));
+        assert!(checker.matches_any_pattern(404, &["2xx".to_string(), "4xx".to_string()]));
 
         // Comma-separated pattern test
-        assert!(checker.matches_any_pattern(200, &vec!["200,404".to_string()]));
-        assert!(checker.matches_any_pattern(404, &vec!["200,404".to_string()]));
-        assert!(checker.matches_any_pattern(200, &vec!["2xx,404".to_string()]));
-        assert!(!checker.matches_any_pattern(301, &vec!["200,404".to_string()]));
+        assert!(checker.matches_any_pattern(200, &["200,404".to_string()]));
+        assert!(checker.matches_any_pattern(404, &["200,404".to_string()]));
+        assert!(checker.matches_any_pattern(200, &["2xx,404".to_string()]));
+        assert!(!checker.matches_any_pattern(301, &["200,404".to_string()]));
     }
 
     #[test]
