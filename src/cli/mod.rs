@@ -113,6 +113,11 @@ pub struct Args {
     #[clap(long)]
     pub proxy_auth: Option<String>,
 
+    /// Skip SSL certificate verification (accept self-signed certs)
+    #[clap(help_heading = "Network Options")]
+    #[clap(long)]
+    pub insecure: bool,
+
     /// Use a random User-Agent for HTTP requests
     #[clap(help_heading = "Network Options")]
     #[clap(long)]

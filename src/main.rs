@@ -83,10 +83,7 @@ async fn main() -> Result<()> {
         wayback_provider.with_timeout(args.timeout);
         wayback_provider.with_retries(args.retries);
         wayback_provider.with_random_agent(args.random_agent);
-        wayback_provider.with_parallel(args.parallel);
-        if let Some(rate) = args.rate_limit {
-            wayback_provider.with_rate_limit(Some(rate));
-        }
+        wayback_provider.with_insecure(args.insecure);
 
         if args.verbose && args.random_agent && !args.silent {
             println!("Random User-Agent enabled for Wayback Machine");
@@ -144,6 +141,7 @@ async fn main() -> Result<()> {
         cc_provider.with_timeout(args.timeout);
         cc_provider.with_retries(args.retries);
         cc_provider.with_random_agent(args.random_agent);
+        cc_provider.with_insecure(args.insecure);
         cc_provider.with_parallel(args.parallel);
         if let Some(rate) = args.rate_limit {
             cc_provider.with_rate_limit(Some(rate));
@@ -199,6 +197,7 @@ async fn main() -> Result<()> {
         otx_provider.with_timeout(args.timeout);
         otx_provider.with_retries(args.retries);
         otx_provider.with_random_agent(args.random_agent);
+        otx_provider.with_insecure(args.insecure);
         otx_provider.with_parallel(args.parallel);
         if let Some(rate) = args.rate_limit {
             otx_provider.with_rate_limit(Some(rate));
@@ -432,6 +431,7 @@ async fn main() -> Result<()> {
             status_checker.with_timeout(args.timeout);
             status_checker.with_retries(args.retries);
             status_checker.with_random_agent(args.random_agent);
+            status_checker.with_insecure(args.insecure);
 
             if let Some(proxy) = &args.proxy {
                 status_checker.with_proxy(Some(proxy.clone()));
@@ -455,6 +455,7 @@ async fn main() -> Result<()> {
             link_extractor.with_timeout(args.timeout);
             link_extractor.with_retries(args.retries);
             link_extractor.with_random_agent(args.random_agent);
+            link_extractor.with_insecure(args.insecure);
 
             if let Some(proxy) = &args.proxy {
                 link_extractor.with_proxy(Some(proxy.clone()));

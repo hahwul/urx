@@ -13,6 +13,7 @@ pub struct WaybackMachineProvider {
     timeout: u64,
     retries: u32,
     random_agent: bool,
+    insecure: bool,
     parallel: u32,
     rate_limit: Option<f32>,
 }
@@ -26,6 +27,7 @@ impl WaybackMachineProvider {
             timeout: 30,
             retries: 3,
             random_agent: false,
+            insecure: false,
             parallel: 5,
             rate_limit: None,
         }
@@ -58,6 +60,11 @@ impl Provider for WaybackMachineProvider {
             // Create client builder with proxy support
             let mut client_builder =
                 reqwest::Client::builder().timeout(std::time::Duration::from_secs(self.timeout));
+
+            // Skip SSL verification if insecure is enabled
+            if self.insecure {
+                client_builder = client_builder.danger_accept_invalid_certs(true);
+            }
 
             // Add random user agent if enabled
             if self.random_agent {
@@ -210,6 +217,10 @@ impl Provider for WaybackMachineProvider {
 
     fn with_random_agent(&mut self, enabled: bool) {
         self.random_agent = enabled;
+    }
+
+    fn with_insecure(&mut self, enabled: bool) {
+        self.insecure = enabled;
     }
 
     fn with_parallel(&mut self, parallel: u32) {
