@@ -7,6 +7,7 @@ use tokio::task;
 
 mod cli;
 mod filters;
+mod network;
 mod output;
 mod progress;
 mod providers;
@@ -15,6 +16,7 @@ mod url_utils;
 
 use cli::{read_domains_from_stdin, Args};
 use filters::UrlFilter;
+use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvider};
@@ -49,6 +51,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Create common network settings from args
+    let network_settings = NetworkSettings::from_args(&args);
+
     // Initialize providers based on command-line flags
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
@@ -56,50 +61,31 @@ async fn main() -> Result<()> {
     if args.providers.iter().any(|p| p == "wayback") {
         if args.verbose && !args.silent {
             println!("Adding Wayback Machine provider");
-            if args.subs {
+            if network_settings.include_subdomains {
                 println!("Subdomain inclusion enabled for Wayback Machine");
             }
-            if args.proxy.is_some() {
+            if network_settings.proxy.is_some() {
                 println!(
                     "Using proxy for Wayback Machine: {}",
-                    args.proxy.as_ref().unwrap()
+                    network_settings.proxy.as_ref().unwrap()
                 );
             }
-        }
-
-        let mut wayback_provider = WaybackMachineProvider::new();
-
-        // Apply common settings to Wayback provider
-        wayback_provider.with_subdomains(args.subs);
-        if let Some(proxy) = &args.proxy {
-            wayback_provider.with_proxy(Some(proxy.clone()));
-
-            if let Some(auth) = &args.proxy_auth {
-                wayback_provider.with_proxy_auth(Some(auth.clone()));
+            if network_settings.random_agent && !args.silent {
+                println!("Random User-Agent enabled for Wayback Machine");
             }
-        }
-
-        // Apply new settings
-        wayback_provider.with_timeout(args.timeout);
-        wayback_provider.with_retries(args.retries);
-        wayback_provider.with_random_agent(args.random_agent);
-        wayback_provider.with_insecure(args.insecure);
-
-        if args.verbose && args.random_agent && !args.silent {
-            println!("Random User-Agent enabled for Wayback Machine");
-        }
-
-        if args.verbose && !args.silent {
             println!(
                 "Timeout set to {} seconds for Wayback Machine",
-                args.timeout
+                network_settings.timeout
             );
-            println!("Retries set to {} for Wayback Machine", args.retries);
+            println!(
+                "Retries set to {} for Wayback Machine",
+                network_settings.retries
+            );
             println!(
                 "Parallel requests set to {} for Wayback Machine",
-                args.parallel
+                network_settings.parallel
             );
-            if let Some(rate) = args.rate_limit {
+            if let Some(rate) = network_settings.rate_limit {
                 println!(
                     "Rate limit set to {} requests/second for Wayback Machine",
                     rate
@@ -107,6 +93,8 @@ async fn main() -> Result<()> {
             }
         }
 
+        let mut wayback_provider = WaybackMachineProvider::new();
+        apply_network_settings_to_provider(&mut wayback_provider, &network_settings);
         providers.push(Box::new(wayback_provider));
         provider_names.push("Wayback Machine".to_string());
     }
@@ -114,51 +102,31 @@ async fn main() -> Result<()> {
     if args.providers.iter().any(|p| p == "cc") {
         if args.verbose && !args.silent {
             println!("Adding Common Crawl provider with index: {}", args.cc_index);
-            if args.subs {
+            if network_settings.include_subdomains {
                 println!("Subdomain inclusion enabled for Common Crawl");
             }
-            if args.proxy.is_some() {
+            if network_settings.proxy.is_some() {
                 println!(
                     "Using proxy for Common Crawl: {}",
-                    args.proxy.as_ref().unwrap()
+                    network_settings.proxy.as_ref().unwrap()
                 );
             }
-        }
-
-        let mut cc_provider = CommonCrawlProvider::with_index(args.cc_index.clone());
-
-        // Apply common settings to Common Crawl provider
-        cc_provider.with_subdomains(args.subs);
-        if let Some(proxy) = &args.proxy {
-            cc_provider.with_proxy(Some(proxy.clone()));
-
-            if let Some(auth) = &args.proxy_auth {
-                cc_provider.with_proxy_auth(Some(auth.clone()));
+            if network_settings.random_agent && !args.silent {
+                println!("Random User-Agent enabled for Common Crawl");
             }
-        }
-
-        // Apply new settings
-        cc_provider.with_timeout(args.timeout);
-        cc_provider.with_retries(args.retries);
-        cc_provider.with_random_agent(args.random_agent);
-        cc_provider.with_insecure(args.insecure);
-        cc_provider.with_parallel(args.parallel);
-        if let Some(rate) = args.rate_limit {
-            cc_provider.with_rate_limit(Some(rate));
-        }
-
-        if args.verbose && args.random_agent && !args.silent {
-            println!("Random User-Agent enabled for Common Crawl");
-        }
-
-        if args.verbose && !args.silent {
-            println!("Timeout set to {} seconds for Common Crawl", args.timeout);
-            println!("Retries set to {} for Common Crawl", args.retries);
+            println!(
+                "Timeout set to {} seconds for Common Crawl",
+                network_settings.timeout
+            );
+            println!(
+                "Retries set to {} for Common Crawl",
+                network_settings.retries
+            );
             println!(
                 "Parallel requests set to {} for Common Crawl",
-                args.parallel
+                network_settings.parallel
             );
-            if let Some(rate) = args.rate_limit {
+            if let Some(rate) = network_settings.rate_limit {
                 println!(
                     "Rate limit set to {} requests/second for Common Crawl",
                     rate
@@ -166,6 +134,8 @@ async fn main() -> Result<()> {
             }
         }
 
+        let mut cc_provider = CommonCrawlProvider::with_index(args.cc_index.clone());
+        apply_network_settings_to_provider(&mut cc_provider, &network_settings);
         providers.push(Box::new(cc_provider));
         provider_names.push(format!("Common Crawl ({})", args.cc_index));
     }
@@ -173,49 +143,34 @@ async fn main() -> Result<()> {
     if args.providers.iter().any(|p| p == "otx") {
         if args.verbose && !args.silent {
             println!("Adding OTX provider");
-            if args.subs {
+            if network_settings.include_subdomains {
                 println!("Subdomain inclusion enabled for OTX");
             }
-            if args.proxy.is_some() {
-                println!("Using proxy for OTX: {}", args.proxy.as_ref().unwrap());
+            if network_settings.proxy.is_some() {
+                println!(
+                    "Using proxy for OTX: {}",
+                    network_settings.proxy.as_ref().unwrap()
+                );
             }
-        }
-
-        let mut otx_provider = OTXProvider::new();
-
-        // Apply common settings to OTX provider
-        otx_provider.with_subdomains(args.subs);
-        if let Some(proxy) = &args.proxy {
-            otx_provider.with_proxy(Some(proxy.clone()));
-
-            if let Some(auth) = &args.proxy_auth {
-                otx_provider.with_proxy_auth(Some(auth.clone()));
+            if network_settings.random_agent && !args.silent {
+                println!("Random User-Agent enabled for OTX");
             }
-        }
-
-        // Apply new settings
-        otx_provider.with_timeout(args.timeout);
-        otx_provider.with_retries(args.retries);
-        otx_provider.with_random_agent(args.random_agent);
-        otx_provider.with_insecure(args.insecure);
-        otx_provider.with_parallel(args.parallel);
-        if let Some(rate) = args.rate_limit {
-            otx_provider.with_rate_limit(Some(rate));
-        }
-
-        if args.verbose && args.random_agent && !args.silent {
-            println!("Random User-Agent enabled for OTX");
-        }
-
-        if args.verbose && !args.silent {
-            println!("Timeout set to {} seconds for OTX", args.timeout);
-            println!("Retries set to {} for OTX", args.retries);
-            println!("Parallel requests set to {} for OTX", args.parallel);
-            if let Some(rate) = args.rate_limit {
+            println!(
+                "Timeout set to {} seconds for OTX",
+                network_settings.timeout
+            );
+            println!("Retries set to {} for OTX", network_settings.retries);
+            println!(
+                "Parallel requests set to {} for OTX",
+                network_settings.parallel
+            );
+            if let Some(rate) = network_settings.rate_limit {
                 println!("Rate limit set to {} requests/second for OTX", rate);
             }
         }
 
+        let mut otx_provider = OTXProvider::new();
+        apply_network_settings_to_provider(&mut otx_provider, &network_settings);
         providers.push(Box::new(otx_provider));
         provider_names.push("OTX".to_string());
     }
@@ -424,23 +379,8 @@ async fn main() -> Result<()> {
         if args.check_status {
             verbose_print(&args, "Checking HTTP status codes for URLs");
 
-            // Apply network settings
             let mut status_checker = StatusChecker::new();
-
-            // Apply network settings
-            status_checker.with_timeout(args.timeout);
-            status_checker.with_retries(args.retries);
-            status_checker.with_random_agent(args.random_agent);
-            status_checker.with_insecure(args.insecure);
-
-            if let Some(proxy) = &args.proxy {
-                status_checker.with_proxy(Some(proxy.clone()));
-
-                if let Some(auth) = &args.proxy_auth {
-                    status_checker.with_proxy_auth(Some(auth.clone()));
-                }
-            }
-
+            apply_network_settings_to_tester(&mut status_checker, &network_settings);
             testers.push(Box::new(status_checker));
         }
 
@@ -450,21 +390,7 @@ async fn main() -> Result<()> {
             }
 
             let mut link_extractor = LinkExtractor::new();
-
-            // Apply network settings
-            link_extractor.with_timeout(args.timeout);
-            link_extractor.with_retries(args.retries);
-            link_extractor.with_random_agent(args.random_agent);
-            link_extractor.with_insecure(args.insecure);
-
-            if let Some(proxy) = &args.proxy {
-                link_extractor.with_proxy(Some(proxy.clone()));
-
-                if let Some(auth) = &args.proxy_auth {
-                    link_extractor.with_proxy_auth(Some(auth.clone()));
-                }
-            }
-
+            apply_network_settings_to_tester(&mut link_extractor, &network_settings);
             testers.push(Box::new(link_extractor));
         }
 
@@ -607,4 +533,42 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Helper function to apply network settings to a provider
+fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
+    provider.with_subdomains(settings.include_subdomains);
+    provider.with_timeout(settings.timeout);
+    provider.with_retries(settings.retries);
+    provider.with_random_agent(settings.random_agent);
+    provider.with_insecure(settings.insecure);
+    provider.with_parallel(settings.parallel);
+
+    if let Some(proxy) = &settings.proxy {
+        provider.with_proxy(Some(proxy.clone()));
+
+        if let Some(auth) = &settings.proxy_auth {
+            provider.with_proxy_auth(Some(auth.clone()));
+        }
+    }
+
+    if let Some(rate) = settings.rate_limit {
+        provider.with_rate_limit(Some(rate));
+    }
+}
+
+/// Helper function to apply network settings to a tester
+fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &NetworkSettings) {
+    tester.with_timeout(settings.timeout);
+    tester.with_retries(settings.retries);
+    tester.with_random_agent(settings.random_agent);
+    tester.with_insecure(settings.insecure);
+
+    if let Some(proxy) = &settings.proxy {
+        tester.with_proxy(Some(proxy.clone()));
+
+        if let Some(auth) = &settings.proxy_auth {
+            tester.with_proxy_auth(Some(auth.clone()));
+        }
+    }
 }
