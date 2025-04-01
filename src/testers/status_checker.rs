@@ -71,6 +71,20 @@ impl StatusChecker {
         }
     }
 
+    /// Checks if a status code matches any pattern in the given patterns vector
+    fn matches_any_pattern(&self, status_code: u16, patterns: &[String]) -> bool {
+        if patterns.is_empty() {
+            return false;
+        }
+
+        patterns.iter().any(|pattern| {
+            // Split the pattern by commas and check if any subpattern matches
+            pattern.split(',').any(|subpattern| {
+                self.status_matches_pattern(status_code, subpattern.trim())
+            })
+        })
+    }
+
     /// Checks if a status code should be included in the results
     /// Returns true if:
     /// - include_status is set and the status code matches any of the patterns
@@ -81,26 +95,12 @@ impl StatusChecker {
     fn should_include_status(&self, status_code: u16) -> bool {
         // If include_status is set, only include status codes that match
         if let Some(include_patterns) = &self.include_status {
-            if !include_patterns.is_empty() {
-                return include_patterns.iter().any(|pattern| {
-                    // Split the pattern by commas and check if any subpattern matches
-                    pattern.split(',').any(|subpattern| {
-                        self.status_matches_pattern(status_code, subpattern.trim())
-                    })
-                });
-            }
+            return self.matches_any_pattern(status_code, include_patterns);
         }
 
         // If exclude_status is set, exclude status codes that match
         if let Some(exclude_patterns) = &self.exclude_status {
-            if !exclude_patterns.is_empty() {
-                return !exclude_patterns.iter().any(|pattern| {
-                    // Split the pattern by commas and check if any subpattern matches
-                    pattern.split(',').any(|subpattern| {
-                        self.status_matches_pattern(status_code, subpattern.trim())
-                    })
-                });
-            }
+            return !self.matches_any_pattern(status_code, exclude_patterns);
         }
 
         // If neither filter is set, include all status codes
