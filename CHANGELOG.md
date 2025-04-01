@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added `--insecure`, `--network-scope` flags
+- Added `--include-status`, `--exclude-status` flags
 
 ## 0.2.0
 
