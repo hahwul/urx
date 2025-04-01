@@ -105,7 +105,7 @@ pub struct Args {
 
     /// Control which components network settings apply to (all, providers, testers, or providers,testers)
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "all")]
+    #[clap(long, default_value = "all", value_parser = validate_network_scope)]
     pub network_scope: String,
 
     #[clap(help_heading = "Network Options")]
@@ -174,4 +174,11 @@ pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
     }
 
     Ok(domains)
+}
+
+fn validate_network_scope(s: &str) -> Result<String, String> {
+    match s {
+        "all" | "providers" | "testers" | "providers,testers" | "testers,providers" => Ok(s.to_string()),
+        _ => Err(format!("Invalid network scope: {}. Allowed values are all, providers, testers, or providers,testers", s)),
+    }
 }
