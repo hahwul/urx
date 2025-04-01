@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Empty
+
+## 0.3.0
+
 - Added `--insecure`, `--network-scope` flags
 - Added `--include-status`, `--exclude-status` flags
 
