@@ -153,12 +153,12 @@ pub struct Args {
     #[clap(long, alias = "cs", visible_alias = "--cs")]
     pub check_status: bool,
 
-    /// Check HTTP status code of collected URLs with a specific filter (e.g., "200,301,302")
+    /// Include URLs with specific HTTP status codes or patterns (e.g., --is=200,30x)
     #[clap(help_heading = "Testing Options")]
     #[clap(long, alias = "is", visible_alias = "--is")]
     pub include_status: Vec<String>,
 
-    /// Check HTTP status code of collected URLs excluding a specific filter (e.g., "200,301,302")
+    /// Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx)
     #[clap(help_heading = "Testing Options")]
     #[clap(long, alias = "es", visible_alias = "--es")]
     pub exclude_status: Vec<String>,
