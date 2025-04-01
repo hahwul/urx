@@ -79,9 +79,9 @@ impl StatusChecker {
 
         patterns.iter().any(|pattern| {
             // Split the pattern by commas and check if any subpattern matches
-            pattern.split(',').any(|subpattern| {
-                self.status_matches_pattern(status_code, subpattern.trim())
-            })
+            pattern
+                .split(',')
+                .any(|subpattern| self.status_matches_pattern(status_code, subpattern.trim()))
         })
     }
 
@@ -237,11 +237,11 @@ mod tests {
     #[test]
     fn test_status_matches_pattern() {
         let checker = StatusChecker::new();
-        
+
         // Exact match test
         assert!(checker.status_matches_pattern(200, "200"));
         assert!(!checker.status_matches_pattern(200, "404"));
-        
+
         // Wildcard match test
         assert!(checker.status_matches_pattern(200, "2xx"));
         assert!(checker.status_matches_pattern(200, "20x"));
@@ -249,7 +249,7 @@ mod tests {
         assert!(checker.status_matches_pattern(404, "4xx"));
         assert!(!checker.status_matches_pattern(200, "3xx"));
         assert!(!checker.status_matches_pattern(200, "4xx"));
-        
+
         // Case insensitivity test
         assert!(checker.status_matches_pattern(200, "2XX"));
         assert!(checker.status_matches_pattern(404, "4XX"));
@@ -258,20 +258,20 @@ mod tests {
     #[test]
     fn test_matches_any_pattern() {
         let checker = StatusChecker::new();
-        
+
         // Single pattern test
         assert!(checker.matches_any_pattern(200, &vec!["200".to_string()]));
         assert!(!checker.matches_any_pattern(404, &vec!["200".to_string()]));
-        
+
         // Multiple pattern test
         assert!(checker.matches_any_pattern(200, &vec!["200".to_string(), "404".to_string()]));
         assert!(checker.matches_any_pattern(404, &vec!["200".to_string(), "404".to_string()]));
         assert!(!checker.matches_any_pattern(301, &vec!["200".to_string(), "404".to_string()]));
-        
+
         // Wildcard pattern test
         assert!(checker.matches_any_pattern(200, &vec!["2xx".to_string()]));
         assert!(checker.matches_any_pattern(404, &vec!["2xx".to_string(), "4xx".to_string()]));
-        
+
         // Comma-separated pattern test
         assert!(checker.matches_any_pattern(200, &vec!["200,404".to_string()]));
         assert!(checker.matches_any_pattern(404, &vec!["200,404".to_string()]));
@@ -282,19 +282,19 @@ mod tests {
     #[test]
     fn test_should_include_status() {
         let mut checker = StatusChecker::new();
-        
+
         // Include all status codes when no filters are set
         assert!(checker.should_include_status(200));
         assert!(checker.should_include_status(404));
         assert!(checker.should_include_status(500));
-        
+
         // include_status filter test
         checker.with_include_status(Some(vec!["200".to_string(), "3xx".to_string()]));
         assert!(checker.should_include_status(200));
         assert!(checker.should_include_status(301));
         assert!(!checker.should_include_status(404));
         assert!(!checker.should_include_status(500));
-        
+
         // exclude_status filter test
         checker.with_include_status(None);
         checker.with_exclude_status(Some(vec!["4xx".to_string(), "500".to_string()]));
@@ -302,7 +302,7 @@ mod tests {
         assert!(checker.should_include_status(301));
         assert!(!checker.should_include_status(404));
         assert!(!checker.should_include_status(500));
-        
+
         // include_status has higher priority than exclude_status
         checker.with_include_status(Some(vec!["200".to_string()]));
         checker.with_exclude_status(Some(vec!["2xx".to_string()]));
