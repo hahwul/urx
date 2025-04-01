@@ -103,6 +103,11 @@ pub struct Args {
     #[clap(long = "max-length")]
     pub max_length: Option<usize>,
 
+    /// Control which components network settings apply to (all, providers, testers, or providers,testers)
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, default_value = "all", value_parser = validate_network_scope)]
+    pub network_scope: String,
+
     #[clap(help_heading = "Network Options")]
     /// Use proxy for HTTP requests (format: http://proxy.example.com:8080)
     #[clap(long)]
@@ -112,6 +117,11 @@ pub struct Args {
     #[clap(help_heading = "Network Options")]
     #[clap(long)]
     pub proxy_auth: Option<String>,
+
+    /// Skip SSL certificate verification (accept self-signed certs)
+    #[clap(help_heading = "Network Options")]
+    #[clap(long)]
+    pub insecure: bool,
 
     /// Use a random User-Agent for HTTP requests
     #[clap(help_heading = "Network Options")]
@@ -164,4 +174,11 @@ pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
     }
 
     Ok(domains)
+}
+
+fn validate_network_scope(s: &str) -> Result<String, String> {
+    match s {
+        "all" | "providers" | "testers" | "providers,testers" | "testers,providers" => Ok(s.to_string()),
+        _ => Err(format!("Invalid network scope: {}. Allowed values are all, providers, testers, or providers,testers", s)),
+    }
 }

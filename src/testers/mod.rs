@@ -32,6 +32,9 @@ pub trait Tester: Send + Sync {
     /// Enable or disable the use of random User-Agent headers
     fn with_random_agent(&mut self, enabled: bool);
 
+    /// Enable or disable SSL certificate verification (for self-signed certificates)
+    fn with_insecure(&mut self, enabled: bool);
+
     /// Set the proxy server for HTTP requests
     fn with_proxy(&mut self, proxy: Option<String>);
 

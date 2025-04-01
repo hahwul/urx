@@ -43,6 +43,9 @@ pub trait Provider: Send + Sync {
     /// Enable or disable the use of random User-Agent headers
     fn with_random_agent(&mut self, enabled: bool);
 
+    /// Enable or disable SSL certificate verification (for self-signed certificates)
+    fn with_insecure(&mut self, enabled: bool);
+
     /// Set the number of parallel requests
     fn with_parallel(&mut self, count: u32);
 
