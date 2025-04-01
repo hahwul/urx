@@ -15,14 +15,13 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 
 ## Features
 
-- Fetch URLs from multiple sources (Wayback Machine, Common Crawl, OTX)
-- Process multiple domains concurrently
-- Filter results by file extensions or patterns
-- Use presets (predefined filter sets) for convenience (like "no-image" to exclude all image-related extensions)
-- Multiple output formats (plain, JSON, CSV)
-- Output to console or file
-- Support for reading domains from stdin (pipeline integration)
-- URL testing capabilities (status checking, link extraction)
+* Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX)
+* Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
+* Support for multiple output formats: plain text, JSON, CSV
+* Output results to the console or a file, or stream via stdin for pipeline integration
+* URL Testing:
+  * Filter and validate URLs based on HTTP status codes and patterns.
+  * Extract additional links from collected URLs
 
 ![Preview](./docs/images/preview.jpg)
 
@@ -88,9 +87,9 @@ Output Options:
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
 
 Provider Options:
-      --cc-index <CC_INDEX>    Common Crawl index to use (e.g., CC-MAIN-2025-08) [default: CC-MAIN-2025-08]
       --providers <PROVIDERS>  Providers to use (comma-separated, e.g., "wayback,cc,otx") [default: wayback,cc,otx]
       --subs                   Include subdomains when searching
+      --cc-index <CC_INDEX>    Common Crawl index to use (e.g., CC-MAIN-2025-08) [default: CC-MAIN-2025-08]
 
 Display Options:
   -v, --verbose      Show verbose output
@@ -120,17 +119,25 @@ Filter Options:
           Maximum URL length to include
 
 Network Options:
-      --proxy <PROXY>            Use proxy for HTTP requests (format: http://proxy.example.com:8080)
-      --proxy-auth <PROXY_AUTH>  Proxy authentication credentials (format: username:password)
-      --random-agent             Use a random User-Agent for HTTP requests
-      --timeout <TIMEOUT>        Request timeout in seconds [default: 30]
-      --retries <RETRIES>        Number of retries for failed requests [default: 3]
-      --parallel <PARALLEL>      Maximum number of parallel requests [default: 5]
-      --rate-limit <RATE_LIMIT>  Rate limit (requests per second)
+      --network-scope <NETWORK_SCOPE>  Control which components network settings apply to (all, providers, testers, or providers,testers) [default: all]
+      --proxy <PROXY>                  Use proxy for HTTP requests (format: http://proxy.example.com:8080)
+      --proxy-auth <PROXY_AUTH>        Proxy authentication credentials (format: username:password)
+      --insecure                       Skip SSL certificate verification (accept self-signed certs)
+      --random-agent                   Use a random User-Agent for HTTP requests
+      --timeout <TIMEOUT>              Request timeout in seconds [default: 30]
+      --retries <RETRIES>              Number of retries for failed requests [default: 3]
+      --parallel <PARALLEL>            Maximum number of parallel requests [default: 5]
+      --rate-limit <RATE_LIMIT>        Rate limit (requests per second)
 
 Testing Options:
-      --check-status   Check HTTP status code of collected URLs
-      --extract-links  Extract additional links from collected URLs (requires HTTP requests)
+      --check-status
+          Check HTTP status code of collected URLs [aliases: --cs]
+      --include-status <INCLUDE_STATUS>
+          Include URLs with specific HTTP status codes or patterns (e.g., --is=200,30x) [aliases: --is]
+      --exclude-status <EXCLUDE_STATUS>
+          Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: --es]
+      --extract-links
+          Extract additional links from collected URLs (requires HTTP requests)
 ```
 
 ### Examples
@@ -170,10 +177,13 @@ urx example.com --check-status
 urx example.com --extract-links
 
 # Network configuration
-urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10
+urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insecure
 
 # Advanced filtering
 urx example.com -e js,php --patterns admin,login --exclude-patterns logout,static --min-length 20
+
+# HTTP Status code based filtering
+urx example.com --include-status 200,30x,405 --exclude-status 20x
 ```
 
 ## Integration with Other Tools
