@@ -103,6 +103,11 @@ pub struct Args {
     #[clap(long = "max-length")]
     pub max_length: Option<usize>,
 
+    /// Control which components network settings apply to (all, providers, testers, or providers,testers)
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, default_value = "all")]
+    pub network_scope: String,
+
     #[clap(help_heading = "Network Options")]
     /// Use proxy for HTTP requests (format: http://proxy.example.com:8080)
     #[clap(long)]

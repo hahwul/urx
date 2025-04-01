@@ -16,7 +16,7 @@ mod url_utils;
 
 use cli::{read_domains_from_stdin, Args};
 use filters::UrlFilter;
-use network::NetworkSettings;
+use network::{NetworkScope, NetworkSettings};
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvider};
@@ -537,6 +537,11 @@ async fn main() -> Result<()> {
 
 /// Helper function to apply network settings to a provider
 fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
+    // Skip applying settings if network scope doesn't include providers
+    if settings.scope == NetworkScope::Testers {
+        return;
+    }
+
     provider.with_subdomains(settings.include_subdomains);
     provider.with_timeout(settings.timeout);
     provider.with_retries(settings.retries);
@@ -559,6 +564,11 @@ fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &Ne
 
 /// Helper function to apply network settings to a tester
 fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &NetworkSettings) {
+    // Skip applying settings if network scope doesn't include testers
+    if settings.scope == NetworkScope::Providers {
+        return;
+    }
+
     tester.with_timeout(settings.timeout);
     tester.with_retries(settings.retries);
     tester.with_random_agent(settings.random_agent);

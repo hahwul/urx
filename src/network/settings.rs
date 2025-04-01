@@ -2,6 +2,23 @@
 ///
 /// This struct centralizes common HTTP request settings used throughout
 /// the application to avoid code duplication between providers and testers.
+/// Network scope specifying which components should use the network settings
+#[derive(Clone, Debug, PartialEq)]
+pub enum NetworkScope {
+    /// Apply network settings to all components
+    All,
+    /// Apply network settings only to providers
+    Providers,
+    /// Apply network settings only to testers
+    Testers,
+}
+
+impl Default for NetworkScope {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NetworkSettings {
     /// Proxy server URL (e.g., "http://proxy.example.com:8080")
@@ -30,6 +47,9 @@ pub struct NetworkSettings {
 
     /// Whether to include subdomains in search
     pub include_subdomains: bool,
+
+    /// Which components should use these network settings
+    pub scope: NetworkScope,
 }
 
 impl Default for NetworkSettings {
@@ -44,6 +64,7 @@ impl Default for NetworkSettings {
             parallel: 5,
             rate_limit: None,
             include_subdomains: false,
+            scope: NetworkScope::All,
         }
     }
 }
@@ -117,6 +138,16 @@ impl NetworkSettings {
             .with_insecure(args.insecure)
             .with_parallel(args.parallel)
             .with_subdomains(args.subs);
+
+        // Parse network scope from args
+        let scope = match args.network_scope.to_lowercase().as_str() {
+            "all" => NetworkScope::All,
+            "providers" => NetworkScope::Providers,
+            "testers" => NetworkScope::Testers,
+            "providers,testers" | "testers,providers" => NetworkScope::All,
+            _ => NetworkScope::All, // Default to All for invalid values
+        };
+        settings.scope = scope;
 
         if let Some(rate) = args.rate_limit {
             settings = settings.with_rate_limit(Some(rate));
