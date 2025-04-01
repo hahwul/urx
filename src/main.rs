@@ -276,13 +276,16 @@ async fn main() -> Result<()> {
         bar.finish_with_message(format!("Transformed to {} URLs", transformed_urls.len()));
     }
 
-    // Output results
     let outputter = create_outputter(&args.format);
 
     // Apply testers if requested
     let mut final_urls = Vec::with_capacity(transformed_urls.len());
 
-    if args.check_status || args.extract_links {
+    // Determine if we need to do status checking (either explicitly requested or needed for filters)
+    let should_check_status =
+        args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty();
+
+    if should_check_status || args.extract_links {
         verbose_print(&args, "Applying testing options...");
 
         // Create progress bar for testing
@@ -292,11 +295,36 @@ async fn main() -> Result<()> {
         // Initialize appropriate testers
         let mut testers: Vec<Box<dyn Tester>> = Vec::new();
 
-        if args.check_status {
+        // Initialize StatusChecker if any status check or filtering is needed
+        if should_check_status {
             verbose_print(&args, "Checking HTTP status codes for URLs");
 
             let mut status_checker = StatusChecker::new();
             apply_network_settings_to_tester(&mut status_checker, &network_settings);
+
+            // Apply status filters if provided
+            if !args.include_status.is_empty() {
+                status_checker.with_include_status(Some(args.include_status.clone()));
+                verbose_print(
+                    &args,
+                    format!(
+                        "Including only status codes that match: {}",
+                        args.include_status.join(", ")
+                    ),
+                );
+            }
+
+            if !args.exclude_status.is_empty() {
+                status_checker.with_exclude_status(Some(args.exclude_status.clone()));
+                verbose_print(
+                    &args,
+                    format!(
+                        "Excluding status codes that match: {}",
+                        args.exclude_status.join(", ")
+                    ),
+                );
+            }
+
             testers.push(Box::new(status_checker));
         }
 
@@ -322,7 +350,7 @@ async fn main() -> Result<()> {
             let url_vec = url_chunk.to_vec();
             let testers_clone: Vec<_> = testers.iter().map(|t| t.clone_box()).collect();
             let verbose = args.verbose;
-            let check_status = args.check_status;
+            let check_status = should_check_status;
             let extract_links = args.extract_links;
             let silent = args.silent;
 
