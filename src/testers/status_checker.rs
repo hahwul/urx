@@ -14,6 +14,8 @@ pub struct StatusChecker {
     retries: u32,
     random_agent: bool,
     insecure: bool,
+    include_status: Option<Vec<String>>,
+    exclude_status: Option<Vec<String>>,
 }
 
 impl StatusChecker {
@@ -26,7 +28,83 @@ impl StatusChecker {
             retries: 3,
             random_agent: false,
             insecure: false,
+            include_status: None,
+            exclude_status: None,
         }
+    }
+
+    /// Sets the status codes to include in the results
+    pub fn with_include_status(&mut self, status_codes: Option<Vec<String>>) {
+        self.include_status = status_codes;
+    }
+
+    /// Sets the status codes to exclude from the results
+    pub fn with_exclude_status(&mut self, status_codes: Option<Vec<String>>) {
+        self.exclude_status = status_codes;
+    }
+
+    /// Checks if a status code matches a pattern
+    /// Patterns can be exact (e.g., "200") or wildcard (e.g., "20x", "3xx")
+    fn status_matches_pattern(&self, status_code: u16, pattern: &str) -> bool {
+        if pattern.contains('x') || pattern.contains('X') {
+            let status_str = status_code.to_string();
+            let pattern = pattern.to_lowercase();
+
+            if status_str.len() != pattern.len() {
+                return false;
+            }
+
+            for (s, p) in status_str.chars().zip(pattern.chars()) {
+                if p != 'x' && p != s {
+                    return false;
+                }
+            }
+
+            true
+        } else {
+            // Exact match
+            if let Ok(pattern_code) = pattern.parse::<u16>() {
+                status_code == pattern_code
+            } else {
+                false
+            }
+        }
+    }
+
+    /// Checks if a status code should be included in the results
+    /// Returns true if:
+    /// - include_status is set and the status code matches any of the patterns
+    /// - exclude_status is set and the status code doesn't match any of the patterns
+    /// - neither filter is set
+    ///   Prioritizes include_status over exclude_status if both are set
+    ///   Supports comma-separated patterns like "200,30x,40x"
+    fn should_include_status(&self, status_code: u16) -> bool {
+        // If include_status is set, only include status codes that match
+        if let Some(include_patterns) = &self.include_status {
+            if !include_patterns.is_empty() {
+                return include_patterns.iter().any(|pattern| {
+                    // Split the pattern by commas and check if any subpattern matches
+                    pattern.split(',').any(|subpattern| {
+                        self.status_matches_pattern(status_code, subpattern.trim())
+                    })
+                });
+            }
+        }
+
+        // If exclude_status is set, exclude status codes that match
+        if let Some(exclude_patterns) = &self.exclude_status {
+            if !exclude_patterns.is_empty() {
+                return !exclude_patterns.iter().any(|pattern| {
+                    // Split the pattern by commas and check if any subpattern matches
+                    pattern.split(',').any(|subpattern| {
+                        self.status_matches_pattern(status_code, subpattern.trim())
+                    })
+                });
+            }
+        }
+
+        // If neither filter is set, include all status codes
+        true
     }
 }
 
@@ -36,6 +114,7 @@ impl Tester for StatusChecker {
     }
 
     /// Tests a URL by sending an HTTP request and returning the status code
+    /// If status filtering is enabled, only returns URLs that match the filter criteria
     fn test_url<'a>(
         &'a self,
         url: &'a str,
@@ -89,9 +168,16 @@ impl Tester for StatusChecker {
                 match client.get(url).send().await {
                     Ok(response) => {
                         let status = response.status();
+                        let status_code = status.as_u16();
+
+                        // Check if this status code should be included in results
+                        if !self.should_include_status(status_code) {
+                            return Ok(vec![]); // Return empty vec if filtered out
+                        }
+
                         let status_text = format!(
                             "{} {}",
-                            status.as_u16(),
+                            status_code,
                             status.canonical_reason().unwrap_or("")
                         );
                         return Ok(vec![format!("{} - {}", url, status_text)]);

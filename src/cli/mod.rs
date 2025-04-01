@@ -150,8 +150,18 @@ pub struct Args {
 
     /// Check HTTP status code of collected URLs
     #[clap(help_heading = "Testing Options")]
-    #[clap(long)]
+    #[clap(long, alias = "cs", visible_alias = "--cs")]
     pub check_status: bool,
+
+    /// Check HTTP status code of collected URLs with a specific filter (e.g., "200,301,302")
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, alias = "is", visible_alias = "--is")]
+    pub include_status: Vec<String>,
+
+    /// Check HTTP status code of collected URLs excluding a specific filter (e.g., "200,301,302")
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, alias = "es", visible_alias = "--es")]
+    pub exclude_status: Vec<String>,
 
     /// Extract additional links from collected URLs (requires HTTP requests)
     #[clap(help_heading = "Testing Options")]
