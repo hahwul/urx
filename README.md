@@ -1,6 +1,6 @@
 <div align="center">
   <picture>
-    <img alt="URX Logo" src="./docs/images/logo.png" width="300px;">
+    <img alt="URX Logo" src="https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/images/logo.png" width="300px;">
   </picture>
   <p>Extracts URLs from OSINT Archives for Security Insights.</p>
 </div>
@@ -23,7 +23,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs
 
-![Preview](./docs/images/preview.jpg)
+![Preview](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/images/preview.jpg)
 
 ## Installation
 
@@ -207,4 +207,4 @@ Urx was inspired by [gau (GetAllUrls)](https://github.com/lc/gau), a tool that f
 Urx is open-source project and made it with ❤️ 
 if you want contribute this project, please see [CONTRIBUTING.md](./CONTRIBUTING.md) and Pull-Request with cool your contents.
 
-[![](./CONTRIBUTORS.svg)](https://github.com/hahwul/urx/graphs/contributors)
+[![](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/CONTRIBUTORS.svg)](https://github.com/hahwul/urx/graphs/contributors)
