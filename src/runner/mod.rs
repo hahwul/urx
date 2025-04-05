@@ -188,6 +188,10 @@ pub async fn process_domains(
                         bar.set_message(format!("Found {} URLs", urls.len()));
                         // Abort the ticker task since we've completed
                         ticker_handle.abort();
+                        // Set tick to check mark for success
+                        bar.set_style(ProgressStyle::with_template(
+                            "{prefix:.bold.dim} [{bar:30.green/white}] ✓ {wide_msg}",
+                        ).unwrap().progress_chars("=>"));
                         Ok(urls)
                     }
                     Err(e) => {
@@ -196,6 +200,10 @@ pub async fn process_domains(
                         bar.set_message(format!("Error: {}", e));
                         // Abort the ticker task since we've completed
                         ticker_handle.abort();
+                        // Set tick to X mark for error
+                        bar.set_style(ProgressStyle::with_template(
+                            "{prefix:.bold.dim} [{bar:30.red/white}] ✗ {wide_msg}",
+                        ).unwrap().progress_chars("=>"));
                         Err(e)
                     }
                 };
