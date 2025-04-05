@@ -17,6 +17,8 @@ pub struct VirusTotalProvider {
     insecure: bool,
     parallel: u32,
     rate_limit: Option<f32>,
+    #[cfg(test)]
+    base_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,7 +47,15 @@ impl VirusTotalProvider {
             insecure: false,
             parallel: 1,
             rate_limit: None,
+            #[cfg(test)]
+            base_url: "https://www.virustotal.com".to_string(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_base_url(&mut self, url: String) -> &mut Self {
+        self.base_url = url;
+        self
     }
 }
 
@@ -67,6 +77,15 @@ impl Provider for VirusTotalProvider {
             // Use the url crate for encoding the domain
             let encoded_domain =
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
+
+            // Construct the URL - use base_url in test mode
+            #[cfg(test)]
+            let url = format!(
+                "{}/vtapi/v2/domain/report?apikey={}&domain={}",
+                self.base_url, self.api_key, encoded_domain
+            );
+
+            #[cfg(not(test))]
             let url = format!(
                 "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
                 self.api_key, encoded_domain
@@ -358,5 +377,43 @@ mod tests {
                 || err.contains("parse"),
             "Unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_with_mock() {
+        // Create a mock server - use new_async to avoid nested runtime issues
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // Create a mock response
+        let mock_response = r#"{
+            "detected_urls": [
+                {"url": "https://example.com/page1"},
+                {"url": "https://example.com/page2"}
+            ]
+        }"#;
+
+        // Setup the mock
+        let _m = mock_server
+            .mock("GET", "/vtapi/v2/domain/report")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("apikey".into(), "test_api_key".into()),
+                mockito::Matcher::UrlEncoded("domain".into(), "example.com".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mock_response)
+            .create();
+
+        // Create the provider using mock server URL
+        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_base_url(mock_server.url());
+
+        let result = provider.fetch_urls("example.com").await;
+        assert!(result.is_ok(), "Expected success with mock API");
+
+        let urls = result.unwrap();
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://example.com/page1");
+        assert_eq!(urls[1], "https://example.com/page2");
     }
 }
