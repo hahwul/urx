@@ -57,7 +57,7 @@ impl ProgressManager {
         .with_key(
             "spinner",
             |state: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
-                // Using a faster animation cycle with more frames for smoother appearance
+                // Using a spinner with 10 frames for smooth animation
                 write!(
                     w,
                     "{}",
@@ -67,17 +67,30 @@ impl ProgressManager {
             },
         );
 
-        provider_names
+        // First, create all progress bars and add them to the multi_progress
+        let bars: Vec<ProgressBar> = provider_names
             .iter()
             .map(|name| {
                 let bar = self.multi_progress.add(ProgressBar::new(100));
-                bar.set_style(style.clone());
+                // Format provider name to have consistent width
                 bar.set_prefix(format!("{:<15}", name));
-                // Much faster tick rate for spinner animation, independent of progress
-                bar.enable_steady_tick(std::time::Duration::from_millis(20));
+                // Set style with consistent template
+                bar.set_style(style.clone());
+                // Use a slower tick rate to reduce flicker
+                bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                // Initialize with an empty message to establish the line
+                bar.set_message("Initializing...");
                 bar
             })
-            .collect()
+            .collect();
+
+        // Force draw all bars to establish their positions in the terminal
+        for bar in &bars {
+            bar.tick();
+        }
+
+        // Return all created bars
+        bars
     }
 
     pub fn create_filter_bar(&self) -> ProgressBar {

@@ -432,7 +432,7 @@ mod tests {
             random_agent: false,
             timeout: 30,
             retries: 3,
-            parallel: 5,
+            parallel: Some(5),
             rate_limit: None,
             check_status: false,
             include_status: vec![],
