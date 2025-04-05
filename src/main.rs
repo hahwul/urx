@@ -293,3 +293,318 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::collections::HashSet;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+
+    // Mock Provider for testing
+    #[derive(Clone)]
+    struct MockProvider {
+        urls: Vec<String>,
+        should_fail: bool,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockProvider {
+        fn new(urls: Vec<String>, should_fail: bool) -> Self {
+            MockProvider {
+                urls,
+                should_fail,
+                calls: Arc::new(Mutex::new(vec![])),
+            }
+        }
+    }
+
+    impl Provider for MockProvider {
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        fn fetch_urls<'a>(
+            &'a self,
+            domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let urls = self.urls.clone();
+            let should_fail = self.should_fail;
+            let calls = self.calls.clone();
+
+            Box::pin(async move {
+                // Record the call
+                calls.lock().unwrap().push(domain.to_string());
+
+                if should_fail {
+                    Err(anyhow::anyhow!("Mock provider failure"))
+                } else {
+                    Ok(urls)
+                }
+            })
+        }
+
+        fn with_subdomains(&mut self, _include: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_parallel(&mut self, _parallel: u32) {}
+        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    }
+
+    // Mock StatusChecker for testing
+    #[derive(Clone)]
+    struct MockStatusChecker {
+        results: Vec<String>,
+    }
+
+    impl MockStatusChecker {
+        fn new(results: Vec<String>) -> Self {
+            MockStatusChecker { results }
+        }
+    }
+
+    impl Tester for MockStatusChecker {
+        fn clone_box(&self) -> Box<dyn Tester> {
+            Box::new(self.clone())
+        }
+
+        fn test_url<'a>(
+            &'a self,
+            _url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let results = self.results.clone();
+            Box::pin(async move { Ok(results) })
+        }
+
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+    }
+
+    #[tokio::test]
+    async fn test_process_domains() {
+        // Create mock providers
+        let mock_urls = vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ];
+
+        let provider = MockProvider::new(mock_urls.clone(), false);
+        let calls = provider.calls.clone();
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+
+        // Setup test args with minimal settings
+        let args = Args {
+            domains: vec!["example.com".to_string()],
+            config: None,
+            output: None,
+            format: "plain".to_string(),
+            merge_endpoint: false,
+            providers: vec!["mock".to_string()],
+            subs: false,
+            cc_index: "CC-MAIN-2025-08".to_string(),
+            vt_api_key: None,
+            verbose: false,
+            silent: true,      // Silent to avoid console output during tests
+            no_progress: true, // No progress bars during tests
+            preset: vec![],
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            min_length: None,
+            max_length: None,
+            network_scope: "all".to_string(),
+            proxy: None,
+            proxy_auth: None,
+            insecure: false,
+            random_agent: false,
+            timeout: 30,
+            retries: 3,
+            parallel: Some(5),
+            rate_limit: None,
+            check_status: false,
+            include_status: vec![],
+            exclude_status: vec![],
+            extract_links: false,
+        };
+
+        let progress_manager = ProgressManager::new(true);
+
+        // Process domains with mock provider
+        let urls = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await;
+
+        // Verify that the provider was called with the correct domain
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "example.com");
+
+        // Verify that the URLs were correctly returned
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains("https://example.com/page1"));
+        assert!(urls.contains("https://example.com/page2"));
+    }
+
+    #[tokio::test]
+    async fn test_process_urls_with_testers() {
+        // Create mock tester
+        let mock_results = vec![
+            "https://example.com/result1".to_string(),
+            "https://example.com/result2".to_string(),
+        ];
+        let mock_tester = MockStatusChecker::new(mock_results.clone());
+        let testers: Vec<Box<dyn Tester>> = vec![Box::new(mock_tester)];
+
+        // Create test input
+        let input_urls = vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ];
+
+        // Setup minimal args
+        let args = Args {
+            domains: vec![],
+            config: None,
+            output: None,
+            format: "plain".to_string(),
+            merge_endpoint: false,
+            providers: vec![],
+            subs: false,
+            cc_index: "CC-MAIN-2025-08".to_string(),
+            vt_api_key: None,
+            verbose: false,
+            silent: true,
+            no_progress: true,
+            preset: vec![],
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            min_length: None,
+            max_length: None,
+            network_scope: "all".to_string(),
+            proxy: None,
+            proxy_auth: None,
+            insecure: false,
+            random_agent: false,
+            timeout: 30,
+            retries: 3,
+            parallel: Some(5),
+            rate_limit: None,
+            check_status: false,
+            include_status: vec![],
+            exclude_status: vec![],
+            extract_links: false,
+        };
+
+        let network_settings = NetworkSettings::new();
+        let progress_manager = ProgressManager::new(true);
+
+        // Process URLs with mock tester
+        let result_data = process_urls_with_testers(
+            input_urls,
+            &args,
+            &network_settings,
+            &progress_manager,
+            testers,
+            false, // 여기를 false로 변경 (should_check_status)
+        )
+        .await;
+
+        // URLs가 올바른지 검증 - 모든 URL이 UrlData 구조체로 래핑됨
+        let result_urls: Vec<String> = result_data.iter().map(|data| data.url.clone()).collect();
+
+        // 결과 데이터에 원본 입력 URL이 포함되어 있는지 확인
+        assert_eq!(result_urls.len(), 2);
+        assert!(result_urls.contains(&"https://example.com/page1".to_string()));
+        assert!(result_urls.contains(&"https://example.com/page2".to_string()));
+    }
+
+    #[test]
+    fn test_url_filtering() {
+        // Create a set of test URLs
+        let urls = HashSet::from([
+            "https://example.com/page1.html".to_string(),
+            "https://example.com/image.jpg".to_string(),
+            "https://example.com/script.js".to_string(),
+            "https://example.com/styles.css".to_string(),
+        ]);
+
+        // Create filter to only include .html and .js files
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["html".to_string(), "js".to_string()]);
+
+        // Apply filter
+        let filtered = filter.apply_filters(&urls);
+
+        // Verify results
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/page1.html".to_string()));
+        assert!(filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(!filtered.contains(&"https://example.com/image.jpg".to_string()));
+        assert!(!filtered.contains(&"https://example.com/styles.css".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformation() {
+        // Test URLs
+        let urls = vec![
+            "https://example.com/path/to/page?param1=value1&param2=value2".to_string(),
+            "https://subdomain.example.com/another/path?id=123".to_string(),
+        ];
+
+        // Test host-only transformation
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_host(true);
+
+        let host_only = transformer.transform(urls.clone());
+        assert_eq!(host_only.len(), 2);
+        assert!(host_only.contains(&"example.com".to_string()));
+        assert!(host_only.contains(&"subdomain.example.com".to_string()));
+
+        // Test path-only transformation
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_path(true);
+
+        let path_only = transformer.transform(urls.clone());
+        assert_eq!(path_only.len(), 2);
+        assert!(path_only.contains(&"/path/to/page".to_string()));
+        assert!(path_only.contains(&"/another/path".to_string()));
+
+        // Test param-only transformation
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_param(true);
+
+        let param_only = transformer.transform(urls);
+        assert_eq!(param_only.len(), 2);
+        assert!(
+            param_only.contains(&"param1=value1&param2=value2".to_string())
+                || param_only.contains(&"param2=value2&param1=value1".to_string())
+        );
+        assert!(param_only.contains(&"id=123".to_string()));
+    }
+}

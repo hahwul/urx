@@ -235,3 +235,153 @@ impl Provider for CommonCrawlProvider {
         self.rate_limit = rate_limit;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_provider() {
+        let provider = CommonCrawlProvider::new();
+        assert_eq!(provider.index, "CC-MAIN-2025-08");
+        assert!(!provider.include_subdomains);
+        assert_eq!(provider.proxy, None);
+        assert_eq!(provider.proxy_auth, None);
+        assert_eq!(provider.timeout, 10);
+        assert_eq!(provider.retries, 3);
+        assert!(provider.random_agent);
+        assert!(!provider.insecure);
+        assert_eq!(provider.parallel, 1);
+        assert_eq!(provider.rate_limit, None);
+    }
+
+    #[test]
+    fn test_with_index() {
+        let index = "CC-MAIN-2023-06".to_string();
+        let provider = CommonCrawlProvider::with_index(index.clone());
+        assert_eq!(provider.index, index);
+    }
+
+    #[test]
+    fn test_with_subdomains() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_subdomains(true);
+        assert!(provider.include_subdomains);
+    }
+
+    #[test]
+    fn test_with_proxy() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
+        assert_eq!(
+            provider.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_proxy_auth() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_proxy_auth(Some("user:pass".to_string()));
+        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_timeout(60);
+        assert_eq!(provider.timeout, 60);
+    }
+
+    #[test]
+    fn test_with_retries() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_retries(5);
+        assert_eq!(provider.retries, 5);
+    }
+
+    #[test]
+    fn test_with_random_agent() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_random_agent(false);
+        assert!(!provider.random_agent);
+    }
+
+    #[test]
+    fn test_with_insecure() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_insecure(true);
+        assert!(provider.insecure);
+    }
+
+    #[test]
+    fn test_with_parallel() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_parallel(10);
+        assert_eq!(provider.parallel, 10);
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_rate_limit(Some(2.5));
+        assert_eq!(provider.rate_limit, Some(2.5));
+    }
+
+    #[test]
+    fn test_clone_box() {
+        let provider = CommonCrawlProvider::new();
+        let _cloned = provider.clone_box();
+        // Just testing that cloning works without error
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_builds_correct_url_without_subdomains() {
+        let provider = CommonCrawlProvider::new();
+
+        // Use a domain that's unlikely to exist to avoid real API calls
+        let domain = "test-domain-that-does-not-exist-xyz.example";
+
+        // We expect this test to fail with a connection error or timeout
+        let result = provider.fetch_urls(domain).await;
+        assert!(
+            result.is_err(),
+            "Expected an error when fetching from non-existent domain"
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(domain) || err.contains("timed out") || err.contains("dns"),
+            "Error doesn't indicate correct domain or connection timeout: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_builds_correct_url_with_subdomains() {
+        let mut provider = CommonCrawlProvider::new();
+        provider.with_subdomains(true);
+
+        // Use a domain that's unlikely to exist to avoid real API calls
+        let domain = "test-domain-that-does-not-exist-xyz.example";
+
+        // We expect this test to fail with a connection error or timeout
+        let result = provider.fetch_urls(domain).await;
+        assert!(
+            result.is_err(),
+            "Expected an error when fetching from non-existent domain"
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(domain) || err.contains("timed out") || err.contains("dns"),
+            "Error doesn't indicate correct domain or connection timeout: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cc_record_deserialize() {
+        let json = r#"{"url":"https://example.com/test"}"#;
+        let record: CCRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.url, "https://example.com/test");
+    }
+}

@@ -216,3 +216,147 @@ impl Provider for VirusTotalProvider {
         self.rate_limit = rate_limit;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_provider() {
+        let api_key = "test_api_key".to_string();
+        let provider = VirusTotalProvider::new(api_key.clone());
+        assert_eq!(provider.api_key, api_key);
+        assert!(!provider.include_subdomains);
+        assert_eq!(provider.proxy, None);
+        assert_eq!(provider.proxy_auth, None);
+        assert_eq!(provider.timeout, 30);
+        assert_eq!(provider.retries, 3);
+        assert!(!provider.random_agent);
+        assert!(!provider.insecure);
+        assert_eq!(provider.parallel, 1);
+        assert_eq!(provider.rate_limit, None);
+    }
+
+    #[test]
+    fn test_with_subdomains() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_subdomains(true);
+        assert!(provider.include_subdomains);
+    }
+
+    #[test]
+    fn test_with_proxy() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
+        assert_eq!(
+            provider.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_proxy_auth() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_proxy_auth(Some("user:pass".to_string()));
+        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_timeout(60);
+        assert_eq!(provider.timeout, 60);
+    }
+
+    #[test]
+    fn test_with_retries() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_retries(5);
+        assert_eq!(provider.retries, 5);
+    }
+
+    #[test]
+    fn test_with_random_agent() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_random_agent(true);
+        assert!(provider.random_agent);
+    }
+
+    #[test]
+    fn test_with_insecure() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_insecure(true);
+        assert!(provider.insecure);
+    }
+
+    #[test]
+    fn test_with_parallel() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_parallel(10);
+        assert_eq!(provider.parallel, 10);
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_rate_limit(Some(2.5));
+        assert_eq!(provider.rate_limit, Some(2.5));
+    }
+
+    #[test]
+    fn test_clone_box() {
+        let provider = VirusTotalProvider::new("test_api_key".to_string());
+        let _cloned = provider.clone_box();
+        // Just testing that cloning works without error
+    }
+
+    #[test]
+    fn test_vt_response_deserialize() {
+        let json = r#"{
+            "detected_urls": [
+                {"url": "https://example.com/page1"},
+                {"url": "https://example.com/page2"}
+            ]
+        }"#;
+
+        let response: VTResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.detected_urls.len(), 2);
+        assert_eq!(response.detected_urls[0].url, "https://example.com/page1");
+        assert_eq!(response.detected_urls[1].url, "https://example.com/page2");
+    }
+
+    #[test]
+    fn test_vt_response_empty_deserialize() {
+        let json = r#"{}"#;
+
+        let response: VTResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.detected_urls.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_with_empty_api_key() {
+        let provider = VirusTotalProvider::new("".to_string());
+        let result = provider.fetch_urls("example.com").await;
+
+        assert!(result.is_ok(), "Expected success with empty API key");
+        let urls = result.unwrap();
+        assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_with_invalid_api_key() {
+        let provider = VirusTotalProvider::new("invalid_key".to_string());
+        // This test should fail with an HTTP error since the API key is invalid
+        let result = provider.fetch_urls("example.com").await;
+
+        assert!(result.is_err(), "Expected error with invalid API key");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("HTTP error")
+                || err.contains("Failed after")
+                || err.contains("VirusTotal")
+                || err.contains("parse"),
+            "Unexpected error: {err}"
+        );
+    }
+}
