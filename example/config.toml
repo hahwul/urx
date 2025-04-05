@@ -1,0 +1,53 @@
+# URX Configuration File Example
+
+# Domain configuration
+domains = ["example.com", "example.org"]
+
+# Output options
+[output]
+output = "results.txt"
+format = "plain"  # Options: plain, json, csv
+merge_endpoint = false
+
+# Provider options
+[provider]
+providers = ["wayback", "cc", "otx"]
+subs = false  # Include subdomains when searching
+cc_index = "CC-MAIN-2025-08"  # Common Crawl index to use
+
+# Display options
+verbose = false
+silent = false
+no_progress = false
+
+# Filter options
+[filter]
+preset = ["no-resources", "no-images"]  # Filter presets
+extensions = ["js", "php", "aspx"]  # Include only these extensions
+exclude_extensions = ["html", "txt"]  # Exclude these extensions
+patterns = ["admin", "api"]  # Only include URLs with these patterns
+exclude_patterns = ["logout", "static"]  # Exclude URLs with these patterns
+show_only_host = false
+show_only_path = false
+show_only_param = false
+min_length = 10  # Minimum URL length to include
+max_length = 500  # Maximum URL length to include
+
+# Network options
+[network]
+network_scope = "all"  # Options: all, providers, testers, providers,testers
+proxy = "http://proxy.example.com:8080"  # HTTP proxy
+proxy_auth = "username:password"  # Proxy authentication
+insecure = false  # Skip SSL certificate verification
+random_agent = true  # Use random User-Agent
+timeout = 30  # Request timeout in seconds
+retries = 3  # Number of retries for failed requests
+parallel = 5  # Maximum number of parallel requests
+rate_limit = 10  # Rate limit (requests per second)
+
+# Testing options
+[testing]
+check_status = false  # Check HTTP status code of collected URLs
+include_status = ["200", "30x"]  # Include URLs with these status codes
+exclude_status = ["404", "50x"]  # Exclude URLs with these status codes
+extract_links = false  # Extract additional links from collected URLs

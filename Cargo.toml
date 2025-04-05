@@ -18,6 +18,7 @@ indicatif = "0.17.7"
 url = "2.5.0"
 rand = "0.8.5"
 scraper = "0.18.1"
+toml = "0.8.8"
 
 [dev-dependencies]
 tempfile = "3.8.0"
