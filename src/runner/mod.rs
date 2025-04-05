@@ -1,8 +1,8 @@
 use futures::future::join_all;
+use indicatif::ProgressStyle;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::task;
-use indicatif::ProgressStyle;
 
 use crate::cli::Args;
 use crate::network::{NetworkScope, NetworkSettings};
@@ -130,24 +130,25 @@ pub async fn process_domains(
             let task = task::spawn(async move {
                 let bar = &bars[p_idx];
                 bar.set_message(format!("Fetching data for {}", domain_clone));
-                
+
                 // Instead of setting a fixed position, start a ticker task
                 let bar_clone = bar.clone();
-                
+
                 // Start with initial spinner-only phase
                 bar.set_message(format!("Fetching data for {}", domain_clone));
-                
+
                 let ticker_handle = tokio::spawn(async move {
                     // For tracking elapsed time
                     let start_time = std::time::Instant::now();
-                    
+
                     // Overall timeout defines the total duration of the progress
-                    let total_duration_ms = timeout as u64 * 1000;
-                    
+                    let total_duration_ms = timeout * 1000;
+
                     // First display spinner only for a short period (10% of timeout)
-                    let spinner_phase_duration = std::time::Duration::from_millis(total_duration_ms / 10);
+                    let spinner_phase_duration =
+                        std::time::Duration::from_millis(total_duration_ms / 10);
                     tokio::time::sleep(spinner_phase_duration).await;
-                    
+
                     // Now switch to progress bar + spinner style
                     let progress_style = ProgressStyle::with_template(
                         "{prefix:.bold.dim} [{bar:30.green/white}] {spinner} {wide_msg}",
@@ -155,28 +156,29 @@ pub async fn process_domains(
                     .unwrap()
                     .progress_chars("=> ")
                     .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
-                    
+
                     bar_clone.set_style(progress_style);
-                    
+
                     // Sleep interval for progress updates
                     // This only affects the progress bar position updates, not the spinner animation
                     // The spinner animation speed is controlled by enable_steady_tick
                     let update_interval_ms = 100;
                     let end_time = start_time + std::time::Duration::from_millis(total_duration_ms);
-                    
+
                     while std::time::Instant::now() < end_time {
                         // Calculate progress based on elapsed time since start
                         let now = std::time::Instant::now();
                         let elapsed = now.duration_since(start_time).as_millis() as u64;
                         let progress = (elapsed * 100) / total_duration_ms;
-                        
+
                         // Update progress bar position
                         bar_clone.set_position(progress.min(99)); // Cap at 99% until complete
-                        
+
                         // Short sleep for progress updates
-                        tokio::time::sleep(std::time::Duration::from_millis(update_interval_ms)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(update_interval_ms))
+                            .await;
                     }
-                    
+
                     // Ensure we reach 100% at the end
                     bar_clone.set_position(100);
                 });
@@ -189,9 +191,13 @@ pub async fn process_domains(
                         // Abort the ticker task since we've completed
                         ticker_handle.abort();
                         // Set tick to check mark for success
-                        bar.set_style(ProgressStyle::with_template(
-                            "{prefix:.bold.dim} [{bar:30.green/white}] ✓ {wide_msg}",
-                        ).unwrap().progress_chars("=>"));
+                        bar.set_style(
+                            ProgressStyle::with_template(
+                                "{prefix:.bold.dim} [{bar:30.green/white}] ✓ {wide_msg}",
+                            )
+                            .unwrap()
+                            .progress_chars("=>"),
+                        );
                         Ok(urls)
                     }
                     Err(e) => {
@@ -201,9 +207,13 @@ pub async fn process_domains(
                         // Abort the ticker task since we've completed
                         ticker_handle.abort();
                         // Set tick to X mark for error
-                        bar.set_style(ProgressStyle::with_template(
-                            "{prefix:.bold.dim} [{bar:30.red/white}] ✗ {wide_msg}",
-                        ).unwrap().progress_chars("=>"));
+                        bar.set_style(
+                            ProgressStyle::with_template(
+                                "{prefix:.bold.dim} [{bar:30.red/white}] ✗ {wide_msg}",
+                            )
+                            .unwrap()
+                            .progress_chars("=>"),
+                        );
                         Err(e)
                     }
                 };
