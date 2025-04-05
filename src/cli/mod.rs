@@ -27,7 +27,7 @@ pub struct Args {
     #[clap(long)]
     pub merge_endpoint: bool,
 
-    /// Providers to use (comma-separated, e.g., "wayback,cc,otx")
+    /// Providers to use (comma-separated, e.g., "wayback,cc,otx,vt")
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
     pub providers: Vec<String>,
@@ -41,6 +41,11 @@ pub struct Args {
     /// Common Crawl index to use (e.g., CC-MAIN-2025-08)
     #[clap(long, default_value = "CC-MAIN-2025-08")]
     pub cc_index: String,
+
+    #[clap(help_heading = "Provider Options")]
+    /// API key for VirusTotal (can also use URX_VT_KEY environment variable)
+    #[clap(long)]
+    pub vt_api_key: Option<String>,
 
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
