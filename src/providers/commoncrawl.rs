@@ -41,7 +41,7 @@ impl CommonCrawlProvider {
         }
     }
 
-    // Allow setting a specific Common Crawl index
+    /// Creates a provider instance with a specific Common Crawl index
     pub fn with_index(index: String) -> Self {
         CommonCrawlProvider {
             index,

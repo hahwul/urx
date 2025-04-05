@@ -19,6 +19,7 @@ pub struct WaybackMachineProvider {
 }
 
 impl WaybackMachineProvider {
+    /// Creates a new WaybackMachineProvider with default settings
     pub fn new() -> Self {
         WaybackMachineProvider {
             include_subdomains: false,

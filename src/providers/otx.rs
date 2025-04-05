@@ -44,6 +44,7 @@ struct OTXUrlEntry {
 const OTX_RESULTS_LIMIT: u32 = 200;
 
 impl OTXProvider {
+    /// Creates a new OTXProvider with default settings
     pub fn new() -> Self {
         OTXProvider {
             include_subdomains: false,
@@ -58,6 +59,10 @@ impl OTXProvider {
         }
     }
 
+    /// Formats the OTX API URL based on the domain and page number
+    /// 
+    /// This handles different endpoints for second-level domains and subdomains,
+    /// and accounts for the include_subdomains setting.
     fn format_url(&self, domain: &str, page: u32) -> String {
         // AlienVault OTX API pages start at 1, not 0
         let page_number = page + 1;
