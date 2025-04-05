@@ -8,6 +8,10 @@ pub struct Args {
     #[clap(name = "DOMAINS")]
     pub domains: Vec<String>,
 
+    /// Config file to load
+    #[clap(short, long, value_parser)]
+    pub config: Option<PathBuf>,
+
     #[clap(help_heading = "Output Options")]
     /// Output file to write results
     #[clap(short, long, value_parser)]

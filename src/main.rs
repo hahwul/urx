@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::task;
 
 mod cli;
+mod config;
 mod filters;
 mod network;
 mod output;
@@ -15,6 +16,7 @@ mod testers;
 mod url_utils;
 
 use cli::{read_domains_from_stdin, Args};
+use config::Config;
 use filters::UrlFilter;
 use network::{NetworkScope, NetworkSettings};
 use output::create_outputter;
@@ -35,7 +37,12 @@ fn verbose_print(args: &Args, message: impl AsRef<str>) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // Load configuration and apply it to args
+    // This ensures command line options take precedence over config file
+    let config = Config::load(&args);
+    config.apply_to_args(&mut args);
 
     // Collect domains either from arguments or stdin
     let domains = if args.domains.is_empty() {
