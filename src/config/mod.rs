@@ -313,3 +313,128 @@ fn home_dir() -> Option<PathBuf> {
         None
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_temp_config_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file
+    }
+
+    #[test]
+    fn test_config_from_file() {
+        // Create a temporary config file
+        let config_content = r#"
+            [output]
+            output = "test-output.txt"
+            format = "json"
+            merge_endpoint = true
+
+            [provider]
+            providers = ["wayback", "cc"]
+            subs = true
+            cc_index = "CC-MAIN-2025-04"
+
+            [filter]
+            extensions = ["php", "js"]
+            show_only_host = true
+        "#;
+
+        let temp_file = create_temp_config_file(config_content);
+        
+        // Load the config from the temp file
+        let config = Config::from_file(temp_file.path()).unwrap();
+        
+        // Verify the loaded config values
+        assert_eq!(config.output.output, Some("test-output.txt".to_string()));
+        assert_eq!(config.output.format, Some("json".to_string()));
+        assert_eq!(config.output.merge_endpoint, Some(true));
+        
+        assert_eq!(config.provider.providers, Some(vec!["wayback".to_string(), "cc".to_string()]));
+        assert_eq!(config.provider.subs, Some(true));
+        assert_eq!(config.provider.cc_index, Some("CC-MAIN-2025-04".to_string()));
+        
+        assert_eq!(config.filter.extensions, Some(vec!["php".to_string(), "js".to_string()]));
+        assert_eq!(config.filter.show_only_host, Some(true));
+    }
+
+    #[test]
+    fn test_default_config() {
+        // Default config should have default values
+        let config = Config::default();
+        
+        assert_eq!(config.output.output, None);
+        assert_eq!(config.output.format, None);
+        assert_eq!(config.output.merge_endpoint, None);
+        
+        assert_eq!(config.provider.providers, None);
+        assert_eq!(config.provider.subs, None);
+        assert_eq!(config.provider.cc_index, None);
+        
+        assert_eq!(config.filter.extensions, None);
+        assert_eq!(config.filter.show_only_host, None);
+    }
+
+    #[test]
+    fn test_apply_to_args() {
+        // Create a config with some values
+        let mut config = Config::default();
+        config.output.output = Some("output.txt".to_string());
+        config.output.format = Some("json".to_string());
+        config.provider.providers = Some(vec!["cc".to_string()]);
+        
+        // Create default args
+        let mut args = Args {
+            config: None,
+            output: None,
+            format: "plain".to_string(),
+            merge_endpoint: false,
+            providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
+            subs: false,
+            cc_index: "CC-MAIN-2025-08".to_string(),
+            verbose: false,
+            silent: false,
+            no_progress: false,
+            preset: vec![],
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            min_length: None,
+            max_length: None,
+            network_scope: "all".to_string(),
+            proxy: None,
+            proxy_auth: None,
+            insecure: false,
+            random_agent: false,
+            timeout: 30,
+            retries: 3,
+            parallel: 5,
+            rate_limit: None,
+            check_status: false,
+            include_status: vec![],
+            exclude_status: vec![],
+            domains: vec![],
+            extract_links: false,
+        };
+        assert_eq!(args.output, None);
+        assert_eq!(args.format, "plain");
+        assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
+        
+        // Apply config to args
+        config.apply_to_args(&mut args);
+        
+        // Verify args were updated correctly
+        assert_eq!(args.output, Some(PathBuf::from("output.txt")));
+        assert_eq!(args.format, "json");
+        assert_eq!(args.providers, vec!["cc"]);
+    }
+}
