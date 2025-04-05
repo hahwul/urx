@@ -64,7 +64,8 @@ impl Provider for VirusTotalProvider {
                 return Ok(Vec::new());
             }
 
-            let encoded_domain = urlencoding::encode(domain);
+            // Use the url crate for encoding the domain
+            let encoded_domain = url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
             let url = format!(
                 "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
                 self.api_key, encoded_domain
