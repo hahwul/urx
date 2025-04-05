@@ -105,7 +105,7 @@ impl UrlFilter {
                     // Get the path from the URL
                     if let Some(path) = parsed_url
                         .path_segments()
-                        .and_then(|segments| segments.last())
+                        .and_then(|mut segments| segments.next_back())
                     {
                         // Extract extension from the last path segment
                         Path::new(path)
