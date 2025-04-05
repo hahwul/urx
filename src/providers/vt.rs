@@ -64,9 +64,10 @@ impl Provider for VirusTotalProvider {
                 return Ok(Vec::new());
             }
 
+            let encoded_domain = urlencoding::encode(domain);
             let url = format!(
                 "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
-                self.api_key, domain
+                self.api_key, encoded_domain
             );
 
             // Create client builder with proxy support
