@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Empty
+- Added `--config` - Load configuration from a specified file
+- Support to vt provider(Virustotal) - Search URLs from Virustotal API
+  - Added `--vt-api-key` flag and `URX_VT_API_KEY` - Specify API key for Virustotal integration
 
 ## 0.3.0
 

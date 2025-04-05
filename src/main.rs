@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
         let api_key = args
             .vt_api_key
             .clone()
-            .or_else(|| std::env::var("URX_VT_KEY").ok());
+            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
 
         if let Some(api_key) = api_key {
             add_provider(
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
                 || VirusTotalProvider::new(api_key.clone()),
             );
         } else if !args.silent {
-            eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_KEY environment variable.");
+            eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
         }
     }
 

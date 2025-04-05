@@ -43,7 +43,7 @@ pub struct Args {
     pub cc_index: String,
 
     #[clap(help_heading = "Provider Options")]
-    /// API key for VirusTotal (can also use URX_VT_KEY environment variable)
+    /// API key for VirusTotal (can also use URX_VT_API_KEY environment variable)
     #[clap(long)]
     pub vt_api_key: Option<String>,
 
