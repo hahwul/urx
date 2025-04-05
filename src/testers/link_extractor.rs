@@ -166,3 +166,71 @@ impl Tester for LinkExtractor {
         self.proxy_auth = auth;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_link_extractor_new() {
+        let extractor = LinkExtractor::new();
+        assert_eq!(extractor.timeout, 30);
+        assert_eq!(extractor.retries, 3);
+        assert!(!extractor.random_agent);
+        assert!(!extractor.insecure);
+        assert_eq!(extractor.proxy, None);
+        assert_eq!(extractor.proxy_auth, None);
+    }
+
+    #[test]
+    fn test_link_extractor_with_timeout() {
+        let mut extractor = LinkExtractor::new();
+        extractor.with_timeout(60);
+        assert_eq!(extractor.timeout, 60);
+    }
+
+    #[test]
+    fn test_link_extractor_with_retries() {
+        let mut extractor = LinkExtractor::new();
+        extractor.with_retries(5);
+        assert_eq!(extractor.retries, 5);
+    }
+
+    #[test]
+    fn test_link_extractor_with_random_agent() {
+        let mut extractor = LinkExtractor::new();
+        extractor.with_random_agent(true);
+        assert!(extractor.random_agent);
+    }
+
+    #[test]
+    fn test_link_extractor_with_insecure() {
+        let mut extractor = LinkExtractor::new();
+        extractor.with_insecure(true);
+        assert!(extractor.insecure);
+    }
+
+    #[test]
+    fn test_link_extractor_with_proxy() {
+        let mut extractor = LinkExtractor::new();
+        extractor.with_proxy(Some("http://proxy.example.com:8080".to_string()));
+        assert_eq!(
+            extractor.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_link_extractor_with_proxy_auth() {
+        let mut extractor = LinkExtractor::new();
+        extractor.with_proxy_auth(Some("username:password".to_string()));
+        assert_eq!(extractor.proxy_auth, Some("username:password".to_string()));
+    }
+
+    #[test]
+    fn test_link_extractor_clone_box() {
+        let extractor = LinkExtractor::new();
+        let _cloned = extractor.clone_box();
+        // Just verifying the method works, actual equality testing would be complex with Box<dyn>
+    }
+}

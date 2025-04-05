@@ -22,7 +22,7 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "{prefix:.bold.dim} [{bar:40.cyan/blue}] {pos}/{len} {wide_msg}",
+            "{prefix:.bold.dim} [{bar:38.cyan/blue}] {pos}/{len} {wide_msg}",
         )
         .unwrap()
         .progress_chars("=> ");
@@ -30,7 +30,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
         bar.set_prefix("Domains");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
@@ -49,13 +50,14 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "{prefix:.bold.dim} [{bar:30.green/white}] {spinner} {wide_msg}",
+            "{prefix:.bold.dim} [{bar:40.green/white}] {spinner} {wide_msg}",
         )
         .unwrap()
         .progress_chars("=> ")
         .with_key(
             "spinner",
             |state: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
+                // Using a spinner with 10 frames for smooth animation
                 write!(
                     w,
                     "{}",
@@ -65,16 +67,30 @@ impl ProgressManager {
             },
         );
 
-        provider_names
+        // First, create all progress bars and add them to the multi_progress
+        let bars: Vec<ProgressBar> = provider_names
             .iter()
             .map(|name| {
                 let bar = self.multi_progress.add(ProgressBar::new(100));
-                bar.set_style(style.clone());
+                // Format provider name to have consistent width
                 bar.set_prefix(format!("{:<15}", name));
+                // Set style with consistent template
+                bar.set_style(style.clone());
+                // Use a slower tick rate to reduce flicker
                 bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                // Initialize with an empty message to establish the line
+                bar.set_message("Initializing...");
                 bar
             })
-            .collect()
+            .collect();
+
+        // Force draw all bars to establish their positions in the terminal
+        for bar in &bars {
+            bar.tick();
+        }
+
+        // Return all created bars
+        bars
     }
 
     pub fn create_filter_bar(&self) -> ProgressBar {
@@ -93,7 +109,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
         bar.set_prefix("Filtering");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
@@ -114,7 +131,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
         bar.set_prefix("Transforming");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
@@ -136,7 +154,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
         bar.set_prefix("Testing URLs");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }

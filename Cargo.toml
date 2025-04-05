@@ -21,4 +21,5 @@ scraper = "0.18.1"
 toml = "0.8.8"
 
 [dev-dependencies]
+mockito = "1.7.0"
 tempfile = "3.8.0"

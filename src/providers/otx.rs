@@ -44,6 +44,7 @@ struct OTXUrlEntry {
 const OTX_RESULTS_LIMIT: u32 = 200;
 
 impl OTXProvider {
+    /// Creates a new OTXProvider with default settings
     pub fn new() -> Self {
         OTXProvider {
             include_subdomains: false,
@@ -58,6 +59,10 @@ impl OTXProvider {
         }
     }
 
+    /// Formats the OTX API URL based on the domain and page number
+    ///
+    /// This handles different endpoints for second-level domains and subdomains,
+    /// and accounts for the include_subdomains setting.
     fn format_url(&self, domain: &str, page: u32) -> String {
         // AlienVault OTX API pages start at 1, not 0
         let page_number = page + 1;
@@ -246,5 +251,206 @@ impl Provider for OTXProvider {
 
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
         self.rate_limit = rate_limit;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_provider() {
+        let provider = OTXProvider::new();
+        assert!(!provider.include_subdomains);
+        assert_eq!(provider.proxy, None);
+        assert_eq!(provider.proxy_auth, None);
+        assert_eq!(provider.timeout, 30);
+        assert_eq!(provider.retries, 3);
+        assert!(!provider.random_agent);
+        assert!(!provider.insecure);
+        assert_eq!(provider.parallel, 1);
+        assert_eq!(provider.rate_limit, None);
+    }
+
+    #[test]
+    fn test_with_subdomains() {
+        let mut provider = OTXProvider::new();
+        provider.with_subdomains(true);
+        assert!(provider.include_subdomains);
+    }
+
+    #[test]
+    fn test_with_proxy() {
+        let mut provider = OTXProvider::new();
+        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
+        assert_eq!(
+            provider.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_proxy_auth() {
+        let mut provider = OTXProvider::new();
+        provider.with_proxy_auth(Some("user:pass".to_string()));
+        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let mut provider = OTXProvider::new();
+        provider.with_timeout(60);
+        assert_eq!(provider.timeout, 60);
+    }
+
+    #[test]
+    fn test_with_retries() {
+        let mut provider = OTXProvider::new();
+        provider.with_retries(5);
+        assert_eq!(provider.retries, 5);
+    }
+
+    #[test]
+    fn test_with_random_agent() {
+        let mut provider = OTXProvider::new();
+        provider.with_random_agent(true);
+        assert!(provider.random_agent);
+    }
+
+    #[test]
+    fn test_with_insecure() {
+        let mut provider = OTXProvider::new();
+        provider.with_insecure(true);
+        assert!(provider.insecure);
+    }
+
+    #[test]
+    fn test_with_parallel() {
+        let mut provider = OTXProvider::new();
+        provider.with_parallel(10);
+        assert_eq!(provider.parallel, 10);
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let mut provider = OTXProvider::new();
+        provider.with_rate_limit(Some(2.5));
+        assert_eq!(provider.rate_limit, Some(2.5));
+    }
+
+    #[test]
+    fn test_clone_box() {
+        let provider = OTXProvider::new();
+        let _cloned = provider.clone_box();
+        // Just testing that cloning works without error
+    }
+
+    #[test]
+    fn test_format_url_second_level_domain() {
+        let provider = OTXProvider::new();
+        let url = provider.format_url("example.com", 0);
+        assert_eq!(
+            url,
+            format!(
+                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={}&page=1",
+                OTX_RESULTS_LIMIT
+            )
+        );
+    }
+
+    #[test]
+    fn test_format_url_subdomain_without_include_subdomains() {
+        let provider = OTXProvider::new();
+        let url = provider.format_url("sub.example.com", 0);
+        assert_eq!(
+            url,
+            format!(
+                "https://otx.alienvault.com/api/v1/indicators/hostname/sub.example.com/url_list?limit={}&page=1",
+                OTX_RESULTS_LIMIT
+            )
+        );
+    }
+
+    #[test]
+    fn test_format_url_subdomain_with_include_subdomains() {
+        let mut provider = OTXProvider::new();
+        provider.with_subdomains(true);
+        let url = provider.format_url("sub.example.com", 0);
+        assert_eq!(
+            url,
+            format!(
+                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={}&page=1",
+                OTX_RESULTS_LIMIT
+            )
+        );
+    }
+
+    #[test]
+    fn test_format_url_with_pagination() {
+        let provider = OTXProvider::new();
+        let url = provider.format_url("example.com", 2);
+        assert_eq!(
+            url,
+            format!(
+                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={}&page=3",
+                OTX_RESULTS_LIMIT
+            )
+        );
+    }
+
+    #[test]
+    fn test_otx_result_deserialize() {
+        let json = r#"{
+            "has_next": true,
+            "actual_size": 200,
+            "url_list": [
+                {
+                    "domain": "example.com",
+                    "url": "https://example.com/page1",
+                    "hostname": "example.com",
+                    "httpcode": 200,
+                    "page_num": 1,
+                    "full_size": 500,
+                    "paged": true
+                },
+                {
+                    "domain": "example.com",
+                    "url": "https://example.com/page2",
+                    "hostname": "example.com"
+                }
+            ]
+        }"#;
+
+        let result: OTXResult = serde_json::from_str(json).unwrap();
+        assert!(result.has_next);
+        assert_eq!(result.actual_size, 200);
+        assert_eq!(result.url_list.len(), 2);
+        assert_eq!(result.url_list[0].url, "https://example.com/page1");
+        assert_eq!(result.url_list[0].httpcode, 200);
+        assert_eq!(result.url_list[1].url, "https://example.com/page2");
+        assert_eq!(result.url_list[1].httpcode, 0); // default value for missing field
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_with_nonexistent_domain() {
+        let provider = OTXProvider::new();
+        let domain = "test-domain-that-does-not-exist-xyz.example";
+
+        let result = provider.fetch_urls(domain).await;
+        assert!(
+            result.is_err(),
+            "Expected an error when fetching from non-existent domain"
+        );
+
+        // Error message should contain domain or connection-related error
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Failed to fetch OTX data")
+                || err.contains("timed out")
+                || err.contains("HTTP error")
+                || err.contains("connection")
+                || err.contains("network"),
+            "Unexpected error: {err}"
+        );
     }
 }

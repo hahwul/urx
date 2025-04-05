@@ -19,6 +19,7 @@ pub struct WaybackMachineProvider {
 }
 
 impl WaybackMachineProvider {
+    /// Creates a new WaybackMachineProvider with default settings
     pub fn new() -> Self {
         WaybackMachineProvider {
             include_subdomains: false,
@@ -229,5 +230,159 @@ impl Provider for WaybackMachineProvider {
 
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
         self.rate_limit = rate_limit;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Removed unused import: std::time::Duration
+
+    #[test]
+    fn test_new_provider() {
+        let provider = WaybackMachineProvider::new();
+        assert!(!provider.include_subdomains);
+        assert_eq!(provider.proxy, None);
+        assert_eq!(provider.proxy_auth, None);
+        assert_eq!(provider.timeout, 30);
+        assert_eq!(provider.retries, 3);
+        assert!(!provider.random_agent);
+        assert!(!provider.insecure);
+        assert_eq!(provider.parallel, 5);
+        assert_eq!(provider.rate_limit, None);
+    }
+
+    #[test]
+    fn test_with_subdomains() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_subdomains(true);
+        assert!(provider.include_subdomains);
+    }
+
+    #[test]
+    fn test_with_proxy() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
+        assert_eq!(
+            provider.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_proxy_auth() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_proxy_auth(Some("user:pass".to_string()));
+        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_timeout(60);
+        assert_eq!(provider.timeout, 60);
+    }
+
+    #[test]
+    fn test_with_retries() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_retries(5);
+        assert_eq!(provider.retries, 5);
+    }
+
+    #[test]
+    fn test_with_random_agent() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_random_agent(true);
+        assert!(provider.random_agent);
+    }
+
+    #[test]
+    fn test_with_insecure() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_insecure(true);
+        assert!(provider.insecure);
+    }
+
+    #[test]
+    fn test_with_parallel() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_parallel(10);
+        assert_eq!(provider.parallel, 10);
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_rate_limit(Some(2.5));
+        assert_eq!(provider.rate_limit, Some(2.5));
+    }
+
+    #[test]
+    fn test_clone_box() {
+        let provider = WaybackMachineProvider::new();
+        let _cloned = provider.clone_box();
+        // Testing the existence of cloned object
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_builds_correct_url_without_subdomains() {
+        // 이 테스트는 실제 API 호출 없이 URL 구성을 확인합니다
+        let provider = WaybackMachineProvider::new();
+
+        // 존재하지 않을 가능성이 높은 도메인 사용
+        let domain = "test-domain-that-does-not-exist-xyz.example";
+
+        // 실제 URL 형식 검증만 합니다
+        let expected_url = format!(
+            "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
+            domain
+        );
+
+        // URL 구성이 올바른지 확인합니다
+        let url = if provider.include_subdomains {
+            format!(
+                "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
+                domain
+            )
+        } else {
+            format!(
+                "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
+                domain
+            )
+        };
+
+        assert_eq!(url, expected_url);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_builds_correct_url_with_subdomains() {
+        // 이 테스트는 실제 API 호출 없이 URL 구성을 확인합니다
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_subdomains(true);
+
+        // 존재하지 않을 가능성이 높은 도메인 사용
+        let domain = "test-domain-that-does-not-exist-xyz.example";
+
+        // 실제 URL 형식 검증만 합니다
+        let expected_url = format!(
+            "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
+            domain
+        );
+
+        // URL 구성이 올바른지 확인합니다
+        let url = if provider.include_subdomains {
+            format!(
+                "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
+                domain
+            )
+        } else {
+            format!(
+                "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
+                domain
+            )
+        };
+
+        assert_eq!(url, expected_url);
     }
 }

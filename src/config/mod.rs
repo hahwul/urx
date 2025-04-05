@@ -267,8 +267,8 @@ impl Config {
             args.retries = self.network.retries.unwrap();
         }
 
-        if args.parallel == 5 && self.network.parallel.is_some() {
-            args.parallel = self.network.parallel.unwrap();
+        if args.parallel.unwrap_or(5) == 5 && self.network.parallel.is_some() {
+            args.parallel = self.network.parallel;
         }
 
         if args.rate_limit.is_none() && self.network.rate_limit.is_some() {
@@ -432,7 +432,7 @@ mod tests {
             random_agent: false,
             timeout: 30,
             retries: 3,
-            parallel: 5,
+            parallel: Some(5),
             rate_limit: None,
             check_status: false,
             include_status: vec![],

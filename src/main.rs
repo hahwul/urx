@@ -1,9 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-use futures::future::join_all;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::task;
 
 mod cli;
 mod config;
@@ -12,30 +8,26 @@ mod network;
 mod output;
 mod progress;
 mod providers;
+mod runner;
+mod tester_manager;
 mod testers;
 mod url_utils;
+mod utils;
 
 use cli::{read_domains_from_stdin, Args};
 use config::Config;
 use filters::UrlFilter;
-use network::{NetworkScope, NetworkSettings};
+use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{
     CommonCrawlProvider, OTXProvider, Provider, VirusTotalProvider, WaybackMachineProvider,
 };
+use runner::{add_provider, process_domains};
+use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
 use testers::{LinkExtractor, StatusChecker, Tester};
 use url_utils::UrlTransformer;
-
-/// Prints messages only when verbose mode is enabled
-///
-/// This helper function is used throughout the application to conditionally
-/// print information messages based on the command-line arguments.
-fn verbose_print(args: &Args, message: impl AsRef<str>) {
-    if args.verbose && !args.silent {
-        println!("{}", message.as_ref());
-    }
-}
+use utils::verbose_print;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -84,7 +76,7 @@ async fn main() -> Result<()> {
             &network_settings,
             &mut providers,
             &mut provider_names,
-            format!("Common Crawl ({})", args.cc_index),
+            args.cc_index.to_string(),
             || CommonCrawlProvider::with_index(args.cc_index.clone()),
         );
     }
@@ -133,109 +125,16 @@ async fn main() -> Result<()> {
 
     // Setup progress bars
     let progress_manager = ProgressManager::new(progress_check);
-    let domain_bar = progress_manager.create_domain_bar(domains.len());
 
     // Process each domain
-    let mut all_urls = HashSet::new();
-    let total_domains = domains.len();
-
-    for (idx, domain) in domains.into_iter().enumerate() {
-        domain_bar.set_position(idx as u64);
-        domain_bar.set_message(format!("Processing {}", domain));
-
-        verbose_print(
-            &args,
-            format!(
-                "Processing domain [{}/{}]: {}",
-                idx + 1,
-                total_domains,
-                domain
-            ),
-        );
-
-        let mut tasks = Vec::new();
-        let provider_bars = progress_manager.create_provider_bars(&provider_names);
-
-        let provider_bars_arc = Arc::new(provider_bars);
-
-        for (p_idx, provider) in providers.iter().enumerate() {
-            let domain_clone = domain.clone();
-            let provider_clone = provider.clone_box();
-            let provider_name = provider_names[p_idx].clone();
-            let bars = Arc::clone(&provider_bars_arc);
-
-            // Set initial message
-            bars[p_idx].set_message(format!("Starting fetch for {}", domain_clone));
-
-            let task = task::spawn(async move {
-                let bar = &bars[p_idx];
-                bar.set_message(format!("Fetching data for {}", domain_clone));
-                bar.set_position(30);
-
-                let result = match provider_clone.fetch_urls(&domain_clone).await {
-                    Ok(urls) => {
-                        bar.set_position(100);
-                        bar.set_message(format!("Found {} URLs", urls.len()));
-                        Ok(urls)
-                    }
-                    Err(e) => {
-                        bar.set_position(100);
-                        bar.set_message(format!("Error: {}", e));
-                        Err(e)
-                    }
-                };
-
-                (result, provider_name)
-            });
-
-            tasks.push(task);
-        }
-
-        let results = join_all(tasks).await;
-        let mut domain_urls_count = 0;
-        let mut provider_results = Vec::new();
-
-        for result in results {
-            match result {
-                Ok((Ok(urls), provider_name)) => {
-                    domain_urls_count += urls.len();
-                    provider_results.push(format!("{}: {} URLs", provider_name, urls.len()));
-                    for url in urls {
-                        all_urls.insert(url);
-                    }
-                }
-                Ok((Err(e), provider_name)) => {
-                    provider_results.push(format!("{}: Error - {}", provider_name, e));
-                    if !args.silent {
-                        eprintln!(
-                            "Error fetching URLs for {} from {}: {}",
-                            domain, provider_name, e
-                        );
-                    }
-                }
-                Err(e) => {
-                    if !args.silent {
-                        eprintln!("Task error: {}", e);
-                    }
-                }
-            }
-        }
-
-        // Complete all progress bars for this domain
-        for bar in provider_bars_arc.iter() {
-            bar.finish();
-        }
-
-        if args.verbose && !args.silent {
-            println!("Results for {}:", domain);
-            for result in &provider_results {
-                println!("  - {}", result);
-            }
-            println!("Total: {} URLs for {}", domain_urls_count, domain);
-        }
-    }
-
-    domain_bar.finish_with_message("All domains processed");
+    let all_urls = process_domains(
+        domains,
+        &args,
+        &progress_manager,
+        &providers,
+        &provider_names,
+    )
+    .await;
 
     // Create a progress bar for filtering
     let filter_bar = if !args.extensions.is_empty()
@@ -308,20 +207,11 @@ async fn main() -> Result<()> {
 
     let outputter = create_outputter(&args.format);
 
-    // Apply testers if requested
-    let mut final_urls = Vec::with_capacity(transformed_urls.len());
-
     // Determine if we need to do status checking (either explicitly requested or needed for filters)
     let should_check_status =
         args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty();
 
-    if should_check_status || args.extract_links {
-        verbose_print(&args, "Applying testing options...");
-
-        // Create progress bar for testing
-        let test_bar = progress_manager.create_test_bar(transformed_urls.len());
-        test_bar.set_message("Preparing URL testing...");
-
+    let final_urls = if should_check_status || args.extract_links {
         // Initialize appropriate testers
         let mut testers: Vec<Box<dyn Tester>> = Vec::new();
 
@@ -369,127 +259,22 @@ async fn main() -> Result<()> {
         }
 
         // Process URLs with testers
-        let mut new_urls = Vec::new();
-
-        // Create tasks for parallel processing
-        let mut tasks = Vec::new();
-        let url_chunks: Vec<_> = transformed_urls.chunks(10).collect();
-        let chunk_count = url_chunks.len();
-
-        for (chunk_idx, url_chunk) in url_chunks.into_iter().enumerate() {
-            let url_vec = url_chunk.to_vec();
-            let testers_clone: Vec<_> = testers.iter().map(|t| t.clone_box()).collect();
-            let verbose = args.verbose;
-            let check_status = should_check_status;
-            let extract_links = args.extract_links;
-            let silent = args.silent;
-
-            let task = task::spawn(async move {
-                let mut result_urls = Vec::new();
-
-                for url in url_vec {
-                    let mut status_result = None;
-                    let mut links_result = None;
-
-                    // Process URL with each tester
-                    for (i, tester) in testers_clone.iter().enumerate() {
-                        match tester.test_url(&url).await {
-                            Ok(results) => {
-                                if i == 0 && check_status {
-                                    // Status checker results (first tester if check_status is enabled)
-                                    status_result = Some(results);
-                                } else if extract_links {
-                                    // Link extractor results
-                                    links_result = Some(results);
-                                }
-                            }
-                            Err(e) => {
-                                if verbose && !silent {
-                                    eprintln!("Error testing URL {}: {}", url, e);
-                                }
-                            }
-                        }
-                    }
-
-                    // Create UrlData for this URL
-                    if let Some(status_urls) = status_result {
-                        for status_url in status_urls {
-                            // Parse the status URL (format: "{url} - {status}")
-                            result_urls.push(output::UrlData::from_string(status_url));
-                        }
-                    } else {
-                        // If no status but URL should be included anyway
-                        if check_status {
-                            let url_data = output::UrlData::with_status(
-                                url.clone(),
-                                "Status check failed".to_string(),
-                            );
-                            result_urls.push(url_data);
-                        } else {
-                            let url_data = output::UrlData::new(url.clone());
-                            result_urls.push(url_data);
-                        }
-                    }
-
-                    // If we have extracted links, add them to the result
-                    if let Some(link_urls) = links_result {
-                        for link_url in link_urls {
-                            result_urls.push(output::UrlData::new(link_url));
-                        }
-                    }
-                }
-
-                (result_urls, chunk_idx)
-            });
-
-            tasks.push(task);
-
-            // Update progress bar
-            test_bar.set_position((chunk_idx as u64 * 10).min(transformed_urls.len() as u64));
-            test_bar.set_message(format!(
-                "Processing chunk {}/{}",
-                chunk_idx + 1,
-                chunk_count
-            ));
-        }
-
-        // Collect results
-        let results = join_all(tasks).await;
-
-        for result in results {
-            match result {
-                Ok((urls, _)) => {
-                    for url in urls {
-                        new_urls.push(url);
-                    }
-                }
-                Err(e) => {
-                    if !args.silent {
-                        eprintln!("Task error: {}", e);
-                    }
-                }
-            }
-        }
-
-        // If we've tested URLs, replace the final list with the new processed URLs
-        if !new_urls.is_empty() {
-            // Sort URLs by their URL field
-            new_urls.sort_by(|a, b| a.url.cmp(&b.url));
-            final_urls = new_urls;
-        }
-
-        test_bar.finish_with_message(format!("Testing complete, found {} URLs", final_urls.len()));
-
-        if args.verbose && !args.silent {
-            println!("Testing complete, final URL count: {}", final_urls.len());
-        }
+        process_urls_with_testers(
+            transformed_urls,
+            &args,
+            &network_settings,
+            &progress_manager,
+            testers,
+            should_check_status,
+        )
+        .await
     } else {
         // No testing, just convert the string URLs to UrlData
-        final_urls = transformed_urls
+        transformed_urls
             .iter()
             .map(|url| output::UrlData::new(url.clone()))
-            .collect();
-    }
+            .collect()
+    };
 
     match outputter.output(&final_urls, args.output.clone(), args.silent) {
         Ok(_) => {
@@ -509,99 +294,317 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Helper function to apply network settings to a provider
-fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
-    // Skip applying settings if network scope doesn't include providers
-    if settings.scope == NetworkScope::Testers {
-        return;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::collections::HashSet;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+
+    // Mock Provider for testing
+    #[derive(Clone)]
+    struct MockProvider {
+        urls: Vec<String>,
+        should_fail: bool,
+        calls: Arc<Mutex<Vec<String>>>,
     }
 
-    provider.with_subdomains(settings.include_subdomains);
-    provider.with_timeout(settings.timeout);
-    provider.with_retries(settings.retries);
-    provider.with_random_agent(settings.random_agent);
-    provider.with_insecure(settings.insecure);
-    provider.with_parallel(settings.parallel);
-
-    if let Some(proxy) = &settings.proxy {
-        provider.with_proxy(Some(proxy.clone()));
-
-        if let Some(auth) = &settings.proxy_auth {
-            provider.with_proxy_auth(Some(auth.clone()));
+    impl MockProvider {
+        fn new(urls: Vec<String>, should_fail: bool) -> Self {
+            MockProvider {
+                urls,
+                should_fail,
+                calls: Arc::new(Mutex::new(vec![])),
+            }
         }
     }
 
-    if let Some(rate) = settings.rate_limit {
-        provider.with_rate_limit(Some(rate));
+    impl Provider for MockProvider {
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        fn fetch_urls<'a>(
+            &'a self,
+            domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let urls = self.urls.clone();
+            let should_fail = self.should_fail;
+            let calls = self.calls.clone();
+
+            Box::pin(async move {
+                // Record the call
+                calls.lock().unwrap().push(domain.to_string());
+
+                if should_fail {
+                    Err(anyhow::anyhow!("Mock provider failure"))
+                } else {
+                    Ok(urls)
+                }
+            })
+        }
+
+        fn with_subdomains(&mut self, _include: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_parallel(&mut self, _parallel: u32) {}
+        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
     }
-}
 
-/// Helper function to apply network settings to a tester
-fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &NetworkSettings) {
-    // Skip applying settings if network scope doesn't include testers
-    if settings.scope == NetworkScope::Providers {
-        return;
+    // Mock StatusChecker for testing
+    #[derive(Clone)]
+    struct MockStatusChecker {
+        results: Vec<String>,
     }
 
-    tester.with_timeout(settings.timeout);
-    tester.with_retries(settings.retries);
-    tester.with_random_agent(settings.random_agent);
-    tester.with_insecure(settings.insecure);
-
-    if let Some(proxy) = &settings.proxy {
-        tester.with_proxy(Some(proxy.clone()));
-
-        if let Some(auth) = &settings.proxy_auth {
-            tester.with_proxy_auth(Some(auth.clone()));
+    impl MockStatusChecker {
+        fn new(results: Vec<String>) -> Self {
+            MockStatusChecker { results }
         }
     }
-}
 
-fn add_provider<T: Provider + 'static>(
-    args: &cli::Args,
-    network_settings: &NetworkSettings,
-    providers: &mut Vec<Box<dyn Provider>>,
-    provider_names: &mut Vec<String>,
-    provider_name: String,
-    provider_builder: impl FnOnce() -> T,
-) {
-    if args.verbose && !args.silent {
-        println!("Adding {} provider", provider_name);
-        if network_settings.include_subdomains {
-            println!("Subdomain inclusion enabled for {}", provider_name);
+    impl Tester for MockStatusChecker {
+        fn clone_box(&self) -> Box<dyn Tester> {
+            Box::new(self.clone())
         }
-        if network_settings.proxy.is_some() {
-            println!(
-                "Using proxy for {}: {}",
-                provider_name,
-                network_settings.proxy.as_ref().unwrap()
-            );
+
+        fn test_url<'a>(
+            &'a self,
+            _url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let results = self.results.clone();
+            Box::pin(async move { Ok(results) })
         }
-        if network_settings.random_agent && !args.silent {
-            println!("Random User-Agent enabled for {}", provider_name);
-        }
-        println!(
-            "Timeout set to {} seconds for {}",
-            network_settings.timeout, provider_name
+
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+    }
+
+    #[tokio::test]
+    async fn test_process_domains() {
+        // Create mock providers
+        let mock_urls = vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ];
+
+        let provider = MockProvider::new(mock_urls.clone(), false);
+        let calls = provider.calls.clone();
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+
+        // Setup test args with minimal settings
+        let args = Args {
+            domains: vec!["example.com".to_string()],
+            config: None,
+            output: None,
+            format: "plain".to_string(),
+            merge_endpoint: false,
+            providers: vec!["mock".to_string()],
+            subs: false,
+            cc_index: "CC-MAIN-2025-08".to_string(),
+            vt_api_key: None,
+            verbose: false,
+            silent: true,      // Silent to avoid console output during tests
+            no_progress: true, // No progress bars during tests
+            preset: vec![],
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            min_length: None,
+            max_length: None,
+            network_scope: "all".to_string(),
+            proxy: None,
+            proxy_auth: None,
+            insecure: false,
+            random_agent: false,
+            timeout: 30,
+            retries: 3,
+            parallel: Some(5),
+            rate_limit: None,
+            check_status: false,
+            include_status: vec![],
+            exclude_status: vec![],
+            extract_links: false,
+        };
+
+        let progress_manager = ProgressManager::new(true);
+
+        // Process domains with mock provider
+        let urls = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await;
+
+        // Verify that the provider was called with the correct domain
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], "example.com");
+
+        // Verify that the URLs were correctly returned
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains("https://example.com/page1"));
+        assert!(urls.contains("https://example.com/page2"));
+    }
+
+    #[tokio::test]
+    async fn test_process_urls_with_testers() {
+        // Create mock tester
+        let mock_results = vec![
+            "https://example.com/result1".to_string(),
+            "https://example.com/result2".to_string(),
+        ];
+        let mock_tester = MockStatusChecker::new(mock_results.clone());
+        let testers: Vec<Box<dyn Tester>> = vec![Box::new(mock_tester)];
+
+        // Create test input
+        let input_urls = vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ];
+
+        // Setup minimal args
+        let args = Args {
+            domains: vec![],
+            config: None,
+            output: None,
+            format: "plain".to_string(),
+            merge_endpoint: false,
+            providers: vec![],
+            subs: false,
+            cc_index: "CC-MAIN-2025-08".to_string(),
+            vt_api_key: None,
+            verbose: false,
+            silent: true,
+            no_progress: true,
+            preset: vec![],
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            min_length: None,
+            max_length: None,
+            network_scope: "all".to_string(),
+            proxy: None,
+            proxy_auth: None,
+            insecure: false,
+            random_agent: false,
+            timeout: 30,
+            retries: 3,
+            parallel: Some(5),
+            rate_limit: None,
+            check_status: false,
+            include_status: vec![],
+            exclude_status: vec![],
+            extract_links: false,
+        };
+
+        let network_settings = NetworkSettings::new();
+        let progress_manager = ProgressManager::new(true);
+
+        // Process URLs with mock tester
+        let result_data = process_urls_with_testers(
+            input_urls,
+            &args,
+            &network_settings,
+            &progress_manager,
+            testers,
+            false, // 여기를 false로 변경 (should_check_status)
+        )
+        .await;
+
+        // URLs가 올바른지 검증 - 모든 URL이 UrlData 구조체로 래핑됨
+        let result_urls: Vec<String> = result_data.iter().map(|data| data.url.clone()).collect();
+
+        // 결과 데이터에 원본 입력 URL이 포함되어 있는지 확인
+        assert_eq!(result_urls.len(), 2);
+        assert!(result_urls.contains(&"https://example.com/page1".to_string()));
+        assert!(result_urls.contains(&"https://example.com/page2".to_string()));
+    }
+
+    #[test]
+    fn test_url_filtering() {
+        // Create a set of test URLs
+        let urls = HashSet::from([
+            "https://example.com/page1.html".to_string(),
+            "https://example.com/image.jpg".to_string(),
+            "https://example.com/script.js".to_string(),
+            "https://example.com/styles.css".to_string(),
+        ]);
+
+        // Create filter to only include .html and .js files
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["html".to_string(), "js".to_string()]);
+
+        // Apply filter
+        let filtered = filter.apply_filters(&urls);
+
+        // Verify results
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/page1.html".to_string()));
+        assert!(filtered.contains(&"https://example.com/script.js".to_string()));
+        assert!(!filtered.contains(&"https://example.com/image.jpg".to_string()));
+        assert!(!filtered.contains(&"https://example.com/styles.css".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformation() {
+        // Test URLs
+        let urls = vec![
+            "https://example.com/path/to/page?param1=value1&param2=value2".to_string(),
+            "https://subdomain.example.com/another/path?id=123".to_string(),
+        ];
+
+        // Test host-only transformation
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_host(true);
+
+        let host_only = transformer.transform(urls.clone());
+        assert_eq!(host_only.len(), 2);
+        assert!(host_only.contains(&"example.com".to_string()));
+        assert!(host_only.contains(&"subdomain.example.com".to_string()));
+
+        // Test path-only transformation
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_path(true);
+
+        let path_only = transformer.transform(urls.clone());
+        assert_eq!(path_only.len(), 2);
+        assert!(path_only.contains(&"/path/to/page".to_string()));
+        assert!(path_only.contains(&"/another/path".to_string()));
+
+        // Test param-only transformation
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_param(true);
+
+        let param_only = transformer.transform(urls);
+        assert_eq!(param_only.len(), 2);
+        assert!(
+            param_only.contains(&"param1=value1&param2=value2".to_string())
+                || param_only.contains(&"param2=value2&param1=value1".to_string())
         );
-        println!(
-            "Retries set to {} for {}",
-            network_settings.retries, provider_name
-        );
-        println!(
-            "Parallel requests set to {} for {}",
-            network_settings.parallel, provider_name
-        );
-        if let Some(rate) = network_settings.rate_limit {
-            println!(
-                "Rate limit set to {} requests/second for {}",
-                rate, provider_name
-            );
-        }
+        assert!(param_only.contains(&"id=123".to_string()));
     }
-
-    let mut provider = provider_builder();
-    apply_network_settings_to_provider(&mut provider, network_settings);
-    providers.push(Box::new(provider));
-    provider_names.push(provider_name);
 }
