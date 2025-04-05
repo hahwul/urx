@@ -89,24 +89,51 @@ impl Config {
     /// Get the default configuration file path
     /// - Linux/macOS: ~/.config/urx/config.toml
     /// - Windows: %AppData%\urx\config.toml
+    ///
+    /// If the directory doesn't exist, it will be created.
+    /// If the file doesn't exist, an empty config.toml file will be created.
     pub fn default_path() -> Option<PathBuf> {
         #[cfg(windows)]
         {
             if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
-                let config_path = app_data.join("urx").join("config.toml");
-                if config_path.exists() {
-                    return Some(config_path);
+                let config_dir = app_data.join("urx");
+                let config_path = config_dir.join("config.toml");
+
+                // Create directory if it doesn't exist
+                if !config_dir.exists() {
+                    if let Err(_) = fs::create_dir_all(&config_dir) {
+                        return None;
+                    }
                 }
+
+                // Create empty config file if it doesn't exist
+                if !config_path.exists() {
+                    if let Err(_) = fs::write(&config_path, "") {
+                        return None;
+                    }
+                }
+
+                return Some(config_path);
             }
         }
 
         #[cfg(not(windows))]
         {
             if let Some(home) = home_dir() {
-                let config_path = home.join(".config").join("urx").join("config.toml");
-                if config_path.exists() {
-                    return Some(config_path);
+                let config_dir = home.join(".config").join("urx");
+                let config_path = config_dir.join("config.toml");
+
+                // Create directory if it doesn't exist
+                if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
+                    return None;
                 }
+
+                // Create empty config file if it doesn't exist
+                if !config_path.exists() && fs::write(&config_path, "").is_err() {
+                    return None;
+                }
+
+                return Some(config_path);
             }
         }
 
@@ -120,21 +147,12 @@ impl Config {
         if let Some(path) = &args.config {
             if let Ok(config) = Self::from_file(path) {
                 return config;
-            } else if !args.silent {
-                eprintln!(
-                    "Warning: Failed to load config from {}. Using default values.",
-                    path.display()
-                );
-                // Continue to check default path
             }
         }
 
         // Then try default location
         if let Some(default_path) = Self::default_path() {
             if let Ok(config) = Self::from_file(default_path.clone()) {
-                if !args.silent {
-                    println!("Using configuration from {}", default_path.display());
-                }
                 return config;
             }
         }
