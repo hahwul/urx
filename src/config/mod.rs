@@ -346,20 +346,29 @@ mod tests {
         "#;
 
         let temp_file = create_temp_config_file(config_content);
-        
+
         // Load the config from the temp file
         let config = Config::from_file(temp_file.path()).unwrap();
-        
+
         // Verify the loaded config values
         assert_eq!(config.output.output, Some("test-output.txt".to_string()));
         assert_eq!(config.output.format, Some("json".to_string()));
         assert_eq!(config.output.merge_endpoint, Some(true));
-        
-        assert_eq!(config.provider.providers, Some(vec!["wayback".to_string(), "cc".to_string()]));
+
+        assert_eq!(
+            config.provider.providers,
+            Some(vec!["wayback".to_string(), "cc".to_string()])
+        );
         assert_eq!(config.provider.subs, Some(true));
-        assert_eq!(config.provider.cc_index, Some("CC-MAIN-2025-04".to_string()));
-        
-        assert_eq!(config.filter.extensions, Some(vec!["php".to_string(), "js".to_string()]));
+        assert_eq!(
+            config.provider.cc_index,
+            Some("CC-MAIN-2025-04".to_string())
+        );
+
+        assert_eq!(
+            config.filter.extensions,
+            Some(vec!["php".to_string(), "js".to_string()])
+        );
         assert_eq!(config.filter.show_only_host, Some(true));
     }
 
@@ -367,15 +376,15 @@ mod tests {
     fn test_default_config() {
         // Default config should have default values
         let config = Config::default();
-        
+
         assert_eq!(config.output.output, None);
         assert_eq!(config.output.format, None);
         assert_eq!(config.output.merge_endpoint, None);
-        
+
         assert_eq!(config.provider.providers, None);
         assert_eq!(config.provider.subs, None);
         assert_eq!(config.provider.cc_index, None);
-        
+
         assert_eq!(config.filter.extensions, None);
         assert_eq!(config.filter.show_only_host, None);
     }
@@ -387,7 +396,7 @@ mod tests {
         config.output.output = Some("output.txt".to_string());
         config.output.format = Some("json".to_string());
         config.provider.providers = Some(vec!["cc".to_string()]);
-        
+
         // Create default args
         let mut args = Args {
             config: None,
@@ -428,10 +437,10 @@ mod tests {
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
-        
+
         // Apply config to args
         config.apply_to_args(&mut args);
-        
+
         // Verify args were updated correctly
         assert_eq!(args.output, Some(PathBuf::from("output.txt")));
         assert_eq!(args.format, "json");
