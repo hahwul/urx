@@ -164,3 +164,121 @@ impl NetworkSettings {
         settings
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_network_scope_default() {
+        let scope = NetworkScope::default();
+        assert_eq!(scope, NetworkScope::All);
+    }
+
+    #[test]
+    fn test_network_settings_default() {
+        let settings = NetworkSettings::default();
+        assert_eq!(settings.proxy, None);
+        assert_eq!(settings.proxy_auth, None);
+        assert_eq!(settings.timeout, 30);
+        assert_eq!(settings.retries, 3);
+        assert!(!settings.random_agent);
+        assert!(!settings.insecure);
+        assert_eq!(settings.parallel, 5);
+        assert_eq!(settings.rate_limit, None);
+        assert!(!settings.include_subdomains);
+        assert_eq!(settings.scope, NetworkScope::All);
+    }
+
+    #[test]
+    fn test_network_settings_new() {
+        let settings = NetworkSettings::new();
+        assert_eq!(settings.timeout, 30);
+        assert_eq!(settings.retries, 3);
+        assert_eq!(settings.parallel, 5);
+    }
+
+    #[test]
+    fn test_with_subdomains() {
+        let settings = NetworkSettings::new().with_subdomains(true);
+        assert!(settings.include_subdomains);
+    }
+
+    #[test]
+    fn test_with_proxy() {
+        let proxy = "http://proxy.example.com:8080".to_string();
+        let settings = NetworkSettings::new().with_proxy(Some(proxy.clone()));
+        assert_eq!(settings.proxy, Some(proxy));
+    }
+
+    #[test]
+    fn test_with_proxy_auth() {
+        let auth = "username:password".to_string();
+        let settings = NetworkSettings::new().with_proxy_auth(Some(auth.clone()));
+        assert_eq!(settings.proxy_auth, Some(auth));
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let settings = NetworkSettings::new().with_timeout(60);
+        assert_eq!(settings.timeout, 60);
+    }
+
+    #[test]
+    fn test_with_retries() {
+        let settings = NetworkSettings::new().with_retries(5);
+        assert_eq!(settings.retries, 5);
+    }
+
+    #[test]
+    fn test_with_random_agent() {
+        let settings = NetworkSettings::new().with_random_agent(true);
+        assert!(settings.random_agent);
+    }
+
+    #[test]
+    fn test_with_insecure() {
+        let settings = NetworkSettings::new().with_insecure(true);
+        assert!(settings.insecure);
+    }
+
+    #[test]
+    fn test_with_parallel() {
+        let settings = NetworkSettings::new().with_parallel(10);
+        assert_eq!(settings.parallel, 10);
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let settings = NetworkSettings::new().with_rate_limit(Some(2.5));
+        assert_eq!(settings.rate_limit, Some(2.5));
+    }
+
+    // Test chaining multiple settings
+    #[test]
+    fn test_chaining_settings() {
+        let settings = NetworkSettings::new()
+            .with_timeout(60)
+            .with_retries(5)
+            .with_random_agent(true)
+            .with_insecure(true)
+            .with_parallel(10)
+            .with_rate_limit(Some(3.0))
+            .with_subdomains(true)
+            .with_proxy(Some("http://proxy.example.com:8080".to_string()))
+            .with_proxy_auth(Some("user:pass".to_string()));
+
+        assert_eq!(settings.timeout, 60);
+        assert_eq!(settings.retries, 5);
+        assert!(settings.random_agent);
+        assert!(settings.insecure);
+        assert_eq!(settings.parallel, 10);
+        assert_eq!(settings.rate_limit, Some(3.0));
+        assert!(settings.include_subdomains);
+        assert_eq!(
+            settings.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+        assert_eq!(settings.proxy_auth, Some("user:pass".to_string()));
+    }
+}
