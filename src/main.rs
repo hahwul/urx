@@ -21,7 +21,9 @@ use filters::UrlFilter;
 use network::{NetworkScope, NetworkSettings};
 use output::create_outputter;
 use progress::ProgressManager;
-use providers::{CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvider};
+use providers::{
+    CommonCrawlProvider, OTXProvider, Provider, VirusTotalProvider, WaybackMachineProvider,
+};
 use testers::{LinkExtractor, StatusChecker, Tester};
 use url_utils::UrlTransformer;
 
@@ -98,9 +100,30 @@ async fn main() -> Result<()> {
         );
     }
 
+    if args.providers.iter().any(|p| p == "vt") {
+        // First check command-line argument, then fall back to environment variable
+        let api_key = args
+            .vt_api_key
+            .clone()
+            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
+
+        if let Some(api_key) = api_key {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                "VirusTotal".to_string(),
+                || VirusTotalProvider::new(api_key.clone()),
+            );
+        } else if !args.silent {
+            eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
+        }
+    }
+
     if providers.is_empty() {
         if !args.silent {
-            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx)");
+            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt)");
         }
         return Ok(());
     }
