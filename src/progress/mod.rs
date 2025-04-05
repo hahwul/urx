@@ -22,7 +22,7 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "{prefix:.bold.dim} [{bar:40.cyan/blue}] {pos}/{len} {wide_msg}",
+            "{prefix:.bold.dim} [{bar:38.cyan/blue}] {pos}/{len} {wide_msg}",
         )
         .unwrap()
         .progress_chars("=> ");
@@ -50,7 +50,7 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "{prefix:.bold.dim} [{bar:30.green/white}] {spinner} {wide_msg}",
+            "{prefix:.bold.dim} [{bar:40.green/white}] {spinner} {wide_msg}",
         )
         .unwrap()
         .progress_chars("=> ")

@@ -151,7 +151,7 @@ pub async fn process_domains(
 
                     // Now switch to progress bar + spinner style
                     let progress_style = ProgressStyle::with_template(
-                        "{prefix:.bold.dim} [{bar:30.green/white}] {spinner} {wide_msg}",
+                        "{prefix:.bold.dim} [{bar:40.green/white}] {spinner} {wide_msg}",
                     )
                     .unwrap()
                     .progress_chars("=> ")
@@ -193,7 +193,7 @@ pub async fn process_domains(
                         // Set tick to check mark for success
                         bar.set_style(
                             ProgressStyle::with_template(
-                                "{prefix:.bold.dim} [{bar:30.green/white}] ✓ {wide_msg}",
+                                "{prefix:.bold.dim} [{bar:40.green/white}] ✓ {wide_msg}",
                             )
                             .unwrap()
                             .progress_chars("=>"),
@@ -209,7 +209,7 @@ pub async fn process_domains(
                         // Set tick to X mark for error
                         bar.set_style(
                             ProgressStyle::with_template(
-                                "{prefix:.bold.dim} [{bar:30.red/white}] ✗ {wide_msg}",
+                                "{prefix:.bold.dim} [{bar:40.red/white}] ✗ {wide_msg}",
                             )
                             .unwrap()
                             .progress_chars("=>"),

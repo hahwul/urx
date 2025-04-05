@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
             &network_settings,
             &mut providers,
             &mut provider_names,
-            format!("Common Crawl ({})", args.cc_index),
+            args.cc_index.to_string(),
             || CommonCrawlProvider::with_index(args.cc_index.clone()),
         );
     }
