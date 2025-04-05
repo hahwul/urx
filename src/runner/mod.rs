@@ -1,7 +1,7 @@
 use futures::future::join_all;
-use indicatif::ProgressStyle;
-use std::collections::HashSet;
-use std::sync::Arc;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use tokio::task;
 
 use crate::cli::Args;
@@ -86,7 +86,7 @@ pub fn add_provider<T: Provider + 'static>(
     provider_names.push(provider_name);
 }
 
-/// Process domains using the provided providers
+/// Process domains using a provider-based concurrency pattern
 pub async fn process_domains(
     domains: Vec<String>,
     args: &Args,
@@ -94,180 +94,244 @@ pub async fn process_domains(
     providers: &[Box<dyn Provider>],
     provider_names: &[String],
 ) -> HashSet<String> {
-    let mut all_urls = HashSet::new();
+    // Create a shared set to collect all URLs
+    let all_urls = Arc::new(Mutex::new(HashSet::new()));
     let total_domains = domains.len();
-    let domain_bar = progress_manager.create_domain_bar(domains.len());
-
-    for (idx, domain) in domains.into_iter().enumerate() {
-        domain_bar.set_position(idx as u64);
-        domain_bar.set_message(format!("Processing {}", domain));
-
-        verbose_print(
-            args,
-            format!(
-                "Processing domain [{}/{}]: {}",
-                idx + 1,
-                total_domains,
-                domain
-            ),
-        );
-
-        let mut tasks = Vec::new();
-        let provider_bars = progress_manager.create_provider_bars(provider_names);
-
-        let provider_bars_arc = Arc::new(provider_bars);
-
-        for (p_idx, provider) in providers.iter().enumerate() {
-            let domain_clone = domain.clone();
-            let provider_clone = provider.clone_box();
-            let provider_name = provider_names[p_idx].clone();
-            let bars = Arc::clone(&provider_bars_arc);
-            let timeout = args.timeout; // Get the timeout value
-
-            // Set initial message
-            bars[p_idx].set_message(format!("Starting fetch for {}", domain_clone));
-
-            let task = task::spawn(async move {
-                let bar = &bars[p_idx];
-                bar.set_message(format!("Fetching data for {}", domain_clone));
-
-                // Instead of setting a fixed position, start a ticker task
-                let bar_clone = bar.clone();
-
-                // Start with initial spinner-only phase
-                bar.set_message(format!("Fetching data for {}", domain_clone));
-
+    let total_providers = providers.len();
+    
+    // Create a progress bar for overall progress
+    let overall_bar = progress_manager.create_domain_bar(total_domains);
+    overall_bar.set_message("Processing domains");
+    
+    // Create a shared counter for processed domains
+    let processed_domains = Arc::new(Mutex::new(0usize));
+    
+    // Create provider bars - one bar per provider
+    let provider_bars = progress_manager.create_provider_bars(provider_names);
+    
+    // Create a queue for each provider
+    let provider_queues: Vec<Arc<Mutex<Vec<String>>>> = (0..providers.len())
+        .map(|_| Arc::new(Mutex::new(domains.clone())))
+        .collect();
+    
+    // Create a tracking set for each domain to know when it's fully processed
+    let domain_completion = Arc::new(Mutex::new(
+        domains.iter().map(|d| (d.clone(), 0)).collect::<HashMap<String, usize>>()
+    ));
+    
+    verbose_print(
+        args,
+        format!("Using provider-based concurrency with {} providers", total_providers),
+    );
+    
+    // Clone provider data for use in async tasks
+    let provider_data: Vec<_> = providers
+        .iter()
+        .enumerate()
+        .map(|(idx, provider)| {
+            (
+                provider.clone_box(),
+                provider_names[idx].clone(),
+                idx,
+            )
+        })
+        .collect();
+    
+    // Create a future for each provider
+    let mut provider_futures = Vec::new();
+    
+    for (p_idx, (provider_clone, provider_name, original_idx)) in provider_data.into_iter().enumerate() {
+        let all_urls_clone = Arc::clone(&all_urls);
+        let processed_domains_clone = Arc::clone(&processed_domains);
+        let queue = Arc::clone(&provider_queues[p_idx]);
+        let domain_completion_clone = Arc::clone(&domain_completion);
+        let overall_bar_clone = overall_bar.clone();
+        let timeout = args.timeout;
+        let verbose = args.verbose;
+        let silent = args.silent;
+        let provider_bar = provider_bars[original_idx].clone();
+        
+        // Spawn a task for this provider
+        let provider_future = task::spawn(async move {
+            // Track the current domain index for this provider
+            let mut current_domain_idx = 0;
+            
+            // Process all domains assigned to this provider
+            loop {
+                // Get the next domain from this provider's queue
+                let domain = {
+                    let mut queue = queue.lock().unwrap();
+                    if queue.is_empty() {
+                        break; // No more domains to process for this provider
+                    }
+                    current_domain_idx += 1;
+                    queue.remove(0)
+                };
+                
+                // Update the progress bar message to show which domain is being processed
+                provider_bar.set_message(format!("({}/{}) Fetching data for {}", 
+                    current_domain_idx, total_domains, domain));
+                
+                // Use ticker for progress visualization
+                let bar_clone = provider_bar.clone();
                 let ticker_handle = tokio::spawn(async move {
-                    // For tracking elapsed time
                     let start_time = std::time::Instant::now();
-
-                    // Overall timeout defines the total duration of the progress
                     let total_duration_ms = timeout * 1000;
-
-                    // First display spinner only for a short period (10% of timeout)
-                    let spinner_phase_duration =
-                        std::time::Duration::from_millis(total_duration_ms / 10);
+                    
+                    let spinner_phase_duration = std::time::Duration::from_millis(total_duration_ms / 10);
                     tokio::time::sleep(spinner_phase_duration).await;
-
-                    // Now switch to progress bar + spinner style
+                    
                     let progress_style = ProgressStyle::with_template(
                         "{prefix:.bold.dim} [{bar:40.green/white}] {spinner} {wide_msg}",
                     )
                     .unwrap()
                     .progress_chars("=> ")
                     .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
-
+                    
                     bar_clone.set_style(progress_style);
-
-                    // Sleep interval for progress updates
-                    // This only affects the progress bar position updates, not the spinner animation
-                    // The spinner animation speed is controlled by enable_steady_tick
+                    
                     let update_interval_ms = 100;
                     let end_time = start_time + std::time::Duration::from_millis(total_duration_ms);
-
+                    
                     while std::time::Instant::now() < end_time {
-                        // Calculate progress based on elapsed time since start
                         let now = std::time::Instant::now();
                         let elapsed = now.duration_since(start_time).as_millis() as u64;
                         let progress = (elapsed * 100) / total_duration_ms;
-
-                        // Update progress bar position
-                        bar_clone.set_position(progress.min(99)); // Cap at 99% until complete
-
-                        // Short sleep for progress updates
-                        tokio::time::sleep(std::time::Duration::from_millis(update_interval_ms))
-                            .await;
+                        
+                        bar_clone.set_position(progress.min(99));
+                        
+                        tokio::time::sleep(std::time::Duration::from_millis(update_interval_ms)).await;
                     }
-
-                    // Ensure we reach 100% at the end
+                    
                     bar_clone.set_position(100);
                 });
-
-                let result = match provider_clone.fetch_urls(&domain_clone).await {
+                
+                // Fetch URLs for this domain using this provider
+                let result = match provider_clone.fetch_urls(&domain).await {
                     Ok(urls) => {
-                        // Immediately complete the progress when we have results
-                        bar.set_position(100);
-                        bar.set_message(format!("Found {} URLs", urls.len()));
-                        // Abort the ticker task since we've completed
+                        provider_bar.set_position(100);
+                        provider_bar.set_message(format!("({}/{}) Found {} URLs for {}", 
+                            current_domain_idx, total_domains, urls.len(), domain));
                         ticker_handle.abort();
-                        // Set tick to check mark for success
-                        bar.set_style(
+                        provider_bar.set_style(
                             ProgressStyle::with_template(
                                 "{prefix:.bold.dim} [{bar:40.green/white}] ✓ {wide_msg}",
                             )
                             .unwrap()
                             .progress_chars("=>"),
                         );
-                        Ok(urls)
-                    }
+                        
+                        // Add URLs to the shared set
+                        {
+                            let mut url_set = all_urls_clone.lock().unwrap();
+                            for url in &urls {
+                                url_set.insert(url.clone());
+                            }
+                        }
+                        
+                        // Mark this provider as completed for this domain
+                        let mut is_domain_complete = false;
+                        {
+                            let mut completion_map = domain_completion_clone.lock().unwrap();
+                            if let Some(count) = completion_map.get_mut(&domain) {
+                                *count += 1;
+                                is_domain_complete = *count >= total_providers;
+                            }
+                        }
+                        
+                        // If all providers for this domain are done, update domain counter
+                        if is_domain_complete {
+                            let mut count = processed_domains_clone.lock().unwrap();
+                            *count += 1;
+                            overall_bar_clone.set_position(*count as u64);
+                            overall_bar_clone.set_message(format!("Completed {}/{} domains", *count, total_domains));
+                            
+                            if verbose && !silent {
+                                println!("Domain completed: {} ({}/{})", domain, *count, total_domains);
+                            }
+                        }
+                        
+                        if verbose && !silent {
+                            println!("  - {}: Found {} URLs for {}", provider_name, urls.len(), domain);
+                        }
+                        
+                        Ok(urls.len())
+                    },
                     Err(e) => {
-                        // Immediately complete the progress when we have an error
-                        bar.set_position(100);
-                        bar.set_message(format!("Error: {}", e));
-                        // Abort the ticker task since we've completed
+                        provider_bar.set_position(100);
+                        provider_bar.set_message(format!("({}/{}) Error: {} for {}", 
+                            current_domain_idx, total_domains, e, domain));
                         ticker_handle.abort();
-                        // Set tick to X mark for error
-                        bar.set_style(
+                        provider_bar.set_style(
                             ProgressStyle::with_template(
                                 "{prefix:.bold.dim} [{bar:40.red/white}] ✗ {wide_msg}",
                             )
                             .unwrap()
                             .progress_chars("=>"),
                         );
-                        Err(e)
+                        
+                        // Mark this provider as completed for this domain
+                        let mut is_domain_complete = false;
+                        {
+                            let mut completion_map = domain_completion_clone.lock().unwrap();
+                            if let Some(count) = completion_map.get_mut(&domain) {
+                                *count += 1;
+                                is_domain_complete = *count >= total_providers;
+                            }
+                        }
+                        
+                        if is_domain_complete {
+                            let mut count = processed_domains_clone.lock().unwrap();
+                            *count += 1;
+                            overall_bar_clone.set_position(*count as u64);
+                            overall_bar_clone.set_message(format!("Completed {}/{} domains", *count, total_domains));
+                            
+                            if verbose && !silent {
+                                println!("Domain completed: {} ({}/{})", domain, *count, total_domains);
+                            }
+                        }
+                        
+                        if !silent {
+                            eprintln!("Error fetching URLs for {} from {}: {}", domain, provider_name, e);
+                        }
+                        
+                        Err(e.to_string())
                     }
                 };
-
-                (result, provider_name)
-            });
-
-            tasks.push(task);
-        }
-
-        let results = join_all(tasks).await;
-        let mut domain_urls_count = 0;
-        let mut provider_results = Vec::new();
-
-        for result in results {
-            match result {
-                Ok((Ok(urls), provider_name)) => {
-                    domain_urls_count += urls.len();
-                    provider_results.push(format!("{}: {} URLs", provider_name, urls.len()));
-                    for url in urls {
-                        all_urls.insert(url);
+                
+                if let Err(err) = result {
+                    if verbose && !silent {
+                        println!("  - {}: Error - {} for {}", provider_name, err, domain);
                     }
                 }
-                Ok((Err(e), provider_name)) => {
-                    provider_results.push(format!("{}: Error - {}", provider_name, e));
-                    if !args.silent {
-                        eprintln!(
-                            "Error fetching URLs for {} from {}: {}",
-                            domain, provider_name, e
-                        );
-                    }
-                }
-                Err(e) => {
-                    if !args.silent {
-                        eprintln!("Task error: {}", e);
-                    }
+                
+                // Get ready for the next domain if any
+                if current_domain_idx < total_domains {
+                    provider_bar.set_position(0); // Reset progress for next domain
                 }
             }
-        }
-
-        // Complete all progress bars for this domain
-        for bar in provider_bars_arc.iter() {
-            bar.finish();
-        }
-
-        if args.verbose && !args.silent {
-            println!("Results for {}:", domain);
-            for result in &provider_results {
-                println!("  - {}", result);
+            
+            // This provider has finished all its domains
+            if current_domain_idx >= total_domains {
+                provider_bar.finish_with_message(format!("({}/{}) Completed all domains", total_domains, total_domains));
             }
-            println!("Total: {} URLs for {}", domain_urls_count, domain);
-        }
+            
+            if verbose && !silent {
+                println!("Provider {} has completed processing all domains", provider_name);
+            }
+        });
+        
+        provider_futures.push(provider_future);
     }
-
-    domain_bar.finish_with_message("All domains processed");
-    all_urls
+    
+    // Wait for all provider tasks to finish
+    join_all(provider_futures).await;
+    
+    overall_bar.finish_with_message("All domains processed");
+    
+    // Return the collected URLs
+    Arc::try_unwrap(all_urls)
+        .unwrap()
+        .into_inner()
+        .unwrap()
 }

@@ -267,8 +267,8 @@ impl Config {
             args.retries = self.network.retries.unwrap();
         }
 
-        if args.parallel == 5 && self.network.parallel.is_some() {
-            args.parallel = self.network.parallel.unwrap();
+        if args.parallel.unwrap_or(5) == 5 && self.network.parallel.is_some() {
+            args.parallel = self.network.parallel;
         }
 
         if args.rate_limit.is_none() && self.network.rate_limit.is_some() {

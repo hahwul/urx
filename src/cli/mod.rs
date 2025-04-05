@@ -147,10 +147,10 @@ pub struct Args {
     #[clap(long, default_value = "3")]
     pub retries: u32,
 
-    /// Maximum number of parallel requests
+    /// Maximum number of parallel requests per provider and maximum concurrent domain processing
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "5")]
-    pub parallel: u32,
+    pub parallel: Option<u32>,
 
     /// Rate limit (requests per second)
     #[clap(help_heading = "Network Options")]

@@ -136,7 +136,7 @@ impl NetworkSettings {
             .with_retries(args.retries)
             .with_random_agent(args.random_agent)
             .with_insecure(args.insecure)
-            .with_parallel(args.parallel)
+            .with_parallel(args.parallel.unwrap_or(5))
             .with_subdomains(args.subs);
 
         // Parse network scope from args
