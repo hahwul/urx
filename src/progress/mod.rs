@@ -30,7 +30,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
         bar.set_prefix("Domains");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
@@ -56,6 +57,7 @@ impl ProgressManager {
         .with_key(
             "spinner",
             |state: &indicatif::ProgressState, w: &mut dyn std::fmt::Write| {
+                // Using a faster animation cycle with more frames for smoother appearance
                 write!(
                     w,
                     "{}",
@@ -71,7 +73,8 @@ impl ProgressManager {
                 let bar = self.multi_progress.add(ProgressBar::new(100));
                 bar.set_style(style.clone());
                 bar.set_prefix(format!("{:<15}", name));
-                bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                // Much faster tick rate for spinner animation, independent of progress
+                bar.enable_steady_tick(std::time::Duration::from_millis(20));
                 bar
             })
             .collect()
@@ -93,7 +96,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
         bar.set_prefix("Filtering");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
@@ -114,7 +118,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
         bar.set_prefix("Transforming");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
@@ -136,7 +141,8 @@ impl ProgressManager {
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
         bar.set_prefix("Testing URLs");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        // Faster tick rate for more responsive UI updates
+        bar.enable_steady_tick(std::time::Duration::from_millis(50));
 
         bar
     }
