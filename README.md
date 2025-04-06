@@ -167,6 +167,12 @@ urx example.com -p no-images
 # Use specific providers
 urx example.com --providers wayback,otx
 
+# Use VirusTotal and URLScan with API keys
+urx example.com --providers=vt,urlscan --vt-api-key=*** --urlscan-api-key=****
+
+# Use VirusTotal and URLScan with environment variables for API keys
+URX_VT_API_KEY=**** URX_URLSCAN_API_KEY=**** urx example.com --providers=vt,urlscan
+
 # Include subdomains
 urx example.com --subs
 
