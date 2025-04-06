@@ -190,7 +190,7 @@ impl Config {
             args.subs = true;
         }
 
-        if args.cc_index == "CC-MAIN-2025-08" && self.provider.cc_index.is_some() {
+        if args.cc_index == "CC-MAIN-2025-13" && self.provider.cc_index.is_some() {
             args.cc_index = self.provider.cc_index.unwrap();
         }
 
@@ -415,7 +415,7 @@ mod tests {
             merge_endpoint: false,
             providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
             subs: false,
-            cc_index: "CC-MAIN-2025-08".to_string(),
+            cc_index: "CC-MAIN-2025-13".to_string(),
             vt_api_key: None,
             urlscan_api_key: None,
             verbose: false,
