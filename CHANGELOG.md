@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Empty
+
 ## 0.4.0
 
 - Added `--config` - Load configuration from a specified file
