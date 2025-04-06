@@ -38,6 +38,7 @@ pub struct ProviderConfig {
     pub subs: Option<bool>,
     pub cc_index: Option<String>,
     pub vt_api_key: Option<String>,
+    pub urlscan_api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -195,6 +196,10 @@ impl Config {
 
         if args.vt_api_key.is_none() && self.provider.vt_api_key.is_some() {
             args.vt_api_key = self.provider.vt_api_key;
+        }
+
+        if args.urlscan_api_key.is_none() && self.provider.urlscan_api_key.is_some() {
+            args.urlscan_api_key = self.provider.urlscan_api_key;
         }
 
         // Filter options
@@ -412,6 +417,7 @@ mod tests {
             subs: false,
             cc_index: "CC-MAIN-2025-08".to_string(),
             vt_api_key: None,
+            urlscan_api_key: None,
             verbose: false,
             silent: false,
             no_progress: false,

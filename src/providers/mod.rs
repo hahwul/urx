@@ -4,11 +4,13 @@ use std::pin::Pin;
 
 mod commoncrawl;
 mod otx;
+mod urlscan;
 mod vt;
 mod wayback;
 
 pub use commoncrawl::CommonCrawlProvider;
 pub use otx::OTXProvider;
+pub use urlscan::UrlscanProvider;
 pub use vt::VirusTotalProvider;
 pub use wayback::WaybackMachineProvider;
 
