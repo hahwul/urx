@@ -21,7 +21,8 @@ use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{
-    CommonCrawlProvider, OTXProvider, Provider, VirusTotalProvider, WaybackMachineProvider,
+    CommonCrawlProvider, OTXProvider, Provider, UrlscanProvider, VirusTotalProvider,
+    WaybackMachineProvider,
 };
 use runner::{add_provider, process_domains};
 use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
@@ -113,9 +114,30 @@ async fn main() -> Result<()> {
         }
     }
 
+    if args.providers.iter().any(|p| p == "urlscan") {
+        // First check command-line argument, then fall back to environment variable
+        let api_key = args
+            .urlscan_api_key
+            .clone()
+            .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
+
+        if let Some(api_key) = api_key {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                "Urlscan".to_string(),
+                || UrlscanProvider::new(api_key.clone()),
+            );
+        } else if !args.silent {
+            eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
+        }
+    }
+
     if providers.is_empty() {
         if !args.silent {
-            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt)");
+            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan)");
         }
         return Ok(());
     }
@@ -415,6 +437,7 @@ mod tests {
             subs: false,
             cc_index: "CC-MAIN-2025-08".to_string(),
             vt_api_key: None,
+            urlscan_api_key: None,
             verbose: false,
             silent: true,      // Silent to avoid console output during tests
             no_progress: true, // No progress bars during tests
@@ -493,6 +516,7 @@ mod tests {
             subs: false,
             cc_index: "CC-MAIN-2025-08".to_string(),
             vt_api_key: None,
+            urlscan_api_key: None,
             verbose: false,
             silent: true,
             no_progress: true,
