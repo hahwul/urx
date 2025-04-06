@@ -13,7 +13,7 @@ merge_endpoint = false
 [provider]
 providers = ["wayback", "cc", "otx"]
 subs = false  # Include subdomains when searching
-cc_index = "CC-MAIN-2025-08"  # Common Crawl index to use
+cc_index = "CC-MAIN-2025-13"  # Common Crawl index to use
 vt_api_key = ""  # VirusTotal API key (If using VirusTotal)
 
 # Display options

@@ -30,7 +30,7 @@ impl CommonCrawlProvider {
     #[allow(dead_code)]
     pub fn new() -> Self {
         CommonCrawlProvider {
-            index: "CC-MAIN-2025-08".to_string(),
+            index: "CC-MAIN-2025-13".to_string(),
             include_subdomains: false,
             proxy: None,
             proxy_auth: None,
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn test_new_provider() {
         let provider = CommonCrawlProvider::new();
-        assert_eq!(provider.index, "CC-MAIN-2025-08");
+        assert_eq!(provider.index, "CC-MAIN-2025-13");
         assert!(!provider.include_subdomains);
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
@@ -470,7 +470,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://index.commoncrawl.org/CC-MAIN-2025-08-index?url=example.com/*&output=json"
+            "https://index.commoncrawl.org/CC-MAIN-2025-13-index?url=example.com/*&output=json"
         );
     }
 
@@ -488,7 +488,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://index.commoncrawl.org/CC-MAIN-2025-08-index?url=*.example.com/*&output=json"
+            "https://index.commoncrawl.org/CC-MAIN-2025-13-index?url=*.example.com/*&output=json"
         );
     }
 }
