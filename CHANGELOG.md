@@ -2,11 +2,14 @@
 
 ## Unreleased
 
+## 0.4.0
+
 - Added `--config` - Load configuration from a specified file
 - Support to vt provider(Virustotal) - Search URLs from Virustotal API
   - Added `--vt-api-key` flag and `URX_VT_API_KEY` - Specify API key for Virustotal integration
 - Support to urlscan provider - Search URLs from Urlscan API
   - Added `--urlscan-api-key` flag and `URX_URLSCAN_API_KEY` - Specify API key for Urlscan integration
+- Improve performance
 
 ## 0.3.0
 
