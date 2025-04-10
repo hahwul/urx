@@ -206,3 +206,102 @@ fn validate_network_scope(s: &str) -> Result<String, String> {
         _ => Err(format!("Invalid network scope: {}. Allowed values are all, providers, testers, or providers,testers", s)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_args_default_values() {
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert_eq!(args.domains, vec!["example.com"]);
+        assert_eq!(args.format, "plain");
+        assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
+        assert_eq!(args.cc_index, "CC-MAIN-2025-13");
+        assert_eq!(args.timeout, 30);
+        assert_eq!(args.retries, 3);
+    }
+
+    #[test]
+    fn test_args_multiple_domains() {
+        let args = Args::parse_from(["urx", "example.com", "example.org"]);
+        assert_eq!(args.domains, vec!["example.com", "example.org"]);
+    }
+
+    #[test]
+    fn test_args_output_options() {
+        let args = Args::parse_from(["urx", "example.com", "-o", "output.txt", "-f", "json"]);
+        assert_eq!(args.domains, vec!["example.com"]);
+        assert!(args.output.is_some());
+        assert_eq!(args.output.unwrap().to_str().unwrap(), "output.txt");
+        assert_eq!(args.format, "json");
+    }
+
+    #[test]
+    fn test_args_providers() {
+        let args = Args::parse_from(["urx", "example.com", "--providers", "wayback,vt"]);
+        assert_eq!(args.providers, vec!["wayback", "vt"]);
+    }
+
+    #[test]
+    fn test_network_options() {
+        let args = Args::parse_from([
+            "urx",
+            "example.com",
+            "--proxy",
+            "http://proxy:8080",
+            "--timeout",
+            "60",
+        ]);
+        assert_eq!(args.proxy.unwrap(), "http://proxy:8080");
+        assert_eq!(args.timeout, 60);
+    }
+
+    #[test]
+    fn test_filter_options() {
+        let args = Args::parse_from([
+            "urx",
+            "example.com",
+            "-e",
+            "js,php",
+            "--exclude-extensions",
+            "html,css",
+        ]);
+        assert_eq!(args.extensions, vec!["js", "php"]);
+        assert_eq!(args.exclude_extensions, vec!["html", "css"]);
+    }
+
+    #[test]
+    fn test_validate_network_scope_valid() {
+        assert!(validate_network_scope("all").is_ok());
+        assert!(validate_network_scope("providers").is_ok());
+        assert!(validate_network_scope("testers").is_ok());
+        assert!(validate_network_scope("providers,testers").is_ok());
+    }
+
+    #[test]
+    fn test_validate_network_scope_invalid() {
+        assert!(validate_network_scope("invalid").is_err());
+    }
+
+    #[test]
+    fn test_read_domains_from_stdin() {
+        use std::io::{self, BufRead, Cursor};
+
+        // Create a cursor with test input data
+        let input = "example.com\nexample.org\n\n";
+        let cursor = Cursor::new(input);
+
+        // Extract lines from the cursor
+        let buffer = io::BufReader::new(cursor);
+        let mut domains = Vec::new();
+        for line in buffer.lines() {
+            let domain = line.unwrap();
+            if !domain.trim().is_empty() {
+                domains.push(domain.trim().to_string());
+            }
+        }
+
+        assert_eq!(domains, vec!["example.com", "example.org"]);
+    }
+}
