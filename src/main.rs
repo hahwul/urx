@@ -92,7 +92,6 @@ async fn main() -> Result<()> {
             RobotsProvider::new,
         );
     }
-    
 
     if args.providers.iter().any(|p| p == "otx") {
         add_provider(
