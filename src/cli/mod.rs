@@ -177,6 +177,11 @@ pub struct Args {
     #[clap(long, alias = "es", visible_alias = "--es")]
     pub exclude_status: Vec<String>,
 
+    /// Include robots.txt discovery
+    #[clap(long)]
+    pub include_robots: bool,
+
+
     /// Extract additional links from collected URLs (requires HTTP requests)
     #[clap(help_heading = "Testing Options")]
     #[clap(long)]
