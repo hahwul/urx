@@ -52,6 +52,11 @@ pub struct Args {
     #[clap(long)]
     pub urlscan_api_key: Option<String>,
 
+    #[clap(help_heading = "Provider Options")]
+    /// Include robots.txt discovery
+    #[clap(long)]
+    pub include_robots: bool,
+
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
     #[clap(short, long)]

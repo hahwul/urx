@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-
+use providers::RobotsProvider;
 mod cli;
 mod config;
 mod filters;
@@ -79,6 +79,17 @@ async fn main() -> Result<()> {
             &mut provider_names,
             args.cc_index.to_string(),
             || CommonCrawlProvider::with_index(args.cc_index.clone()),
+        );
+    }
+
+    if args.include_robots {
+        add_provider(
+            &args,
+            &network_settings,
+            &mut providers,
+            &mut provider_names,
+            "Robots.txt".to_string(),
+            RobotsProvider::new,
         );
     }
 
@@ -428,6 +439,8 @@ mod tests {
 
         // Setup test args with minimal settings
         let args = Args {
+            include_robots: false, // Added missing field
+            // Removed duplicate field
             domains: vec!["example.com".to_string()],
             config: None,
             output: None,
@@ -543,6 +556,7 @@ mod tests {
             include_status: vec![],
             exclude_status: vec![],
             extract_links: false,
+            include_robots: false,
         };
 
         let network_settings = NetworkSettings::new();
