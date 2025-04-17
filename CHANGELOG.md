@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- Empty
+- Added `--include-robots` flag - Extract URLs from robots.txt files
 
 ## 0.4.0
 
-- Added `--config` - Load configuration from a specified file
+- Added `--config` flag - Load configuration from a specified file
 - Support to vt provider(Virustotal) - Search URLs from Virustotal API
   - Added `--vt-api-key` flag and `URX_VT_API_KEY` - Specify API key for Virustotal
 - Support to urlscan provider - Search URLs from Urlscan API
