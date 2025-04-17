@@ -94,6 +94,7 @@ Provider Options:
   --cc-index <CC_INDEX>                Common Crawl index to use (e.g., CC-MAIN-2025-13) [default: CC-MAIN-2025-13]
   --vt-api-key <VT_API_KEY>            API key for VirusTotal (can also use URX_VT_API_KEY environment variable)
   --urlscan-api-key <URLSCAN_API_KEY>  API key for Urlscan (can also use URX_URLSCAN_API_KEY environment variable)
+  --include-robots                     Include robots.txt discovery
 
 Display Options:
   -v, --verbose      Show verbose output
@@ -172,6 +173,9 @@ urx example.com --providers=vt,urlscan --vt-api-key=*** --urlscan-api-key=****
 
 # Use VirusTotal and URLScan with environment variables for API keys
 URX_VT_API_KEY=**** URX_URLSCAN_API_KEY=**** urx example.com --providers=vt,urlscan
+
+# Extract URLs from robots.txt files
+urx example.com --include-robots
 
 # Include subdomains
 urx example.com --subs
