@@ -75,13 +75,11 @@ impl Provider for RobotsProvider {
                     if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
                         if !path.is_empty() && path != "/" {
                             let url = format!("https://{}{}", domain, path);
-                            println!("RobotsProvider returned URL: {}", url);
                             urls.push(url);
                         }
                     }
                 } else if line.starts_with("Sitemap:") {
                     if let Some(link) = line.strip_prefix("Sitemap:").map(|s| s.trim()) {
-                        println!("RobotsProvider returned Sitemap: {}", link);
                         urls.push(link.to_string());
                     }
                 }
