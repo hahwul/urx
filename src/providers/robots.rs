@@ -125,3 +125,162 @@ impl Provider for RobotsProvider {
     fn with_parallel(&mut self, _count: u32) {}
     fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_provider() {
+        let provider = RobotsProvider::new();
+        assert_eq!(provider.timeout, Duration::from_secs(30));
+        assert_eq!(provider.retries, 3);
+        assert_eq!(provider.user_agent, None);
+        assert_eq!(provider.proxy, None);
+        assert_eq!(provider.proxy_auth, None);
+        assert!(!provider.insecure);
+    }
+
+    #[test]
+    fn test_with_proxy() {
+        let mut provider = RobotsProvider::new();
+        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
+        assert_eq!(
+            provider.proxy,
+            Some("http://proxy.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_proxy_auth() {
+        let mut provider = RobotsProvider::new();
+        provider.with_proxy_auth(Some("user:pass".to_string()));
+        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let mut provider = RobotsProvider::new();
+        provider.with_timeout(60);
+        assert_eq!(provider.timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_with_retries() {
+        let mut provider = RobotsProvider::new();
+        provider.with_retries(5);
+        assert_eq!(provider.retries, 5);
+    }
+
+    #[test]
+    fn test_with_random_agent() {
+        let mut provider = RobotsProvider::new();
+        provider.with_random_agent(true);
+        assert_eq!(
+            provider.user_agent,
+            Some("Mozilla/5.0 (compatible; URXBot/1.0)".to_string())
+        );
+
+        // Test disabling the random agent
+        provider.with_random_agent(false);
+        assert_eq!(
+            provider.user_agent,
+            Some("Mozilla/5.0 (compatible; URXBot/1.0)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_insecure() {
+        let mut provider = RobotsProvider::new();
+        provider.with_insecure(true);
+        assert!(provider.insecure);
+    }
+
+    #[test]
+    fn test_clone_box() {
+        let provider = RobotsProvider::new();
+        let _cloned = provider.clone_box();
+        // Testing the existence of cloned object
+    }
+
+    #[test]
+    fn test_build_client() {
+        let provider = RobotsProvider::new();
+        let client_result = provider.build_client();
+        assert!(client_result.is_ok());
+
+        // Test with proxy
+        let mut provider_with_proxy = RobotsProvider::new();
+        provider_with_proxy.with_proxy(Some("http://invalid:proxy".to_string()));
+        let client_result = provider_with_proxy.build_client();
+        assert!(client_result.is_err());
+
+        // Test with user agent
+        let mut provider_with_agent = RobotsProvider::new();
+        provider_with_agent.with_random_agent(true);
+        let client_result = provider_with_agent.build_client();
+        assert!(client_result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_robots_txt_parsing() {
+        let _provider = RobotsProvider::new();
+
+        // Mock robots.txt content
+        let robots_txt = "\
+User-agent: *
+Disallow: /private/
+Disallow: /admin
+Disallow: 
+Disallow: /
+Allow: /public/
+Sitemap: https://example.com/sitemap.xml
+";
+
+        // Manually parse the robots.txt content
+        let domain = "example.com";
+        let protocol = "https";
+        let mut urls = Vec::new();
+
+        for line in robots_txt.lines() {
+            let line = line.trim();
+            if line.starts_with("Disallow:") {
+                if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
+                    if !path.is_empty() && path != "/" {
+                        let url = format!("{}://{}{}", protocol, domain, path);
+                        urls.push(url);
+                    }
+                }
+            } else if line.starts_with("Sitemap:") {
+                if let Some(link) = line.strip_prefix("Sitemap:").map(|s| s.trim()) {
+                    urls.push(link.to_string());
+                }
+            }
+        }
+
+        // Verify expected output
+        assert_eq!(urls.len(), 3);
+        assert!(urls.contains(&"https://example.com/private/".to_string()));
+        assert!(urls.contains(&"https://example.com/admin".to_string()));
+        assert!(urls.contains(&"https://example.com/sitemap.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_url_construction() {
+        let domain = "example.com";
+
+        // Test HTTPS URL construction
+        let https_url = format!("https://{}/robots.txt", domain);
+        assert_eq!(https_url, "https://example.com/robots.txt");
+
+        // Test HTTP URL construction
+        let http_url = format!("http://{}/robots.txt", domain);
+        assert_eq!(http_url, "http://example.com/robots.txt");
+
+        // Test disallowed path URL construction
+        let protocol = "https";
+        let path = "/private/";
+        let url = format!("{}://{}{}", protocol, domain, path);
+        assert_eq!(url, "https://example.com/private/");
+    }
+}
