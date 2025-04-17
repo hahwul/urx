@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Added `--include-robots` flag - Extract URLs from robots.txt files
+- Added `--include-robots` flag - Extract URLs from robots.txt files by [@Adesoji1](https://github.com/Adesoji1)
 
 ## 0.4.0
 
