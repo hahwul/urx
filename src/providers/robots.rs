@@ -59,22 +59,34 @@ impl Provider for RobotsProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
-            let url = format!("https://{}/robots.txt", domain);
+            let https_url = format!("https://{}/robots.txt", domain);
             let mut urls = Vec::new();
 
-            let resp = client.get(&url).send().await?;
-            if !resp.status().is_success() {
-                return Ok(urls);
-            }
+            // Try HTTPS first
+            let https_resp = client.get(&https_url).send().await;
+            // Track which protocol was successful
+            let (is_https, text) = match https_resp {
+                Ok(resp) if resp.status().is_success() => (true, resp.text().await?),
+                _ => {
+                    // If HTTPS fails, try HTTP
+                    let http_url = format!("http://{}/robots.txt", domain);
+                    let http_resp = client.get(&http_url).send().await?;
+                    if !http_resp.status().is_success() {
+                        return Ok(urls);
+                    }
+                    (false, http_resp.text().await?)
+                }
+            };
 
-            let text = resp.text().await?;
+            // Use the protocol that worked
+            let protocol = if is_https { "https" } else { "http" };
 
             for line in text.lines() {
                 let line = line.trim();
                 if line.starts_with("Disallow:") {
                     if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
                         if !path.is_empty() && path != "/" {
-                            let url = format!("https://{}{}", domain, path);
+                            let url = format!("{}://{}{}", protocol, domain, path);
                             urls.push(url);
                         }
                     }
