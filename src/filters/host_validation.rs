@@ -8,16 +8,16 @@ pub struct HostValidator {
 
 impl HostValidator {
     /// Create a new host validator with the given domains
-   pub fn new(domains: &[String]) -> Self {  
-        let normalized_domains: HashSet<String> = domains  
-            .iter()  
-            .map(|domain| domain.trim().to_lowercase())  
-            .collect();  
+    pub fn new(domains: &[String]) -> Self {
+        let normalized_domains: HashSet<String> = domains
+            .iter()
+            .map(|domain| domain.trim().to_lowercase())
+            .collect();
 
-        HostValidator {  
-            domains: normalized_domains,  
-        }  
-    }  
+        HostValidator {
+            domains: normalized_domains,
+        }
+    }
 
     /// Validate that the URL's host matches one of the provided domains
     pub fn is_valid_host(&self, url_str: &str) -> bool {
@@ -33,14 +33,6 @@ impl HostValidator {
 
         // If we can't parse the URL or it has no host, consider it invalid
         false
-    }
-
-    /// Filter URLs to only include those with valid hosts
-    pub fn filter_urls(&self, urls: &HashSet<String>) -> HashSet<String> {
-        urls.iter()
-            .filter(|url| self.is_valid_host(url))
-            .cloned()
-            .collect()
     }
 }
 
@@ -74,21 +66,5 @@ mod tests {
         assert!(!validator.is_valid_host("https://"));
         assert!(!validator.is_valid_host("http://"));
         assert!(!validator.is_valid_host("not-a-url"));
-
-        // Test URL filtering
-        let urls = HashSet::from([
-            "https://example.com/page1".to_string(),
-            "https://subdomain.example.com/page2".to_string(),
-            "https://test.org/page3".to_string(),
-            "https://invalid.com/page4".to_string(),
-        ]);
-
-        let filtered = validator.filter_urls(&urls);
-
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered.contains("https://example.com/page1"));
-        assert!(filtered.contains("https://test.org/page3"));
-        assert!(!filtered.contains("https://subdomain.example.com/page2"));
-        assert!(!filtered.contains("https://invalid.com/page4"));
     }
 }

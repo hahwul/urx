@@ -221,13 +221,15 @@ async fn main() -> Result<()> {
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-    if args.strict {
-        if args.verbose && !args.silent {
-            println!("Enforcing strict host validation...");
-        }
         let host_validator = HostValidator::new(&domains);
         sorted_urls.retain(|url| host_validator.is_valid_host(url));
-    }
+
+        if args.verbose && !args.silent {
+            println!(
+                "Number of valid URLs after host validation: {}",
+                sorted_urls.len()
+            );
+        }
     }
 
     if let Some(bar) = filter_bar {
