@@ -569,8 +569,8 @@ mod tests {
             include_status: vec![],
             exclude_status: vec![],
             extract_links: false,
-            include_robots: false,
-            include_sitemap: false,
+            include_robots: true,
+            include_sitemap: true,
         };
 
         let network_settings = NetworkSettings::new();
