@@ -221,14 +221,13 @@ async fn main() -> Result<()> {
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-        // Convert Vec to HashSet before calling filter_urls
-        let sorted_urls_set: std::collections::HashSet<String> = sorted_urls.into_iter().collect();
+    if args.strict {
+        if args.verbose && !args.silent {
+            println!("Enforcing strict host validation...");
+        }
         let host_validator = HostValidator::new(&domains);
-        // Call filter_urls with HashSet and convert result back to Vec
-        sorted_urls = host_validator
-            .filter_urls(&sorted_urls_set)
-            .into_iter()
-            .collect();
+        sorted_urls.retain(|url| host_validator.is_valid_host(url));
+    }
     }
 
     if let Some(bar) = filter_bar {
