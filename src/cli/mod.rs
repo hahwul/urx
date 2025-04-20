@@ -127,6 +127,11 @@ pub struct Args {
     #[clap(long = "max-length")]
     pub max_length: Option<usize>,
 
+    /// Enforce exact host validation (default)
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long, default_value = "true")]
+    pub strict: bool,
+
     /// Control which components network settings apply to (all, providers, testers, or providers,testers)
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "all", value_parser = validate_network_scope)]

@@ -35,6 +35,7 @@ show_only_path = false
 show_only_param = false
 min_length = 10  # Minimum URL length to include
 max_length = 500  # Maximum URL length to include
+strict = true  # Strict mode for host validation
 
 # Network options
 [network]
