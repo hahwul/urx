@@ -431,6 +431,7 @@ mod tests {
             show_only_param: false,
             min_length: None,
             max_length: None,
+            strict: true,
             network_scope: "all".to_string(),
             proxy: None,
             proxy_auth: None,

@@ -17,7 +17,7 @@ mod utils;
 
 use cli::{read_domains_from_stdin, Args};
 use config::Config;
-use filters::UrlFilter;
+use filters::{HostValidator, UrlFilter};
 use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
 
     // Process each domain
     let all_urls = process_domains(
-        domains,
+        domains.clone(),
         &args,
         &progress_manager,
         &providers,
@@ -213,7 +213,24 @@ async fn main() -> Result<()> {
         .with_min_length(args.min_length)
         .with_max_length(args.max_length);
 
-    let sorted_urls = url_filter.apply_filters(&all_urls);
+    // Apply URL filters
+    let mut sorted_urls = url_filter.apply_filters(&all_urls);
+
+    // Apply host validation if strict mode is enabled
+    if args.strict {
+        if args.verbose && !args.silent {
+            println!("Enforcing strict host validation...");
+        }
+        let host_validator = HostValidator::new(&domains);
+        sorted_urls.retain(|url| host_validator.is_valid_host(url));
+
+        if args.verbose && !args.silent {
+            println!(
+                "Number of valid URLs after host validation: {}",
+                sorted_urls.len()
+            );
+        }
+    }
 
     if let Some(bar) = filter_bar {
         bar.finish_with_message(format!("Filtered to {} URLs", sorted_urls.len()));
@@ -475,6 +492,7 @@ mod tests {
             show_only_param: false,
             min_length: None,
             max_length: None,
+            strict: true, // Default strict mode enabled
             network_scope: "all".to_string(),
             proxy: None,
             proxy_auth: None,
@@ -556,6 +574,7 @@ mod tests {
             show_only_param: false,
             min_length: None,
             max_length: None,
+            strict: true,
             network_scope: "all".to_string(),
             proxy: None,
             proxy_auth: None,

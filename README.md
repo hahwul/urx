@@ -123,6 +123,8 @@ Filter Options:
           Minimum URL length to include
       --max-length <MAX_LENGTH>
           Maximum URL length to include
+      --strict
+          Enforce exact host validation (default)
 
 Network Options:
   --network-scope <NETWORK_SCOPE>  Control which components network settings apply to (all, providers, testers, or providers,testers) [default: all]
@@ -198,6 +200,9 @@ urx example.com -e js,php --patterns admin,login --exclude-patterns logout,stati
 
 # HTTP Status code based filtering
 urx example.com --include-status 200,30x,405 --exclude-status 20x
+
+# Disable host validation
+urx example.com --strict false
 ```
 
 ## Integration with Other Tools
