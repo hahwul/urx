@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Empty
+
+## 0.5.0
+
 - Added `--include-robots` flag - Extract URLs from robots.txt files by [@Adesoji1](https://github.com/Adesoji1)
 - Added `--include-sitemap` flag - Extract URLs from sitemap
 - Added `--strict` flag - Enforce exact host validation (default is true)
