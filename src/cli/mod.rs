@@ -57,6 +57,11 @@ pub struct Args {
     #[clap(long)]
     pub include_robots: bool,
 
+    #[clap(help_heading = "Provider Options")]
+    /// Include sitemap.xml discovery
+    #[clap(long)]
+    pub include_sitemap: bool,
+
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
     #[clap(short, long)]

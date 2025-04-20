@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use providers::RobotsProvider;
+use providers::SitemapProvider;
 mod cli;
 mod config;
 mod filters;
@@ -90,6 +91,17 @@ async fn main() -> Result<()> {
             &mut provider_names,
             "Robots.txt".to_string(),
             RobotsProvider::new,
+        );
+    }
+
+    if args.include_sitemap {
+        add_provider(
+            &args,
+            &network_settings,
+            &mut providers,
+            &mut provider_names,
+            "Sitemap".to_string(),
+            SitemapProvider::new,
         );
     }
 
@@ -439,7 +451,6 @@ mod tests {
 
         // Setup test args with minimal settings
         let args = Args {
-            include_robots: false, // Added missing field
             // Removed duplicate field
             domains: vec!["example.com".to_string()],
             config: None,
@@ -477,6 +488,8 @@ mod tests {
             include_status: vec![],
             exclude_status: vec![],
             extract_links: false,
+            include_robots: false,
+            include_sitemap: false,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -556,7 +569,8 @@ mod tests {
             include_status: vec![],
             exclude_status: vec![],
             extract_links: false,
-            include_robots: false,
+            include_robots: true,
+            include_sitemap: true,
         };
 
         let network_settings = NetworkSettings::new();

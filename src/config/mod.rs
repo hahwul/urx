@@ -446,6 +446,7 @@ mod tests {
             domains: vec![],
             extract_links: false,
             include_robots: false,
+            include_sitemap: false,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");
