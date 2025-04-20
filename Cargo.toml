@@ -20,6 +20,7 @@ rand = "0.8.5"
 scraper = "0.18.1"
 toml = "0.8.8"
 async-trait = "0.1"
+roxmltree = "0.20.0"
 
 [dev-dependencies]
 mockito = "1.7.0"

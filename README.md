@@ -95,6 +95,7 @@ Provider Options:
   --vt-api-key <VT_API_KEY>            API key for VirusTotal (can also use URX_VT_API_KEY environment variable)
   --urlscan-api-key <URLSCAN_API_KEY>  API key for Urlscan (can also use URX_URLSCAN_API_KEY environment variable)
   --include-robots                     Include robots.txt discovery
+  --include-sitemap                    Include sitemap.xml discovery
 
 Display Options:
   -v, --verbose      Show verbose output
@@ -176,6 +177,9 @@ URX_VT_API_KEY=**** URX_URLSCAN_API_KEY=**** urx example.com --providers=vt,urls
 
 # Extract URLs from robots.txt files
 urx example.com --include-robots
+
+# Extract URLs from sitemap
+urx example.com --include-sitemap
 
 # Include subdomains
 urx example.com --subs
