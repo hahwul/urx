@@ -137,11 +137,6 @@ impl Provider for SitemapProvider {
                         // Found a valid sitemap, parse it
                         let sitemap_urls = self.parse_sitemap(&client, &sitemap_url).await?;
                         urls.extend(sitemap_urls);
-
-                        // If we found a valid sitemap, we can stop checking other locations
-                        if !urls.is_empty() {
-                            break;
-                        }
                     }
                 }
             }
