@@ -15,6 +15,8 @@ providers = ["wayback", "cc", "otx"]
 subs = false  # Include subdomains when searching
 cc_index = "CC-MAIN-2025-13"  # Common Crawl index to use
 vt_api_key = ""  # VirusTotal API key (If using VirusTotal)
+include_robots = false  # Include robots.txt URLs
+include_sitemap = false  # Include sitemap.xml URLs
 
 # Display options
 verbose = false
