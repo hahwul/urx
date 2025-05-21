@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_recursion::async_recursion;
 use async_trait::async_trait;
 use reqwest::Client;
 use roxmltree::Document;
@@ -47,6 +48,7 @@ impl SitemapProvider {
         Ok(builder.build()?)
     }
 
+    #[async_recursion]
     async fn parse_sitemap(&self, client: &Client, sitemap_url: &str) -> Result<Vec<String>> {
         let resp = client.get(sitemap_url).send().await?;
         if !resp.status().is_success() {

@@ -1,5 +1,6 @@
 /// Implements different URL output formatters
 use super::UrlData;
+use colored::*;
 use std::fmt;
 
 /// Formatter trait for converting URL data to different output formats
@@ -34,7 +35,22 @@ impl PlainFormatter {
 impl Formatter for PlainFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
         match &url_data.status {
-            Some(status) => format!("{} [{}]\n", url_data.url, status),
+            Some(status) => {
+                let status_code_str = status.split_whitespace().next().unwrap_or("");
+                let colored_status = match status_code_str.parse::<u16>() {
+                    Ok(code) => {
+                        match code {
+                            200..=299 => status.green(),
+                            300..=399 => status.yellow(),
+                            400..=499 => status.red(),
+                            500..=599 => status.magenta(),
+                            _ => status.normal(),
+                        }
+                    }
+                    Err(_) => status.normal(),
+                };
+                format!("{} [{}]\n", url_data.url, colored_status)
+            }
             None => format!("{}\n", url_data.url),
         }
     }
