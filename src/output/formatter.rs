@@ -38,15 +38,13 @@ impl Formatter for PlainFormatter {
             Some(status) => {
                 let status_code_str = status.split_whitespace().next().unwrap_or("");
                 let colored_status = match status_code_str.parse::<u16>() {
-                    Ok(code) => {
-                        match code {
-                            200..=299 => status.green(),
-                            300..=399 => status.yellow(),
-                            400..=499 => status.red(),
-                            500..=599 => status.magenta(),
-                            _ => status.normal(),
-                        }
-                    }
+                    Ok(code) => match code {
+                        200..=299 => status.green(),
+                        300..=399 => status.yellow(),
+                        400..=499 => status.red(),
+                        500..=599 => status.magenta(),
+                        _ => status.normal(),
+                    },
                     Err(_) => status.normal(),
                 };
                 format!("{} [{}]\n", url_data.url, colored_status)
