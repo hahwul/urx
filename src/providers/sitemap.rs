@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_recursion::async_recursion;
 use async_trait::async_trait;
 use reqwest::Client;
 use roxmltree::Document;
@@ -47,7 +48,8 @@ impl SitemapProvider {
         Ok(builder.build()?)
     }
 
-    async fn parse_sitemap(&self, client: &Client, sitemap_url: &str) -> Result<Vec<String>> {
+    #[async_recursion]
+    async fn parse_sitemap(client: &Client, sitemap_url: &str) -> Result<Vec<String>> {
         let resp = client.get(sitemap_url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
@@ -71,7 +73,7 @@ impl SitemapProvider {
                                 // Recursively fetch and parse nested sitemaps
                                 // Box::pin the future to avoid infinitely sized futures
                                 let nested_urls =
-                                    Box::pin(self.parse_sitemap(client, nested_sitemap_url))
+                                    Box::pin(Self::parse_sitemap(client, nested_sitemap_url))
                                         .await?;
                                 urls.extend(nested_urls);
                             }
@@ -135,7 +137,7 @@ impl Provider for SitemapProvider {
                 if let Ok(resp) = resp {
                     if resp.status().is_success() {
                         // Found a valid sitemap, parse it
-                        let sitemap_urls = self.parse_sitemap(&client, &sitemap_url).await?;
+                        let sitemap_urls = Self::parse_sitemap(&client, &sitemap_url).await?;
                         urls.extend(sitemap_urls);
                     }
                 }
