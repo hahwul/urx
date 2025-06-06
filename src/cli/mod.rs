@@ -138,7 +138,7 @@ pub struct Args {
     pub network_scope: String,
 
     #[clap(help_heading = "Network Options")]
-    /// Use proxy for HTTP requests (format: http://proxy.example.com:8080)
+    /// Use proxy for HTTP requests (format: <http://proxy.example.com:8080>)
     #[clap(long)]
     pub proxy: Option<String>,
 
