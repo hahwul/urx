@@ -21,7 +21,7 @@ impl Default for NetworkScope {
 
 #[derive(Clone, Debug)]
 pub struct NetworkSettings {
-    /// Proxy server URL (e.g., "http://proxy.example.com:8080")
+    /// Proxy server URL (e.g., "<http://proxy.example.com:8080>")
     pub proxy: Option<String>,
 
     /// Proxy authentication in the format "username:password"
