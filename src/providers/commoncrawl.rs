@@ -198,7 +198,7 @@ impl Provider for CommonCrawlProvider {
                             if res.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
                                 // This means we've likely reached the end if total_size was not known
                                 log::info!("Range not satisfiable for {}, assuming end of file.", range_value);
-                                break Ok(None); // Signal to break outer loop
+                                break Ok::<Option<reqwest::Response>, anyhow::Error>(None); // Signal to break outer loop
                             }
                             if !res.status().is_success() && res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
                                 last_error = Some(anyhow::anyhow!("HTTP error: {} for range {}", res.status(), range_value));
