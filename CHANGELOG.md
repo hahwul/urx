@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+- Added Discovery Options(`--exclude-robots` and `--exclude-sitemap` flags) - Options to disable robots.txt and sitemap.xml discovery which are now enabled by default
+- Changed robots.txt and sitemap.xml discovery to be enabled by default
+
 ## 0.5.0
 
-- Added `--include-robots` flag - Extract URLs from robots.txt files by [@Adesoji1](https://github.com/Adesoji1)
-- Added `--include-sitemap` flag - Extract URLs from sitemap
+- Added robots.txt discovery functionality by [@Adesoji1](https://github.com/Adesoji1)
+- Added sitemap.xml discovery functionality
 - Added `--strict` flag - Enforce exact host validation (default is true)
 
 ## 0.4.0

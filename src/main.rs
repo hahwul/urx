@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if args.include_robots {
+    if args.should_use_robots() {
         add_provider(
             &args,
             &network_settings,
@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if args.include_sitemap {
+    if args.should_use_sitemap() {
         add_provider(
             &args,
             &network_settings,
@@ -506,8 +506,10 @@ mod tests {
             include_status: vec![],
             exclude_status: vec![],
             extract_links: false,
-            include_robots: false,
-            include_sitemap: false,
+            include_robots: true,
+            include_sitemap: true,
+            exclude_robots: false,
+            exclude_sitemap: false,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -590,6 +592,8 @@ mod tests {
             extract_links: false,
             include_robots: true,
             include_sitemap: true,
+            exclude_robots: false,
+            exclude_sitemap: false,
         };
 
         let network_settings = NetworkSettings::new();
