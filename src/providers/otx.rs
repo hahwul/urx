@@ -1,10 +1,20 @@
 use anyhow::{Context, Result};
 use rand::Rng;
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 
 use super::Provider;
+
+// Helper function to deserialize null as default value for i32
+fn deserialize_null_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 #[derive(Clone)]
 pub struct OTXProvider {
@@ -21,21 +31,27 @@ pub struct OTXProvider {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OTXResult {
+    #[serde(default)]
     has_next: bool,
+    #[serde(default)]
     actual_size: i32,
+    #[serde(default = "Vec::new")]
     url_list: Vec<OTXUrlEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OTXUrlEntry {
+    #[serde(default = "String::new")]
     domain: String,
+    #[serde(default = "String::new")]
     url: String,
+    #[serde(default = "String::new")]
     hostname: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_i32")]
     httpcode: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_i32")]
     page_num: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_i32")]
     full_size: i32,
     #[serde(default)]
     paged: bool,
@@ -165,14 +181,93 @@ impl Provider for OTXProvider {
                     match client.get(&url).send().await {
                         Ok(response) => {
                             if response.status().is_success() {
-                                match response.json::<OTXResult>().await {
-                                    Ok(otx_result) => {
-                                        result = Some(otx_result);
-                                        break;
+                                match response.text().await {
+                                    Ok(text) => {
+                                        // Try to parse as OTXResult first
+                                        let parse_result = serde_json::from_str::<OTXResult>(&text);
+
+                                        if let Ok(otx_result) = parse_result {
+                                            result = Some(otx_result);
+                                            break;
+                                        } else {
+                                            // If that fails, try to parse as a JSON Value and extract the url_list
+                                            match serde_json::from_str::<serde_json::Value>(&text) {
+                                                Ok(json_value) => {
+                                                    if let Some(url_list) =
+                                                        json_value.get("url_list")
+                                                    {
+                                                        match serde_json::from_value::<
+                                                            Vec<OTXUrlEntry>,
+                                                        >(
+                                                            url_list.clone()
+                                                        ) {
+                                                            Ok(entries) => {
+                                                                // Create a new OTXResult with default values for other fields
+                                                                let otx_result = OTXResult {
+                                                                    has_next: json_value
+                                                                        .get("has_next")
+                                                                        .and_then(|v| v.as_bool())
+                                                                        .unwrap_or(false),
+                                                                    actual_size: json_value
+                                                                        .get("actual_size")
+                                                                        .and_then(|v| v.as_i64())
+                                                                        .map(|v| v as i32)
+                                                                        .unwrap_or(0),
+                                                                    url_list: entries,
+                                                                };
+                                                                result = Some(otx_result);
+                                                                break;
+                                                            }
+                                                            Err(e) => {
+                                                                let preview = if text.len() > 100 {
+                                                                    format!(
+                                                                        "{}... (truncated)",
+                                                                        &text[..100]
+                                                                    )
+                                                                } else {
+                                                                    text.clone()
+                                                                };
+
+                                                                last_error = Some(anyhow::anyhow!(
+                                                                    "Failed to parse url_list entries: {}. Response preview: {}",
+                                                                    e, preview
+                                                                ));
+                                                            }
+                                                        }
+                                                    } else {
+                                                        let preview = if text.len() > 100 {
+                                                            format!(
+                                                                "{}... (truncated)",
+                                                                &text[..100]
+                                                            )
+                                                        } else {
+                                                            text.clone()
+                                                        };
+
+                                                        last_error = Some(anyhow::anyhow!(
+                                                            "Response is missing url_list field. Response preview: {}",
+                                                            preview
+                                                        ));
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    let preview = if text.len() > 100 {
+                                                        format!("{}... (truncated)", &text[..100])
+                                                    } else {
+                                                        text.clone()
+                                                    };
+
+                                                    last_error = Some(anyhow::anyhow!(
+                                                        "Failed to parse OTX response as JSON: {}. Response preview: {}",
+                                                        e, preview
+                                                    ));
+                                                }
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         last_error = Some(anyhow::anyhow!(
-                                            "Failed to parse OTX response: {}",
+                                            "Failed to get response text: {}",
                                             e
                                         ));
                                     }
