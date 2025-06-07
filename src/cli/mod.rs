@@ -159,12 +159,12 @@ pub struct Args {
 
     /// Request timeout in seconds
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "30")]
+    #[clap(long, default_value = "120")]
     pub timeout: u64,
 
     /// Number of retries for failed requests
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "3")]
+    #[clap(long, default_value = "2")]
     pub retries: u32,
 
     /// Maximum number of parallel requests per provider and maximum concurrent domain processing
