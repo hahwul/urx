@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(name = "urx", version)]
 pub struct Args {
     /// Domains to fetch URLs for
@@ -52,15 +52,21 @@ pub struct Args {
     #[clap(long)]
     pub urlscan_api_key: Option<String>,
 
-    #[clap(help_heading = "Provider Options")]
-    /// Include robots.txt discovery
-    #[clap(long)]
+    /// Include robots.txt discovery (default: true)
+    #[clap(long, default_value = "true", hide = true)]
     pub include_robots: bool,
 
-    #[clap(help_heading = "Provider Options")]
-    /// Include sitemap.xml discovery
-    #[clap(long)]
+    /// Exclude robots.txt discovery
+    #[clap(long, help_heading = "Discovery Options")]
+    pub exclude_robots: bool,
+
+    /// Include sitemap.xml discovery (default: true)
+    #[clap(long, default_value = "true", hide = true)]
     pub include_sitemap: bool,
+
+    /// Exclude sitemap.xml discovery
+    #[clap(long, help_heading = "Discovery Options")]
+    pub exclude_sitemap: bool,
 
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
@@ -215,6 +221,18 @@ pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
     Ok(domains)
 }
 
+impl Args {
+    /// Check if robots.txt discovery should be used
+    pub fn should_use_robots(&self) -> bool {
+        !self.exclude_robots && self.include_robots
+    }
+
+    /// Check if sitemap.xml discovery should be used
+    pub fn should_use_sitemap(&self) -> bool {
+        !self.exclude_sitemap && self.include_sitemap
+    }
+}
+
 fn validate_network_scope(s: &str) -> Result<String, String> {
     match s {
         "all" | "providers" | "testers" | "providers,testers" | "testers,providers" => Ok(s.to_string()),
@@ -235,6 +253,12 @@ mod tests {
         assert_eq!(args.cc_index, "CC-MAIN-2025-13");
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
+        assert!(args.include_robots);
+        assert!(args.include_sitemap);
+        assert!(!args.exclude_robots);
+        assert!(!args.exclude_sitemap);
+        assert!(args.should_use_robots());
+        assert!(args.should_use_sitemap());
     }
 
     #[test]
@@ -284,6 +308,49 @@ mod tests {
         ]);
         assert_eq!(args.extensions, vec!["js", "php"]);
         assert_eq!(args.exclude_extensions, vec!["html", "css"]);
+    }
+
+    #[test]
+    fn test_robots_sitemap_flags() {
+        // Test default values are true for include flags and false for exclude flags
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.include_robots);
+        assert!(args.include_sitemap);
+        assert!(!args.exclude_robots);
+        assert!(!args.exclude_sitemap);
+        assert!(args.should_use_robots());
+        assert!(args.should_use_sitemap());
+
+        // Test they can be disabled via exclude flags (visible in help)
+        let args = Args::parse_from([
+            "urx",
+            "example.com",
+            "--exclude-robots",
+            "--exclude-sitemap",
+        ]);
+        assert!(args.exclude_robots);
+        assert!(args.exclude_sitemap);
+        assert!(!args.should_use_robots());
+        assert!(!args.should_use_sitemap());
+    }
+
+    #[test]
+    fn test_robots_sitemap_helper_methods() {
+        // Default is to use both
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.should_use_robots());
+        assert!(args.should_use_sitemap());
+
+        // Exclude flags take precedence over include flags
+        let args = Args::parse_from(["urx", "example.com", "--exclude-robots"]);
+        assert!(!args.should_use_robots());
+        assert!(args.should_use_sitemap());
+
+        // Explicit exclude always wins over include setting
+        let args = Args::parse_from(["urx", "example.com", "--include-robots", "--exclude-robots"]);
+        assert!(args.exclude_robots);
+        assert!(args.include_robots); // Both flags retain their values
+        assert!(!args.should_use_robots()); // But should_use_robots uses the logic
     }
 
     #[test]

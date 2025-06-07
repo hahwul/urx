@@ -94,8 +94,10 @@ Provider Options:
   --cc-index <CC_INDEX>                Common Crawl index to use (e.g., CC-MAIN-2025-13) [default: CC-MAIN-2025-13]
   --vt-api-key <VT_API_KEY>            API key for VirusTotal (can also use URX_VT_API_KEY environment variable)
   --urlscan-api-key <URLSCAN_API_KEY>  API key for Urlscan (can also use URX_URLSCAN_API_KEY environment variable)
-  --include-robots                     Include robots.txt discovery
-  --include-sitemap                    Include sitemap.xml discovery
+
+Discovery Options:
+  --exclude-robots   Exclude robots.txt discovery
+  --exclude-sitemap  Exclude sitemap.xml discovery
 
 Display Options:
   -v, --verbose      Show verbose output
@@ -177,11 +179,13 @@ urx example.com --providers=vt,urlscan --vt-api-key=*** --urlscan-api-key=****
 # Use VirusTotal and URLScan with environment variables for API keys
 URX_VT_API_KEY=**** URX_URLSCAN_API_KEY=**** urx example.com --providers=vt,urlscan
 
-# Extract URLs from robots.txt files
-urx example.com --include-robots
+# URLs from robots.txt and sitemap.xml are included by default
 
-# Extract URLs from sitemap
-urx example.com --include-sitemap
+# Exclude URLs from robots.txt files
+urx example.com --exclude-robots
+
+# Exclude URLs from sitemap
+urx example.com --exclude-sitemap
 
 # Include subdomains
 urx example.com --subs
@@ -223,7 +227,7 @@ Urx was inspired by [gau (GetAllUrls)](https://github.com/lc/gau), a tool that f
 
 ## Contribute
 
-Urx is open-source project and made it with ❤️ 
+Urx is open-source project and made it with ❤️
 if you want contribute this project, please see [CONTRIBUTING.md](./CONTRIBUTING.md) and Pull-Request with cool your contents.
 
 [![](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/CONTRIBUTORS.svg)](https://github.com/hahwul/urx/graphs/contributors)

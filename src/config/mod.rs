@@ -39,6 +39,10 @@ pub struct ProviderConfig {
     pub cc_index: Option<String>,
     pub vt_api_key: Option<String>,
     pub urlscan_api_key: Option<String>,
+    pub include_robots: Option<bool>,
+    pub include_sitemap: Option<bool>,
+    pub exclude_robots: Option<bool>,
+    pub exclude_sitemap: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -200,6 +204,25 @@ impl Config {
 
         if args.urlscan_api_key.is_none() && self.provider.urlscan_api_key.is_some() {
             args.urlscan_api_key = self.provider.urlscan_api_key;
+        }
+
+        // Handle robots.txt and sitemap.xml discovery options
+        if !args.exclude_robots && self.provider.exclude_robots.unwrap_or(false) {
+            args.exclude_robots = true;
+        }
+
+        if !args.exclude_sitemap && self.provider.exclude_sitemap.unwrap_or(false) {
+            args.exclude_sitemap = true;
+        }
+
+        // Only apply include_* if exclude_* is not set (exclude takes precedence)
+        if !args.exclude_robots && args.include_robots && self.provider.include_robots.is_some() {
+            args.include_robots = self.provider.include_robots.unwrap();
+        }
+
+        if !args.exclude_sitemap && args.include_sitemap && self.provider.include_sitemap.is_some()
+        {
+            args.include_sitemap = self.provider.include_sitemap.unwrap();
         }
 
         // Filter options
@@ -446,8 +469,10 @@ mod tests {
             exclude_status: vec![],
             domains: vec![],
             extract_links: false,
-            include_robots: false,
-            include_sitemap: false,
+            include_robots: true,
+            include_sitemap: true,
+            exclude_robots: false,
+            exclude_sitemap: false,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");
