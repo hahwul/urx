@@ -233,8 +233,8 @@ mod tests {
         assert_eq!(args.format, "plain");
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
         assert_eq!(args.cc_index, "CC-MAIN-2025-13");
-        assert_eq!(args.timeout, 30);
-        assert_eq!(args.retries, 3);
+        assert_eq!(args.timeout, 120);
+        assert_eq!(args.retries, 2);
     }
 
     #[test]
