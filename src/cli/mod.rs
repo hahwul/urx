@@ -159,12 +159,12 @@ pub struct Args {
 
     /// Request timeout in seconds
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "30")]
+    #[clap(long, default_value = "120")]
     pub timeout: u64,
 
     /// Number of retries for failed requests
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "3")]
+    #[clap(long, default_value = "2")]
     pub retries: u32,
 
     /// Maximum number of parallel requests per provider and maximum concurrent domain processing
@@ -233,8 +233,8 @@ mod tests {
         assert_eq!(args.format, "plain");
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
         assert_eq!(args.cc_index, "CC-MAIN-2025-13");
-        assert_eq!(args.timeout, 30);
-        assert_eq!(args.retries, 3);
+        assert_eq!(args.timeout, 120);
+        assert_eq!(args.retries, 2);
     }
 
     #[test]
