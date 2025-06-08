@@ -57,11 +57,41 @@ async fn main() -> Result<()> {
     // Create common network settings from args
     let network_settings = NetworkSettings::from_args(&args);
 
-    // Initialize providers based on command-line flags
+    // Initialize providers based on command-line flags and API keys
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
 
-    if args.providers.iter().any(|p| p == "wayback") {
+    // Get VirusTotal and Urlscan API keys
+    let vt_api_key = args
+        .vt_api_key
+        .clone()
+        .or_else(|| std::env::var("URX_VT_API_KEY").ok());
+
+    let urlscan_api_key = args
+        .urlscan_api_key
+        .clone()
+        .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
+
+    // Auto-enable providers if API keys are provided but not explicitly included in providers
+    let mut providers_list = args.providers.clone();
+
+    // Auto-enable VirusTotal if API key is provided but not in providers list
+    if vt_api_key.is_some() && !providers_list.iter().any(|p| p == "vt") {
+        providers_list.push("vt".to_string());
+        if args.verbose && !args.silent {
+            println!("Auto-enabling VirusTotal provider because API key is provided");
+        }
+    }
+
+    // Auto-enable Urlscan if API key is provided but not in providers list
+    if urlscan_api_key.is_some() && !providers_list.iter().any(|p| p == "urlscan") {
+        providers_list.push("urlscan".to_string());
+        if args.verbose && !args.silent {
+            println!("Auto-enabling Urlscan provider because API key is provided");
+        }
+    }
+
+    if providers_list.iter().any(|p| p == "wayback") {
         add_provider(
             &args,
             &network_settings,
@@ -72,7 +102,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if args.providers.iter().any(|p| p == "cc") {
+    if providers_list.iter().any(|p| p == "cc") {
         add_provider(
             &args,
             &network_settings,
@@ -105,7 +135,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if args.providers.iter().any(|p| p == "otx") {
+    if providers_list.iter().any(|p| p == "otx") {
         add_provider(
             &args,
             &network_settings,
@@ -116,14 +146,8 @@ async fn main() -> Result<()> {
         );
     }
 
-    if args.providers.iter().any(|p| p == "vt") {
-        // First check command-line argument, then fall back to environment variable
-        let api_key = args
-            .vt_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
-
-        if let Some(api_key) = api_key {
+    if providers_list.iter().any(|p| p == "vt") {
+        if let Some(api_key) = vt_api_key.clone() {
             add_provider(
                 &args,
                 &network_settings,
@@ -137,14 +161,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    if args.providers.iter().any(|p| p == "urlscan") {
-        // First check command-line argument, then fall back to environment variable
-        let api_key = args
-            .urlscan_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
-
-        if let Some(api_key) = api_key {
+    if providers_list.iter().any(|p| p == "urlscan") {
+        if let Some(api_key) = urlscan_api_key.clone() {
             add_provider(
                 &args,
                 &network_settings,
@@ -361,6 +379,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use std::collections::HashSet;
+
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
