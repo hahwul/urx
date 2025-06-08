@@ -31,13 +31,14 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 ### From Cargo
 
 ```bash
+# https://crates.io/crates/urx
 cargo install urx
 ```
 
-### From Homebrew (Tap)
+### From Homebrew
 
 ```bash
-brew tap hahwul/urx
+# https://formulae.brew.sh/formula/urx
 brew install urx
 ```
 
