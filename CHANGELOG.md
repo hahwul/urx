@@ -2,13 +2,19 @@
 
 ## Unreleased
 
-- Added Discovery Options(`--exclude-robots` and `--exclude-sitemap` flags) - Options to disable robots.txt and sitemap.xml discovery which are now enabled by default
-- Changed robots.txt and sitemap.xml discovery to be enabled by default
-- Added a feature to highlight HTTP response statuses using the `--check-status` flag. This was inspired by a feature request from the community (related to issue #59).
-- Added auto-enabling of providers when API keys are provided - If VirusTotal or Urlscan API keys are provided via CLI args or environment variables but not explicitly included in the providers list, they will now be automatically enabled (related to issue #60).
-- Adjusted default timeout and retry values for fetching URLs. Timeout was increased from 30s to 120s, and retries were reduced from 3 to 2 to improve reliability and performance (related to issue #68).
-- Fixed a parsing bug in the OTX provider that occurred when encountering unexpected null values in the API response (related to issue #70).
-- Resolved issues with fetching URLs from Wayback Machine, Common Crawl, and OTX providers. This included fixing timeouts, premature connection closures, and response parsing errors (related to issue #62).
+## 0.6.0
+
+- Enhanced URL discovery features
+  - Added robots.txt and sitemap.xml discovery by default
+  - Added `--exclude-robots` and `--exclude-sitemap` flags to disable discovery when needed
+- Added HTTP response status highlighting with `--check-status` flag (#59)
+- Improved API key handling for providers
+  - Auto-enables VirusTotal and Urlscan when API keys are provided (#60)
+- Enhanced network reliability
+  - Increased default timeout from 30s to 120s and optimized retry settings (#68)
+- Fixed provider issues
+  - Resolved OTX provider parsing bug for null values (#70)
+  - Fixed connectivity issues with Wayback Machine, Common Crawl, and OTX (#62)
 
 ## 0.5.0
 
