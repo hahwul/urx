@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Dependencies Update
+- Fixed a bug in the HostValidator when using the `--subs` flag (#78)
 
 ## 0.6.0
 
