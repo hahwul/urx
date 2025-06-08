@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
     // Helper function to auto-enable providers
     fn auto_enable_provider(
         providers_list: &mut Vec<String>,
-        api_key: Option<String>,
+        api_key: &Option<String>,
         provider_name: &str,
         verbose: bool,
         silent: bool,
@@ -86,14 +86,29 @@ async fn main() -> Result<()> {
         if api_key.is_some() && !providers_list.iter().any(|p| p == provider_name) {
             providers_list.push(provider_name.to_string());
             if verbose && !silent {
-                println!("Auto-enabling {} provider because API key is provided", provider_name);
+                println!(
+                    "Auto-enabling {} provider because API key is provided",
+                    provider_name
+                );
             }
         }
     }
 
     // Auto-enable VirusTotal and Urlscan providers
-    auto_enable_provider(&mut providers_list, vt_api_key, "vt", args.verbose, args.silent);
-    auto_enable_provider(&mut providers_list, urlscan_api_key, "urlscan", args.verbose, args.silent);
+    auto_enable_provider(
+        &mut providers_list,
+        &vt_api_key,
+        "vt",
+        args.verbose,
+        args.silent,
+    );
+    auto_enable_provider(
+        &mut providers_list,
+        &urlscan_api_key,
+        "urlscan",
+        args.verbose,
+        args.silent,
+    );
 
     if providers_list.iter().any(|p| p == "wayback") {
         add_provider(
