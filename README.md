@@ -28,7 +28,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 
 ## Installation
 
-### From Cargo (Recommended)
+### From Cargo
 
 ```bash
 cargo install urx
