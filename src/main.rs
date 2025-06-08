@@ -257,7 +257,7 @@ async fn main() -> Result<()> {
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-        let host_validator = HostValidator::new(&domains);
+        let host_validator = HostValidator::new(&domains, args.subs);
         sorted_urls.retain(|url| host_validator.is_valid_host(url));
 
         if args.verbose && !args.silent {
