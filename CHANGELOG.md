@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Dependencies Update
+
 ## 0.6.0
 
 - Enhanced URL discovery features
