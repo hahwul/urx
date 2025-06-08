@@ -173,11 +173,15 @@ urx example.com -p no-images
 # Use specific providers
 urx example.com --providers wayback,otx
 
-# Use VirusTotal and URLScan with API keys
-urx example.com --providers=vt,urlscan --vt-api-key=*** --urlscan-api-key=****
+# Using VirusTotal and URLScan providers
+# 1. Explicitly add to providers (with API keys via command line)
+urx example.com --providers=vt,urlscan --vt-api-key=*** --urlscan-api-key=***
 
-# Use VirusTotal and URLScan with environment variables for API keys
-URX_VT_API_KEY=**** URX_URLSCAN_API_KEY=**** urx example.com --providers=vt,urlscan
+# 2. Using environment variables for API keys
+URX_VT_API_KEY=*** URX_URLSCAN_API_KEY=*** urx example.com --providers=vt,urlscan
+
+# 3. Auto-enabling: providers are automatically added when API keys are provided
+urx example.com --vt-api-key=*** --urlscan-api-key=*** # No need to specify in --providers
 
 # URLs from robots.txt and sitemap.xml are included by default
 
