@@ -22,8 +22,9 @@ twitter_site = "@hahwul"
 twitter_creator = "@hahwul"
 nav = [
     { name = "Get Started", url = "/get_started/installation", type = "url" },
-    { name = "GitHub", url = "https://github.com/hahwul/urx", type = "url" },
     { name = "Links", type = "dropdown", members = [
+        { name = "GitHub", url = "https://github.com/hahwul/urx", type = "url" },
+        { name = "Crates", url = "https://crates.io/crates/urx", type = "url" },
         { name = "Creator Blog", url = "https://www.hahwul.com", type = "url" },
     ] },
 ]
