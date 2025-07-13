@@ -3,11 +3,11 @@ template = "landing.html"
 extra.version = "v0.6.1"
 extra.landing_image = "/images/preview.jpg"
 extra.features = [
-    { title = "Documentation Friendly", desc = "Provides a clean writing experience for documentation." },
-    { title = "Simple Design", desc = "A theme that pursues minimalism." },
-    { title = "Fast Speed", desc = "Fast, because we don't like slow things." },
-    { title = "SEO Optimized", desc = "Provides a structure optimized for search engines." },
-    { title = "Various Shortcodes", desc = "Offers a variety of useful shortcodes." },
-    { title = "Dark & Light Mode", desc = "Supports both dark and light modes." },
+    { title = "Multi-Source URL Collection", desc = "Fetch URLs from multiple OSINT archives in parallel, including Wayback Machine, Common Crawl, and OTX." },
+    { title = "Advanced Filtering", desc = "Filter results by file extensions, patterns, or presets (e.g., exclude images or resources)." },
+    { title = "Flexible Output", desc = "Supports plain text, JSON, and CSV formats. Output to console, file, or stream for pipeline integration." },
+    { title = "URL Testing & Validation", desc = "Filter and validate URLs based on HTTP status codes, extract additional links, and perform live checks." },
+    { title = "Performance & Concurrency", desc = "Built with Rust for speed and efficiency, leveraging asynchronous processing and parallel requests." },
+    { title = "Customizable Network Options", desc = "Configure proxies, timeouts, retries, parallelism, and more for robust network operations." },
 ]
 +++
