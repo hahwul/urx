@@ -48,13 +48,11 @@ impl Provider for WaybackMachineProvider {
             // Handle subdomain inclusion in URL construction
             let url = if self.include_subdomains {
                 format!(
-                    "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
-                    domain
+                    "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
                 )
             } else {
                 format!(
-                    "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
-                    domain
+                    "https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original"
                 )
             };
 
@@ -335,21 +333,16 @@ mod tests {
 
         // 실제 URL 형식 검증만 합니다
         let expected_url = format!(
-            "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
-            domain
+            "https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original"
         );
 
         // URL 구성이 올바른지 확인합니다
         let url = if provider.include_subdomains {
             format!(
-                "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
-                domain
+                "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
             )
         } else {
-            format!(
-                "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
-                domain
-            )
+            format!("https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original")
         };
 
         assert_eq!(url, expected_url);
@@ -366,21 +359,16 @@ mod tests {
 
         // 실제 URL 형식 검증만 합니다
         let expected_url = format!(
-            "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
-            domain
+            "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
         );
 
         // URL 구성이 올바른지 확인합니다
         let url = if provider.include_subdomains {
             format!(
-                "https://web.archive.org/cdx/search/cdx?url=*.{}/*&output=json&fl=original",
-                domain
+                "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
             )
         } else {
-            format!(
-                "https://web.archive.org/cdx/search/cdx?url={}/*&output=json&fl=original",
-                domain
-            )
+            format!("https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original")
         };
 
         assert_eq!(url, expected_url);

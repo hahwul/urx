@@ -109,7 +109,7 @@ impl UrlTransformer {
                     if !all_params.is_empty() {
                         let query_string = all_params
                             .into_iter()
-                            .map(|(k, v)| format!("{}={}", k, v))
+                            .map(|(k, v)| format!("{k}={v}"))
                             .collect::<Vec<_>>()
                             .join("&");
 

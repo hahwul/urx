@@ -41,10 +41,7 @@ pub fn auto_enable_provider(
     if api_key.is_some() && !providers_list.iter().any(|p| p == provider_name) {
         providers_list.push(provider_name.to_string());
         if verbose && !silent {
-            println!(
-                "Auto-enabling {} provider because API key is provided",
-                provider_name
-            );
+            println!("Auto-enabling {provider_name} provider because API key is provided");
         }
     }
 }
@@ -384,7 +381,7 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             if !args.silent {
-                eprintln!("Error writing output: {}", e);
+                eprintln!("Error writing output: {e}");
             }
         }
     }

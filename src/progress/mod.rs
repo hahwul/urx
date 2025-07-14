@@ -73,7 +73,7 @@ impl ProgressManager {
             .map(|name| {
                 let bar = self.multi_progress.add(ProgressBar::new(100));
                 // Format provider name to have consistent width
-                bar.set_prefix(format!("{:<15}", name));
+                bar.set_prefix(format!("{name:<15}"));
                 // Set style with consistent template
                 bar.set_style(style.clone());
                 // Use a slower tick rate to reduce flicker

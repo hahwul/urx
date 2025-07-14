@@ -46,37 +46,33 @@ pub fn add_provider<T: Provider + 'static>(
     provider_builder: impl FnOnce() -> T,
 ) {
     if args.verbose && !args.silent {
-        println!("Adding {} provider", provider_name);
+        println!("Adding {provider_name} provider");
         if network_settings.include_subdomains {
-            println!("Subdomain inclusion enabled for {}", provider_name);
+            println!("Subdomain inclusion enabled for {provider_name}");
         }
         if network_settings.proxy.is_some() {
             println!(
-                "Using proxy for {}: {}",
-                provider_name,
+                "Using proxy for {provider_name}: {}",
                 network_settings.proxy.as_ref().unwrap()
             );
         }
         if network_settings.random_agent && !args.silent {
-            println!("Random User-Agent enabled for {}", provider_name);
+            println!("Random User-Agent enabled for {provider_name}");
         }
         println!(
-            "Timeout set to {} seconds for {}",
-            network_settings.timeout, provider_name
+            "Timeout set to {} seconds for {provider_name}",
+            network_settings.timeout
         );
         println!(
-            "Retries set to {} for {}",
-            network_settings.retries, provider_name
+            "Retries set to {} for {provider_name}",
+            network_settings.retries
         );
         println!(
-            "Parallel requests set to {} for {}",
-            network_settings.parallel, provider_name
+            "Parallel requests set to {} for {provider_name}",
+            network_settings.parallel
         );
         if let Some(rate) = network_settings.rate_limit {
-            println!(
-                "Rate limit set to {} requests/second for {}",
-                rate, provider_name
-            );
+            println!("Rate limit set to {rate} requests/second for {provider_name}");
         }
     }
 
@@ -124,10 +120,7 @@ pub async fn process_domains(
 
     verbose_print(
         args,
-        format!(
-            "Using provider-based concurrency with {} providers",
-            total_providers
-        ),
+        format!("Using provider-based concurrency with {total_providers} providers"),
     );
 
     // Clone provider data for use in async tasks
@@ -175,8 +168,7 @@ pub async fn process_domains(
 
                 // Update the progress bar message to show which domain is being processed
                 provider_bar.set_message(format!(
-                    "({}/{}) Fetching data for {}",
-                    current_domain_idx, total_domains, domain
+                    "({current_domain_idx}/{total_domains}) Fetching data for {domain}"
                 ));
 
                 // Use ticker for progress visualization
@@ -294,8 +286,7 @@ pub async fn process_domains(
                     Err(e) => {
                         provider_bar.set_position(100);
                         provider_bar.set_message(format!(
-                            "({}/{}) Error: for {}",
-                            current_domain_idx, total_domains, domain
+                            "({current_domain_idx}/{total_domains}) Error: for {domain}"
                         ));
                         ticker_handle.abort();
                         provider_bar.set_style(
@@ -337,10 +328,7 @@ pub async fn process_domains(
                         }
 
                         if verbose && !silent {
-                            eprintln!(
-                                "Error fetching URLs for {} from {}: {}",
-                                domain, provider_name, e
-                            );
+                            eprintln!("Error fetching URLs for {domain} from {provider_name}: {e}");
                         }
 
                         Err(e.to_string())
@@ -349,7 +337,7 @@ pub async fn process_domains(
 
                 if let Err(err) = result {
                     if verbose && !silent {
-                        println!("  - {}: Error - {} for {}", provider_name, err, domain);
+                        println!("  - {provider_name}: Error - {err} for {domain}");
                     }
                 }
 
@@ -362,16 +350,12 @@ pub async fn process_domains(
             // This provider has finished all its domains
             if current_domain_idx >= total_domains {
                 provider_bar.finish_with_message(format!(
-                    "({}/{}) Completed all domains",
-                    total_domains, total_domains
+                    "({total_domains}/{total_domains}) Completed all domains"
                 ));
             }
 
             if verbose && !silent {
-                println!(
-                    "Provider {} has completed processing all domains",
-                    provider_name
-                );
+                println!("Provider {provider_name} has completed processing all domains");
             }
         });
 

@@ -44,7 +44,7 @@ impl Outputter for PlainOutputter {
 
                 for (i, url_data) in urls.iter().enumerate() {
                     let formatted = self.format(url_data, i == urls.len() - 1);
-                    print!("{}", formatted);
+                    print!("{formatted}");
                 }
                 Ok(())
             }
@@ -97,7 +97,7 @@ impl Outputter for JsonOutputter {
 
                 for (i, url_data) in urls.iter().enumerate() {
                     let formatted = self.format(url_data, i == urls.len() - 1);
-                    print!("{}", formatted);
+                    print!("{formatted}");
                 }
 
                 println!("]");
@@ -163,7 +163,7 @@ impl Outputter for CsvOutputter {
 
                 for (i, url_data) in urls.iter().enumerate() {
                     let formatted = self.format(url_data, i == urls.len() - 1);
-                    print!("{}", formatted);
+                    print!("{formatted}");
                 }
 
                 Ok(())

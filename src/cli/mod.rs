@@ -236,7 +236,7 @@ impl Args {
 fn validate_network_scope(s: &str) -> Result<String, String> {
     match s {
         "all" | "providers" | "testers" | "providers,testers" | "testers,providers" => Ok(s.to_string()),
-        _ => Err(format!("Invalid network scope: {}. Allowed values are all, providers, testers, or providers,testers", s)),
+        _ => Err(format!("Invalid network scope: {s}. Allowed values are all, providers, testers, or providers,testers")),
     }
 }
 

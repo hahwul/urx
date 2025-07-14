@@ -77,9 +77,9 @@ impl Formatter for JsonFormatter {
         };
 
         if is_last {
-            format!("{}\n", json)
+            format!("{json}\n")
         } else {
-            format!("{},", json)
+            format!("{json},")
         }
     }
 
