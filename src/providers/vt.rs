@@ -120,7 +120,7 @@ impl Provider for VirusTotalProvider {
             // Add proxy if configured
             if let Some(proxy_url) = &self.proxy {
                 let mut proxy = reqwest::Proxy::all(proxy_url)
-                    .context(format!("Invalid proxy URL: {}", proxy_url))?;
+                    .context(format!("Invalid proxy URL: {proxy_url}"))?;
 
                 // Add proxy authentication if provided
                 if let Some(auth) = &self.proxy_auth {

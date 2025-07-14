@@ -88,8 +88,7 @@ impl OTXProvider {
         if domain.split('.').count() <= 2 {
             // This is a second-level domain like example.com
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/{}/url_list?limit={}&page={}",
-                domain, OTX_RESULTS_LIMIT, page_number
+                "https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}"
             )
         } else if self.include_subdomains {
             // This is a subdomain but we want to include all subdomains
@@ -102,14 +101,12 @@ impl OTXProvider {
             };
 
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/{}/url_list?limit={}&page={}",
-                main_domain, OTX_RESULTS_LIMIT, page_number
+                "https://otx.alienvault.com/api/v1/indicators/domain/{main_domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}"
             )
         } else {
             // This is a subdomain and we don't want to include other subdomains
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/hostname/{}/url_list?limit={}&page={}",
-                domain, OTX_RESULTS_LIMIT, page_number
+                "https://otx.alienvault.com/api/v1/indicators/hostname/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}"
             )
         }
     }
@@ -157,7 +154,7 @@ impl Provider for OTXProvider {
                 // Add proxy if configured
                 if let Some(proxy_url) = &self.proxy {
                     let mut proxy = reqwest::Proxy::all(proxy_url)
-                        .context(format!("Invalid proxy URL: {}", proxy_url))?;
+                        .context(format!("Invalid proxy URL: {proxy_url}"))?;
 
                     // Add proxy authentication if provided
                     if let Some(auth) = &self.proxy_auth {
@@ -447,8 +444,7 @@ mod tests {
         assert_eq!(
             url,
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={}&page=1",
-                OTX_RESULTS_LIMIT
+                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={OTX_RESULTS_LIMIT}&page=1"
             )
         );
     }
@@ -460,8 +456,7 @@ mod tests {
         assert_eq!(
             url,
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/hostname/sub.example.com/url_list?limit={}&page=1",
-                OTX_RESULTS_LIMIT
+                "https://otx.alienvault.com/api/v1/indicators/hostname/sub.example.com/url_list?limit={OTX_RESULTS_LIMIT}&page=1"
             )
         );
     }
@@ -474,8 +469,7 @@ mod tests {
         assert_eq!(
             url,
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={}&page=1",
-                OTX_RESULTS_LIMIT
+                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={OTX_RESULTS_LIMIT}&page=1"
             )
         );
     }
@@ -487,8 +481,7 @@ mod tests {
         assert_eq!(
             url,
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={}&page=3",
-                OTX_RESULTS_LIMIT
+                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={OTX_RESULTS_LIMIT}&page=3"
             )
         );
     }

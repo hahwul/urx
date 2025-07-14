@@ -81,7 +81,7 @@ pub async fn process_urls_with_testers(
                         }
                         Err(e) => {
                             if verbose && !silent {
-                                eprintln!("Error testing URL {}: {}", url, e);
+                                eprintln!("Error testing URL {url}: {e}");
                             }
                         }
                     }
@@ -141,7 +141,7 @@ pub async fn process_urls_with_testers(
             }
             Err(e) => {
                 if !args.silent {
-                    eprintln!("Task error: {}", e);
+                    eprintln!("Task error: {e}");
                 }
             }
         }

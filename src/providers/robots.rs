@@ -59,7 +59,7 @@ impl Provider for RobotsProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
-            let https_url = format!("https://{}/robots.txt", domain);
+            let https_url = format!("https://{domain}/robots.txt");
             let mut urls = Vec::new();
 
             // Try HTTPS first
@@ -69,7 +69,7 @@ impl Provider for RobotsProvider {
                 Ok(resp) if resp.status().is_success() => (true, resp.text().await?),
                 _ => {
                     // If HTTPS fails, try HTTP
-                    let http_url = format!("http://{}/robots.txt", domain);
+                    let http_url = format!("http://{domain}/robots.txt");
                     let http_resp = client.get(&http_url).send().await?;
                     if !http_resp.status().is_success() {
                         return Ok(urls);
@@ -86,7 +86,7 @@ impl Provider for RobotsProvider {
                 if line.starts_with("Disallow:") {
                     if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
                         if !path.is_empty() && path != "/" {
-                            let url = format!("{}://{}{}", protocol, domain, path);
+                            let url = format!("{protocol}://{domain}{path}");
                             urls.push(url);
                         }
                     }
@@ -247,7 +247,7 @@ Sitemap: https://example.com/sitemap.xml
             if line.starts_with("Disallow:") {
                 if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
                     if !path.is_empty() && path != "/" {
-                        let url = format!("{}://{}{}", protocol, domain, path);
+                        let url = format!("{protocol}://{domain}{path}");
                         urls.push(url);
                     }
                 }
@@ -270,17 +270,17 @@ Sitemap: https://example.com/sitemap.xml
         let domain = "example.com";
 
         // Test HTTPS URL construction
-        let https_url = format!("https://{}/robots.txt", domain);
+        let https_url = format!("https://{domain}/robots.txt");
         assert_eq!(https_url, "https://example.com/robots.txt");
 
         // Test HTTP URL construction
-        let http_url = format!("http://{}/robots.txt", domain);
+        let http_url = format!("http://{domain}/robots.txt");
         assert_eq!(http_url, "http://example.com/robots.txt");
 
         // Test disallowed path URL construction
         let protocol = "https";
         let path = "/private/";
-        let url = format!("{}://{}{}", protocol, domain, path);
+        let url = format!("{protocol}://{domain}{path}");
         assert_eq!(url, "https://example.com/private/");
     }
 }

@@ -36,7 +36,7 @@ impl HostValidator {
                 // If subdomains are allowed, check if the host is a subdomain of any of our domains
                 if self.include_subdomains {
                     for domain in &self.domains {
-                        if normalized_host.ends_with(&format!(".{}", domain)) {
+                        if normalized_host.ends_with(&format!(".{domain}")) {
                             return true;
                         }
                     }
