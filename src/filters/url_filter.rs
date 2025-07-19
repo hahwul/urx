@@ -107,11 +107,18 @@ impl UrlFilter {
                         .path_segments()
                         .and_then(|mut segments| segments.next_back())
                     {
-                        // Extract extension from the last path segment
-                        Path::new(path)
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .map(|s| s.to_lowercase())
+                        // Manually handle complex extensions like "tar.gz"
+                        let filename = Path::new(path).file_name().and_then(|s| s.to_str());
+                        if let Some(name) = filename {
+                            let parts: Vec<&str> = name.split('.').collect();
+                            if parts.len() > 1 {
+                                Some(parts[1..].join(".").to_lowercase())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -123,9 +130,8 @@ impl UrlFilter {
                         let filename_parts: Vec<&str> = last.split('.').collect();
                         if filename_parts.len() > 1 {
                             Some(
-                                filename_parts
-                                    .last()
-                                    .unwrap()
+                                filename_parts[1..]
+                                    .join(".")
                                     .split('?')
                                     .next()
                                     .unwrap_or("")
@@ -180,12 +186,15 @@ impl UrlFilter {
                 }
             }
 
-            if include && !self.patterns.is_empty() {
+            if !self.patterns.is_empty() {
                 let url_lower = url.to_lowercase();
-                include = self
+                let pattern_match = self
                     .patterns
                     .iter()
                     .any(|pattern| url_lower.contains(&pattern.to_lowercase()));
+                if !pattern_match {
+                    include = false;
+                }
             }
 
             if include {
@@ -328,24 +337,28 @@ mod tests {
 
         let filtered = filter.apply_filters(&urls);
 
-        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/archive.tar.gz".to_string()));
         assert!(filtered.contains(&"https://example.com/script.min.js".to_string()));
     }
 
     #[test]
     fn test_case_insensitive_filtering() {
         let mut filter = UrlFilter::new();
-        filter.with_extensions(vec!["JPG".to_string()]);
-        filter.with_patterns(vec!["ADMIN".to_string()]);
+        filter.with_extensions(vec!["JPG".to_string(), "PnG".to_string()]);
+        filter.with_patterns(vec!["AdMiN".to_string()]);
 
         let mut urls = create_test_urls();
         urls.insert("https://example.com/image.jpg".to_string());
+        urls.insert("https://example.com/photo.png".to_string());
         urls.insert("https://example.com/admin/dashboard".to_string());
+        urls.insert("https://example.com/ADMIN/login.php".to_string());
 
         let filtered = filter.apply_filters(&urls);
 
-        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered.len(), 3);
         assert!(filtered.contains(&"https://example.com/image.jpg".to_string()));
+        assert!(filtered.contains(&"https://example.com/photo.png".to_string()));
         assert!(filtered.contains(&"https://example.com/admin/dashboard".to_string()));
     }
 
