@@ -315,4 +315,86 @@ mod tests {
         assert!(filtered.contains(&"https://example.com/script.js".to_string()));
         assert!(!filtered.contains(&"https://example.com/image.png".to_string()));
     }
+
+    #[test]
+    fn test_with_complex_extensions() {
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["tar.gz".to_string(), "min.js".to_string()]);
+
+        let mut urls = create_test_urls();
+        urls.insert("https://example.com/archive.tar.gz".to_string());
+        urls.insert("https://example.com/script.min.js".to_string());
+        urls.insert("https://example.com/not-min.js".to_string());
+
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains(&"https://example.com/script.min.js".to_string()));
+    }
+
+    #[test]
+    fn test_case_insensitive_filtering() {
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["JPG".to_string()]);
+        filter.with_patterns(vec!["ADMIN".to_string()]);
+
+        let mut urls = create_test_urls();
+        urls.insert("https://example.com/image.jpg".to_string());
+        urls.insert("https://example.com/admin/dashboard".to_string());
+
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/image.jpg".to_string()));
+        assert!(filtered.contains(&"https://example.com/admin/dashboard".to_string()));
+    }
+
+    #[test]
+    fn test_combined_filters() {
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["html".to_string()]);
+        filter.with_exclude_patterns(vec!["admin".to_string()]);
+
+        let mut urls = create_test_urls();
+        urls.insert("https://example.com/admin/index.html".to_string());
+
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&"https://example.com/index.html".to_string()));
+        assert!(
+            filtered.contains(&"https://example.com/very/long/path/to/resource/file.html".to_string())
+        );
+    }
+
+    #[test]
+    fn test_fallback_url_parsing() {
+        let mut filter = UrlFilter::new();
+        filter.with_extensions(vec!["aspx".to_string()]);
+
+        let mut urls = HashSet::new();
+        urls.insert("mailto:user@example.com".to_string());
+        urls.insert("ftp://example.com/file.txt".to_string());
+        urls.insert("/path/to/page.aspx?id=1".to_string());
+
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered.contains(&"/path/to/page.aspx?id=1".to_string()));
+    }
+
+    #[test]
+    fn test_preset_merging() {
+        let mut filter = UrlFilter::new();
+        filter.with_exclude_extensions(vec!["log".to_string()]);
+        filter.apply_presets(&["no-images".to_string()]);
+
+        let mut urls = create_test_urls();
+        urls.insert("https://example.com/error.log".to_string());
+
+        let filtered = filter.apply_filters(&urls);
+
+        assert!(!filtered.contains(&"https://example.com/image.png".to_string()));
+        assert!(!filtered.contains(&"https://example.com/error.log".to_string()));
+    }
 }
