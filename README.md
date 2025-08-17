@@ -17,6 +17,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 ## Features
 
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX)
+* **Direct file input support**: Read URLs directly from WARC files, URLTeam compressed files, and text files
 * Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
 * Support for multiple output formats: plain text, JSON, CSV
 * Output results to the console or a file, or stream via stdin for pipeline integration
@@ -147,6 +148,16 @@ Testing Options:
   --extract-links                    Extract additional links from collected URLs (requires HTTP requests)
 ```
 
+### File Input Support
+
+Urx supports reading URLs directly from various file formats, allowing you to process existing URL datasets instead of querying external providers:
+
+* **Text files** (`--text-file`): Plain text files with one URL per line
+* **WARC files** (`--warc-file`): Web Archive files containing crawled web data
+* **URLTeam files** (`--urlteam-file`): Compressed files (gzip) from URLTeam projects
+
+When using file input, all filtering, formatting, and output options remain available.
+
 ### Examples
 
 ```bash
@@ -197,6 +208,18 @@ urx example.com --subs
 
 # Check status of collected URLs
 urx example.com --check-status
+
+# Read URLs directly from a text file
+urx --text-file urls.txt
+
+# Read URLs from a WARC file
+urx --warc-file archive.warc
+
+# Read URLs from a URLTeam compressed file
+urx --urlteam-file urlteam_data.gz
+
+# Combine file input with filtering
+urx --text-file urls.txt --patterns api,admin -f json
 
 # Extract additional links from collected URLs
 urx example.com --extract-links
