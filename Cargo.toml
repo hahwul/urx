@@ -23,6 +23,7 @@ async-trait = "0.1"
 roxmltree = "0.20.0"
 colored = "2.0.0"
 async-recursion = "1.0.5"
+flate2 = "1.0"
 
 [dev-dependencies]
 mockito = "1.7.0"

@@ -12,6 +12,19 @@ pub struct Args {
     #[clap(short, long, value_parser)]
     pub config: Option<PathBuf>,
 
+    #[clap(help_heading = "Input Options")]
+    /// Read URLs directly from a WARC file
+    #[clap(long, value_parser)]
+    pub warc_file: Option<PathBuf>,
+
+    /// Read URLs directly from a URLTeam compressed file (gzip/bzip2)
+    #[clap(long, value_parser)]
+    pub urlteam_file: Option<PathBuf>,
+
+    /// Read URLs directly from a text file (one URL per line)
+    #[clap(long, value_parser)]
+    pub text_file: Option<PathBuf>,
+
     #[clap(help_heading = "Output Options")]
     /// Output file to write results
     #[clap(short, long, value_parser)]
