@@ -25,7 +25,7 @@ use providers::{
     CommonCrawlProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider,
     VirusTotalProvider, WaybackMachineProvider,
 };
-use readers::{read_urls_from_file};
+use readers::read_urls_from_file;
 use runner::{add_provider, process_domains};
 use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
 use testers::{LinkExtractor, StatusChecker, Tester};
@@ -60,12 +60,16 @@ async fn main() -> Result<()> {
     // Check if file input is provided
     let urls_from_file = if !args.files.is_empty() {
         let mut all_file_urls = Vec::new();
-        
+
         for file_path in &args.files {
             match read_urls_from_file(file_path) {
                 Ok(urls) => {
                     if args.verbose && !args.silent {
-                        println!("Read {} URLs from file: {}", urls.len(), file_path.display());
+                        println!(
+                            "Read {} URLs from file: {}",
+                            urls.len(),
+                            file_path.display()
+                        );
                     }
                     all_file_urls.extend(urls);
                 }
@@ -73,11 +77,11 @@ async fn main() -> Result<()> {
                     if !args.silent {
                         eprintln!("Error reading file {}: {}", file_path.display(), e);
                     }
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }
-        
+
         Some(all_file_urls)
     } else {
         None
@@ -86,7 +90,11 @@ async fn main() -> Result<()> {
     let all_urls = if let Some(urls) = urls_from_file {
         // URLs read from file(s) - skip provider processing
         if args.verbose && !args.silent {
-            println!("Read {} URLs total from {} file(s)", urls.len(), args.files.len());
+            println!(
+                "Read {} URLs total from {} file(s)",
+                urls.len(),
+                args.files.len()
+            );
         }
         urls.into_iter().collect()
     } else {
@@ -100,7 +108,9 @@ async fn main() -> Result<()> {
 
         if domains.is_empty() {
             if !args.silent {
-                eprintln!("No domains provided. Please specify domains or pipe them through stdin.");
+                eprintln!(
+                    "No domains provided. Please specify domains or pipe them through stdin."
+                );
             }
             return Ok(());
         }
@@ -306,7 +316,7 @@ async fn main() -> Result<()> {
         } else {
             args.domains.clone()
         };
-        
+
         if !domains.is_empty() {
             let host_validator = HostValidator::new(&domains, args.subs);
             sorted_urls.retain(|url| host_validator.is_valid_host(url));

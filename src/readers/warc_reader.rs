@@ -68,7 +68,7 @@ mod tests {
         writeln!(temp_file, "WARC-Type: response")?;
         writeln!(temp_file, "WARC-Target-URI: https://example.com/page1")?;
         writeln!(temp_file, "Content-Length: 100")?;
-        writeln!(temp_file, "")?;
+        writeln!(temp_file)?;
         writeln!(temp_file, "HTTP response content here")?;
         writeln!(temp_file, "WARC-Target-URI: http://example.org/page2")?;
         temp_file.flush()?;

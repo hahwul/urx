@@ -374,13 +374,7 @@ mod tests {
     #[test]
     fn test_files_flag() {
         // Test that the new --files flag accepts multiple files
-        let args = Args::parse_from([
-            "urx",
-            "--files",
-            "file1.txt",
-            "file2.warc",
-            "--verbose",
-        ]);
+        let args = Args::parse_from(["urx", "--files", "file1.txt", "file2.warc", "--verbose"]);
         assert_eq!(args.files.len(), 2);
         assert_eq!(args.files[0].to_str().unwrap(), "file1.txt");
         assert_eq!(args.files[1].to_str().unwrap(), "file2.warc");
@@ -390,13 +384,7 @@ mod tests {
     #[test]
     fn test_multiple_files_flags() {
         // Test that repeated --files flags work
-        let args = Args::parse_from([
-            "urx",
-            "--files",
-            "file1.txt",
-            "--files",
-            "file2.warc",
-        ]);
+        let args = Args::parse_from(["urx", "--files", "file1.txt", "--files", "file2.warc"]);
         assert_eq!(args.files.len(), 2);
         assert_eq!(args.files[0].to_str().unwrap(), "file1.txt");
         assert_eq!(args.files[1].to_str().unwrap(), "file2.warc");
