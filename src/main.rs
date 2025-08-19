@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 
 mod cli;
@@ -25,7 +25,7 @@ use providers::{
     CommonCrawlProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider,
     VirusTotalProvider, WaybackMachineProvider,
 };
-use readers::{FileReader, TextFileReader, UrlTeamFileReader, WarcFileReader};
+use readers::{read_urls_from_file};
 use runner::{add_provider, process_domains};
 use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
 use testers::{LinkExtractor, StatusChecker, Tester};
@@ -58,26 +58,35 @@ async fn main() -> Result<()> {
     config.apply_to_args(&mut args);
 
     // Check if file input is provided
-    let urls_from_file = if let Some(warc_file) = &args.warc_file {
-        let reader = WarcFileReader::new();
-        Some(reader.read_urls(warc_file)
-            .with_context(|| format!("Failed to read WARC file: {}", warc_file.display()))?)
-    } else if let Some(urlteam_file) = &args.urlteam_file {
-        let reader = UrlTeamFileReader::new();
-        Some(reader.read_urls(urlteam_file)
-            .with_context(|| format!("Failed to read URLTeam file: {}", urlteam_file.display()))?)
-    } else if let Some(text_file) = &args.text_file {
-        let reader = TextFileReader::new();
-        Some(reader.read_urls(text_file)
-            .with_context(|| format!("Failed to read text file: {}", text_file.display()))?)
+    let urls_from_file = if !args.files.is_empty() {
+        let mut all_file_urls = Vec::new();
+        
+        for file_path in &args.files {
+            match read_urls_from_file(file_path) {
+                Ok(urls) => {
+                    if args.verbose && !args.silent {
+                        println!("Read {} URLs from file: {}", urls.len(), file_path.display());
+                    }
+                    all_file_urls.extend(urls);
+                }
+                Err(e) => {
+                    if !args.silent {
+                        eprintln!("Error reading file {}: {}", file_path.display(), e);
+                    }
+                    return Err(e.into());
+                }
+            }
+        }
+        
+        Some(all_file_urls)
     } else {
         None
     };
 
     let all_urls = if let Some(urls) = urls_from_file {
-        // URLs read from file - skip provider processing
+        // URLs read from file(s) - skip provider processing
         if args.verbose && !args.silent {
-            println!("Read {} URLs from file", urls.len());
+            println!("Read {} URLs total from {} file(s)", urls.len(), args.files.len());
         }
         urls.into_iter().collect()
     } else {
@@ -287,7 +296,7 @@ async fn main() -> Result<()> {
     let mut sorted_urls = url_filter.apply_filters(&all_urls);
 
     // Apply host validation if strict mode is enabled and we have domains (not from file)
-    if args.strict && args.warc_file.is_none() && args.urlteam_file.is_none() && args.text_file.is_none() {
+    if args.strict && args.files.is_empty() {
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
@@ -666,9 +675,7 @@ mod tests {
         let args = Args {
             domains: vec!["example.com".to_string()],
             config: None,
-            warc_file: None,
-            urlteam_file: None,
-            text_file: None,
+            files: vec![],
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,
@@ -753,9 +760,7 @@ mod tests {
         let args = Args {
             domains: vec![],
             config: None,
-            warc_file: None,
-            urlteam_file: None,
-            text_file: None,
+            files: vec![],
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,

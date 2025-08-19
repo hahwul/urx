@@ -434,9 +434,7 @@ mod tests {
         let mut args = Args {
             domains: vec![],
             config: None,
-            warc_file: None,
-            urlteam_file: None,
-            text_file: None,
+            files: vec![],
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,

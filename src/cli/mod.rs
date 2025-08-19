@@ -13,17 +13,9 @@ pub struct Args {
     pub config: Option<PathBuf>,
 
     #[clap(help_heading = "Input Options")]
-    /// Read URLs directly from a WARC file
-    #[clap(long, value_parser)]
-    pub warc_file: Option<PathBuf>,
-
-    /// Read URLs directly from a URLTeam compressed file (gzip/bzip2)
-    #[clap(long, value_parser)]
-    pub urlteam_file: Option<PathBuf>,
-
-    /// Read URLs directly from a text file (one URL per line)
-    #[clap(long, value_parser)]
-    pub text_file: Option<PathBuf>,
+    /// Read URLs directly from files (supports WARC, URLTeam compressed, and text files). Use multiple --files flags or space-separate multiple files.
+    #[clap(long, action = clap::ArgAction::Append, num_args = 1.., value_parser)]
+    pub files: Vec<PathBuf>,
 
     #[clap(help_heading = "Output Options")]
     /// Output file to write results
@@ -377,6 +369,37 @@ mod tests {
     #[test]
     fn test_validate_network_scope_invalid() {
         assert!(validate_network_scope("invalid").is_err());
+    }
+
+    #[test]
+    fn test_files_flag() {
+        // Test that the new --files flag accepts multiple files
+        let args = Args::parse_from([
+            "urx",
+            "--files",
+            "file1.txt",
+            "file2.warc",
+            "--verbose",
+        ]);
+        assert_eq!(args.files.len(), 2);
+        assert_eq!(args.files[0].to_str().unwrap(), "file1.txt");
+        assert_eq!(args.files[1].to_str().unwrap(), "file2.warc");
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn test_multiple_files_flags() {
+        // Test that repeated --files flags work
+        let args = Args::parse_from([
+            "urx",
+            "--files",
+            "file1.txt",
+            "--files",
+            "file2.warc",
+        ]);
+        assert_eq!(args.files.len(), 2);
+        assert_eq!(args.files[0].to_str().unwrap(), "file1.txt");
+        assert_eq!(args.files[1].to_str().unwrap(), "file2.warc");
     }
 
     #[test]
