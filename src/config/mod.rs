@@ -432,7 +432,9 @@ mod tests {
 
         // Create default args
         let mut args = Args {
+            domains: vec![],
             config: None,
+            files: vec![],
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,
@@ -467,7 +469,6 @@ mod tests {
             check_status: false,
             include_status: vec![],
             exclude_status: vec![],
-            domains: vec![],
             extract_links: false,
             include_robots: true,
             include_sitemap: true,

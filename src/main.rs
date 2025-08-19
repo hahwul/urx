@@ -8,6 +8,7 @@ mod network;
 mod output;
 mod progress;
 mod providers;
+mod readers;
 mod runner;
 mod tester_manager;
 mod testers;
@@ -24,6 +25,7 @@ use providers::{
     CommonCrawlProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider,
     VirusTotalProvider, WaybackMachineProvider,
 };
+use readers::read_urls_from_file;
 use runner::{add_provider, process_domains};
 use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
 use testers::{LinkExtractor, StatusChecker, Tester};
@@ -55,164 +57,218 @@ async fn main() -> Result<()> {
     let config = Config::load(&args);
     config.apply_to_args(&mut args);
 
-    // Collect domains either from arguments or stdin
-    let domains = if args.domains.is_empty() {
-        read_domains_from_stdin()?
+    // Check if file input is provided
+    let urls_from_file = if !args.files.is_empty() {
+        let mut all_file_urls = Vec::new();
+
+        for file_path in &args.files {
+            match read_urls_from_file(file_path) {
+                Ok(urls) => {
+                    if args.verbose && !args.silent {
+                        println!(
+                            "Read {} URLs from file: {}",
+                            urls.len(),
+                            file_path.display()
+                        );
+                    }
+                    all_file_urls.extend(urls);
+                }
+                Err(e) => {
+                    if !args.silent {
+                        eprintln!("Error reading file {}: {}", file_path.display(), e);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Some(all_file_urls)
     } else {
-        args.domains.clone()
+        None
     };
 
-    if domains.is_empty() {
-        if !args.silent {
-            eprintln!("No domains provided. Please specify domains or pipe them through stdin.");
+    let all_urls = if let Some(urls) = urls_from_file {
+        // URLs read from file(s) - skip provider processing
+        if args.verbose && !args.silent {
+            println!(
+                "Read {} URLs total from {} file(s)",
+                urls.len(),
+                args.files.len()
+            );
         }
-        return Ok(());
-    }
+        urls.into_iter().collect()
+    } else {
+        // No file input - use traditional domain-based approach
+        // Collect domains either from arguments or stdin
+        let domains = if args.domains.is_empty() {
+            read_domains_from_stdin()?
+        } else {
+            args.domains.clone()
+        };
 
-    // Create common network settings from args
+        if domains.is_empty() {
+            if !args.silent {
+                eprintln!(
+                    "No domains provided. Please specify domains or pipe them through stdin."
+                );
+            }
+            return Ok(());
+        }
+
+        // Create common network settings from args
+        let network_settings = NetworkSettings::from_args(&args);
+
+        // Initialize providers based on command-line flags and API keys
+        let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+        let mut provider_names: Vec<String> = Vec::new();
+
+        // Get VirusTotal and Urlscan API keys
+        let vt_api_key = args
+            .vt_api_key
+            .clone()
+            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
+
+        let urlscan_api_key = args
+            .urlscan_api_key
+            .clone()
+            .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
+
+        // Auto-enable providers if API keys are provided but not explicitly included in providers
+        let mut providers_list = args.providers.clone();
+
+        // Auto-enable VirusTotal and Urlscan providers
+        auto_enable_provider(
+            &mut providers_list,
+            &vt_api_key,
+            "vt",
+            args.verbose,
+            args.silent,
+        );
+        auto_enable_provider(
+            &mut providers_list,
+            &urlscan_api_key,
+            "urlscan",
+            args.verbose,
+            args.silent,
+        );
+
+        if providers_list.iter().any(|p| p == "wayback") {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                "Wayback Machine".to_string(),
+                WaybackMachineProvider::new,
+            );
+        }
+
+        if providers_list.iter().any(|p| p == "cc") {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                args.cc_index.to_string(),
+                || CommonCrawlProvider::with_index(args.cc_index.clone()),
+            );
+        }
+
+        if args.should_use_robots() {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                "Robots.txt".to_string(),
+                RobotsProvider::new,
+            );
+        }
+
+        if args.should_use_sitemap() {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                "Sitemap".to_string(),
+                SitemapProvider::new,
+            );
+        }
+
+        if providers_list.iter().any(|p| p == "otx") {
+            add_provider(
+                &args,
+                &network_settings,
+                &mut providers,
+                &mut provider_names,
+                "OTX".to_string(),
+                OTXProvider::new,
+            );
+        }
+
+        if providers_list.iter().any(|p| p == "vt") {
+            if let Some(api_key) = vt_api_key.clone() {
+                add_provider(
+                    &args,
+                    &network_settings,
+                    &mut providers,
+                    &mut provider_names,
+                    "VirusTotal".to_string(),
+                    || VirusTotalProvider::new(api_key.clone()),
+                );
+            } else if !args.silent {
+                eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
+            }
+        }
+
+        if providers_list.iter().any(|p| p == "urlscan") {
+            if let Some(api_key) = urlscan_api_key.clone() {
+                add_provider(
+                    &args,
+                    &network_settings,
+                    &mut providers,
+                    &mut provider_names,
+                    "Urlscan".to_string(),
+                    || UrlscanProvider::new(api_key.clone()),
+                );
+            } else if !args.silent {
+                eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
+            }
+        }
+
+        if providers.is_empty() {
+            if !args.silent {
+                eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan)");
+            }
+            return Ok(());
+        }
+
+        // Check for progress bar options
+        let progress_check = args.no_progress || args.silent;
+
+        // Setup progress bars
+        let progress_manager = ProgressManager::new(progress_check);
+
+        // Process each domain
+        process_domains(
+            domains.clone(),
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await
+    };
+
+    // Create common network settings from args (for testing phase)
     let network_settings = NetworkSettings::from_args(&args);
-
-    // Initialize providers based on command-line flags and API keys
-    let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-    let mut provider_names: Vec<String> = Vec::new();
-
-    // Get VirusTotal and Urlscan API keys
-    let vt_api_key = args
-        .vt_api_key
-        .clone()
-        .or_else(|| std::env::var("URX_VT_API_KEY").ok());
-
-    let urlscan_api_key = args
-        .urlscan_api_key
-        .clone()
-        .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
-
-    // Auto-enable providers if API keys are provided but not explicitly included in providers
-    let mut providers_list = args.providers.clone();
-
-    // Auto-enable VirusTotal and Urlscan providers
-    auto_enable_provider(
-        &mut providers_list,
-        &vt_api_key,
-        "vt",
-        args.verbose,
-        args.silent,
-    );
-    auto_enable_provider(
-        &mut providers_list,
-        &urlscan_api_key,
-        "urlscan",
-        args.verbose,
-        args.silent,
-    );
-
-    if providers_list.iter().any(|p| p == "wayback") {
-        add_provider(
-            &args,
-            &network_settings,
-            &mut providers,
-            &mut provider_names,
-            "Wayback Machine".to_string(),
-            WaybackMachineProvider::new,
-        );
-    }
-
-    if providers_list.iter().any(|p| p == "cc") {
-        add_provider(
-            &args,
-            &network_settings,
-            &mut providers,
-            &mut provider_names,
-            args.cc_index.to_string(),
-            || CommonCrawlProvider::with_index(args.cc_index.clone()),
-        );
-    }
-
-    if args.should_use_robots() {
-        add_provider(
-            &args,
-            &network_settings,
-            &mut providers,
-            &mut provider_names,
-            "Robots.txt".to_string(),
-            RobotsProvider::new,
-        );
-    }
-
-    if args.should_use_sitemap() {
-        add_provider(
-            &args,
-            &network_settings,
-            &mut providers,
-            &mut provider_names,
-            "Sitemap".to_string(),
-            SitemapProvider::new,
-        );
-    }
-
-    if providers_list.iter().any(|p| p == "otx") {
-        add_provider(
-            &args,
-            &network_settings,
-            &mut providers,
-            &mut provider_names,
-            "OTX".to_string(),
-            OTXProvider::new,
-        );
-    }
-
-    if providers_list.iter().any(|p| p == "vt") {
-        if let Some(api_key) = vt_api_key.clone() {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                "VirusTotal".to_string(),
-                || VirusTotalProvider::new(api_key.clone()),
-            );
-        } else if !args.silent {
-            eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
-        }
-    }
-
-    if providers_list.iter().any(|p| p == "urlscan") {
-        if let Some(api_key) = urlscan_api_key.clone() {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                "Urlscan".to_string(),
-                || UrlscanProvider::new(api_key.clone()),
-            );
-        } else if !args.silent {
-            eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
-        }
-    }
-
-    if providers.is_empty() {
-        if !args.silent {
-            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan)");
-        }
-        return Ok(());
-    }
 
     // Check for progress bar options
     let progress_check = args.no_progress || args.silent;
 
     // Setup progress bars
     let progress_manager = ProgressManager::new(progress_check);
-
-    // Process each domain
-    let all_urls = process_domains(
-        domains.clone(),
-        &args,
-        &progress_manager,
-        &providers,
-        &provider_names,
-    )
-    .await;
 
     // Create a progress bar for filtering
     let filter_bar = if !args.extensions.is_empty()
@@ -249,19 +305,28 @@ async fn main() -> Result<()> {
     // Apply URL filters
     let mut sorted_urls = url_filter.apply_filters(&all_urls);
 
-    // Apply host validation if strict mode is enabled
-    if args.strict {
+    // Apply host validation if strict mode is enabled and we have domains (not from file)
+    if args.strict && args.files.is_empty() {
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-        let host_validator = HostValidator::new(&domains, args.subs);
-        sorted_urls.retain(|url| host_validator.is_valid_host(url));
+        // We need to get domains from the original input
+        let domains = if args.domains.is_empty() {
+            read_domains_from_stdin().unwrap_or_default()
+        } else {
+            args.domains.clone()
+        };
 
-        if args.verbose && !args.silent {
-            println!(
-                "Number of valid URLs after host validation: {}",
-                sorted_urls.len()
-            );
+        if !domains.is_empty() {
+            let host_validator = HostValidator::new(&domains, args.subs);
+            sorted_urls.retain(|url| host_validator.is_valid_host(url));
+
+            if args.verbose && !args.silent {
+                println!(
+                    "Number of valid URLs after host validation: {}",
+                    sorted_urls.len()
+                );
+            }
         }
     }
 
@@ -618,9 +683,9 @@ mod tests {
 
         // Setup test args with minimal settings
         let args = Args {
-            // Removed duplicate field
             domains: vec!["example.com".to_string()],
             config: None,
+            files: vec![],
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,
@@ -705,6 +770,7 @@ mod tests {
         let args = Args {
             domains: vec![],
             config: None,
+            files: vec![],
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,

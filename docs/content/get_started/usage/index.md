@@ -25,6 +25,14 @@ You can also pipe a list of domains from a file:
 cat domains.txt | urx
 ```
 
+Unified File Input:
+
+Read URLs from files with automatic format detection (supports WARC files, URLTeam compressed files (gzip/bzip2), and plain text files):
+
+```bash
+urx --files urls.txt
+```
+
 ### Examples
 
 Here are some examples of how to use Urx with different options:
@@ -161,4 +169,30 @@ Filter by HTTP status codes:
 
 ```bash
 urx example.com --include-status 200,30x,405 --exclude-status 20x
+```
+
+**Unified File Input**
+
+Read URLs from a single file (auto-detects format):
+
+```bash
+urx --files urls.txt
+```
+
+Read from multiple files with space separation:
+
+```bash
+urx --files urls.txt archive.warc data.gz
+```
+
+Read from multiple files with repeated flags:
+
+```bash
+urx --files urls.txt --files archive.warc
+```
+
+Combine with filtering and formatting options:
+
+```bash
+urx --files data.txt --patterns api,admin -f json
 ```
