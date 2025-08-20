@@ -162,7 +162,9 @@ impl Provider for SitemapProvider {
     }
     fn with_random_agent(&mut self, enabled: bool) {
         if enabled {
-            self.user_agent = Some("Mozilla/5.0 (compatible; URXBot/1.0)".to_string());
+            self.user_agent = Some(crate::network::random_user_agent());
+        } else {
+            self.user_agent = None;
         }
     }
     fn with_insecure(&mut self, enabled: bool) {
@@ -222,10 +224,15 @@ mod tests {
     fn test_with_random_agent() {
         let mut provider = SitemapProvider::new();
         provider.with_random_agent(true);
-        assert_eq!(
-            provider.user_agent,
-            Some("Mozilla/5.0 (compatible; URXBot/1.0)".to_string())
-        );
+        assert!(provider.user_agent.is_some());
+        assert!(provider
+            .user_agent
+            .as_ref()
+            .unwrap()
+            .starts_with("Mozilla/5.0"));
+        // Disabling should reset UA to None
+        provider.with_random_agent(false);
+        assert_eq!(provider.user_agent, None);
     }
 
     #[test]

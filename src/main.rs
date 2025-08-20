@@ -465,6 +465,12 @@ mod tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
 
+    // Serialize tests that mutate environment variables to avoid race conditions
+    fn env_mutex() -> &'static std::sync::Mutex<()> {
+        static INSTANCE: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        INSTANCE.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     #[test]
     fn test_auto_enable_provider() {
         // Test the auto_enable_provider helper function directly
@@ -489,6 +495,7 @@ mod tests {
 
     #[test]
     fn test_auto_enable_providers_with_env_vars() {
+        let _env_lock = env_mutex().lock().unwrap();
         // Save current environment to restore later
         let old_vt_key = env::var("URX_VT_API_KEY").ok();
         let old_urlscan_key = env::var("URX_URLSCAN_API_KEY").ok();
@@ -543,6 +550,7 @@ mod tests {
 
     #[test]
     fn test_api_key_precedence() {
+        let _env_lock = env_mutex().lock().unwrap();
         // This test verifies command-line arguments take precedence over env vars
 
         // Save current environment
