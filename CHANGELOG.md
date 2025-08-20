@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.0
+
+- Add Support for Direct Reading from Files with Unified `--files` Flag and Auto-Detection
+- Centralized, randomized modern User-Agent; applied across providers/testers
+- robots.txt/sitemap use `--random-agent`; disabling resets UA
+- Stabilized env-var tests; fixed clippy warnings
+
 ## 0.6.1
 
 - Dependencies Update
