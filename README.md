@@ -94,6 +94,7 @@ Output Options:
   -o, --output <OUTPUT>  Output file to write results
   -f, --format <FORMAT>  Output format (e.g., "plain", "json", "csv") [default: plain]
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
+      --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
 
 Provider Options:
       --providers <PROVIDERS>
