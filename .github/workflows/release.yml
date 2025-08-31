@@ -13,6 +13,9 @@ jobs:
     name: Build and upload
     runs-on: ${{ matrix.os }}
 
+    permissions:
+      contents: write  # Required to upload release assets
+
     strategy:
       matrix:
         include:
@@ -24,7 +27,7 @@ jobs:
           - build: linux-aarch64
             os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            use_cross: true
+            use_cross: true  # Cross-compilation needed for ARM64
           # macOS targets  
           - build: macos-x86_64
             os: macos-latest
@@ -33,7 +36,7 @@ jobs:
           - build: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
-            use_cross: false
+            use_cross: false  # Apple Silicon Macs can build for both architectures natively
           # Windows targets
           - build: windows-x86_64
             os: windows-latest
@@ -74,12 +77,15 @@ jobs:
           binary_name="urx"
           dirname="$binary_name-$VERSION-${{ matrix.build }}"
           mkdir "$dirname"
+          
+          # Move the appropriate binary into the archive directory
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             mv "target/${{ matrix.target }}/release/$binary_name.exe" "$dirname"
           else
             mv "target/${{ matrix.target }}/release/$binary_name" "$dirname"
           fi
 
+          # Create the appropriate archive format for each OS
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             7z a "$dirname.zip" "$dirname"
             echo "ASSET=$dirname.zip" >> $GITHUB_ENV
