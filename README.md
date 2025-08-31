@@ -26,6 +26,10 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * URL Testing:
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs
+* Caching and Incremental Scanning:
+  * Local SQLite or remote Redis caching to avoid re-scanning domains
+  * Incremental mode to discover only new URLs since last scan
+  * Configurable cache TTL and automatic cleanup of expired entries
 
 ![Preview](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/static/images/preview.jpg)
 
@@ -254,6 +258,49 @@ urx example.com --normalize-url --merge-endpoint
 
 # URL normalization with file input
 urx --files urls.txt --normalize-url
+```
+
+### Caching and Incremental Scanning
+
+Urx supports caching to improve performance for repeated scans and incremental scanning to discover only new URLs.
+
+```bash
+# Enable caching with SQLite (default)
+urx example.com --cache-type sqlite --cache-path ~/.urx/cache.db
+
+# Use Redis for distributed caching
+urx example.com --cache-type redis --redis-url redis://localhost:6379
+
+# Incremental scanning - only show new URLs since last scan
+urx example.com --incremental
+
+# Set cache TTL (time-to-live) to 12 hours
+urx example.com --cache-ttl 43200
+
+# Disable caching entirely
+urx example.com --no-cache
+
+# Combine incremental scanning with filters
+urx example.com --incremental -e js,php --patterns api
+
+# Configuration file with caching settings
+urx -c example/config.toml example.com
+```
+
+#### Caching Use Cases
+
+```bash
+# Daily monitoring - only alert on new URLs
+urx target.com --incremental --silent | notify-tool
+
+# Efficient domain lists processing
+cat domains.txt | urx --incremental --cache-ttl 3600 > new_urls.txt
+
+# Distributed team scanning with Redis
+urx example.com --cache-type redis --redis-url redis://shared-cache:6379
+
+# Fast re-scans during development
+urx test-domain.com --cache-ttl 300  # 5-minute cache for rapid iterations
 ```
 
 ## Integration with Other Tools

@@ -11,7 +11,6 @@ pub use types::{CacheEntry, CacheKey, CacheBackend, CacheFilters};
 pub use redis_impl::RedisCache;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use std::collections::HashSet;
 
 /// Cache manager that provides a unified interface for different cache backends

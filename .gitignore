@@ -3,3 +3,7 @@
 
 # SBOM files (generated during release)
 *.cdx.xml
+
+# Cache files
+*.db
+test_cache_integration.sh
