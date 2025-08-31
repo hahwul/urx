@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod cache;
 mod cli;
 mod config;
 mod filters;
@@ -14,8 +15,8 @@ mod tester_manager;
 mod testers;
 mod url_utils;
 mod utils;
-mod cache;
 
+use cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
 use cli::{read_domains_from_stdin, Args};
 use config::Config;
 use filters::{HostValidator, UrlFilter};
@@ -32,7 +33,6 @@ use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers
 use testers::{LinkExtractor, StatusChecker, Tester};
 use url_utils::UrlTransformer;
 use utils::verbose_print;
-use cache::{CacheManager, CacheKey, CacheEntry, CacheFilters};
 
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
 pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
@@ -87,8 +87,11 @@ async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
                 let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
                 std::path::PathBuf::from(home).join(".urx").join("cache.db")
             });
-            
-            verbose_print(args, format!("Using SQLite cache at: {}", cache_path.display()));
+
+            verbose_print(
+                args,
+                format!("Using SQLite cache at: {}", cache_path.display()),
+            );
             let manager = CacheManager::new_sqlite(cache_path).await?;
             Ok(Some(manager))
         }
@@ -110,13 +113,16 @@ async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
             if !args.silent {
                 eprintln!("Error: Redis cache support not compiled in. Use 'sqlite' or compile with --features redis-cache");
             }
-            return Err(anyhow::anyhow!("Redis cache not supported"));
+            Err(anyhow::anyhow!("Redis cache not supported"))
         }
         _ => {
             if !args.silent {
-                eprintln!("Error: Unknown cache type '{}'. Use 'sqlite' or 'redis'", args.cache_type);
+                eprintln!(
+                    "Error: Unknown cache type '{}'. Use 'sqlite' or 'redis'",
+                    args.cache_type
+                );
             }
-            return Err(anyhow::anyhow!("Invalid cache type"));
+            Err(anyhow::anyhow!("Invalid cache type"))
         }
     }
 }
@@ -150,26 +156,30 @@ async fn process_domains_with_cache(
     cache_manager: Option<&CacheManager>,
 ) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
-    
+
     let mut final_urls = HashSet::new();
-    
+
     // If caching is disabled, use normal processing
     if cache_manager.is_none() {
         return process_domains(domains, args, progress_manager, providers, provider_names).await;
     }
-    
+
     let cache = cache_manager.unwrap();
     let mut domains_to_process = Vec::new();
     let mut cached_urls = HashSet::new();
-    
+
     // Check cache for each domain
     for domain in &domains {
         let cache_key = create_cache_key(domain, args);
-        
-        if cache.is_valid(&cache_key, args.cache_ttl).await.unwrap_or(false) {
+
+        if cache
+            .is_valid(&cache_key, args.cache_ttl)
+            .await
+            .unwrap_or(false)
+        {
             if let Ok(Some(cached_entry)) = cache.get_cached_urls(&cache_key).await {
                 verbose_print(args, format!("Using cached results for domain: {}", domain));
-                
+
                 if args.incremental {
                     // For incremental mode, we still need to fetch fresh URLs to compare
                     domains_to_process.push(domain.clone());
@@ -180,45 +190,58 @@ async fn process_domains_with_cache(
                 }
             }
         }
-        
+
         // Domain not in cache or cache expired, needs processing
         domains_to_process.push(domain.clone());
     }
-    
+
     // Add cached URLs to final result
     final_urls.extend(cached_urls);
-    
+
     // Process domains that need fresh data
     if !domains_to_process.is_empty() {
-        verbose_print(args, format!("Processing {} domains (cache miss/expired)", domains_to_process.len()));
-        
+        verbose_print(
+            args,
+            format!(
+                "Processing {} domains (cache miss/expired)",
+                domains_to_process.len()
+            ),
+        );
+
         let fresh_urls = process_domains(
             domains_to_process.clone(),
             args,
             progress_manager,
             providers,
             provider_names,
-        ).await;
-        
+        )
+        .await;
+
         // Handle incremental scanning and cache updates
         if args.incremental {
             for domain in &domains_to_process {
                 let cache_key = create_cache_key(domain, args);
-                
+
                 // Get domain-specific URLs (this is a simplification - in reality we'd need to track per-domain)
-                let domain_fresh_urls: HashSet<String> = fresh_urls.iter()
+                let domain_fresh_urls: HashSet<String> = fresh_urls
+                    .iter()
                     .filter(|url| url.contains(domain))
                     .cloned()
                     .collect();
-                
-                let new_urls = cache.get_new_urls(&cache_key, &domain_fresh_urls).await
+
+                let new_urls = cache
+                    .get_new_urls(&cache_key, &domain_fresh_urls)
+                    .await
                     .unwrap_or(domain_fresh_urls.clone());
-                
+
                 if !new_urls.is_empty() {
-                    verbose_print(args, format!("Found {} new URLs for domain: {}", new_urls.len(), domain));
+                    verbose_print(
+                        args,
+                        format!("Found {} new URLs for domain: {}", new_urls.len(), domain),
+                    );
                     final_urls.extend(new_urls);
                 }
-                
+
                 // Update cache with all fresh URLs for this domain
                 let entry = CacheEntry::new(domain_fresh_urls.into_iter().collect());
                 let _ = cache.store_urls(&cache_key, &entry).await;
@@ -226,15 +249,16 @@ async fn process_domains_with_cache(
         } else {
             // Normal mode: add all fresh URLs and update cache
             final_urls.extend(fresh_urls.clone());
-            
+
             // For simplicity, store all URLs for each domain (this could be optimized)
             for domain in &domains_to_process {
                 let cache_key = create_cache_key(domain, args);
-                let domain_urls: Vec<String> = fresh_urls.iter()
+                let domain_urls: Vec<String> = fresh_urls
+                    .iter()
                     .filter(|url| url.contains(domain))
                     .cloned()
                     .collect();
-                
+
                 if !domain_urls.is_empty() {
                     let entry = CacheEntry::new(domain_urls);
                     let _ = cache.store_urls(&cache_key, &entry).await;
@@ -242,10 +266,10 @@ async fn process_domains_with_cache(
             }
         }
     }
-    
+
     // Clean up expired cache entries
     let _ = cache.cleanup_expired(args.cache_ttl * 2).await;
-    
+
     final_urls
 }
 
@@ -446,7 +470,7 @@ async fn main() -> Result<()> {
 
         // Initialize cache manager if caching is enabled
         let cache_manager = create_cache_manager(&args).await.ok().flatten();
-        
+
         // Process each domain with caching support
         process_domains_with_cache(
             domains.clone(),

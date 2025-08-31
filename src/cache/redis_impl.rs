@@ -16,27 +16,30 @@ pub struct RedisCache {
 impl RedisCache {
     /// Create a new Redis cache
     pub async fn new(redis_url: &str) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .context("Failed to create Redis client")?;
-        
+        let client = redis::Client::open(redis_url).context("Failed to create Redis client")?;
+
         // Test the connection
-        let mut conn = client.get_async_connection().await
+        let mut conn = client
+            .get_async_connection()
+            .await
             .context("Failed to connect to Redis")?;
-        
-        redis::cmd("PING").query_async(&mut conn).await
+
+        redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
             .context("Redis ping failed")?;
-        
+
         Ok(Self { client })
     }
 
     /// Generate a Redis key from a cache key
     fn redis_key(&self, key: &CacheKey) -> String {
-        format!("urx:cache:{}", key.to_string())
+        format!("urx:cache:{}", key)
     }
 
     /// Generate a Redis key for metadata
     fn redis_meta_key(&self, key: &CacheKey) -> String {
-        format!("urx:meta:{}", key.to_string())
+        format!("urx:meta:{}", key)
     }
 }
 
@@ -44,20 +47,23 @@ impl RedisCache {
 #[async_trait]
 impl CacheBackend for RedisCache {
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {
-        let mut conn = self.client.get_async_connection().await
+        let mut conn = self
+            .client
+            .get_async_connection()
+            .await
             .context("Failed to connect to Redis")?;
-        
+
         let redis_key = self.redis_key(key);
         let value: Option<String> = redis::cmd("GET")
             .arg(&redis_key)
             .query_async(&mut conn)
             .await
             .context("Failed to get value from Redis")?;
-        
+
         match value {
             Some(json_str) => {
-                let entry: CacheEntry = serde_json::from_str(&json_str)
-                    .context("Failed to deserialize cache entry")?;
+                let entry: CacheEntry =
+                    serde_json::from_str(&json_str).context("Failed to deserialize cache entry")?;
                 Ok(Some(entry))
             }
             None => Ok(None),
@@ -65,20 +71,22 @@ impl CacheBackend for RedisCache {
     }
 
     async fn set(&self, key: &CacheKey, entry: &CacheEntry) -> Result<()> {
-        let mut conn = self.client.get_async_connection().await
+        let mut conn = self
+            .client
+            .get_async_connection()
+            .await
             .context("Failed to connect to Redis")?;
-        
+
         let redis_key = self.redis_key(key);
-        let json_str = serde_json::to_string(entry)
-            .context("Failed to serialize cache entry")?;
-        
+        let json_str = serde_json::to_string(entry).context("Failed to serialize cache entry")?;
+
         redis::cmd("SET")
             .arg(&redis_key)
             .arg(&json_str)
             .query_async(&mut conn)
             .await
             .context("Failed to set value in Redis")?;
-        
+
         // Also store metadata for cleanup purposes
         let meta_key = self.redis_meta_key(key);
         let meta_data = serde_json::json!({
@@ -86,54 +94,60 @@ impl CacheBackend for RedisCache {
             "providers": key.providers,
             "timestamp": entry.timestamp.to_rfc3339()
         });
-        
+
         redis::cmd("SET")
             .arg(&meta_key)
             .arg(&meta_data.to_string())
             .query_async(&mut conn)
             .await
             .context("Failed to set metadata in Redis")?;
-        
+
         Ok(())
     }
 
     async fn delete(&self, key: &CacheKey) -> Result<()> {
-        let mut conn = self.client.get_async_connection().await
+        let mut conn = self
+            .client
+            .get_async_connection()
+            .await
             .context("Failed to connect to Redis")?;
-        
+
         let redis_key = self.redis_key(key);
         let meta_key = self.redis_meta_key(key);
-        
+
         redis::cmd("DEL")
             .arg(&redis_key)
             .arg(&meta_key)
             .query_async(&mut conn)
             .await
             .context("Failed to delete from Redis")?;
-        
+
         Ok(())
     }
 
     async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
-        let mut conn = self.client.get_async_connection().await
+        let mut conn = self
+            .client
+            .get_async_connection()
+            .await
             .context("Failed to connect to Redis")?;
-        
+
         let cutoff_time = Utc::now() - chrono::Duration::seconds(ttl_seconds as i64);
-        
+
         // Get all metadata keys
         let meta_keys: Vec<String> = redis::cmd("KEYS")
             .arg("urx:meta:*")
             .query_async(&mut conn)
             .await
             .context("Failed to get metadata keys from Redis")?;
-        
+
         for meta_key in meta_keys {
             let meta_value: Option<String> = redis::cmd("GET")
                 .arg(&meta_key)
                 .query_async(&mut conn)
                 .await
                 .context("Failed to get metadata from Redis")?;
-            
+
             if let Some(meta_str) = meta_value {
                 if let Ok(meta_json) = serde_json::from_str::<serde_json::Value>(&meta_str) {
                     if let Some(timestamp_str) = meta_json["timestamp"].as_str() {
@@ -153,21 +167,24 @@ impl CacheBackend for RedisCache {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     async fn exists(&self, key: &CacheKey) -> Result<bool> {
-        let mut conn = self.client.get_async_connection().await
+        let mut conn = self
+            .client
+            .get_async_connection()
+            .await
             .context("Failed to connect to Redis")?;
-        
+
         let redis_key = self.redis_key(key);
         let exists: bool = redis::cmd("EXISTS")
             .arg(&redis_key)
             .query_async(&mut conn)
             .await
             .context("Failed to check existence in Redis")?;
-        
+
         Ok(exists)
     }
 }
@@ -194,7 +211,7 @@ mod tests {
                 return Ok(());
             }
         };
-        
+
         let filters = CacheFilters {
             subs: false,
             extensions: vec![],
@@ -208,32 +225,32 @@ mod tests {
             normalize_url: false,
             merge_endpoint: false,
         };
-        
+
         let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
         let entry = CacheEntry::new(vec!["https://example.com/page1".to_string()]);
-        
+
         // Clean up any existing data
         let _ = cache.delete(&key).await;
-        
+
         // Test exists (should be false initially)
         assert!(!cache.exists(&key).await?);
-        
+
         // Test set
         cache.set(&key, &entry).await?;
-        
+
         // Test exists (should be true now)
         assert!(cache.exists(&key).await?);
-        
+
         // Test get
         let retrieved = cache.get(&key).await?;
         assert!(retrieved.is_some());
         let retrieved_entry = retrieved.unwrap();
         assert_eq!(retrieved_entry.urls, vec!["https://example.com/page1"]);
-        
+
         // Test delete
         cache.delete(&key).await?;
         assert!(!cache.exists(&key).await?);
-        
+
         Ok(())
     }
 
@@ -247,7 +264,7 @@ mod tests {
                 return Ok(());
             }
         };
-        
+
         let filters = CacheFilters {
             subs: false,
             extensions: vec![],
@@ -261,22 +278,22 @@ mod tests {
             normalize_url: false,
             merge_endpoint: false,
         };
-        
+
         let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
-        
+
         // Create an old entry
         let mut old_entry = CacheEntry::new(vec!["https://example.com/old".to_string()]);
         old_entry.timestamp = Utc::now() - chrono::Duration::hours(2);
-        
+
         cache.set(&key, &old_entry).await?;
         assert!(cache.exists(&key).await?);
-        
+
         // Clean up expired entries (1 hour TTL)
         cache.cleanup_expired(3600).await?;
-        
+
         // Entry should be gone
         assert!(!cache.exists(&key).await?);
-        
+
         Ok(())
     }
 }

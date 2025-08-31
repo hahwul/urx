@@ -14,30 +14,27 @@ pub struct CacheKey {
 
 impl CacheKey {
     /// Create a new cache key from scan parameters
-    pub fn new(
-        domain: &str,
-        providers: &[String],
-        filters: &CacheFilters,
-    ) -> Self {
+    pub fn new(domain: &str, providers: &[String], filters: &CacheFilters) -> Self {
         let mut providers = providers.to_vec();
         providers.sort(); // Ensure consistent ordering
-        
+
         let filters_hash = filters.compute_hash();
-        
+
         Self {
             domain: domain.to_string(),
             providers,
             filters_hash,
         }
     }
+}
 
-    /// Generate a unique string representation for storage
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for CacheKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut hasher = Sha256::new();
         hasher.update(&self.domain);
-        hasher.update(&self.providers.join(","));
+        hasher.update(self.providers.join(","));
         hasher.update(&self.filters_hash);
-        format!("{:x}", hasher.finalize())
+        write!(f, "{:x}", hasher.finalize())
     }
 }
 
@@ -61,19 +58,19 @@ impl CacheFilters {
     /// Compute a hash of the filter configuration
     pub fn compute_hash(&self) -> String {
         let mut hasher = Sha256::new();
-        
+
         hasher.update(if self.subs { "1" } else { "0" });
-        hasher.update(&self.extensions.join(","));
-        hasher.update(&self.exclude_extensions.join(","));
-        hasher.update(&self.patterns.join(","));
-        hasher.update(&self.exclude_patterns.join(","));
-        hasher.update(&self.presets.join(","));
-        hasher.update(&self.min_length.map(|l| l.to_string()).unwrap_or_default());
-        hasher.update(&self.max_length.map(|l| l.to_string()).unwrap_or_default());
+        hasher.update(self.extensions.join(","));
+        hasher.update(self.exclude_extensions.join(","));
+        hasher.update(self.patterns.join(","));
+        hasher.update(self.exclude_patterns.join(","));
+        hasher.update(self.presets.join(","));
+        hasher.update(self.min_length.map(|l| l.to_string()).unwrap_or_default());
+        hasher.update(self.max_length.map(|l| l.to_string()).unwrap_or_default());
         hasher.update(if self.strict { "1" } else { "0" });
         hasher.update(if self.normalize_url { "1" } else { "0" });
         hasher.update(if self.merge_endpoint { "1" } else { "0" });
-        
+
         format!("{:x}", hasher.finalize())
     }
 }
@@ -107,16 +104,16 @@ impl CacheEntry {
 pub trait CacheBackend: Send + Sync {
     /// Get a cache entry by key
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>>;
-    
+
     /// Set a cache entry
     async fn set(&self, key: &CacheKey, entry: &CacheEntry) -> Result<()>;
-    
+
     /// Delete a cache entry
     async fn delete(&self, key: &CacheKey) -> Result<()>;
-    
+
     /// Clean up expired entries
     async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()>;
-    
+
     /// Check if a key exists in the cache
     async fn exists(&self, key: &CacheKey) -> Result<bool>;
 }
@@ -221,10 +218,10 @@ mod tests {
     #[test]
     fn test_cache_entry_expiry() {
         let mut entry = CacheEntry::new(vec!["https://example.com".to_string()]);
-        
+
         // Fresh entry should not be expired
         assert!(!entry.is_expired(3600)); // 1 hour TTL
-        
+
         // Simulate old entry
         entry.timestamp = Utc::now() - chrono::Duration::hours(2);
         assert!(entry.is_expired(3600)); // Should be expired
@@ -251,9 +248,9 @@ mod tests {
         let key3 = CacheKey::new("different.com", &["wayback".to_string()], &filters);
 
         // Same keys should have same string representation
-        assert_eq!(key1.to_string(), key2.to_string());
-        
+        assert_eq!(format!("{}", key1), format!("{}", key2));
+
         // Different keys should have different string representation
-        assert_ne!(key1.to_string(), key3.to_string());
+        assert_ne!(format!("{}", key1), format!("{}", key3));
     }
 }
