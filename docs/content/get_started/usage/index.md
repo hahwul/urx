@@ -216,3 +216,23 @@ Combine with filtering and formatting options:
 ```bash
 urx --files data.txt --patterns api,admin -f json
 ```
+
+URL normalization and deduplication:
+
+Normalize URLs by sorting query parameters and removing trailing slashes:
+
+```bash
+urx example.com --normalize-url
+```
+
+Combine normalization with endpoint merging for comprehensive deduplication:
+
+```bash
+urx example.com --normalize-url --merge-endpoint
+```
+
+URL normalization with file input:
+
+```bash
+urx --files urls.txt --normalize-url
+```
