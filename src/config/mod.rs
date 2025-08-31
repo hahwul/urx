@@ -23,6 +23,9 @@ pub struct Config {
 
     #[serde(default)]
     pub testing: TestingConfig,
+
+    #[serde(default)]
+    pub cache: CacheConfig,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -78,6 +81,16 @@ pub struct TestingConfig {
     pub include_status: Option<Vec<String>>,
     pub exclude_status: Option<Vec<String>>,
     pub extract_links: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CacheConfig {
+    pub incremental: Option<bool>,
+    pub cache_type: Option<String>,
+    pub cache_path: Option<String>,
+    pub redis_url: Option<String>,
+    pub cache_ttl: Option<u64>,
+    pub no_cache: Option<bool>,
 }
 
 impl Config {
@@ -320,6 +333,31 @@ impl Config {
         if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
             args.extract_links = true;
         }
+
+        // Cache options
+        if !args.incremental && self.cache.incremental.unwrap_or(false) {
+            args.incremental = true;
+        }
+
+        if args.cache_type == "sqlite" && self.cache.cache_type.is_some() {
+            args.cache_type = self.cache.cache_type.unwrap();
+        }
+
+        if args.cache_path.is_none() && self.cache.cache_path.is_some() {
+            args.cache_path = Some(PathBuf::from(self.cache.cache_path.unwrap()));
+        }
+
+        if args.redis_url.is_none() && self.cache.redis_url.is_some() {
+            args.redis_url = self.cache.redis_url;
+        }
+
+        if args.cache_ttl == 86400 && self.cache.cache_ttl.is_some() {
+            args.cache_ttl = self.cache.cache_ttl.unwrap();
+        }
+
+        if !args.no_cache && self.cache.no_cache.unwrap_or(false) {
+            args.no_cache = true;
+        }
     }
 }
 
@@ -476,6 +514,12 @@ mod tests {
             include_sitemap: true,
             exclude_robots: false,
             exclude_sitemap: false,
+            incremental: false,
+            cache_type: "sqlite".to_string(),
+            cache_path: None,
+            redis_url: None,
+            cache_ttl: 86400,
+            no_cache: false,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

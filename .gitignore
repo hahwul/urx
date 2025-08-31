@@ -3,3 +3,6 @@
 
 # SBOM files (generated during release)
 *.cdx.xml
+
+# Cache files
+*.db

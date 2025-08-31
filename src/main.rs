@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod cache;
 mod cli;
 mod config;
 mod filters;
@@ -15,6 +16,7 @@ mod testers;
 mod url_utils;
 mod utils;
 
+use cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
 use cli::{read_domains_from_stdin, Args};
 use config::Config;
 use filters::{HostValidator, UrlFilter};
@@ -71,6 +73,204 @@ pub fn auto_enable_provider(
             println!("Auto-enabling {provider_name} provider because API key is provided");
         }
     }
+}
+
+/// Create cache manager based on arguments
+async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
+    if args.no_cache {
+        return Ok(None);
+    }
+
+    match args.cache_type.as_str() {
+        "sqlite" => {
+            let cache_path = args.cache_path.clone().unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                std::path::PathBuf::from(home).join(".urx").join("cache.db")
+            });
+
+            verbose_print(
+                args,
+                format!("Using SQLite cache at: {}", cache_path.display()),
+            );
+            let manager = CacheManager::new_sqlite(cache_path).await?;
+            Ok(Some(manager))
+        }
+        #[cfg(feature = "redis-cache")]
+        "redis" => {
+            if let Some(redis_url) = &args.redis_url {
+                verbose_print(args, format!("Using Redis cache at: {}", redis_url));
+                let manager = CacheManager::new_redis(redis_url).await?;
+                Ok(Some(manager))
+            } else {
+                if !args.silent {
+                    eprintln!("Error: Redis cache type selected but no --redis-url provided");
+                }
+                Err(anyhow::anyhow!("Redis URL required for Redis cache type"))
+            }
+        }
+        #[cfg(not(feature = "redis-cache"))]
+        "redis" => {
+            if !args.silent {
+                eprintln!("Error: Redis cache support not compiled in. Use 'sqlite' or compile with --features redis-cache");
+            }
+            Err(anyhow::anyhow!("Redis cache not supported"))
+        }
+        _ => {
+            if !args.silent {
+                eprintln!(
+                    "Error: Unknown cache type '{}'. Use 'sqlite' or 'redis'",
+                    args.cache_type
+                );
+            }
+            Err(anyhow::anyhow!("Invalid cache type"))
+        }
+    }
+}
+
+/// Create cache key from arguments and domains
+fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
+    let filters = CacheFilters {
+        subs: args.subs,
+        extensions: args.extensions.clone(),
+        exclude_extensions: args.exclude_extensions.clone(),
+        patterns: args.patterns.clone(),
+        exclude_patterns: args.exclude_patterns.clone(),
+        presets: args.preset.clone(),
+        min_length: args.min_length,
+        max_length: args.max_length,
+        strict: args.strict,
+        normalize_url: args.normalize_url,
+        merge_endpoint: args.merge_endpoint,
+    };
+
+    CacheKey::new(domain, &args.providers, &filters)
+}
+
+/// Process domains with cache support
+async fn process_domains_with_cache(
+    domains: Vec<String>,
+    args: &Args,
+    progress_manager: &ProgressManager,
+    providers: &[Box<dyn Provider>],
+    provider_names: &[String],
+    cache_manager: Option<&CacheManager>,
+) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+
+    let mut final_urls = HashSet::new();
+
+    // If caching is disabled, use normal processing
+    if cache_manager.is_none() {
+        return process_domains(domains, args, progress_manager, providers, provider_names).await;
+    }
+
+    let cache = cache_manager.unwrap();
+    let mut domains_to_process = Vec::new();
+    let mut cached_urls = HashSet::new();
+
+    // Check cache for each domain
+    for domain in &domains {
+        let cache_key = create_cache_key(domain, args);
+
+        if cache
+            .is_valid(&cache_key, args.cache_ttl)
+            .await
+            .unwrap_or(false)
+        {
+            if let Ok(Some(cached_entry)) = cache.get_cached_urls(&cache_key).await {
+                verbose_print(args, format!("Using cached results for domain: {}", domain));
+
+                if args.incremental {
+                    // For incremental mode, we still need to fetch fresh URLs to compare
+                    domains_to_process.push(domain.clone());
+                } else {
+                    // Use cached results directly
+                    cached_urls.extend(cached_entry.urls);
+                    continue;
+                }
+            }
+        }
+
+        // Domain not in cache or cache expired, needs processing
+        domains_to_process.push(domain.clone());
+    }
+
+    // Add cached URLs to final result
+    final_urls.extend(cached_urls);
+
+    // Process domains that need fresh data
+    if !domains_to_process.is_empty() {
+        verbose_print(
+            args,
+            format!(
+                "Processing {} domains (cache miss/expired)",
+                domains_to_process.len()
+            ),
+        );
+
+        let fresh_urls = process_domains(
+            domains_to_process.clone(),
+            args,
+            progress_manager,
+            providers,
+            provider_names,
+        )
+        .await;
+
+        // Handle incremental scanning and cache updates
+        if args.incremental {
+            for domain in &domains_to_process {
+                let cache_key = create_cache_key(domain, args);
+
+                // Get domain-specific URLs (this is a simplification - in reality we'd need to track per-domain)
+                let domain_fresh_urls: HashSet<String> = fresh_urls
+                    .iter()
+                    .filter(|url| url.contains(domain))
+                    .cloned()
+                    .collect();
+
+                let new_urls = cache
+                    .get_new_urls(&cache_key, &domain_fresh_urls)
+                    .await
+                    .unwrap_or(domain_fresh_urls.clone());
+
+                if !new_urls.is_empty() {
+                    verbose_print(
+                        args,
+                        format!("Found {} new URLs for domain: {}", new_urls.len(), domain),
+                    );
+                    final_urls.extend(new_urls);
+                }
+
+                // Update cache with all fresh URLs for this domain
+                let entry = CacheEntry::new(domain_fresh_urls.into_iter().collect());
+                let _ = cache.store_urls(&cache_key, &entry).await;
+            }
+        } else {
+            // Normal mode: add all fresh URLs and update cache
+            final_urls.extend(fresh_urls.clone());
+
+            // For simplicity, store all URLs for each domain (this could be optimized)
+            for domain in &domains_to_process {
+                let cache_key = create_cache_key(domain, args);
+                let domain_urls: Vec<String> = fresh_urls
+                    .iter()
+                    .filter(|url| url.contains(domain))
+                    .cloned()
+                    .collect();
+
+                if !domain_urls.is_empty() {
+                    let entry = CacheEntry::new(domain_urls);
+                    let _ = cache.store_urls(&cache_key, &entry).await;
+                }
+            }
+        }
+    }
+
+    // Clean up expired cache entries
+    let _ = cache.cleanup_expired(args.cache_ttl * 2).await;
+
+    final_urls
 }
 
 #[tokio::main]
@@ -268,13 +468,17 @@ async fn main() -> Result<()> {
         // Setup progress bars
         let progress_manager = ProgressManager::new(progress_check);
 
-        // Process each domain
-        process_domains(
+        // Initialize cache manager if caching is enabled
+        let cache_manager = create_cache_manager(&args).await.ok().flatten();
+
+        // Process each domain with caching support
+        process_domains_with_cache(
             domains.clone(),
             &args,
             &progress_manager,
             &providers,
             &provider_names,
+            cache_manager.as_ref(),
         )
         .await
     };
@@ -818,6 +1022,12 @@ mod tests {
             include_sitemap: true,
             exclude_robots: false,
             exclude_sitemap: false,
+            incremental: false,
+            cache_type: "sqlite".to_string(),
+            cache_path: None,
+            redis_url: None,
+            cache_ttl: 86400,
+            no_cache: false,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -904,6 +1114,12 @@ mod tests {
             include_sitemap: true,
             exclude_robots: false,
             exclude_sitemap: false,
+            incremental: false,
+            cache_type: "sqlite".to_string(),
+            cache_path: None,
+            redis_url: None,
+            cache_ttl: 86400,
+            no_cache: false,
         };
 
         let network_settings = NetworkSettings::new();

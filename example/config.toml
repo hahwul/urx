@@ -55,3 +55,12 @@ check_status = false            # Check HTTP status code of collected URLs
 include_status = ["200", "30x"] # Include URLs with these status codes
 exclude_status = ["404", "50x"] # Exclude URLs with these status codes
 extract_links = false           # Extract additional links from collected URLs
+
+# Cache options
+[cache]
+incremental = false             # Enable incremental scanning mode
+cache_type = "sqlite"           # Cache backend: sqlite or redis
+cache_path = "~/.urx/cache.db"  # Path for SQLite cache database
+redis_url = "redis://localhost:6379"  # Redis connection URL (for redis cache_type)
+cache_ttl = 86400              # Cache time-to-live in seconds (24 hours)
+no_cache = false               # Disable caching entirely
