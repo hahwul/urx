@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
 
-mod api_key_rotation;
 mod cli;
 mod config;
 mod filters;

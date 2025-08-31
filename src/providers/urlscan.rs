@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 
+use super::ApiKeyRotator;
 use super::Provider;
-use crate::api_key_rotation::ApiKeyRotator;
 
 #[derive(Clone)]
 pub struct UrlscanProvider {

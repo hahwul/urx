@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 
+mod api_key_rotation;
 mod commoncrawl;
 mod otx;
 mod robots;
@@ -9,6 +10,7 @@ mod sitemap;
 mod urlscan;
 mod vt;
 mod wayback;
+pub use api_key_rotation::ApiKeyRotator;
 pub use commoncrawl::CommonCrawlProvider;
 pub use otx::OTXProvider;
 pub use robots::RobotsProvider;
