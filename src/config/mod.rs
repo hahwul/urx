@@ -476,6 +476,12 @@ mod tests {
             include_sitemap: true,
             exclude_robots: false,
             exclude_sitemap: false,
+            incremental: false,
+            cache_type: "sqlite".to_string(),
+            cache_path: None,
+            redis_url: None,
+            cache_ttl: 86400,
+            no_cache: false,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

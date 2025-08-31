@@ -212,6 +212,36 @@ pub struct Args {
     #[clap(help_heading = "Testing Options")]
     #[clap(long)]
     pub extract_links: bool,
+
+    /// Enable incremental scanning mode (only return new URLs compared to previous scans)
+    #[clap(help_heading = "Cache Options")]
+    #[clap(long)]
+    pub incremental: bool,
+
+    /// Cache backend type (sqlite or redis)
+    #[clap(help_heading = "Cache Options")]
+    #[clap(long, default_value = "sqlite")]
+    pub cache_type: String,
+
+    /// Path for SQLite cache database
+    #[clap(help_heading = "Cache Options")]
+    #[clap(long)]
+    pub cache_path: Option<std::path::PathBuf>,
+
+    /// Redis connection URL for remote caching
+    #[clap(help_heading = "Cache Options")]
+    #[clap(long)]
+    pub redis_url: Option<String>,
+
+    /// Cache time-to-live in seconds (default: 24 hours)
+    #[clap(help_heading = "Cache Options")]
+    #[clap(long, default_value = "86400")]
+    pub cache_ttl: u64,
+
+    /// Disable caching entirely
+    #[clap(help_heading = "Cache Options")]
+    #[clap(long)]
+    pub no_cache: bool,
 }
 
 pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
