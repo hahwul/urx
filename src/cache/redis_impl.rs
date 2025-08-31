@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde_json;
 
 use super::types::{CacheBackend, CacheEntry, CacheKey};
 
@@ -20,12 +19,12 @@ impl RedisCache {
 
         // Test the connection
         let mut conn = client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .context("Failed to connect to Redis")?;
 
         redis::cmd("PING")
-            .query_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Redis ping failed")?;
 
@@ -49,7 +48,7 @@ impl CacheBackend for RedisCache {
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {
         let mut conn = self
             .client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .context("Failed to connect to Redis")?;
 
@@ -73,7 +72,7 @@ impl CacheBackend for RedisCache {
     async fn set(&self, key: &CacheKey, entry: &CacheEntry) -> Result<()> {
         let mut conn = self
             .client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .context("Failed to connect to Redis")?;
 
@@ -83,7 +82,7 @@ impl CacheBackend for RedisCache {
         redis::cmd("SET")
             .arg(&redis_key)
             .arg(&json_str)
-            .query_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to set value in Redis")?;
 
@@ -97,8 +96,8 @@ impl CacheBackend for RedisCache {
 
         redis::cmd("SET")
             .arg(&meta_key)
-            .arg(&meta_data.to_string())
-            .query_async(&mut conn)
+            .arg(meta_data.to_string())
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to set metadata in Redis")?;
 
@@ -108,7 +107,7 @@ impl CacheBackend for RedisCache {
     async fn delete(&self, key: &CacheKey) -> Result<()> {
         let mut conn = self
             .client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .context("Failed to connect to Redis")?;
 
@@ -118,7 +117,7 @@ impl CacheBackend for RedisCache {
         redis::cmd("DEL")
             .arg(&redis_key)
             .arg(&meta_key)
-            .query_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to delete from Redis")?;
 
@@ -128,7 +127,7 @@ impl CacheBackend for RedisCache {
     async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
         let mut conn = self
             .client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .context("Failed to connect to Redis")?;
 
@@ -158,7 +157,7 @@ impl CacheBackend for RedisCache {
                                 redis::cmd("DEL")
                                     .arg(&cache_key)
                                     .arg(&meta_key)
-                                    .query_async(&mut conn)
+                                    .query_async::<()>(&mut conn)
                                     .await
                                     .context("Failed to delete expired entry from Redis")?;
                             }
@@ -174,7 +173,7 @@ impl CacheBackend for RedisCache {
     async fn exists(&self, key: &CacheKey) -> Result<bool> {
         let mut conn = self
             .client
-            .get_async_connection()
+            .get_multiplexed_async_connection()
             .await
             .context("Failed to connect to Redis")?;
 

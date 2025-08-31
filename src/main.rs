@@ -105,7 +105,7 @@ async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
                 if !args.silent {
                     eprintln!("Error: Redis cache type selected but no --redis-url provided");
                 }
-                return Err(anyhow::anyhow!("Redis URL required for Redis cache type"));
+                Err(anyhow::anyhow!("Redis URL required for Redis cache type"))
             }
         }
         #[cfg(not(feature = "redis-cache"))]
