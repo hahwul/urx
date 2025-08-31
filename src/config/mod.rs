@@ -198,12 +198,13 @@ impl Config {
             args.cc_index = self.provider.cc_index.unwrap();
         }
 
-        if args.vt_api_key.is_none() && self.provider.vt_api_key.is_some() {
-            args.vt_api_key = self.provider.vt_api_key;
+        if args.vt_api_key.is_empty() && self.provider.vt_api_key.is_some() {
+            args.vt_api_key.push(self.provider.vt_api_key.unwrap());
         }
 
-        if args.urlscan_api_key.is_none() && self.provider.urlscan_api_key.is_some() {
-            args.urlscan_api_key = self.provider.urlscan_api_key;
+        if args.urlscan_api_key.is_empty() && self.provider.urlscan_api_key.is_some() {
+            args.urlscan_api_key
+                .push(self.provider.urlscan_api_key.unwrap());
         }
 
         // Handle robots.txt and sitemap.xml discovery options
@@ -441,8 +442,8 @@ mod tests {
             providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
             subs: false,
             cc_index: "CC-MAIN-2025-13".to_string(),
-            vt_api_key: None,
-            urlscan_api_key: None,
+            vt_api_key: vec![],
+            urlscan_api_key: vec![],
             verbose: false,
             silent: false,
             no_progress: false,

@@ -17,6 +17,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 ## Features
 
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX)
+* API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
 * Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
 * Support for multiple output formats: plain text, JSON, CSV
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
@@ -101,9 +102,9 @@ Provider Options:
       --cc-index <CC_INDEX>
           Common Crawl index to use (e.g., CC-MAIN-2025-13) [default: CC-MAIN-2025-13]
       --vt-api-key <VT_API_KEY>
-          API key for VirusTotal (can also use URX_VT_API_KEY environment variable)
+          API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>
-          API key for Urlscan (can also use URX_URLSCAN_API_KEY environment variable)
+          API key for Urlscan (can be used multiple times for rotation, can also use URX_URLSCAN_API_KEY environment variable with comma-separated keys)
 
 Discovery Options:
       --exclude-robots   Exclude robots.txt discovery
@@ -196,6 +197,16 @@ URX_VT_API_KEY=*** URX_URLSCAN_API_KEY=*** urx example.com --providers=vt,urlsca
 
 # 3. Auto-enabling: providers are automatically added when API keys are provided
 urx example.com --vt-api-key=*** --urlscan-api-key=*** # No need to specify in --providers
+
+# 4. Multiple API key rotation (to mitigate rate limits)
+# Using repeated flags for multiple keys
+urx example.com --vt-api-key=key1 --vt-api-key=key2 --vt-api-key=key3
+
+# Using environment variables with comma-separated keys
+URX_VT_API_KEY=key1,key2,key3 URX_URLSCAN_API_KEY=ukey1,ukey2 urx example.com
+
+# Combining CLI flags and environment variables (CLI keys are used first)
+URX_VT_API_KEY=env_key1,env_key2 urx example.com --vt-api-key=cli_key1 --vt-api-key=cli_key2
 
 # URLs from robots.txt and sitemap.xml are included by default
 
