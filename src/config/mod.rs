@@ -203,7 +203,8 @@ impl Config {
         }
 
         if args.urlscan_api_key.is_empty() && self.provider.urlscan_api_key.is_some() {
-            args.urlscan_api_key.push(self.provider.urlscan_api_key.unwrap());
+            args.urlscan_api_key
+                .push(self.provider.urlscan_api_key.unwrap());
         }
 
         // Handle robots.txt and sitemap.xml discovery options

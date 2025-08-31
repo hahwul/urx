@@ -36,7 +36,7 @@ use utils::verbose_print;
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
 pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
     let mut all_keys = cli_keys;
-    
+
     // Add keys from environment variable if present (comma-separated)
     if let Ok(env_keys) = std::env::var(env_var_name) {
         let env_keys: Vec<String> = env_keys
@@ -46,7 +46,7 @@ pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> 
             .collect();
         all_keys.extend(env_keys);
     }
-    
+
     // Remove duplicates while preserving order
     let mut unique_keys = Vec::new();
     for key in all_keys {
@@ -54,7 +54,7 @@ pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> 
             unique_keys.push(key);
         }
     }
-    
+
     unique_keys
 }
 
@@ -599,19 +599,23 @@ mod tests {
     fn test_multiple_api_keys_integration() {
         // Test multiple VT API keys via CLI
         let args = Args::parse_from([
-            "urx", "example.com", 
-            "--vt-api-key", "vt_key1",
-            "--vt-api-key", "vt_key2",
-            "--urlscan-api-key", "url_key1"
+            "urx",
+            "example.com",
+            "--vt-api-key",
+            "vt_key1",
+            "--vt-api-key",
+            "vt_key2",
+            "--urlscan-api-key",
+            "url_key1",
         ]);
-        
+
         assert_eq!(args.vt_api_key, vec!["vt_key1", "vt_key2"]);
         assert_eq!(args.urlscan_api_key, vec!["url_key1"]);
 
         // Test that parse_api_keys works with the CLI args
         let vt_keys = parse_api_keys(args.vt_api_key, "URX_VT_API_KEY");
         let url_keys = parse_api_keys(args.urlscan_api_key, "URX_URLSCAN_API_KEY");
-        
+
         assert_eq!(vt_keys, vec!["vt_key1", "vt_key2"]);
         assert_eq!(url_keys, vec!["url_key1"]);
     }

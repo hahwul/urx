@@ -28,6 +28,7 @@ impl ApiKeyRotator {
     }
 
     /// Get the current key without advancing the rotation
+    #[allow(dead_code)]
     pub fn current_key(&self) -> Option<String> {
         if self.keys.is_empty() {
             return None;
@@ -43,6 +44,7 @@ impl ApiKeyRotator {
     }
 
     /// Get the number of available keys
+    #[allow(dead_code)]
     pub fn key_count(&self) -> usize {
         self.keys.len()
     }
@@ -58,7 +60,7 @@ mod tests {
     fn test_new_rotator() {
         let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let rotator = ApiKeyRotator::new(keys.clone());
-        
+
         assert_eq!(rotator.key_count(), 3);
         assert!(rotator.has_keys());
     }
@@ -66,7 +68,7 @@ mod tests {
     #[test]
     fn test_empty_rotator() {
         let rotator = ApiKeyRotator::new(vec![]);
-        
+
         assert_eq!(rotator.key_count(), 0);
         assert!(!rotator.has_keys());
         assert!(rotator.next_key().is_none());
@@ -77,7 +79,7 @@ mod tests {
     fn test_single_key_rotation() {
         let keys = vec!["single_key".to_string()];
         let rotator = ApiKeyRotator::new(keys);
-        
+
         // Should always return the same key
         for _ in 0..5 {
             assert_eq!(rotator.next_key(), Some("single_key".to_string()));
@@ -88,7 +90,7 @@ mod tests {
     fn test_multiple_key_rotation() {
         let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let rotator = ApiKeyRotator::new(keys);
-        
+
         // Test rotation order
         assert_eq!(rotator.next_key(), Some("key1".to_string()));
         assert_eq!(rotator.next_key(), Some("key2".to_string()));
@@ -101,14 +103,14 @@ mod tests {
     fn test_current_key() {
         let keys = vec!["key1".to_string(), "key2".to_string()];
         let rotator = ApiKeyRotator::new(keys);
-        
+
         // Current key should be key1 initially
         assert_eq!(rotator.current_key(), Some("key1".to_string()));
-        
+
         // After next_key(), current should change
         assert_eq!(rotator.next_key(), Some("key1".to_string()));
         assert_eq!(rotator.current_key(), Some("key2".to_string()));
-        
+
         // Call current_key multiple times - should not advance
         assert_eq!(rotator.current_key(), Some("key2".to_string()));
         assert_eq!(rotator.current_key(), Some("key2".to_string()));
@@ -118,10 +120,10 @@ mod tests {
     fn test_thread_safety() {
         let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let rotator = Arc::new(ApiKeyRotator::new(keys));
-        
+
         let mut handles = vec![];
         let mut all_keys = vec![];
-        
+
         // Spawn multiple threads to get keys concurrently
         for _ in 0..10 {
             let rotator_clone = rotator.clone();
@@ -136,23 +138,23 @@ mod tests {
             });
             handles.push(handle);
         }
-        
+
         // Collect all keys from all threads
         for handle in handles {
             let thread_keys = handle.join().unwrap();
             all_keys.extend(thread_keys);
         }
-        
+
         // Verify we got the expected number of keys
         assert_eq!(all_keys.len(), 30); // 10 threads * 3 keys each
-        
+
         // Verify all keys are from our original set
         let unique_keys: HashSet<String> = all_keys.into_iter().collect();
         let expected_keys: HashSet<String> = ["key1", "key2", "key3"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        
+
         assert!(unique_keys.is_subset(&expected_keys));
         assert_eq!(unique_keys, expected_keys);
     }
