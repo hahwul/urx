@@ -4,10 +4,11 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::Provider;
+use crate::api_key_rotation::ApiKeyRotator;
 
 #[derive(Clone)]
 pub struct UrlscanProvider {
-    api_key: String,
+    api_key_rotator: ApiKeyRotator,
     include_subdomains: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
@@ -50,8 +51,19 @@ struct ArchivedPage {
 
 impl UrlscanProvider {
     pub fn new(api_key: String) -> Self {
+        if api_key.is_empty() {
+            Self::new_with_keys(vec![])
+        } else {
+            Self::new_with_keys(vec![api_key])
+        }
+    }
+
+    pub fn new_with_keys(api_keys: Vec<String>) -> Self {
+        // Filter out empty keys
+        let filtered_keys: Vec<String> = api_keys.into_iter().filter(|k| !k.is_empty()).collect();
+        
         UrlscanProvider {
-            api_key,
+            api_key_rotator: ApiKeyRotator::new(filtered_keys),
             include_subdomains: false,
             proxy: None,
             proxy_auth: None,
@@ -83,10 +95,14 @@ impl Provider for UrlscanProvider {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            // Skip if no API key is provided
-            if self.api_key.is_empty() {
+            // Skip if no API keys are provided
+            if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
             }
+
+            // Get the next API key in rotation
+            let api_key = self.api_key_rotator.next_key()
+                .expect("Key rotator should have keys since has_keys() returned true");
 
             // Use the url crate for encoding the domain
             let encoded_domain =
@@ -153,8 +169,8 @@ impl Provider for UrlscanProvider {
 
                 // Create a new request with API key header
                 let mut req = client.get(&url);
-                if !self.api_key.is_empty() {
-                    req = req.header("API-Key", &self.api_key);
+                if !api_key.is_empty() {
+                    req = req.header("API-Key", &api_key);
                 }
 
                 match req.send().await {
@@ -254,7 +270,9 @@ mod tests {
     fn test_new_provider() {
         let api_key = "test_api_key".to_string();
         let provider = UrlscanProvider::new(api_key.clone());
-        assert_eq!(provider.api_key, api_key);
+        assert!(provider.api_key_rotator.has_keys());
+        assert_eq!(provider.api_key_rotator.key_count(), 1);
+        assert_eq!(provider.api_key_rotator.current_key(), Some(api_key));
         assert!(!provider.include_subdomains);
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
@@ -264,6 +282,40 @@ mod tests {
         assert!(!provider.insecure);
         assert_eq!(provider.parallel, 1);
         assert_eq!(provider.rate_limit, None);
+    }
+
+    #[test]
+    fn test_new_provider_with_multiple_keys() {
+        let api_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+        let provider = UrlscanProvider::new_with_keys(api_keys.clone());
+        
+        assert!(provider.api_key_rotator.has_keys());
+        assert_eq!(provider.api_key_rotator.key_count(), 3);
+        
+        // Test rotation
+        assert_eq!(provider.api_key_rotator.next_key(), Some("key1".to_string()));
+        assert_eq!(provider.api_key_rotator.next_key(), Some("key2".to_string()));
+        assert_eq!(provider.api_key_rotator.next_key(), Some("key3".to_string()));
+        assert_eq!(provider.api_key_rotator.next_key(), Some("key1".to_string())); // Should wrap
+    }
+
+    #[test]
+    fn test_new_provider_filters_empty_keys() {
+        let api_keys = vec!["key1".to_string(), "".to_string(), "key2".to_string(), "".to_string()];
+        let provider = UrlscanProvider::new_with_keys(api_keys);
+        
+        assert!(provider.api_key_rotator.has_keys());
+        assert_eq!(provider.api_key_rotator.key_count(), 2);
+        assert_eq!(provider.api_key_rotator.next_key(), Some("key1".to_string()));
+        assert_eq!(provider.api_key_rotator.next_key(), Some("key2".to_string()));
+    }
+
+    #[test]
+    fn test_new_provider_with_empty_key() {
+        let provider = UrlscanProvider::new("".to_string());
+        assert!(!provider.api_key_rotator.has_keys());
+        assert_eq!(provider.api_key_rotator.key_count(), 0);
+        assert_eq!(provider.api_key_rotator.current_key(), None);
     }
 
     #[test]

@@ -48,14 +48,14 @@ pub struct Args {
     pub cc_index: String,
 
     #[clap(help_heading = "Provider Options")]
-    /// API key for VirusTotal (can also use URX_VT_API_KEY environment variable)
-    #[clap(long)]
-    pub vt_api_key: Option<String>,
+    /// API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
+    #[clap(long, action = clap::ArgAction::Append)]
+    pub vt_api_key: Vec<String>,
 
     #[clap(help_heading = "Provider Options")]
-    /// API key for Urlscan (can also use URX_URLSCAN_API_KEY environment variable)
-    #[clap(long)]
-    pub urlscan_api_key: Option<String>,
+    /// API key for Urlscan (can be used multiple times for rotation, can also use URX_URLSCAN_API_KEY environment variable with comma-separated keys)
+    #[clap(long, action = clap::ArgAction::Append)]
+    pub urlscan_api_key: Vec<String>,
 
     /// Include robots.txt discovery (default: true)
     #[clap(long, default_value = "true", hide = true)]

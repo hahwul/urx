@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
+mod api_key_rotation;
 mod cli;
 mod config;
 mod filters;
@@ -32,15 +33,40 @@ use testers::{LinkExtractor, StatusChecker, Tester};
 use url_utils::UrlTransformer;
 use utils::verbose_print;
 
+/// Parse API keys from environment variable (comma-separated) and combine with CLI keys
+pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
+    let mut all_keys = cli_keys;
+    
+    // Add keys from environment variable if present (comma-separated)
+    if let Ok(env_keys) = std::env::var(env_var_name) {
+        let env_keys: Vec<String> = env_keys
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        all_keys.extend(env_keys);
+    }
+    
+    // Remove duplicates while preserving order
+    let mut unique_keys = Vec::new();
+    for key in all_keys {
+        if !unique_keys.contains(&key) {
+            unique_keys.push(key);
+        }
+    }
+    
+    unique_keys
+}
+
 /// Helper function to auto-enable providers if API key is present
 pub fn auto_enable_provider(
     providers_list: &mut Vec<String>,
-    api_key: &Option<String>,
+    api_keys: &[String],
     provider_name: &str,
     verbose: bool,
     silent: bool,
 ) {
-    if api_key.is_some() && !providers_list.iter().any(|p| p == provider_name) {
+    if !api_keys.is_empty() && !providers_list.iter().any(|p| p == provider_name) {
         providers_list.push(provider_name.to_string());
         if verbose && !silent {
             println!("Auto-enabling {provider_name} provider because API key is provided");
@@ -122,16 +148,9 @@ async fn main() -> Result<()> {
         let mut providers: Vec<Box<dyn Provider>> = Vec::new();
         let mut provider_names: Vec<String> = Vec::new();
 
-        // Get VirusTotal and Urlscan API keys
-        let vt_api_key = args
-            .vt_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
-
-        let urlscan_api_key = args
-            .urlscan_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
+        // Get VirusTotal and Urlscan API keys (from CLI and env vars)
+        let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
+        let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
 
         // Auto-enable providers if API keys are provided but not explicitly included in providers
         let mut providers_list = args.providers.clone();
@@ -139,14 +158,14 @@ async fn main() -> Result<()> {
         // Auto-enable VirusTotal and Urlscan providers
         auto_enable_provider(
             &mut providers_list,
-            &vt_api_key,
+            &vt_api_keys,
             "vt",
             args.verbose,
             args.silent,
         );
         auto_enable_provider(
             &mut providers_list,
-            &urlscan_api_key,
+            &urlscan_api_keys,
             "urlscan",
             args.verbose,
             args.silent,
@@ -208,14 +227,14 @@ async fn main() -> Result<()> {
         }
 
         if providers_list.iter().any(|p| p == "vt") {
-            if let Some(api_key) = vt_api_key.clone() {
+            if !vt_api_keys.is_empty() {
                 add_provider(
                     &args,
                     &network_settings,
                     &mut providers,
                     &mut provider_names,
                     "VirusTotal".to_string(),
-                    || VirusTotalProvider::new(api_key.clone()),
+                    || VirusTotalProvider::new_with_keys(vt_api_keys.clone()),
                 );
             } else if !args.silent {
                 eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
@@ -223,14 +242,14 @@ async fn main() -> Result<()> {
         }
 
         if providers_list.iter().any(|p| p == "urlscan") {
-            if let Some(api_key) = urlscan_api_key.clone() {
+            if !urlscan_api_keys.is_empty() {
                 add_provider(
                     &args,
                     &network_settings,
                     &mut providers,
                     &mut provider_names,
                     "Urlscan".to_string(),
-                    || UrlscanProvider::new(api_key.clone()),
+                    || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
                 );
             } else if !args.silent {
                 eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
@@ -475,20 +494,20 @@ mod tests {
     fn test_auto_enable_provider() {
         // Test the auto_enable_provider helper function directly
         let mut providers_list = vec!["wayback".to_string(), "cc".to_string()];
-        let api_key = Some("test_api_key".to_string());
+        let api_keys = vec!["test_api_key".to_string()];
 
         // Should add vt to the list
-        auto_enable_provider(&mut providers_list, &api_key, "vt", false, false);
+        auto_enable_provider(&mut providers_list, &api_keys, "vt", false, false);
         assert!(providers_list.contains(&"vt".to_string()));
         assert_eq!(providers_list.len(), 3);
 
         // Calling again shouldn't add duplicates
-        auto_enable_provider(&mut providers_list, &api_key, "vt", false, false);
+        auto_enable_provider(&mut providers_list, &api_keys, "vt", false, false);
         assert_eq!(providers_list.len(), 3);
 
         // Empty API key should not add the provider
-        let empty_key: Option<String> = None;
-        auto_enable_provider(&mut providers_list, &empty_key, "urlscan", false, false);
+        let empty_keys: Vec<String> = vec![];
+        auto_enable_provider(&mut providers_list, &empty_keys, "urlscan", false, false);
         assert!(!providers_list.contains(&"urlscan".to_string()));
         assert_eq!(providers_list.len(), 3);
     }
@@ -510,22 +529,15 @@ mod tests {
         // Create our own empty providers list for testing
         let mut providers_list = Vec::new();
 
-        // Get API keys (this simulates part of main function)
-        let vt_api_key = args
-            .vt_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
-
-        let urlscan_api_key = args
-            .urlscan_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_URLSCAN_API_KEY").ok());
+        // Get API keys using the new parsing function (this simulates part of main function)
+        let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
+        let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
 
         // Test auto-enabling providers
-        auto_enable_provider(&mut providers_list, &vt_api_key, "vt", false, false);
+        auto_enable_provider(&mut providers_list, &vt_api_keys, "vt", false, false);
         auto_enable_provider(
             &mut providers_list,
-            &urlscan_api_key,
+            &urlscan_api_keys,
             "urlscan",
             false,
             false,
@@ -549,6 +561,62 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_api_keys() {
+        // Test CLI keys only
+        let cli_keys = vec!["key1".to_string(), "key2".to_string()];
+        let result = parse_api_keys(cli_keys, "NONEXISTENT_ENV_VAR");
+        assert_eq!(result, vec!["key1", "key2"]);
+
+        // Test environment keys only (using an actual env var for testing)
+        let _env_lock = env_mutex().lock().unwrap();
+        env::set_var("TEST_API_KEYS", "env_key1,env_key2, env_key3 ");
+        let result = parse_api_keys(vec![], "TEST_API_KEYS");
+        assert_eq!(result, vec!["env_key1", "env_key2", "env_key3"]);
+        env::remove_var("TEST_API_KEYS");
+
+        // Test CLI + environment (CLI should come first)
+        env::set_var("TEST_API_KEYS", "env_key1,env_key2");
+        let cli_keys = vec!["cli_key1".to_string()];
+        let result = parse_api_keys(cli_keys, "TEST_API_KEYS");
+        assert_eq!(result, vec!["cli_key1", "env_key1", "env_key2"]);
+        env::remove_var("TEST_API_KEYS");
+
+        // Test duplicate removal
+        env::set_var("TEST_API_KEYS", "key1,key2");
+        let cli_keys = vec!["key1".to_string(), "key3".to_string()];
+        let result = parse_api_keys(cli_keys, "TEST_API_KEYS");
+        assert_eq!(result, vec!["key1", "key3", "key2"]);
+        env::remove_var("TEST_API_KEYS");
+
+        // Test empty strings are filtered
+        env::set_var("TEST_API_KEYS", "key1,,key2, ,key3");
+        let result = parse_api_keys(vec![], "TEST_API_KEYS");
+        assert_eq!(result, vec!["key1", "key2", "key3"]);
+        env::remove_var("TEST_API_KEYS");
+    }
+
+    #[test]
+    fn test_multiple_api_keys_integration() {
+        // Test multiple VT API keys via CLI
+        let args = Args::parse_from([
+            "urx", "example.com", 
+            "--vt-api-key", "vt_key1",
+            "--vt-api-key", "vt_key2",
+            "--urlscan-api-key", "url_key1"
+        ]);
+        
+        assert_eq!(args.vt_api_key, vec!["vt_key1", "vt_key2"]);
+        assert_eq!(args.urlscan_api_key, vec!["url_key1"]);
+
+        // Test that parse_api_keys works with the CLI args
+        let vt_keys = parse_api_keys(args.vt_api_key, "URX_VT_API_KEY");
+        let url_keys = parse_api_keys(args.urlscan_api_key, "URX_URLSCAN_API_KEY");
+        
+        assert_eq!(vt_keys, vec!["vt_key1", "vt_key2"]);
+        assert_eq!(url_keys, vec!["url_key1"]);
+    }
+
+    #[test]
     fn test_api_key_precedence() {
         let _env_lock = env_mutex().lock().unwrap();
         // This test verifies command-line arguments take precedence over env vars
@@ -562,24 +630,18 @@ mod tests {
         // Create args with explicit API key
         let args = Args::parse_from(["urx", "example.com", "--vt-api-key", "arg_vt_key"]);
 
-        // Verify command line arg takes precedence
-        let vt_api_key = args
-            .vt_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
-
-        assert_eq!(vt_api_key, Some("arg_vt_key".to_string()));
+        // Verify command line arg takes precedence using parse_api_keys
+        let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
+        assert_eq!(vt_api_keys, vec!["arg_vt_key", "env_vt_key"]);
+        // CLI arg should be first (taking precedence)
+        assert_eq!(vt_api_keys[0], "arg_vt_key");
 
         // Create args without explicit API key
         let args = Args::parse_from(["urx", "example.com"]);
 
         // Verify environment variable is used as fallback
-        let vt_api_key = args
-            .vt_api_key
-            .clone()
-            .or_else(|| std::env::var("URX_VT_API_KEY").ok());
-
-        assert_eq!(vt_api_key, Some("env_vt_key".to_string()));
+        let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
+        assert_eq!(vt_api_keys, vec!["env_vt_key"]);
 
         // Restore environment
         match old_vt_key {
@@ -700,8 +762,8 @@ mod tests {
             providers: vec!["mock".to_string()],
             subs: false,
             cc_index: "CC-MAIN-2025-13".to_string(),
-            vt_api_key: None,
-            urlscan_api_key: None,
+            vt_api_key: vec![],
+            urlscan_api_key: vec![],
             verbose: false,
             silent: true,      // Silent to avoid console output during tests
             no_progress: true, // No progress bars during tests
@@ -785,8 +847,8 @@ mod tests {
             providers: vec![],
             subs: false,
             cc_index: "CC-MAIN-2025-13".to_string(),
-            vt_api_key: None,
-            urlscan_api_key: None,
+            vt_api_key: vec![],
+            urlscan_api_key: vec![],
             verbose: false,
             silent: true,
             no_progress: true,
