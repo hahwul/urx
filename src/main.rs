@@ -597,6 +597,14 @@ mod tests {
 
     #[test]
     fn test_multiple_api_keys_integration() {
+        let _env_lock = env_mutex().lock().unwrap();
+
+        // Save and clear environment variables to isolate from ambient env
+        let old_vt_key = env::var("URX_VT_API_KEY").ok();
+        let old_urlscan_key = env::var("URX_URLSCAN_API_KEY").ok();
+        env::remove_var("URX_VT_API_KEY");
+        env::remove_var("URX_URLSCAN_API_KEY");
+
         // Test multiple VT API keys via CLI
         let args = Args::parse_from([
             "urx",
@@ -618,6 +626,16 @@ mod tests {
 
         assert_eq!(vt_keys, vec!["vt_key1", "vt_key2"]);
         assert_eq!(url_keys, vec!["url_key1"]);
+
+        // Restore environment
+        match old_vt_key {
+            Some(val) => env::set_var("URX_VT_API_KEY", val),
+            None => env::remove_var("URX_VT_API_KEY"),
+        }
+        match old_urlscan_key {
+            Some(val) => env::set_var("URX_URLSCAN_API_KEY", val),
+            None => env::remove_var("URX_URLSCAN_API_KEY"),
+        }
     }
 
     #[test]
