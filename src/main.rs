@@ -372,6 +372,7 @@ async fn main() -> Result<()> {
     // Apply URL transformations
     let mut url_transformer = UrlTransformer::new();
     url_transformer
+        .with_normalize_url(args.normalize_url)
         .with_merge_endpoint(args.merge_endpoint)
         .with_show_only_host(args.show_only_host)
         .with_show_only_path(args.show_only_path)
@@ -780,6 +781,7 @@ mod tests {
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,
+            normalize_url: false,
             providers: vec!["mock".to_string()],
             subs: false,
             cc_index: "CC-MAIN-2025-13".to_string(),
@@ -865,6 +867,7 @@ mod tests {
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,
+            normalize_url: false,
             providers: vec![],
             subs: false,
             cc_index: "CC-MAIN-2025-13".to_string(),
