@@ -91,7 +91,7 @@ Use specific providers:
 urx example.com --providers wayback,otx
 ```
 
-Using VirusTotal and URLScan providers requires API keys. You can provide them in three ways:
+Using VirusTotal and URLScan providers requires API keys. You can provide them in multiple ways:
 
 1.  **Command Line:**
 
@@ -111,6 +111,26 @@ Using VirusTotal and URLScan providers requires API keys. You can provide them i
 
     ```bash
     urx example.com --vt-api-key=YOUR_VT_KEY --urlscan-api-key=YOUR_URLSCAN_KEY
+    ```
+
+4.  **Multiple API key rotation (to mitigate rate limits)**
+
+    Using repeated flags for multiple keys:
+
+    ```bash
+    urx example.com --vt-api-key=key1 --vt-api-key=key2 --vt-api-key=key3
+    ```
+
+    Using environment variables with comma-separated keys:
+
+    ```bash
+    URX_VT_API_KEY=key1,key2,key3 URX_URLSCAN_API_KEY=ukey1,ukey2 urx example.com
+    ```
+
+    Combining CLI flags and environment variables (CLI keys are used first):
+
+    ```bash
+    URX_VT_API_KEY=env_key1,env_key2 urx example.com --vt-api-key=cli_key1 --vt-api-key=cli_key2
     ```
 
 **Discovery**
