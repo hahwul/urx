@@ -19,6 +19,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX)
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
 * Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
+* URL normalization and deduplication: Sort query parameters, remove trailing slashes, and merge semantically identical URLs
 * Support for multiple output formats: plain text, JSON, CSV
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
 * Output results to the console or a file, or stream via stdin for pipeline integration
@@ -93,6 +94,7 @@ Output Options:
   -o, --output <OUTPUT>  Output file to write results
   -f, --format <FORMAT>  Output format (e.g., "plain", "json", "csv") [default: plain]
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
+      --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
 
 Provider Options:
       --providers <PROVIDERS>
@@ -242,6 +244,16 @@ urx example.com --include-status 200,30x,405 --exclude-status 20x
 
 # Disable host validation
 urx example.com --strict false
+
+# URL normalization and deduplication
+# Normalize URLs by sorting query parameters and removing trailing slashes
+urx example.com --normalize-url
+
+# Combine normalization with endpoint merging for comprehensive deduplication
+urx example.com --normalize-url --merge-endpoint
+
+# URL normalization with file input
+urx --files urls.txt --normalize-url
 ```
 
 ## Integration with Other Tools

@@ -32,6 +32,11 @@ pub struct Args {
     #[clap(long)]
     pub merge_endpoint: bool,
 
+    /// Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
+    #[clap(help_heading = "Output Options")]
+    #[clap(long)]
+    pub normalize_url: bool,
+
     /// Providers to use (comma-separated, e.g., "wayback,cc,otx,vt,urlscan")
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]

@@ -439,6 +439,7 @@ mod tests {
             output: None,
             format: "plain".to_string(),
             merge_endpoint: false,
+            normalize_url: false,
             providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
             subs: false,
             cc_index: "CC-MAIN-2025-13".to_string(),
