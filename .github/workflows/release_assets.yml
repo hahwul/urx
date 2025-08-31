@@ -28,4 +28,4 @@ jobs:
         with:
           files: urx.cdx.xml
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.URX_PUBLISH_TOKEN }}
