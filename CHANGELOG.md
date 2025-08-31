@@ -7,7 +7,6 @@
 - Add Multiple API Key Rotation (e.g., `--vt-api-key` key1 `--vt-api-key` key2)
 - Add URL Normalization and Deduplication (Added `--normalize-url` and `--merge-endpoint`)
 - Add Caching and Incremental Scanning (Added `--incremental`, `--cache-type`, `--cache-path`, `--cache-ttl`, `--redis-url`, `--no-cache`)
-- Support for SBOM
 
 ## 0.7.0
 
