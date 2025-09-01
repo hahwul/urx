@@ -25,9 +25,9 @@ jobs:
             target: x86_64-unknown-linux-gnu
             use_cross: false
           - build: linux-aarch64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            use_cross: true # Cross-compilation needed for ARM64
+            use_cross: false
           # macOS targets
           - build: macos-x86_64
             os: macos-latest
@@ -50,12 +50,6 @@ jobs:
       - name: Get the release version from the tag
         shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-
-      - name: Install OpenSSL dependencies for aarch64
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
