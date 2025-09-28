@@ -3,6 +3,7 @@ template = "landing.html"
 
 [extra.hero]
 title = "Welcome to Urx!"
+badge = "v0.8.0"
 description = "Extracts URLs from OSINT Archives for Security Insights"
 image = "/images/preview.jpg" # Background image
 cta_buttons = [
