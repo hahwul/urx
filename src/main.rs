@@ -5,6 +5,8 @@ mod cache;
 mod cli;
 mod config;
 mod filters;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod network;
 mod output;
 mod progress;
@@ -276,6 +278,12 @@ async fn process_domains_with_cache(
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    // Check if MCP mode is enabled
+    #[cfg(feature = "mcp")]
+    if args.mcp {
+        return run_mcp_server().await;
+    }
 
     // Load configuration and apply it to args
     // This ensures command line options take precedence over config file
@@ -677,6 +685,37 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Run URX as an MCP server
+#[cfg(feature = "mcp")]
+async fn run_mcp_server() -> Result<()> {
+    use mcp::UrxMcpServer;
+    use rmcp::{ServiceExt, transport::stdio};
+
+    // Create the MCP server
+    let server = UrxMcpServer::new();
+
+    // Get API keys from environment variables
+    let vt_api_keys = parse_api_keys(vec![], "URX_VT_API_KEY");
+    let urlscan_api_keys = parse_api_keys(vec![], "URX_URLSCAN_API_KEY");
+
+    // Set API keys if available
+    if !vt_api_keys.is_empty() {
+        server.set_vt_api_keys(vt_api_keys).await;
+    }
+    if !urlscan_api_keys.is_empty() {
+        server.set_urlscan_api_keys(urlscan_api_keys).await;
+    }
+
+    // Start the MCP server with stdio transport
+    eprintln!("Starting URX MCP server...");
+    let service = server.serve(stdio()).await?;
+
+    // Wait for the server to finish
+    service.waiting().await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1028,6 +1067,8 @@ mod tests {
             redis_url: None,
             cache_ttl: 86400,
             no_cache: false,
+            #[cfg(feature = "mcp")]
+            mcp: false,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -1120,6 +1161,8 @@ mod tests {
             redis_url: None,
             cache_ttl: 86400,
             no_cache: false,
+            #[cfg(feature = "mcp")]
+            mcp: false,
         };
 
         let network_settings = NetworkSettings::new();

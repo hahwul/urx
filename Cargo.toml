@@ -28,6 +28,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 redis = { version = "0.27", optional = true, features = ["aio", "tokio-comp"] }
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
+rmcp = { version = "0.8.3", optional = true, features = ["server", "transport-io"] }
 
 [dev-dependencies]
 mockito = "1.7.0"
@@ -36,3 +37,4 @@ tempfile = "3.8.0"
 [features]
 default = []
 redis-cache = ["redis"]
+mcp = ["rmcp"]
