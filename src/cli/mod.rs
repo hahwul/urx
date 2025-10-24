@@ -242,6 +242,12 @@ pub struct Args {
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]
     pub no_cache: bool,
+
+    /// Run in MCP (Model Context Protocol) server mode
+    #[cfg(feature = "mcp")]
+    #[clap(help_heading = "MCP Options")]
+    #[clap(long)]
+    pub mcp: bool,
 }
 
 pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {

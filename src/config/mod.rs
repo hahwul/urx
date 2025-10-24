@@ -520,6 +520,8 @@ mod tests {
             redis_url: None,
             cache_ttl: 86400,
             no_cache: false,
+            #[cfg(feature = "mcp")]
+            mcp: false,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

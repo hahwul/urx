@@ -30,6 +30,8 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
   * Configurable cache TTL and automatic cleanup of expired entries
+* **MCP Server Mode**: Run URX as a [Model Context Protocol](https://modelcontextprotocol.io/) server for AI assistant integration
+  * See [MCP Documentation](docs/MCP.md) for details
 
 ![Preview](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/static/images/preview.jpg)
 
@@ -58,6 +60,18 @@ cargo build --release
 ```
 
 The compiled binary will be available at `target/release/urx`.
+
+### With MCP Support
+
+To build URX with MCP (Model Context Protocol) server support:
+
+```bash
+git clone https://github.com/hahwul/urx.git
+cd urx
+cargo build --release --features mcp
+```
+
+See [MCP Documentation](docs/MCP.md) for usage instructions.
 
 ### From Docker
 
