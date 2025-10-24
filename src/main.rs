@@ -689,7 +689,7 @@ async fn main() -> Result<()> {
 #[cfg(feature = "mcp")]
 async fn run_mcp_server() -> Result<()> {
     use mcp::UrxMcpServer;
-    use rmcp::{ServiceExt, transport::stdio};
+    use rmcp::{transport::stdio, ServiceExt};
 
     // Create the MCP server
     let server = UrxMcpServer::new();

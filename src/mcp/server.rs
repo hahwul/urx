@@ -3,11 +3,9 @@
 //! Provides MCP tools for URL extraction from OSINT archives.
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars,
-    tool, tool_handler, tool_router,
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -17,8 +15,8 @@ use crate::cli::Args;
 use crate::filters::UrlFilter;
 use crate::progress::ProgressManager;
 use crate::providers::{
-    CommonCrawlProvider, OTXProvider, Provider, WaybackMachineProvider, VirusTotalProvider,
-    UrlscanProvider,
+    CommonCrawlProvider, OTXProvider, Provider, UrlscanProvider, VirusTotalProvider,
+    WaybackMachineProvider,
 };
 use crate::runner::process_domains;
 
@@ -93,7 +91,9 @@ impl UrxMcpServer {
     }
 
     /// Fetch URLs from OSINT archives for a domain
-    #[tool(description = "Extract URLs from OSINT archives (Wayback Machine, Common Crawl, OTX, etc.) for security analysis")]
+    #[tool(
+        description = "Extract URLs from OSINT archives (Wayback Machine, Common Crawl, OTX, etc.) for security analysis"
+    )]
     async fn fetch_urls(
         &self,
         Parameters(args): Parameters<FetchUrlsArgs>,
@@ -122,7 +122,8 @@ impl UrxMcpServer {
                     active_provider_names.push("Wayback Machine".to_string());
                 }
                 "cc" => {
-                    let mut provider = CommonCrawlProvider::with_index("CC-MAIN-2025-13".to_string());
+                    let mut provider =
+                        CommonCrawlProvider::with_index("CC-MAIN-2025-13".to_string());
                     if let Some(subs) = args.include_subdomains {
                         provider.with_subdomains(subs);
                     }
@@ -247,7 +248,10 @@ impl UrxMcpServer {
 
         if let Some(exclude_exts) = args.exclude_extensions {
             url_filter.with_exclude_extensions(
-                exclude_exts.split(',').map(|s| s.trim().to_string()).collect(),
+                exclude_exts
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect(),
             );
         }
 
@@ -283,9 +287,7 @@ impl UrxMcpServer {
             url_list
         );
 
-        Ok(CallToolResult::success(vec![Content::text(
-            response_text,
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
     /// List available OSINT providers
