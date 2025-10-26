@@ -1,4 +1,6 @@
+pub mod url;
 use crate::cli::Args;
+pub use url::UrlTransformer;
 
 /// Prints messages only when verbose mode is enabled
 ///

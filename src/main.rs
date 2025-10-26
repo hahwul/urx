@@ -13,7 +13,7 @@ mod readers;
 mod runner;
 mod tester_manager;
 mod testers;
-mod url_utils;
+
 mod utils;
 
 use cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
@@ -31,8 +31,8 @@ use readers::read_urls_from_file;
 use runner::{add_provider, process_domains};
 use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
 use testers::{LinkExtractor, StatusChecker, Tester};
-use url_utils::UrlTransformer;
 use utils::verbose_print;
+use utils::UrlTransformer;
 
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
 pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
