@@ -4,8 +4,10 @@
 /// the application to avoid code duplication between providers and testers.
 /// Network scope specifying which components should use the network settings
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum NetworkScope {
     /// Apply network settings to all components
+    #[default]
     All,
     /// Apply network settings only to providers
     Providers,
@@ -13,11 +15,6 @@ pub enum NetworkScope {
     Testers,
 }
 
-impl Default for NetworkScope {
-    fn default() -> Self {
-        Self::All
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct NetworkSettings {
