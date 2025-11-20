@@ -3,8 +3,7 @@
 /// This struct centralizes common HTTP request settings used throughout
 /// the application to avoid code duplication between providers and testers.
 /// Network scope specifying which components should use the network settings
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum NetworkScope {
     /// Apply network settings to all components
     #[default]
@@ -14,7 +13,6 @@ pub enum NetworkScope {
     /// Apply network settings only to testers
     Testers,
 }
-
 
 #[derive(Clone, Debug)]
 pub struct NetworkSettings {

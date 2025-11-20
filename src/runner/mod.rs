@@ -46,34 +46,30 @@ pub fn add_provider<T: Provider + 'static>(
     provider_builder: impl FnOnce() -> T,
 ) {
     if args.verbose && !args.silent {
-        println!("Adding {provider_name} provider");
+        let mut config_info = vec![
+            format!("Adding {provider_name} provider"),
+            format!("  Timeout: {} seconds", network_settings.timeout),
+            format!("  Retries: {}", network_settings.retries),
+            format!("  Parallel requests: {}", network_settings.parallel),
+        ];
+
         if network_settings.include_subdomains {
-            println!("Subdomain inclusion enabled for {provider_name}");
+            config_info.push("  Subdomain inclusion: enabled".to_string());
         }
-        if network_settings.proxy.is_some() {
-            println!(
-                "Using proxy for {provider_name}: {}",
-                network_settings.proxy.as_ref().unwrap()
-            );
+
+        if let Some(proxy) = &network_settings.proxy {
+            config_info.push(format!("  Proxy: {}", proxy));
         }
-        if network_settings.random_agent && !args.silent {
-            println!("Random User-Agent enabled for {provider_name}");
+
+        if network_settings.random_agent {
+            config_info.push("  Random User-Agent: enabled".to_string());
         }
-        println!(
-            "Timeout set to {} seconds for {provider_name}",
-            network_settings.timeout
-        );
-        println!(
-            "Retries set to {} for {provider_name}",
-            network_settings.retries
-        );
-        println!(
-            "Parallel requests set to {} for {provider_name}",
-            network_settings.parallel
-        );
+
         if let Some(rate) = network_settings.rate_limit {
-            println!("Rate limit set to {rate} requests/second for {provider_name}");
+            config_info.push(format!("  Rate limit: {} requests/second", rate));
         }
+
+        println!("{}", config_info.join("\n"));
     }
 
     let mut provider = provider_builder();
