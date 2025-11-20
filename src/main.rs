@@ -34,6 +34,9 @@ use testers::{LinkExtractor, StatusChecker, Tester};
 use utils::verbose_print;
 use utils::UrlTransformer;
 
+/// Type alias for provider initialization result
+type ProviderList = (Vec<Box<dyn Provider>>, Vec<String>);
+
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
 pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
     let mut all_keys = cli_keys;
@@ -73,6 +76,286 @@ pub fn auto_enable_provider(
             println!("Auto-enabling {provider_name} provider because API key is provided");
         }
     }
+}
+
+/// Initialize all providers based on args and API keys
+fn initialize_providers(
+    args: &Args,
+    network_settings: &NetworkSettings,
+) -> Result<ProviderList> {
+    let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+    let mut provider_names: Vec<String> = Vec::new();
+
+    // Get VirusTotal and Urlscan API keys (from CLI and env vars)
+    let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
+    let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
+
+    // Auto-enable providers if API keys are provided but not explicitly included in providers
+    let mut providers_list = args.providers.clone();
+
+    // Auto-enable VirusTotal and Urlscan providers
+    auto_enable_provider(
+        &mut providers_list,
+        &vt_api_keys,
+        "vt",
+        args.verbose,
+        args.silent,
+    );
+    auto_enable_provider(
+        &mut providers_list,
+        &urlscan_api_keys,
+        "urlscan",
+        args.verbose,
+        args.silent,
+    );
+
+    if providers_list.iter().any(|p| p == "wayback") {
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            "Wayback Machine".to_string(),
+            WaybackMachineProvider::new,
+        );
+    }
+
+    if providers_list.iter().any(|p| p == "cc") {
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            args.cc_index.to_string(),
+            || CommonCrawlProvider::with_index(args.cc_index.clone()),
+        );
+    }
+
+    if args.should_use_robots() {
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            "Robots.txt".to_string(),
+            RobotsProvider::new,
+        );
+    }
+
+    if args.should_use_sitemap() {
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            "Sitemap".to_string(),
+            SitemapProvider::new,
+        );
+    }
+
+    if providers_list.iter().any(|p| p == "otx") {
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            "OTX".to_string(),
+            OTXProvider::new,
+        );
+    }
+
+    if providers_list.iter().any(|p| p == "vt") {
+        if !vt_api_keys.is_empty() {
+            add_provider(
+                args,
+                network_settings,
+                &mut providers,
+                &mut provider_names,
+                "VirusTotal".to_string(),
+                || VirusTotalProvider::new_with_keys(vt_api_keys.clone()),
+            );
+        } else if !args.silent {
+            eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
+        }
+    }
+
+    if providers_list.iter().any(|p| p == "urlscan") {
+        if !urlscan_api_keys.is_empty() {
+            add_provider(
+                args,
+                network_settings,
+                &mut providers,
+                &mut provider_names,
+                "Urlscan".to_string(),
+                || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
+            );
+        } else if !args.silent {
+            eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
+        }
+    }
+
+    if providers.is_empty() {
+        if !args.silent {
+            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan)");
+        }
+        return Err(anyhow::anyhow!("No valid providers specified"));
+    }
+
+    Ok((providers, provider_names))
+}
+
+/// Read URLs from multiple files
+fn read_urls_from_files(args: &Args) -> Result<Option<Vec<String>>> {
+    if args.files.is_empty() {
+        return Ok(None);
+    }
+
+    let mut all_file_urls = Vec::new();
+
+    for file_path in &args.files {
+        match read_urls_from_file(file_path) {
+            Ok(urls) => {
+                if args.verbose && !args.silent {
+                    println!(
+                        "Read {} URLs from file: {}",
+                        urls.len(),
+                        file_path.display()
+                    );
+                }
+                all_file_urls.extend(urls);
+            }
+            Err(e) => {
+                if !args.silent {
+                    eprintln!("Error reading file {}: {}", file_path.display(), e);
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    if args.verbose && !args.silent {
+        println!(
+            "Read {} URLs total from {} file(s)",
+            all_file_urls.len(),
+            args.files.len()
+        );
+    }
+
+    Ok(Some(all_file_urls))
+}
+
+/// Apply URL filtering and host validation
+fn apply_url_filters(
+    args: &Args,
+    urls: &std::collections::HashSet<String>,
+    progress_manager: &ProgressManager,
+) -> Vec<String> {
+    // Create a progress bar for filtering
+    let filter_bar = if !args.extensions.is_empty()
+        || !args.patterns.is_empty()
+        || !args.exclude_extensions.is_empty()
+        || !args.exclude_patterns.is_empty()
+        || args.min_length.is_some()
+        || args.max_length.is_some()
+    {
+        let bar = progress_manager.create_filter_bar();
+        bar.set_message("Applying filters to URLs...");
+        Some(bar)
+    } else {
+        None
+    };
+
+    // Apply URL filtering
+    let mut url_filter = UrlFilter::new();
+
+    // Apply presets if specified
+    if !args.preset.is_empty() {
+        url_filter.apply_presets(&args.preset);
+    }
+
+    // Apply additional filters (will be combined with preset filters)
+    url_filter
+        .with_extensions(args.extensions.clone())
+        .with_exclude_extensions(args.exclude_extensions.clone())
+        .with_patterns(args.patterns.clone())
+        .with_exclude_patterns(args.exclude_patterns.clone())
+        .with_min_length(args.min_length)
+        .with_max_length(args.max_length);
+
+    // Apply URL filters
+    let mut sorted_urls = url_filter.apply_filters(urls);
+
+    // Apply host validation if strict mode is enabled and we have domains (not from file)
+    if args.strict && args.files.is_empty() {
+        if args.verbose && !args.silent {
+            println!("Enforcing strict host validation...");
+        }
+        // We need to get domains from the original input
+        let domains = if args.domains.is_empty() {
+            read_domains_from_stdin().unwrap_or_default()
+        } else {
+            args.domains.clone()
+        };
+
+        if !domains.is_empty() {
+            let host_validator = HostValidator::new(&domains, args.subs);
+            sorted_urls.retain(|url| host_validator.is_valid_host(url));
+
+            if args.verbose && !args.silent {
+                println!(
+                    "Number of valid URLs after host validation: {}",
+                    sorted_urls.len()
+                );
+            }
+        }
+    }
+
+    if let Some(bar) = filter_bar {
+        bar.finish_with_message(format!("Filtered to {} URLs", sorted_urls.len()));
+    }
+
+    if args.verbose && !args.silent {
+        println!("Total unique URLs after filtering: {}", sorted_urls.len());
+    }
+
+    sorted_urls
+}
+
+/// Apply URL transformations
+fn apply_url_transformations(
+    args: &Args,
+    urls: Vec<String>,
+    progress_manager: &ProgressManager,
+) -> Vec<String> {
+    // Apply URL transformation based on display options
+    let transform_bar = if args.merge_endpoint
+        || args.show_only_host
+        || args.show_only_path
+        || args.show_only_param
+    {
+        let bar = progress_manager.create_transform_bar();
+        bar.set_message("Applying URL transformations...");
+        Some(bar)
+    } else {
+        None
+    };
+
+    // Apply URL transformations
+    let mut url_transformer = UrlTransformer::new();
+    url_transformer
+        .with_normalize_url(args.normalize_url)
+        .with_merge_endpoint(args.merge_endpoint)
+        .with_show_only_host(args.show_only_host)
+        .with_show_only_path(args.show_only_path)
+        .with_show_only_param(args.show_only_param);
+
+    let transformed_urls = url_transformer.transform(urls);
+
+    if let Some(bar) = transform_bar {
+        bar.finish_with_message(format!("Transformed to {} URLs", transformed_urls.len()));
+    }
+
+    transformed_urls
 }
 
 /// Create cache manager based on arguments
@@ -283,44 +566,10 @@ async fn main() -> Result<()> {
     config.apply_to_args(&mut args);
 
     // Check if file input is provided
-    let urls_from_file = if !args.files.is_empty() {
-        let mut all_file_urls = Vec::new();
-
-        for file_path in &args.files {
-            match read_urls_from_file(file_path) {
-                Ok(urls) => {
-                    if args.verbose && !args.silent {
-                        println!(
-                            "Read {} URLs from file: {}",
-                            urls.len(),
-                            file_path.display()
-                        );
-                    }
-                    all_file_urls.extend(urls);
-                }
-                Err(e) => {
-                    if !args.silent {
-                        eprintln!("Error reading file {}: {}", file_path.display(), e);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        Some(all_file_urls)
-    } else {
-        None
-    };
+    let urls_from_file = read_urls_from_files(&args)?;
 
     let all_urls = if let Some(urls) = urls_from_file {
         // URLs read from file(s) - skip provider processing
-        if args.verbose && !args.silent {
-            println!(
-                "Read {} URLs total from {} file(s)",
-                urls.len(),
-                args.files.len()
-            );
-        }
         urls.into_iter().collect()
     } else {
         // No file input - use traditional domain-based approach
@@ -344,123 +593,7 @@ async fn main() -> Result<()> {
         let network_settings = NetworkSettings::from_args(&args);
 
         // Initialize providers based on command-line flags and API keys
-        let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-        let mut provider_names: Vec<String> = Vec::new();
-
-        // Get VirusTotal and Urlscan API keys (from CLI and env vars)
-        let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
-        let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
-
-        // Auto-enable providers if API keys are provided but not explicitly included in providers
-        let mut providers_list = args.providers.clone();
-
-        // Auto-enable VirusTotal and Urlscan providers
-        auto_enable_provider(
-            &mut providers_list,
-            &vt_api_keys,
-            "vt",
-            args.verbose,
-            args.silent,
-        );
-        auto_enable_provider(
-            &mut providers_list,
-            &urlscan_api_keys,
-            "urlscan",
-            args.verbose,
-            args.silent,
-        );
-
-        if providers_list.iter().any(|p| p == "wayback") {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                "Wayback Machine".to_string(),
-                WaybackMachineProvider::new,
-            );
-        }
-
-        if providers_list.iter().any(|p| p == "cc") {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                args.cc_index.to_string(),
-                || CommonCrawlProvider::with_index(args.cc_index.clone()),
-            );
-        }
-
-        if args.should_use_robots() {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                "Robots.txt".to_string(),
-                RobotsProvider::new,
-            );
-        }
-
-        if args.should_use_sitemap() {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                "Sitemap".to_string(),
-                SitemapProvider::new,
-            );
-        }
-
-        if providers_list.iter().any(|p| p == "otx") {
-            add_provider(
-                &args,
-                &network_settings,
-                &mut providers,
-                &mut provider_names,
-                "OTX".to_string(),
-                OTXProvider::new,
-            );
-        }
-
-        if providers_list.iter().any(|p| p == "vt") {
-            if !vt_api_keys.is_empty() {
-                add_provider(
-                    &args,
-                    &network_settings,
-                    &mut providers,
-                    &mut provider_names,
-                    "VirusTotal".to_string(),
-                    || VirusTotalProvider::new_with_keys(vt_api_keys.clone()),
-                );
-            } else if !args.silent {
-                eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
-            }
-        }
-
-        if providers_list.iter().any(|p| p == "urlscan") {
-            if !urlscan_api_keys.is_empty() {
-                add_provider(
-                    &args,
-                    &network_settings,
-                    &mut providers,
-                    &mut provider_names,
-                    "Urlscan".to_string(),
-                    || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
-                );
-            } else if !args.silent {
-                eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
-            }
-        }
-
-        if providers.is_empty() {
-            if !args.silent {
-                eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan)");
-            }
-            return Ok(());
-        }
+        let (providers, provider_names) = initialize_providers(&args, &network_settings)?;
 
         // Check for progress bar options
         let progress_check = args.no_progress || args.silent;
@@ -492,101 +625,11 @@ async fn main() -> Result<()> {
     // Setup progress bars
     let progress_manager = ProgressManager::new(progress_check);
 
-    // Create a progress bar for filtering
-    let filter_bar = if !args.extensions.is_empty()
-        || !args.patterns.is_empty()
-        || !args.exclude_extensions.is_empty()
-        || !args.exclude_patterns.is_empty()
-        || args.min_length.is_some()
-        || args.max_length.is_some()
-    {
-        let bar = progress_manager.create_filter_bar();
-        bar.set_message("Applying filters to URLs...");
-        Some(bar)
-    } else {
-        None
-    };
-
     // Apply URL filtering
-    let mut url_filter = UrlFilter::new();
-
-    // Apply presets if specified
-    if !args.preset.is_empty() {
-        url_filter.apply_presets(&args.preset);
-    }
-
-    // Apply additional filters (will be combined with preset filters)
-    url_filter
-        .with_extensions(args.extensions.clone())
-        .with_exclude_extensions(args.exclude_extensions.clone())
-        .with_patterns(args.patterns.clone())
-        .with_exclude_patterns(args.exclude_patterns.clone())
-        .with_min_length(args.min_length)
-        .with_max_length(args.max_length);
-
-    // Apply URL filters
-    let mut sorted_urls = url_filter.apply_filters(&all_urls);
-
-    // Apply host validation if strict mode is enabled and we have domains (not from file)
-    if args.strict && args.files.is_empty() {
-        if args.verbose && !args.silent {
-            println!("Enforcing strict host validation...");
-        }
-        // We need to get domains from the original input
-        let domains = if args.domains.is_empty() {
-            read_domains_from_stdin().unwrap_or_default()
-        } else {
-            args.domains.clone()
-        };
-
-        if !domains.is_empty() {
-            let host_validator = HostValidator::new(&domains, args.subs);
-            sorted_urls.retain(|url| host_validator.is_valid_host(url));
-
-            if args.verbose && !args.silent {
-                println!(
-                    "Number of valid URLs after host validation: {}",
-                    sorted_urls.len()
-                );
-            }
-        }
-    }
-
-    if let Some(bar) = filter_bar {
-        bar.finish_with_message(format!("Filtered to {} URLs", sorted_urls.len()));
-    }
-
-    if args.verbose && !args.silent {
-        println!("Total unique URLs after filtering: {}", sorted_urls.len());
-    }
-
-    // Apply URL transformation based on display options
-    let transform_bar = if args.merge_endpoint
-        || args.show_only_host
-        || args.show_only_path
-        || args.show_only_param
-    {
-        let bar = progress_manager.create_transform_bar();
-        bar.set_message("Applying URL transformations...");
-        Some(bar)
-    } else {
-        None
-    };
+    let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager);
 
     // Apply URL transformations
-    let mut url_transformer = UrlTransformer::new();
-    url_transformer
-        .with_normalize_url(args.normalize_url)
-        .with_merge_endpoint(args.merge_endpoint)
-        .with_show_only_host(args.show_only_host)
-        .with_show_only_path(args.show_only_path)
-        .with_show_only_param(args.show_only_param);
-
-    let transformed_urls = url_transformer.transform(sorted_urls);
-
-    if let Some(bar) = transform_bar {
-        bar.finish_with_message(format!("Transformed to {} URLs", transformed_urls.len()));
-    }
+    let transformed_urls = apply_url_transformations(&args, sorted_urls, &progress_manager);
 
     let outputter = create_outputter(&args.format);
 
