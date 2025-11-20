@@ -2,7 +2,7 @@ use futures::future::join_all;
 use tokio::task;
 
 use crate::cli::Args;
-use crate::network::NetworkSettings;
+use crate::network::{NetworkScope, NetworkSettings};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::testers::Tester;
@@ -158,5 +158,3 @@ pub async fn process_urls_with_testers(
 
     new_urls
 }
-
-use crate::network::NetworkScope;

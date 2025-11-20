@@ -79,10 +79,7 @@ pub fn auto_enable_provider(
 }
 
 /// Initialize all providers based on args and API keys
-fn initialize_providers(
-    args: &Args,
-    network_settings: &NetworkSettings,
-) -> Result<ProviderList> {
+fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
 
