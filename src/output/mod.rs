@@ -138,4 +138,81 @@ mod tests {
         assert_eq!(with_status.url, "https://example.com");
         assert_eq!(with_status.status, Some("200 OK".to_string()));
     }
+
+    #[test]
+    fn test_url_data_new() {
+        let url_data = UrlData::new("https://example.com/path".to_string());
+        assert_eq!(url_data.url, "https://example.com/path");
+        assert_eq!(url_data.status, None);
+    }
+
+    #[test]
+    fn test_url_data_with_status() {
+        let url_data = UrlData::with_status(
+            "https://example.com".to_string(),
+            "404 Not Found".to_string(),
+        );
+        assert_eq!(url_data.url, "https://example.com");
+        assert_eq!(url_data.status, Some("404 Not Found".to_string()));
+    }
+
+    #[test]
+    fn test_url_data_from_string_multiple_dashes() {
+        // Test URL that contains " - " in the path should be correctly parsed
+        let with_status = UrlData::from_string(
+            "https://example.com/path-to-page - 301 Moved Permanently".to_string(),
+        );
+        assert_eq!(with_status.url, "https://example.com/path-to-page");
+        assert_eq!(
+            with_status.status,
+            Some("301 Moved Permanently".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_data_from_string_with_complex_status() {
+        let with_status = UrlData::from_string(
+            "https://example.com/api/v1/users?id=123 - 500 Internal Server Error".to_string(),
+        );
+        assert_eq!(with_status.url, "https://example.com/api/v1/users?id=123");
+        assert_eq!(
+            with_status.status,
+            Some("500 Internal Server Error".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_data_clone() {
+        let original =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
+        let cloned = original.clone();
+
+        assert_eq!(original.url, cloned.url);
+        assert_eq!(original.status, cloned.status);
+    }
+
+    #[test]
+    fn test_url_data_debug() {
+        let url_data = UrlData::new("https://example.com".to_string());
+        let debug_str = format!("{:?}", url_data);
+        assert!(debug_str.contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_create_outputter_empty_format() {
+        let outputter = create_outputter("");
+        let url_data = UrlData::new("https://example.com".to_string());
+        // Empty format should default to plain
+        assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
+    }
+
+    #[test]
+    fn test_create_outputter_mixed_case() {
+        let outputter = create_outputter("JsOn");
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(
+            outputter.format(&url_data, false),
+            "{\"url\":\"https://example.com\"},"
+        );
+    }
 }

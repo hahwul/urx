@@ -253,4 +253,255 @@ mod tests {
         // Different keys should have different string representation
         assert_ne!(format!("{}", key1), format!("{}", key3));
     }
+
+    #[test]
+    fn test_cache_entry_new() {
+        let urls = vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ];
+        let entry = CacheEntry::new(urls.clone());
+
+        assert_eq!(entry.urls, urls);
+        // Timestamp should be close to now
+        let now = Utc::now();
+        let diff = now.signed_duration_since(entry.timestamp).num_seconds();
+        assert!(diff.abs() < 2); // Within 2 seconds
+    }
+
+    #[test]
+    fn test_cache_entry_empty_urls() {
+        let entry = CacheEntry::new(vec![]);
+        assert!(entry.urls.is_empty());
+    }
+
+    #[test]
+    fn test_cache_entry_is_expired_boundary() {
+        let mut entry = CacheEntry::new(vec!["https://example.com".to_string()]);
+
+        // Entry that is exactly at TTL should be expired
+        entry.timestamp = Utc::now() - chrono::Duration::seconds(3600);
+        assert!(entry.is_expired(3600));
+
+        // Entry that is just under TTL should not be expired
+        entry.timestamp = Utc::now() - chrono::Duration::seconds(3599);
+        assert!(!entry.is_expired(3600));
+    }
+
+    #[test]
+    fn test_cache_filters_hash_with_different_extensions() {
+        let filters1 = CacheFilters {
+            subs: true,
+            extensions: vec!["js".to_string()],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        let filters2 = CacheFilters {
+            subs: true,
+            extensions: vec!["php".to_string()], // Different
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        assert_ne!(filters1.compute_hash(), filters2.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_filters_hash_with_different_patterns() {
+        let filters1 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec!["admin".to_string()],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        let filters2 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec!["api".to_string()], // Different
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        assert_ne!(filters1.compute_hash(), filters2.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_filters_hash_with_length_options() {
+        let filters1 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: Some(10),
+            max_length: Some(100),
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        let filters2 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: Some(20), // Different
+            max_length: Some(100),
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        assert_ne!(filters1.compute_hash(), filters2.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_filters_hash_with_normalize_url() {
+        let filters1 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: true,
+            merge_endpoint: false,
+        };
+
+        let filters2 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false, // Different
+            merge_endpoint: false,
+        };
+
+        assert_ne!(filters1.compute_hash(), filters2.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_filters_hash_with_merge_endpoint() {
+        let filters1 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: true,
+        };
+
+        let filters2 = CacheFilters {
+            subs: true,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false, // Different
+        };
+
+        assert_ne!(filters1.compute_hash(), filters2.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_key_providers_sorted() {
+        let filters = CacheFilters {
+            subs: false,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        // Providers in different order should result in same sorted list
+        let key1 = CacheKey::new(
+            "example.com",
+            &["wayback".to_string(), "cc".to_string(), "otx".to_string()],
+            &filters,
+        );
+        let key2 = CacheKey::new(
+            "example.com",
+            &["otx".to_string(), "wayback".to_string(), "cc".to_string()],
+            &filters,
+        );
+
+        assert_eq!(key1.providers, key2.providers);
+        assert_eq!(format!("{}", key1), format!("{}", key2));
+    }
+
+    #[test]
+    fn test_cache_key_empty_providers() {
+        let filters = CacheFilters {
+            subs: false,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: true,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+
+        let key = CacheKey::new("example.com", &[], &filters);
+        assert!(key.providers.is_empty());
+    }
 }

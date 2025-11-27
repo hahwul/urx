@@ -269,4 +269,170 @@ mod tests {
             assert!(preset.get_exclude_patterns().is_empty());
         }
     }
+
+    #[test]
+    fn test_no_fonts_preset() {
+        let preset = FilterPreset::NoFonts;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // Should exclude all font extensions
+        assert!(exclude_extensions.contains(&"ttf".to_string()));
+        assert!(exclude_extensions.contains(&"otf".to_string()));
+        assert!(exclude_extensions.contains(&"woff".to_string()));
+        assert!(exclude_extensions.contains(&"woff2".to_string()));
+        assert!(exclude_extensions.contains(&"eot".to_string()));
+
+        // Should not include any extensions
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_no_documents_preset() {
+        let preset = FilterPreset::NoDocuments;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // Should exclude all document extensions
+        assert!(exclude_extensions.contains(&"pdf".to_string()));
+        assert!(exclude_extensions.contains(&"doc".to_string()));
+        assert!(exclude_extensions.contains(&"docx".to_string()));
+        assert!(exclude_extensions.contains(&"xls".to_string()));
+        assert!(exclude_extensions.contains(&"xlsx".to_string()));
+        assert!(exclude_extensions.contains(&"ppt".to_string()));
+        assert!(exclude_extensions.contains(&"pptx".to_string()));
+
+        // Should not include any extensions
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_no_videos_preset() {
+        let preset = FilterPreset::NoVideos;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // Should exclude all video extensions
+        assert!(exclude_extensions.contains(&"mp4".to_string()));
+        assert!(exclude_extensions.contains(&"mkv".to_string()));
+        assert!(exclude_extensions.contains(&"avi".to_string()));
+        assert!(exclude_extensions.contains(&"mov".to_string()));
+        assert!(exclude_extensions.contains(&"wmv".to_string()));
+        assert!(exclude_extensions.contains(&"webm".to_string()));
+
+        // Should not include any extensions
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_only_fonts_preset() {
+        let preset = FilterPreset::OnlyFonts;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // OnlyFonts uses exclude_extensions to store font types (get_extensions returns empty)
+        assert!(exclude_extensions.contains(&"ttf".to_string()));
+        assert!(exclude_extensions.contains(&"otf".to_string()));
+        assert!(exclude_extensions.contains(&"woff".to_string()));
+        assert!(exclude_extensions.contains(&"woff2".to_string()));
+
+        // get_extensions should be empty for OnlyFonts
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_only_documents_preset() {
+        let preset = FilterPreset::OnlyDocuments;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // OnlyDocuments uses exclude_extensions to store document types
+        assert!(exclude_extensions.contains(&"pdf".to_string()));
+        assert!(exclude_extensions.contains(&"doc".to_string()));
+        assert!(exclude_extensions.contains(&"docx".to_string()));
+
+        // get_extensions should be empty for OnlyDocuments
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_only_videos_preset() {
+        let preset = FilterPreset::OnlyVideos;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // OnlyVideos uses exclude_extensions to store video types
+        assert!(exclude_extensions.contains(&"mp4".to_string()));
+        assert!(exclude_extensions.contains(&"mkv".to_string()));
+        assert!(exclude_extensions.contains(&"avi".to_string()));
+
+        // get_extensions should be empty for OnlyVideos
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_only_images_preset() {
+        let preset = FilterPreset::OnlyImages;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // OnlyImages uses exclude_extensions to store image types
+        assert!(exclude_extensions.contains(&"png".to_string()));
+        assert!(exclude_extensions.contains(&"jpg".to_string()));
+        assert!(exclude_extensions.contains(&"jpeg".to_string()));
+        assert!(exclude_extensions.contains(&"gif".to_string()));
+        assert!(exclude_extensions.contains(&"svg".to_string()));
+
+        // get_extensions should be empty for OnlyImages
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_no_documents() {
+        assert!(matches!(
+            FilterPreset::from_str("no-documents"),
+            Some(FilterPreset::NoDocuments)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-document"),
+            Some(FilterPreset::NoDocuments)
+        ));
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_no_videos() {
+        assert!(matches!(
+            FilterPreset::from_str("no-videos"),
+            Some(FilterPreset::NoVideos)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-video"),
+            Some(FilterPreset::NoVideos)
+        ));
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_only_fonts() {
+        assert!(matches!(
+            FilterPreset::from_str("only-fonts"),
+            Some(FilterPreset::OnlyFonts)
+        ));
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_only_documents() {
+        assert!(matches!(
+            FilterPreset::from_str("only-documents"),
+            Some(FilterPreset::OnlyDocuments)
+        ));
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_only_videos() {
+        assert!(matches!(
+            FilterPreset::from_str("only-videos"),
+            Some(FilterPreset::OnlyVideos)
+        ));
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_only_images() {
+        assert!(matches!(
+            FilterPreset::from_str("only-images"),
+            Some(FilterPreset::OnlyImages)
+        ));
+    }
 }

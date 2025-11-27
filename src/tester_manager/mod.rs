@@ -158,3 +158,181 @@ pub async fn process_urls_with_testers(
 
     new_urls
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock tester for testing apply_network_settings_to_tester
+    #[derive(Clone)]
+    struct MockTester {
+        timeout: Arc<Mutex<u64>>,
+        retries: Arc<Mutex<u32>>,
+        random_agent: Arc<Mutex<bool>>,
+        insecure: Arc<Mutex<bool>>,
+        proxy: Arc<Mutex<Option<String>>>,
+        proxy_auth: Arc<Mutex<Option<String>>>,
+    }
+
+    impl MockTester {
+        fn new() -> Self {
+            MockTester {
+                timeout: Arc::new(Mutex::new(0)),
+                retries: Arc::new(Mutex::new(0)),
+                random_agent: Arc::new(Mutex::new(false)),
+                insecure: Arc::new(Mutex::new(false)),
+                proxy: Arc::new(Mutex::new(None)),
+                proxy_auth: Arc::new(Mutex::new(None)),
+            }
+        }
+    }
+
+    impl Tester for MockTester {
+        fn clone_box(&self) -> Box<dyn Tester> {
+            Box::new(self.clone())
+        }
+
+        fn test_url<'a>(
+            &'a self,
+            url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let url = url.to_string();
+            Box::pin(async move { Ok(vec![url]) })
+        }
+
+        fn with_timeout(&mut self, seconds: u64) {
+            *self.timeout.lock().unwrap() = seconds;
+        }
+
+        fn with_retries(&mut self, count: u32) {
+            *self.retries.lock().unwrap() = count;
+        }
+
+        fn with_random_agent(&mut self, enabled: bool) {
+            *self.random_agent.lock().unwrap() = enabled;
+        }
+
+        fn with_insecure(&mut self, enabled: bool) {
+            *self.insecure.lock().unwrap() = enabled;
+        }
+
+        fn with_proxy(&mut self, proxy: Option<String>) {
+            *self.proxy.lock().unwrap() = proxy;
+        }
+
+        fn with_proxy_auth(&mut self, auth: Option<String>) {
+            *self.proxy_auth.lock().unwrap() = auth;
+        }
+    }
+
+    #[test]
+    fn test_apply_network_settings_to_tester_basic() {
+        let mut tester = MockTester::new();
+        let settings = NetworkSettings::new()
+            .with_timeout(60)
+            .with_retries(5)
+            .with_random_agent(true)
+            .with_insecure(true);
+
+        apply_network_settings_to_tester(&mut tester, &settings);
+
+        assert_eq!(*tester.timeout.lock().unwrap(), 60);
+        assert_eq!(*tester.retries.lock().unwrap(), 5);
+        assert!(*tester.random_agent.lock().unwrap());
+        assert!(*tester.insecure.lock().unwrap());
+    }
+
+    #[test]
+    fn test_apply_network_settings_to_tester_with_proxy() {
+        let mut tester = MockTester::new();
+        let settings = NetworkSettings::new()
+            .with_proxy(Some("http://proxy:8080".to_string()))
+            .with_proxy_auth(Some("user:pass".to_string()));
+
+        apply_network_settings_to_tester(&mut tester, &settings);
+
+        assert_eq!(
+            *tester.proxy.lock().unwrap(),
+            Some("http://proxy:8080".to_string())
+        );
+        assert_eq!(
+            *tester.proxy_auth.lock().unwrap(),
+            Some("user:pass".to_string())
+        );
+    }
+
+    #[test]
+    fn test_apply_network_settings_to_tester_skips_for_providers_scope() {
+        let mut tester = MockTester::new();
+        let mut settings = NetworkSettings::new()
+            .with_timeout(60)
+            .with_retries(5)
+            .with_random_agent(true)
+            .with_insecure(true);
+        settings.scope = NetworkScope::Providers;
+
+        apply_network_settings_to_tester(&mut tester, &settings);
+
+        // Settings should not be applied when scope is Providers
+        assert_eq!(*tester.timeout.lock().unwrap(), 0);
+        assert_eq!(*tester.retries.lock().unwrap(), 0);
+        assert!(!*tester.random_agent.lock().unwrap());
+        assert!(!*tester.insecure.lock().unwrap());
+    }
+
+    #[test]
+    fn test_apply_network_settings_to_tester_applies_for_testers_scope() {
+        let mut tester = MockTester::new();
+        let mut settings = NetworkSettings::new()
+            .with_timeout(60)
+            .with_retries(5)
+            .with_random_agent(true)
+            .with_insecure(true);
+        settings.scope = NetworkScope::Testers;
+
+        apply_network_settings_to_tester(&mut tester, &settings);
+
+        // Settings should be applied when scope is Testers
+        assert_eq!(*tester.timeout.lock().unwrap(), 60);
+        assert_eq!(*tester.retries.lock().unwrap(), 5);
+        assert!(*tester.random_agent.lock().unwrap());
+        assert!(*tester.insecure.lock().unwrap());
+    }
+
+    #[test]
+    fn test_apply_network_settings_to_tester_applies_for_all_scope() {
+        let mut tester = MockTester::new();
+        let mut settings = NetworkSettings::new()
+            .with_timeout(60)
+            .with_retries(5)
+            .with_random_agent(true)
+            .with_insecure(true);
+        settings.scope = NetworkScope::All;
+
+        apply_network_settings_to_tester(&mut tester, &settings);
+
+        // Settings should be applied when scope is All
+        assert_eq!(*tester.timeout.lock().unwrap(), 60);
+        assert_eq!(*tester.retries.lock().unwrap(), 5);
+        assert!(*tester.random_agent.lock().unwrap());
+        assert!(*tester.insecure.lock().unwrap());
+    }
+
+    #[test]
+    fn test_apply_network_settings_proxy_without_auth() {
+        let mut tester = MockTester::new();
+        let settings = NetworkSettings::new().with_proxy(Some("http://proxy:8080".to_string()));
+
+        apply_network_settings_to_tester(&mut tester, &settings);
+
+        assert_eq!(
+            *tester.proxy.lock().unwrap(),
+            Some("http://proxy:8080".to_string())
+        );
+        assert_eq!(*tester.proxy_auth.lock().unwrap(), None);
+    }
+}
