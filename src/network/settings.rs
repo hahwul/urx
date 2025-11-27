@@ -276,4 +276,105 @@ mod tests {
         );
         assert_eq!(settings.proxy_auth, Some("user:pass".to_string()));
     }
+
+    #[test]
+    fn test_from_args_basic() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from(["urx", "example.com"]);
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.timeout, 120); // Default timeout in args is 120
+        assert_eq!(settings.retries, 2); // Default retries in args is 2
+        assert!(!settings.random_agent);
+        assert!(!settings.insecure);
+        assert_eq!(settings.parallel, 5);
+        assert_eq!(settings.rate_limit, None);
+        assert!(!settings.include_subdomains);
+        assert_eq!(settings.scope, NetworkScope::All);
+    }
+
+    #[test]
+    fn test_from_args_with_proxy() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from([
+            "urx",
+            "example.com",
+            "--proxy",
+            "http://proxy:8080",
+            "--proxy-auth",
+            "user:pass",
+        ]);
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.proxy, Some("http://proxy:8080".to_string()));
+        assert_eq!(settings.proxy_auth, Some("user:pass".to_string()));
+    }
+
+    #[test]
+    fn test_from_args_with_network_options() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from([
+            "urx",
+            "example.com",
+            "--timeout",
+            "60",
+            "--retries",
+            "5",
+            "--random-agent",
+            "--insecure",
+            "--parallel",
+            "10",
+            "--rate-limit",
+            "2.5",
+            "--subs",
+        ]);
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.timeout, 60);
+        assert_eq!(settings.retries, 5);
+        assert!(settings.random_agent);
+        assert!(settings.insecure);
+        assert_eq!(settings.parallel, 10);
+        assert_eq!(settings.rate_limit, Some(2.5));
+        assert!(settings.include_subdomains);
+    }
+
+    #[test]
+    fn test_from_args_network_scope_providers() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from(["urx", "example.com", "--network-scope", "providers"]);
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.scope, NetworkScope::Providers);
+    }
+
+    #[test]
+    fn test_from_args_network_scope_testers() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from(["urx", "example.com", "--network-scope", "testers"]);
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.scope, NetworkScope::Testers);
+    }
+
+    #[test]
+    fn test_from_args_network_scope_providers_testers() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from(["urx", "example.com", "--network-scope", "providers,testers"]);
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.scope, NetworkScope::All);
+    }
 }

@@ -399,4 +399,149 @@ mod tests {
         assert!(transformed.contains(&"https://example.com/api?a=1&b=2".to_string()));
         assert!(transformed.contains(&"not-a-valid-url".to_string()));
     }
+
+    #[test]
+    fn test_url_transformer_new() {
+        let transformer = UrlTransformer::new();
+
+        // Transform empty list should return empty list
+        let urls: Vec<String> = vec![];
+        let transformed = transformer.transform(urls);
+        assert!(transformed.is_empty());
+    }
+
+    #[test]
+    fn test_url_transformer_no_options() {
+        let transformer = UrlTransformer::new();
+
+        let urls = vec![
+            "https://example.com/path1".to_string(),
+            "https://example.com/path2".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls.clone());
+        // Without any options, URLs should be returned as-is
+        assert_eq!(transformed, urls);
+    }
+
+    #[test]
+    fn test_url_transformer_show_only_path_root_path() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_path(true);
+
+        let urls = vec![
+            "https://example.com/".to_string(),
+            "https://example.com/path".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        // Root path "/" should not be included
+        assert_eq!(transformed.len(), 1);
+        assert!(transformed.contains(&"/path".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_show_only_param_no_params() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_param(true);
+
+        let urls = vec![
+            "https://example.com/path".to_string(),
+            "https://example.com/api?id=123".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        // URL without params should not contribute to the result
+        assert_eq!(transformed.len(), 1);
+        assert!(transformed.contains(&"id=123".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_merge_endpoints_single_url() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec!["https://example.com/api?param1=value1".to_string()];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 1);
+        assert!(transformed.contains(&"https://example.com/api?param1=value1".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_merge_endpoints_no_params() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "https://example.com/path".to_string(),
+            "https://example.com/path".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 1);
+        assert!(transformed.contains(&"https://example.com/path".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_merge_endpoints_invalid_url() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "not-a-valid-url".to_string(),
+            "another-invalid-url".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        // Invalid URLs should be kept as-is
+        assert_eq!(transformed.len(), 2);
+    }
+
+    #[test]
+    fn test_url_transformer_normalize_empty_query() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_normalize_url(true);
+
+        let urls = vec!["https://example.com/path".to_string()];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 1);
+        assert!(transformed.contains(&"https://example.com/path".to_string()));
+    }
+
+    #[test]
+    fn test_url_transformer_chaining() {
+        let mut transformer = UrlTransformer::new();
+        transformer
+            .with_merge_endpoint(true)
+            .with_show_only_host(false)
+            .with_show_only_path(false)
+            .with_show_only_param(false)
+            .with_normalize_url(true);
+
+        let urls = vec![
+            "https://example.com/api?b=2&a=1".to_string(),
+            "https://example.com/api?a=1&b=2".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed.len(), 1);
+    }
+
+    #[test]
+    fn test_url_transformer_show_only_host_invalid_url() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_host(true);
+
+        let urls = vec![
+            "https://example.com/path".to_string(),
+            "not-a-valid-url".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        // Invalid URL should be kept as-is
+        assert!(transformed.contains(&"example.com".to_string()));
+        assert!(transformed.contains(&"not-a-valid-url".to_string()));
+    }
 }
