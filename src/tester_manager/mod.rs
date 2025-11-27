@@ -165,29 +165,21 @@ mod tests {
     use anyhow::Result;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::{Arc, Mutex};
 
     /// Mock tester for testing apply_network_settings_to_tester
-    #[derive(Clone)]
+    #[derive(Clone, Default)]
     struct MockTester {
-        timeout: Arc<Mutex<u64>>,
-        retries: Arc<Mutex<u32>>,
-        random_agent: Arc<Mutex<bool>>,
-        insecure: Arc<Mutex<bool>>,
-        proxy: Arc<Mutex<Option<String>>>,
-        proxy_auth: Arc<Mutex<Option<String>>>,
+        timeout: u64,
+        retries: u32,
+        random_agent: bool,
+        insecure: bool,
+        proxy: Option<String>,
+        proxy_auth: Option<String>,
     }
 
     impl MockTester {
         fn new() -> Self {
-            MockTester {
-                timeout: Arc::new(Mutex::new(0)),
-                retries: Arc::new(Mutex::new(0)),
-                random_agent: Arc::new(Mutex::new(false)),
-                insecure: Arc::new(Mutex::new(false)),
-                proxy: Arc::new(Mutex::new(None)),
-                proxy_auth: Arc::new(Mutex::new(None)),
-            }
+            MockTester::default()
         }
     }
 
@@ -205,27 +197,27 @@ mod tests {
         }
 
         fn with_timeout(&mut self, seconds: u64) {
-            *self.timeout.lock().unwrap() = seconds;
+            self.timeout = seconds;
         }
 
         fn with_retries(&mut self, count: u32) {
-            *self.retries.lock().unwrap() = count;
+            self.retries = count;
         }
 
         fn with_random_agent(&mut self, enabled: bool) {
-            *self.random_agent.lock().unwrap() = enabled;
+            self.random_agent = enabled;
         }
 
         fn with_insecure(&mut self, enabled: bool) {
-            *self.insecure.lock().unwrap() = enabled;
+            self.insecure = enabled;
         }
 
         fn with_proxy(&mut self, proxy: Option<String>) {
-            *self.proxy.lock().unwrap() = proxy;
+            self.proxy = proxy;
         }
 
         fn with_proxy_auth(&mut self, auth: Option<String>) {
-            *self.proxy_auth.lock().unwrap() = auth;
+            self.proxy_auth = auth;
         }
     }
 
@@ -240,10 +232,10 @@ mod tests {
 
         apply_network_settings_to_tester(&mut tester, &settings);
 
-        assert_eq!(*tester.timeout.lock().unwrap(), 60);
-        assert_eq!(*tester.retries.lock().unwrap(), 5);
-        assert!(*tester.random_agent.lock().unwrap());
-        assert!(*tester.insecure.lock().unwrap());
+        assert_eq!(tester.timeout, 60);
+        assert_eq!(tester.retries, 5);
+        assert!(tester.random_agent);
+        assert!(tester.insecure);
     }
 
     #[test]
@@ -255,14 +247,8 @@ mod tests {
 
         apply_network_settings_to_tester(&mut tester, &settings);
 
-        assert_eq!(
-            *tester.proxy.lock().unwrap(),
-            Some("http://proxy:8080".to_string())
-        );
-        assert_eq!(
-            *tester.proxy_auth.lock().unwrap(),
-            Some("user:pass".to_string())
-        );
+        assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
+        assert_eq!(tester.proxy_auth, Some("user:pass".to_string()));
     }
 
     #[test]
@@ -278,10 +264,10 @@ mod tests {
         apply_network_settings_to_tester(&mut tester, &settings);
 
         // Settings should not be applied when scope is Providers
-        assert_eq!(*tester.timeout.lock().unwrap(), 0);
-        assert_eq!(*tester.retries.lock().unwrap(), 0);
-        assert!(!*tester.random_agent.lock().unwrap());
-        assert!(!*tester.insecure.lock().unwrap());
+        assert_eq!(tester.timeout, 0);
+        assert_eq!(tester.retries, 0);
+        assert!(!tester.random_agent);
+        assert!(!tester.insecure);
     }
 
     #[test]
@@ -297,10 +283,10 @@ mod tests {
         apply_network_settings_to_tester(&mut tester, &settings);
 
         // Settings should be applied when scope is Testers
-        assert_eq!(*tester.timeout.lock().unwrap(), 60);
-        assert_eq!(*tester.retries.lock().unwrap(), 5);
-        assert!(*tester.random_agent.lock().unwrap());
-        assert!(*tester.insecure.lock().unwrap());
+        assert_eq!(tester.timeout, 60);
+        assert_eq!(tester.retries, 5);
+        assert!(tester.random_agent);
+        assert!(tester.insecure);
     }
 
     #[test]
@@ -316,10 +302,10 @@ mod tests {
         apply_network_settings_to_tester(&mut tester, &settings);
 
         // Settings should be applied when scope is All
-        assert_eq!(*tester.timeout.lock().unwrap(), 60);
-        assert_eq!(*tester.retries.lock().unwrap(), 5);
-        assert!(*tester.random_agent.lock().unwrap());
-        assert!(*tester.insecure.lock().unwrap());
+        assert_eq!(tester.timeout, 60);
+        assert_eq!(tester.retries, 5);
+        assert!(tester.random_agent);
+        assert!(tester.insecure);
     }
 
     #[test]
@@ -329,10 +315,7 @@ mod tests {
 
         apply_network_settings_to_tester(&mut tester, &settings);
 
-        assert_eq!(
-            *tester.proxy.lock().unwrap(),
-            Some("http://proxy:8080".to_string())
-        );
-        assert_eq!(*tester.proxy_auth.lock().unwrap(), None);
+        assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
+        assert_eq!(tester.proxy_auth, None);
     }
 }

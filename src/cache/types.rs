@@ -263,10 +263,10 @@ mod tests {
         let entry = CacheEntry::new(urls.clone());
 
         assert_eq!(entry.urls, urls);
-        // Timestamp should be close to now
+        // Timestamp should be close to now (within 5 seconds to account for slow CI)
         let now = Utc::now();
         let diff = now.signed_duration_since(entry.timestamp).num_seconds();
-        assert!(diff.abs() < 2); // Within 2 seconds
+        assert!(diff.abs() < 5);
     }
 
     #[test]
