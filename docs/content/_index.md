@@ -11,6 +11,10 @@ cta_buttons = [
     { text = "View on GitHub", url = "https://github.com/hahwul/urx", style = "secondary" },
 ]
 
+[extra.features_section]
+title = "Essential Features"
+description = "Discover urx's essential features for comprehensive attack surface detection and analysis."
+
 [[extra.features]]
 title = "Multi-Source URL Collection"
 desc = "Fetch URLs from multiple OSINT archives in parallel, including Wayback Machine, Common Crawl, and OTX."
