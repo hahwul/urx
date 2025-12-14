@@ -3,8 +3,6 @@ title: "Options"
 weight: 3
 ---
 
-Urx provides a wide range of options to customize its behavior.
-
 ```
 Usage: urx [OPTIONS] [DOMAINS]...
 
