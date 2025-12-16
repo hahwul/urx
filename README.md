@@ -1,6 +1,8 @@
 <div align="center">
   <picture>
-    <img alt="URX Logo" src="https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/static/images/logo.png" width="300px;">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/static/images/urx-dark.png" width="500px;">
+        <source media="(prefers-color-scheme: light)" srcset="docs/static/images/urx-light.png" width="500px;">
+        <img alt="Urx Logo" src="docs/static/images/urx-dark.png" width="500px;">
   </picture>
   <p>Extracts URLs from OSINT Archives for Security Insights.</p>
 </div>
