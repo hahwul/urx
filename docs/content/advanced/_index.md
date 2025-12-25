@@ -1,6 +1,6 @@
 +++
-title = "Get Started"
-weight = 1
+title = "Advanced"
+weight = 3
 sort_by = "weight"
 
 [extra]
