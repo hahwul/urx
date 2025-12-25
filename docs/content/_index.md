@@ -7,7 +7,7 @@ badge = "v0.8.0"
 description = "Extracts URLs from OSINT Archives for Security Insights"
 image = "/images/preview.jpg" # Background image
 cta_buttons = [
-    { text = "Get Started", url = "/get_started/installation", style = "primary" },
+    { text = "Get Started", url = "/getting_started/introduction", style = "primary" },
     { text = "View on GitHub", url = "https://github.com/hahwul/urx", style = "secondary" },
 ]
 
