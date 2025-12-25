@@ -18,10 +18,14 @@ Options:
   -h, --help             Print help
   -V, --version          Print version
 
+Input Options:
+      --files <FILES>...  Read URLs directly from files (supports WARC, URLTeam compressed, and text files). Use multiple --files flags or space-separate multiple files
+
 Output Options:
   -o, --output <OUTPUT>  Output file to write results
   -f, --format <FORMAT>  Output format (e.g., "plain", "json", "csv") [default: plain]
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
+      --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
 
 Provider Options:
   --providers <PROVIDERS>              Providers to use (comma-separated, e.g., "wayback,cc,otx,vt,urlscan") [default: wayback,cc,otx]
@@ -69,8 +73,8 @@ Network Options:
   --proxy-auth <PROXY_AUTH>        Proxy authentication credentials (format: username:password)
   --insecure                       Skip SSL certificate verification (accept self-signed certs)
   --random-agent                   Use a random User-Agent for HTTP requests
-  --timeout <TIMEOUT>              Request timeout in seconds [default: 30]
-  --retries <RETRIES>              Number of retries for failed requests [default: 3]
+  --timeout <TIMEOUT>              Request timeout in seconds [default: 120]
+  --retries <RETRIES>              Number of retries for failed requests [default: 2]
   --parallel <PARALLEL>            Maximum number of parallel requests per provider and maximum concurrent domain processing [default: 5]
   --rate-limit <RATE_LIMIT>        Rate limit (requests per second)
 
@@ -80,16 +84,19 @@ Testing Options:
   --exclude-status <EXCLUDE_STATUS>  Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: --es]
   --extract-links                    Extract additional links from collected URLs (requires HTTP requests)
 
-Caching Options:
-  --cache-type <CACHE_TYPE>    Cache type (sqlite or redis) [default: sqlite]
-  --cache-path <CACHE_PATH>    Path to SQLite cache file [default: ~/.urx/cache.db]
-  --cache-ttl <CACHE_TTL>      Cache TTL in seconds [default: 86400]
-  --redis-url <REDIS_URL>      Redis URL for cache (e.g., redis://localhost:6379)
-  --incremental                Enable incremental mode (only return new URLs)
-  --no-cache                   Disable caching
+Cache Options:
+  --incremental              Enable incremental scanning mode (only return new URLs compared to previous scans)
+  --cache-type <CACHE_TYPE>  Cache backend type (sqlite or redis) [default: sqlite]
+  --cache-path <CACHE_PATH>  Path for SQLite cache database
+  --redis-url <REDIS_URL>    Redis connection URL for remote caching
+  --cache-ttl <CACHE_TTL>    Cache time-to-live in seconds (default: 24 hours) [default: 86400]
+  --no-cache                 Disable caching entirely
 ```
 
 ## Option Categories
+
+### Input Control
+Specify domains or read URLs from files.
 
 ### Output Control
 Configure how and where results are displayed or saved.
