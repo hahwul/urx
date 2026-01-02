@@ -36,6 +36,11 @@
           darwin.apple_sdk.frameworks.SystemConfiguration
         ];
 
+        # Rust toolchain for development shell
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+        };
+
       in
       {
         packages = {
@@ -68,25 +73,15 @@
           inherit buildInputs;
           
           nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
-            # Rust toolchain
-            (rust-bin.stable.latest.default.override {
-              extensions = [ "rust-src" "rust-analyzer" ];
-            })
-            
-            # Development tools
-            cargo
-            rustc
-            rustfmt
-            clippy
+            # Rust toolchain with rust-src and rust-analyzer
+            rustToolchain
             
             # Additional tools
             just
           ]);
 
           # Environment variables
-          RUST_SRC_PATH = "${pkgs.rust-bin.stable.latest.default.override {
-            extensions = [ "rust-src" ];
-          }}/lib/rustlib/src/rust/library";
+          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
           shellHook = ''
             echo "🦀 URX Development Environment"
