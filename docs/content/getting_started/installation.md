@@ -23,6 +23,35 @@ For macOS and Linux users with Homebrew:
 brew install urx
 ```
 
+### From Nix
+
+For users with Nix and flakes enabled:
+
+```bash
+# Run URX directly without installation
+nix run github:hahwul/urx
+
+# Install to your profile
+nix profile install github:hahwul/urx
+
+# Add to your flake.nix
+{
+  inputs.urx.url = "github:hahwul/urx";
+  # ... then use inputs.urx.packages.${system}.default
+}
+```
+
+For development with Nix:
+
+```bash
+# Enter development shell with Rust toolchain
+nix develop
+
+# Or use direnv for automatic environment loading
+echo "use flake" > .envrc
+direnv allow
+```
+
 ### From Source
 
 Build from source for the latest development version:
