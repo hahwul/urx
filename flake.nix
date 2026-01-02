@@ -18,15 +18,15 @@
           inherit system overlays;
         };
         
-        # Parse Cargo.toml to get version and metadata
-        cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-        pname = cargoToml.package.name;
-        version = cargoToml.package.version;
+        # Use stable Rust toolchain
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+        };
 
-        # Common build inputs needed for the project
+        # Build dependencies
         nativeBuildInputs = with pkgs; [
+          rustToolchain
           pkg-config
-          rustPlatform.bindgenHook
         ];
 
         buildInputs = with pkgs; [
@@ -36,67 +36,54 @@
           darwin.apple_sdk.frameworks.SystemConfiguration
         ];
 
-        # Rust toolchain for development shell
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
+        # Common environment for development
+        commonEnv = {
+          RUST_BACKTRACE = "1";
         };
 
       in
       {
-        packages = {
-          default = pkgs.rustPlatform.buildRustPackage {
-            inherit pname version;
-            
-            src = ./.;
+        # Package definition
+        packages.default = pkgs.rustPlatform.buildRustPackage {
+          pname = "urx";
+          version = "0.8.0";
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
+          src = ./.;
 
-            inherit nativeBuildInputs buildInputs;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
 
-            # Skip tests during build as some require network access
-            doCheck = false;
+          inherit nativeBuildInputs buildInputs;
 
-            meta = with pkgs.lib; {
-              description = cargoToml.package.description;
-              homepage = "https://github.com/hahwul/urx";
-              license = licenses.mit;
-              maintainers = [ ];
-              mainProgram = "urx";
-            };
+          meta = with pkgs.lib; {
+            description = "Extracts URLs from OSINT Archives for Security Insights";
+            homepage = "https://github.com/hahwul/urx";
+            license = licenses.mit;
+            maintainers = [ ];
+            mainProgram = "urx";
           };
         };
 
-        # Development shell with Rust toolchain and dependencies
-        devShells.default = pkgs.mkShell {
+        # Development shell
+        devShells.default = pkgs.mkShell (commonEnv // {
           inherit buildInputs;
-          
           nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
-            # Rust toolchain with rust-src and rust-analyzer
-            rustToolchain
-            
-            # Additional tools
+            # Additional development tools
+            cargo-watch
+            cargo-edit
             just
           ]);
 
-          # Environment variables
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-
           shellHook = ''
-            echo "🦀 URX Development Environment"
-            echo "Rust version: $(rustc --version)"
-            echo "Cargo version: $(cargo --version)"
-            echo ""
-            echo "Available commands:"
-            echo "  cargo build          - Build the project"
-            echo "  cargo test           - Run tests"
-            echo "  cargo run            - Run URX"
-            echo "  just                 - See available just recipes"
+            echo "🦀 URX development environment"
+            echo "Run 'just' to see available commands"
+            echo "Run 'cargo build' to build the project"
+            echo "Run 'cargo test' to run tests"
           '';
-        };
+        });
 
-        # Allow running: nix run github:hahwul/urx
+        # App for easy running
         apps.default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/urx";
