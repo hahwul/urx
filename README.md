@@ -51,6 +51,22 @@ cargo install urx
 brew install urx
 ```
 
+### From Nix
+
+```bash
+# Using Nix flakes
+nix run github:hahwul/urx
+
+# Or install to your profile
+nix profile install github:hahwul/urx
+
+# Or add to your flake.nix inputs
+{
+  inputs.urx.url = "github:hahwul/urx";
+  # ... then use inputs.urx.packages.${system}.default
+}
+```
+
 ### From Source
 
 ```bash

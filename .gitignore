@@ -6,3 +6,8 @@
 
 # Cache files
 *.db
+
+# Nix
+.direnv
+result
+result-*
