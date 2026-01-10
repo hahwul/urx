@@ -9,7 +9,7 @@
         name: homebrew-releaser
         steps:
           - name: Release urx to Homebrew tap
-            uses: Justintime50/homebrew-releaser@v1
+            uses: Justintime50/homebrew-releaser@v3
             with:
               homebrew_owner: hahwul
               homebrew_tap: homebrew-urx
