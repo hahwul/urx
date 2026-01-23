@@ -21,7 +21,7 @@ scraper = "0.25.0"
 toml = "0.9.11"
 async-trait = "0.1"
 roxmltree = "0.20.0"
-colored = "2.0.0"
+colored = "3.0.0"
 async-recursion = "1.0.5"
 flate2 = "1.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
