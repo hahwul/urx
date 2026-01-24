@@ -14,7 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 futures = "0.3"
-indicatif = "0.17.7"
+indicatif = "0.18.3"
 url = "2.5.0"
 rand = "0.8.5"
 scraper = "0.25.0"
