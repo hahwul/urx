@@ -1,7 +1,16 @@
 /// Implements different URL output formatters
 use super::UrlData;
 use colored::*;
+use serde::Serialize;
 use std::fmt;
+
+/// Helper struct for JSON serialization with guaranteed field order (url first, then status).
+#[derive(Serialize)]
+struct JsonUrlEntry<'a> {
+    url: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'a str>,
+}
 
 /// Formatter trait for converting URL data to different output formats
 pub trait Formatter: fmt::Debug + Send + Sync {
@@ -71,10 +80,11 @@ impl JsonFormatter {
 
 impl Formatter for JsonFormatter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        let json = match &url_data.status {
-            Some(status) => format!("{{\"url\":\"{}\",\"status\":\"{}\"}}", url_data.url, status),
-            None => format!("{{\"url\":\"{}\"}}", url_data.url),
+        let entry = JsonUrlEntry {
+            url: &url_data.url,
+            status: url_data.status.as_deref(),
         };
+        let json = serde_json::to_string(&entry).unwrap_or_default();
 
         if is_last {
             format!("{json}\n")
@@ -101,14 +111,30 @@ impl CsvFormatter {
 
 impl Formatter for CsvFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
+        let escaped_url = csv_escape(&url_data.url);
         match &url_data.status {
-            Some(status) => format!("{},{}\n", url_data.url, status),
-            None => format!("{},\n", url_data.url),
+            Some(status) => {
+                let escaped_status = csv_escape(status);
+                format!("{escaped_url},{escaped_status}\n")
+            }
+            None => format!("{escaped_url},\n"),
         }
     }
 
     fn clone_box(&self) -> Box<dyn Formatter> {
         Box::new(self.clone())
+    }
+}
+
+/// Escape a field value for CSV output per RFC 4180.
+/// If the value contains a comma, double-quote, or newline, wrap it in
+/// double-quotes and escape any internal double-quotes by doubling them.
+fn csv_escape(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') {
+        let escaped = value.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        value.to_string()
     }
 }
 
@@ -285,6 +311,34 @@ mod tests {
         assert_eq!(
             formatter.format(&url_data_status, true),
             "https://example.com,200 OK\n"
+        );
+    }
+
+    #[test]
+    fn test_csv_escape_plain() {
+        assert_eq!(csv_escape("hello"), "hello");
+    }
+
+    #[test]
+    fn test_csv_escape_with_comma() {
+        assert_eq!(
+            csv_escape("https://example.com/path?a=1,2"),
+            "\"https://example.com/path?a=1,2\""
+        );
+    }
+
+    #[test]
+    fn test_csv_escape_with_quote() {
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn test_csv_formatter_with_special_chars() {
+        let formatter = CsvFormatter::new();
+        let url_data = UrlData::new("https://example.com/path?a=1,2&b=3".to_string());
+        assert_eq!(
+            formatter.format(&url_data, false),
+            "\"https://example.com/path?a=1,2&b=3\",\n"
         );
     }
 
