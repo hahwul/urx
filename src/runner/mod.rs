@@ -1,5 +1,5 @@
 use futures::future::join_all;
-use indicatif::ProgressStyle;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::task;
@@ -9,6 +9,52 @@ use crate::network::{NetworkScope, NetworkSettings};
 use crate::progress::ProgressManager;
 use crate::providers::Provider;
 use crate::utils::verbose_print;
+
+/// Shared state for tracking domain completion across provider tasks.
+struct DomainCompletionCtx {
+    total_providers: usize,
+    total_domains: usize,
+    domain_completion: Arc<Mutex<HashMap<String, usize>>>,
+    processed_domains: Arc<Mutex<usize>>,
+    overall_bar: ProgressBar,
+    verbose: bool,
+    silent: bool,
+}
+
+impl DomainCompletionCtx {
+    /// Mark one provider as finished for `domain` and update progress bars.
+    ///
+    /// Returns `true` if the domain is now fully complete (all providers finished).
+    fn track(&self, domain: &str) -> bool {
+        let mut is_domain_complete = false;
+        {
+            let mut completion_map = self.domain_completion.lock().unwrap();
+            if let Some(count) = completion_map.get_mut(domain) {
+                *count += 1;
+                is_domain_complete = *count >= self.total_providers;
+            }
+        }
+
+        if is_domain_complete {
+            let mut count = self.processed_domains.lock().unwrap();
+            *count += 1;
+            self.overall_bar.set_position(*count as u64);
+            self.overall_bar.set_message(format!(
+                "Completed {}/{} domains",
+                *count, self.total_domains
+            ));
+
+            if self.verbose && !self.silent {
+                println!(
+                    "Domain completed: {} ({}/{})",
+                    domain, *count, self.total_domains
+                );
+            }
+        }
+
+        is_domain_complete
+    }
+}
 
 /// Helper function to apply network settings to a provider
 pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
@@ -139,11 +185,18 @@ pub async fn process_domains(
         provider_data.into_iter().enumerate()
     {
         let all_urls_clone = Arc::clone(&all_urls);
-        let processed_domains_clone = Arc::clone(&processed_domains);
         let queue = Arc::clone(&provider_queues[p_idx]);
-        let domain_completion_clone = Arc::clone(&domain_completion);
-        let overall_bar_clone = overall_bar.clone();
         let provider_bar = provider_bars[original_idx].clone();
+
+        let completion_ctx = DomainCompletionCtx {
+            total_providers,
+            total_domains,
+            domain_completion: Arc::clone(&domain_completion),
+            processed_domains: Arc::clone(&processed_domains),
+            overall_bar: overall_bar.clone(),
+            verbose,
+            silent,
+        };
 
         // Spawn a task for this provider
         let provider_future = task::spawn(async move {
@@ -240,33 +293,7 @@ pub async fn process_domains(
                             }
                         }
 
-                        // Mark this provider as completed for this domain
-                        let mut is_domain_complete = false;
-                        {
-                            let mut completion_map = domain_completion_clone.lock().unwrap();
-                            if let Some(count) = completion_map.get_mut(&domain) {
-                                *count += 1;
-                                is_domain_complete = *count >= total_providers;
-                            }
-                        }
-
-                        // If all providers for this domain are done, update domain counter
-                        if is_domain_complete {
-                            let mut count = processed_domains_clone.lock().unwrap();
-                            *count += 1;
-                            overall_bar_clone.set_position(*count as u64);
-                            overall_bar_clone.set_message(format!(
-                                "Completed {}/{} domains",
-                                *count, total_domains
-                            ));
-
-                            if verbose && !silent {
-                                println!(
-                                    "Domain completed: {} ({}/{})",
-                                    domain, *count, total_domains
-                                );
-                            }
-                        }
+                        completion_ctx.track(&domain);
 
                         if verbose && !silent {
                             println!(
@@ -296,32 +323,7 @@ pub async fn process_domains(
                         // Force refresh to maintain line position
                         provider_bar.tick();
 
-                        // Mark this provider as completed for this domain
-                        let mut is_domain_complete = false;
-                        {
-                            let mut completion_map = domain_completion_clone.lock().unwrap();
-                            if let Some(count) = completion_map.get_mut(&domain) {
-                                *count += 1;
-                                is_domain_complete = *count >= total_providers;
-                            }
-                        }
-
-                        if is_domain_complete {
-                            let mut count = processed_domains_clone.lock().unwrap();
-                            *count += 1;
-                            overall_bar_clone.set_position(*count as u64);
-                            overall_bar_clone.set_message(format!(
-                                "Completed {}/{} domains",
-                                *count, total_domains
-                            ));
-
-                            if verbose && !silent {
-                                println!(
-                                    "Domain completed: {} ({}/{})",
-                                    domain, *count, total_domains
-                                );
-                            }
-                        }
+                        completion_ctx.track(&domain);
 
                         if verbose && !silent {
                             eprintln!("Error fetching URLs for {domain} from {provider_name}: {e}");

@@ -5,6 +5,7 @@ use url::Url;
 use super::preset::FilterPreset;
 
 /// URL Filter for filtering URLs based on extensions, patterns, length, etc.
+#[derive(Default)]
 pub struct UrlFilter {
     extensions: Vec<String>,
     exclude_extensions: Vec<String>,

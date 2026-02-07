@@ -190,8 +190,10 @@ impl Config {
             }
         }
 
-        if args.format == "plain" && self.output.format.is_some() {
-            args.format = self.output.format.unwrap();
+        if args.format == "plain" {
+            if let Some(format) = self.output.format {
+                args.format = format;
+            }
         }
 
         if !args.merge_endpoint && self.output.merge_endpoint.unwrap_or(false) {
@@ -199,25 +201,32 @@ impl Config {
         }
 
         // Provider options
-        if args.providers == vec!["wayback", "cc", "otx"] && self.provider.providers.is_some() {
-            args.providers = self.provider.providers.unwrap();
+        if args.providers == vec!["wayback", "cc", "otx"] {
+            if let Some(providers) = self.provider.providers {
+                args.providers = providers;
+            }
         }
 
         if !args.subs && self.provider.subs.unwrap_or(false) {
             args.subs = true;
         }
 
-        if args.cc_index == "CC-MAIN-2025-13" && self.provider.cc_index.is_some() {
-            args.cc_index = self.provider.cc_index.unwrap();
+        if args.cc_index == "CC-MAIN-2025-13" {
+            if let Some(cc_index) = self.provider.cc_index {
+                args.cc_index = cc_index;
+            }
         }
 
-        if args.vt_api_key.is_empty() && self.provider.vt_api_key.is_some() {
-            args.vt_api_key.push(self.provider.vt_api_key.unwrap());
+        if args.vt_api_key.is_empty() {
+            if let Some(vt_api_key) = self.provider.vt_api_key {
+                args.vt_api_key.push(vt_api_key);
+            }
         }
 
-        if args.urlscan_api_key.is_empty() && self.provider.urlscan_api_key.is_some() {
-            args.urlscan_api_key
-                .push(self.provider.urlscan_api_key.unwrap());
+        if args.urlscan_api_key.is_empty() {
+            if let Some(urlscan_api_key) = self.provider.urlscan_api_key {
+                args.urlscan_api_key.push(urlscan_api_key);
+            }
         }
 
         // Handle robots.txt and sitemap.xml discovery options
@@ -230,34 +239,47 @@ impl Config {
         }
 
         // Only apply include_* if exclude_* is not set (exclude takes precedence)
-        if !args.exclude_robots && args.include_robots && self.provider.include_robots.is_some() {
-            args.include_robots = self.provider.include_robots.unwrap();
+        if !args.exclude_robots && args.include_robots {
+            if let Some(include_robots) = self.provider.include_robots {
+                args.include_robots = include_robots;
+            }
         }
 
-        if !args.exclude_sitemap && args.include_sitemap && self.provider.include_sitemap.is_some()
-        {
-            args.include_sitemap = self.provider.include_sitemap.unwrap();
+        if !args.exclude_sitemap && args.include_sitemap {
+            if let Some(include_sitemap) = self.provider.include_sitemap {
+                args.include_sitemap = include_sitemap;
+            }
         }
 
         // Filter options
-        if args.preset.is_empty() && self.filter.preset.is_some() {
-            args.preset = self.filter.preset.unwrap();
+        if args.preset.is_empty() {
+            if let Some(preset) = self.filter.preset {
+                args.preset = preset;
+            }
         }
 
-        if args.extensions.is_empty() && self.filter.extensions.is_some() {
-            args.extensions = self.filter.extensions.unwrap();
+        if args.extensions.is_empty() {
+            if let Some(extensions) = self.filter.extensions {
+                args.extensions = extensions;
+            }
         }
 
-        if args.exclude_extensions.is_empty() && self.filter.exclude_extensions.is_some() {
-            args.exclude_extensions = self.filter.exclude_extensions.unwrap();
+        if args.exclude_extensions.is_empty() {
+            if let Some(exclude_extensions) = self.filter.exclude_extensions {
+                args.exclude_extensions = exclude_extensions;
+            }
         }
 
-        if args.patterns.is_empty() && self.filter.patterns.is_some() {
-            args.patterns = self.filter.patterns.unwrap();
+        if args.patterns.is_empty() {
+            if let Some(patterns) = self.filter.patterns {
+                args.patterns = patterns;
+            }
         }
 
-        if args.exclude_patterns.is_empty() && self.filter.exclude_patterns.is_some() {
-            args.exclude_patterns = self.filter.exclude_patterns.unwrap();
+        if args.exclude_patterns.is_empty() {
+            if let Some(exclude_patterns) = self.filter.exclude_patterns {
+                args.exclude_patterns = exclude_patterns;
+            }
         }
 
         if !args.show_only_host && self.filter.show_only_host.unwrap_or(false) {
@@ -281,8 +303,10 @@ impl Config {
         }
 
         // Network options
-        if args.network_scope == "all" && self.network.network_scope.is_some() {
-            args.network_scope = self.network.network_scope.unwrap();
+        if args.network_scope == "all" {
+            if let Some(network_scope) = self.network.network_scope {
+                args.network_scope = network_scope;
+            }
         }
 
         if args.proxy.is_none() && self.network.proxy.is_some() {
@@ -301,12 +325,16 @@ impl Config {
             args.random_agent = true;
         }
 
-        if args.timeout == 30 && self.network.timeout.is_some() {
-            args.timeout = self.network.timeout.unwrap();
+        if args.timeout == 30 {
+            if let Some(timeout) = self.network.timeout {
+                args.timeout = timeout;
+            }
         }
 
-        if args.retries == 3 && self.network.retries.is_some() {
-            args.retries = self.network.retries.unwrap();
+        if args.retries == 3 {
+            if let Some(retries) = self.network.retries {
+                args.retries = retries;
+            }
         }
 
         if args.parallel.unwrap_or(5) == 5 && self.network.parallel.is_some() {
@@ -322,12 +350,16 @@ impl Config {
             args.check_status = true;
         }
 
-        if args.include_status.is_empty() && self.testing.include_status.is_some() {
-            args.include_status = self.testing.include_status.unwrap();
+        if args.include_status.is_empty() {
+            if let Some(include_status) = self.testing.include_status {
+                args.include_status = include_status;
+            }
         }
 
-        if args.exclude_status.is_empty() && self.testing.exclude_status.is_some() {
-            args.exclude_status = self.testing.exclude_status.unwrap();
+        if args.exclude_status.is_empty() {
+            if let Some(exclude_status) = self.testing.exclude_status {
+                args.exclude_status = exclude_status;
+            }
         }
 
         if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
@@ -339,20 +371,26 @@ impl Config {
             args.incremental = true;
         }
 
-        if args.cache_type == "sqlite" && self.cache.cache_type.is_some() {
-            args.cache_type = self.cache.cache_type.unwrap();
+        if args.cache_type == "sqlite" {
+            if let Some(cache_type) = self.cache.cache_type {
+                args.cache_type = cache_type;
+            }
         }
 
-        if args.cache_path.is_none() && self.cache.cache_path.is_some() {
-            args.cache_path = Some(PathBuf::from(self.cache.cache_path.unwrap()));
+        if args.cache_path.is_none() {
+            if let Some(cache_path) = self.cache.cache_path {
+                args.cache_path = Some(PathBuf::from(cache_path));
+            }
         }
 
         if args.redis_url.is_none() && self.cache.redis_url.is_some() {
             args.redis_url = self.cache.redis_url;
         }
 
-        if args.cache_ttl == 86400 && self.cache.cache_ttl.is_some() {
-            args.cache_ttl = self.cache.cache_ttl.unwrap();
+        if args.cache_ttl == 86400 {
+            if let Some(cache_ttl) = self.cache.cache_ttl {
+                args.cache_ttl = cache_ttl;
+            }
         }
 
         if !args.no_cache && self.cache.no_cache.unwrap_or(false) {

@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::Provider;
+use crate::network::client::{get_with_retry, HttpClientConfig};
 
 #[derive(Clone)]
 pub struct WaybackMachineProvider {
@@ -33,6 +34,17 @@ impl WaybackMachineProvider {
             rate_limit: None,
         }
     }
+
+    /// Build an `HttpClientConfig` from the current provider settings.
+    fn client_config(&self) -> HttpClientConfig {
+        HttpClientConfig {
+            timeout: self.timeout,
+            insecure: self.insecure,
+            random_agent: self.random_agent,
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
+        }
+    }
 }
 
 impl Provider for WaybackMachineProvider {
@@ -56,128 +68,37 @@ impl Provider for WaybackMachineProvider {
                 )
             };
 
-            // Create client builder with proxy support
-            let mut client_builder =
-                reqwest::Client::builder().timeout(std::time::Duration::from_secs(self.timeout));
+            let client = self.client_config().build_client()?;
+            let text = get_with_retry(&client, &url, self.retries).await?;
 
-            // Skip SSL verification if insecure is enabled
-            if self.insecure {
-                client_builder = client_builder.danger_accept_invalid_certs(true);
+            if text.trim().is_empty() {
+                return Ok(Vec::new());
             }
 
-            // Add random user agent if enabled
-            if self.random_agent {
-                let ua = crate::network::random_user_agent();
-                client_builder = client_builder.user_agent(ua);
-            }
+            let json_data: Value = serde_json::from_str(&text)?;
+            let mut urls = Vec::new();
 
-            // Apply proxy if configured
-            if let Some(proxy_url) = &self.proxy {
-                let mut proxy = reqwest::Proxy::all(proxy_url)?;
-
-                // Add proxy authentication if provided
-                if let Some(auth) = &self.proxy_auth {
-                    proxy = proxy.basic_auth(
-                        auth.split(':').next().unwrap_or(""),
-                        auth.split(':').nth(1).unwrap_or(""),
-                    );
-                }
-
-                client_builder = client_builder.proxy(proxy);
-            }
-
-            let client = client_builder.build()?;
-
-            // Implement retry logic
-            let mut last_error = None;
-            let mut attempt = 0;
-
-            while attempt <= self.retries {
-                if attempt > 0 {
-                    // Wait before retrying, with increasing backoff
-                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
-                        .await;
-                }
-
-                match client.get(&url).send().await {
-                    Ok(response) => {
-                        // Check if response is successful
-                        if !response.status().is_success() {
-                            attempt += 1;
-                            last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
-                            continue;
-                        }
-
-                        // Try to parse as JSON, but handle empty or invalid responses
-                        match response.text().await {
-                            Ok(text) => {
-                                if text.trim().is_empty() {
-                                    return Ok(Vec::new());
-                                }
-
-                                match serde_json::from_str::<Value>(&text) {
-                                    Ok(json_data) => {
-                                        let mut urls = Vec::new();
-
-                                        // Skip the first array which is the header
-                                        if let Value::Array(arrays) = json_data {
-                                            for (i, array) in arrays.iter().enumerate() {
-                                                // Skip the header row
-                                                if i == 0 {
-                                                    continue;
-                                                }
-
-                                                if let Value::Array(elements) = array {
-                                                    if let Some(Value::String(url)) =
-                                                        elements.first()
-                                                    {
-                                                        urls.push(url.clone());
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Remove duplicates
-                                        urls.sort();
-                                        urls.dedup();
-
-                                        return Ok(urls);
-                                    }
-                                    Err(e) => {
-                                        attempt += 1;
-                                        last_error = Some(e.into());
-                                        continue;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                attempt += 1;
-                                last_error = Some(e.into());
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        attempt += 1;
-                        last_error = Some(e.into());
+            // Skip the first array which is the header
+            if let Value::Array(arrays) = json_data {
+                for (i, array) in arrays.iter().enumerate() {
+                    // Skip the header row
+                    if i == 0 {
                         continue;
                     }
+
+                    if let Value::Array(elements) = array {
+                        if let Some(Value::String(url)) = elements.first() {
+                            urls.push(url.clone());
+                        }
+                    }
                 }
             }
 
-            // If we got here, all attempts failed
-            if let Some(e) = last_error {
-                Err(anyhow::anyhow!(
-                    "Failed after {} attempts: {}",
-                    self.retries + 1,
-                    e
-                ))
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed after {} attempts",
-                    self.retries + 1
-                ))
-            }
+            // Remove duplicates
+            urls.sort();
+            urls.dedup();
+
+            Ok(urls)
         })
     }
 
@@ -310,6 +231,23 @@ mod tests {
         let provider = WaybackMachineProvider::new();
         let _cloned = provider.clone_box();
         // Testing the existence of cloned object
+    }
+
+    #[test]
+    fn test_client_config() {
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_timeout(60);
+        provider.with_insecure(true);
+        provider.with_random_agent(true);
+        provider.with_proxy(Some("http://proxy:8080".to_string()));
+        provider.with_proxy_auth(Some("user:pass".to_string()));
+
+        let config = provider.client_config();
+        assert_eq!(config.timeout, 60);
+        assert!(config.insecure);
+        assert!(config.random_agent);
+        assert_eq!(config.proxy, Some("http://proxy:8080".to_string()));
+        assert_eq!(config.proxy_auth, Some("user:pass".to_string()));
     }
 
     #[tokio::test]
