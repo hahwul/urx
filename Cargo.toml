@@ -31,7 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 mockito = "1.7.2"
-tempfile = "3.24.0"
+tempfile = "3.25.0"
 
 [features]
 default = []
