@@ -30,6 +30,28 @@ impl LinkExtractor {
             insecure: false,
         }
     }
+
+    /// Extracts links from HTML content, resolving them against a base URL
+    fn extract_links(base_url: &Url, html_content: &str) -> Vec<String> {
+        let document = Html::parse_document(html_content);
+        let mut links = Vec::new();
+
+        // Select all <a> tags with href attributes
+        // We unwrap here because "a[href]" is a constant valid selector
+        let selector = Selector::parse("a[href]").unwrap();
+
+        // Extract and normalize links
+        for element in document.select(&selector) {
+            if let Some(href) = element.value().attr("href") {
+                // Resolve relative URLs to absolute URLs
+                if let Ok(absolute_url) = base_url.join(href) {
+                    links.push(absolute_url.to_string());
+                }
+            }
+        }
+
+        links
+    }
 }
 
 impl Tester for LinkExtractor {
@@ -77,7 +99,6 @@ impl Tester for LinkExtractor {
 
             // Perform the request with retries
             let mut last_error = None;
-            let mut links = Vec::new();
 
             for _ in 0..=self.retries {
                 match client.get(url).send().await {
@@ -92,20 +113,9 @@ impl Tester for LinkExtractor {
 
                         // Get the HTML content
                         let html_content = response.text().await?;
-                        let document = Html::parse_document(&html_content);
 
-                        // Select all <a> tags with href attributes
-                        let selector = Selector::parse("a[href]").unwrap();
-
-                        // Extract and normalize links
-                        for element in document.select(&selector) {
-                            if let Some(href) = element.value().attr("href") {
-                                // Resolve relative URLs to absolute URLs
-                                if let Ok(absolute_url) = base_url.join(href) {
-                                    links.push(absolute_url.to_string());
-                                }
-                            }
-                        }
+                        // Extract links using the helper function
+                        let links = Self::extract_links(&base_url, &html_content);
 
                         // Return the list of links
                         return Ok(links);
@@ -223,5 +233,53 @@ mod tests {
         let extractor = LinkExtractor::new();
         let _cloned = extractor.clone_box();
         // Just verifying the method works, actual equality testing would be complex with Box<dyn>
+    }
+
+    #[test]
+    fn test_extract_links() {
+        let base_url = Url::parse("https://example.com/start").unwrap();
+
+        // 1. Basic absolute and relative links
+        let html = r#"
+            <html>
+                <body>
+                    <a href="https://other.com/page">Absolute</a>
+                    <a href="/relative/path">Relative Root</a>
+                    <a href="sibling">Relative Sibling</a>
+                    <a href="../parent">Relative Parent</a>
+                </body>
+            </html>
+        "#;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert_eq!(links.len(), 4);
+        assert!(links.contains(&"https://other.com/page".to_string()));
+        assert!(links.contains(&"https://example.com/relative/path".to_string()));
+        assert!(links.contains(&"https://example.com/sibling".to_string()));
+        assert!(links.contains(&"https://example.com/parent".to_string()));
+
+        // 2. Fragment and Query parameters
+        let html = r#"
+            <a href="/page#fragment">Fragment</a>
+            <a href="/page?query=1">Query</a>
+        "#;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert_eq!(links.len(), 2);
+        assert!(links.contains(&"https://example.com/page#fragment".to_string()));
+        assert!(links.contains(&"https://example.com/page?query=1".to_string()));
+
+        // 3. No links
+        let html = "<html><body><p>No links here</p></body></html>";
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert!(links.is_empty());
+
+        // 4. Empty HTML
+        let html = "";
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert!(links.is_empty());
+
+        // 5. Links without href
+        let html = "<a>No href</a>";
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert!(links.is_empty());
     }
 }
