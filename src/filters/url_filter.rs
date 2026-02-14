@@ -336,4 +336,30 @@ mod tests {
         assert!(filtered.contains(&"https://example.com/script.js".to_string()));
         assert!(!filtered.contains(&"https://example.com/image.png".to_string()));
     }
+
+    #[test]
+    fn test_fallback_invalid_urls() {
+        let mut filter = UrlFilter::new();
+        // Allow js and png
+        filter.with_extensions(vec!["js".to_string(), "png".to_string()]);
+
+        let urls: HashSet<String> = vec![
+            "script.js",           // Invalid URL, has allowed extension
+            "/path/to/image.png",  // Invalid URL, has allowed extension
+            "style.css",           // Invalid URL, disallowed extension
+            "readme.txt",          // Invalid URL, disallowed extension
+            "no_extension",        // Invalid URL, no extension
+            "image.png?version=1", // Invalid URL with query param
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let filtered = filter.apply_filters(&urls);
+
+        assert_eq!(filtered.len(), 3);
+        assert!(filtered.contains(&"script.js".to_string()));
+        assert!(filtered.contains(&"/path/to/image.png".to_string()));
+        assert!(filtered.contains(&"image.png?version=1".to_string()));
+    }
 }
