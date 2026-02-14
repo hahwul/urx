@@ -17,6 +17,8 @@ pub struct WaybackMachineProvider {
     insecure: bool,
     parallel: u32,
     rate_limit: Option<f32>,
+    #[cfg(test)]
+    base_url: String,
 }
 
 impl WaybackMachineProvider {
@@ -32,7 +34,15 @@ impl WaybackMachineProvider {
             insecure: false,
             parallel: 5,
             rate_limit: None,
+            #[cfg(test)]
+            base_url: "https://web.archive.org".to_string(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_base_url(&mut self, url: String) -> &mut Self {
+        self.base_url = url;
+        self
     }
 
     /// Build an `HttpClientConfig` from the current provider settings.
@@ -57,14 +67,21 @@ impl Provider for WaybackMachineProvider {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
+            #[cfg(not(test))]
+            let base_url = "https://web.archive.org";
+            #[cfg(test)]
+            let base_url = &self.base_url;
+
             // Handle subdomain inclusion in URL construction
             let url = if self.include_subdomains {
                 format!(
-                    "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
+                    "{}/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original",
+                    base_url
                 )
             } else {
                 format!(
-                    "https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original"
+                    "{}/cdx/search/cdx?url={domain}/*&output=json&fl=original",
+                    base_url
                 )
             };
 
@@ -299,5 +316,101 @@ mod tests {
         };
 
         assert_eq!(url, expected_url);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_integration() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("output".into(), "json".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"[
+                    ["original"],
+                    ["http://example.com/page1"],
+                    ["http://example.com/page2"],
+                    ["http://example.com/page1"]
+                ]"#,
+            )
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        // Should return unique URLs sorted
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "http://example.com/page1");
+        assert_eq!(urls[1], "http://example.com/page2");
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_integration_with_subdomains() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "*.example.com/*".into()),
+                mockito::Matcher::UrlEncoded("output".into(), "json".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"[
+                    ["original"],
+                    ["http://sub.example.com/page1"]
+                ]"#,
+            )
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_subdomains(true);
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0], "http://sub.example.com/page1");
+
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_integration_empty_response() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("")
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert_eq!(urls.len(), 0);
+
+        mock.assert();
     }
 }
