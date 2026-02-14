@@ -207,4 +207,81 @@ mod tests {
         let client = config.build_client();
         assert!(client.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_get_with_retry_success_first_try() {
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_server.mock("GET", "/test")
+            .with_status(200)
+            .with_body("success")
+            .create_async().await;
+
+        let client = Client::new();
+        let url = format!("{}/test", mock_server.url());
+        let result = get_with_retry(&client, &url, 3).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+    }
+
+    #[tokio::test]
+    async fn test_get_with_retry_success_after_retry() {
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // First attempt fails with 500
+        let _m1 = mock_server.mock("GET", "/test")
+            .with_status(500)
+            .expect(1)
+            .create_async().await;
+
+        // Second attempt succeeds
+        let _m2 = mock_server.mock("GET", "/test")
+            .with_status(200)
+            .with_body("success")
+            .expect(1)
+            .create_async().await;
+
+        let client = Client::new();
+        let url = format!("{}/test", mock_server.url());
+
+        // We expect it to succeed eventually
+        let result = get_with_retry(&client, &url, 3).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+    }
+
+    #[tokio::test]
+    async fn test_get_with_retry_failure_max_retries() {
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // Always fail. expects 2 calls (initial + 1 retry)
+        let _m = mock_server.mock("GET", "/test")
+            .with_status(500)
+            .expect(2)
+            .create_async().await;
+
+        let client = Client::new();
+        let url = format!("{}/test", mock_server.url());
+
+        // Max retries = 1. Total attempts = 2.
+        let result = get_with_retry(&client, &url, 1).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Failed after 2 attempts"));
+    }
+
+    #[tokio::test]
+    async fn test_get_with_retry_connection_error() {
+        // Use a reserved port (0) which typically causes a connection error immediately
+        let client = Client::new();
+        let url = "http://127.0.0.1:0";
+
+        let result = get_with_retry(&client, url, 1).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Failed after 2 attempts"));
+    }
 }
