@@ -12,7 +12,13 @@ impl HostValidator {
     pub fn new(domains: &[String], include_subdomains: bool) -> Self {
         let normalized_domains: HashSet<String> = domains
             .iter()
-            .map(|domain| domain.trim().to_lowercase().trim_end_matches('.').to_string())
+            .map(|domain| {
+                domain
+                    .trim()
+                    .to_lowercase()
+                    .trim_end_matches('.')
+                    .to_string()
+            })
             .collect();
 
         HostValidator {

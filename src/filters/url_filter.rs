@@ -33,8 +33,12 @@ impl UrlFilter {
         for preset_str in presets {
             if let Some(preset) = FilterPreset::from_str(preset_str) {
                 // Merge preset extensions/patterns with existing ones
-                self.extensions
-                    .extend(preset.get_extensions().into_iter().map(|s| s.to_lowercase()));
+                self.extensions.extend(
+                    preset
+                        .get_extensions()
+                        .into_iter()
+                        .map(|s| s.to_lowercase()),
+                );
                 self.exclude_extensions.extend(
                     preset
                         .get_exclude_extensions()
@@ -188,7 +192,10 @@ impl UrlFilter {
 
             if !self.extensions.is_empty() {
                 if let Some(ext) = &extension {
-                    include = self.extensions.iter().any(|included_ext| included_ext == ext);
+                    include = self
+                        .extensions
+                        .iter()
+                        .any(|included_ext| included_ext == ext);
                 } else {
                     include = false; // No extension found but extensions filter is set
                 }
