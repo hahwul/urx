@@ -544,4 +544,23 @@ mod tests {
         assert!(transformed.contains(&"example.com".to_string()));
         assert!(transformed.contains(&"not-a-valid-url".to_string()));
     }
+
+    #[test]
+    fn test_url_transformer_normalize_completely_invalid_inputs() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_normalize_url(true);
+
+        let urls = vec![
+            "plain-text".to_string(),
+            "://start-with-colon".to_string(),
+            "".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+
+        assert_eq!(transformed.len(), 3);
+        assert!(transformed.contains(&"plain-text".to_string()));
+        assert!(transformed.contains(&"://start-with-colon".to_string()));
+        assert!(transformed.contains(&"".to_string()));
+    }
 }
