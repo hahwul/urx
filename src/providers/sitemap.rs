@@ -177,6 +177,7 @@ impl Provider for SitemapProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
 
     #[test]
     fn test_new_provider() {
@@ -324,5 +325,127 @@ mod tests {
         assert_eq!(sitemap_urls.len(), 2);
         assert!(sitemap_urls.contains(&"https://example.com/sitemap1.xml".to_string()));
         assert!(sitemap_urls.contains(&"https://example.com/sitemap2.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_sitemap_xml() {
+        let mut server = Server::new_async().await;
+        let sitemap_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://example.com/page1</loc>
+  </url>
+  <url>
+    <loc>https://example.com/page2</loc>
+  </url>
+</urlset>"#;
+
+        let _m = server
+            .mock("GET", "/sitemap.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(sitemap_xml)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        // remove "http://" prefix from host_with_port if present (mockito shouldn't have it, but just in case)
+        let host = server.host_with_port();
+        // fetch_urls expects domain without protocol
+        let result = provider.fetch_urls(&host).await;
+
+        assert!(result.is_ok());
+        let urls = result.unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"https://example.com/page1".to_string()));
+        assert!(urls.contains(&"https://example.com/page2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_sitemap_index() {
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+
+        // Sitemap index pointing to a nested sitemap
+        // We use the server address to ensure it calls back to our mock
+        let sitemap_index = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>http://{}/nested.xml</loc>
+  </sitemap>
+</sitemapindex>"#,
+            host
+        );
+
+        let nested_sitemap = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://example.com/nested-page</loc>
+  </url>
+</urlset>"#;
+
+        let _m1 = server
+            .mock("GET", "/sitemap_index.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(sitemap_index)
+            .create_async()
+            .await;
+
+        let _m2 = server
+            .mock("GET", "/nested.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(nested_sitemap)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        // fetch_urls will try sitemap.xml first (which will 404/fail or 501), then sitemap_index.xml
+        // Mockito returns 501 for unmocked requests by default, but it's fine as long as fetch_urls continues
+        let result = provider.fetch_urls(&host).await;
+
+        assert!(result.is_ok());
+        let urls = result.unwrap();
+        assert_eq!(urls.len(), 1);
+        assert!(urls.contains(&"https://example.com/nested-page".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_sitemap_txt() {
+        let mut server = Server::new_async().await;
+        let sitemap_txt = "https://example.com/page1\nhttps://example.com/page2";
+
+        let _m = server
+            .mock("GET", "/sitemap.txt")
+            .with_status(200)
+            .with_body(sitemap_txt)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        let host = server.host_with_port();
+        let result = provider.fetch_urls(&host).await;
+
+        assert!(result.is_ok());
+        let urls = result.unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"https://example.com/page1".to_string()));
+        assert!(urls.contains(&"https://example.com/page2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_not_found() {
+        let server = Server::new_async().await;
+        // No mocks created, so all requests will return 501 (Not Implemented) or fail connection
+
+        let provider = SitemapProvider::new();
+        let host = server.host_with_port();
+        let result = provider.fetch_urls(&host).await;
+
+        assert!(result.is_ok());
+        let urls = result.unwrap();
+        assert!(urls.is_empty());
     }
 }
