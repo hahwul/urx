@@ -33,11 +33,22 @@ impl UrlFilter {
         for preset_str in presets {
             if let Some(preset) = FilterPreset::from_str(preset_str) {
                 // Merge preset extensions/patterns with existing ones
-                self.extensions.extend(preset.get_extensions());
-                self.exclude_extensions
-                    .extend(preset.get_exclude_extensions());
-                self.patterns.extend(preset.get_patterns());
-                self.exclude_patterns.extend(preset.get_exclude_patterns());
+                self.extensions
+                    .extend(preset.get_extensions().into_iter().map(|s| s.to_lowercase()));
+                self.exclude_extensions.extend(
+                    preset
+                        .get_exclude_extensions()
+                        .into_iter()
+                        .map(|s| s.to_lowercase()),
+                );
+                self.patterns
+                    .extend(preset.get_patterns().into_iter().map(|s| s.to_lowercase()));
+                self.exclude_patterns.extend(
+                    preset
+                        .get_exclude_patterns()
+                        .into_iter()
+                        .map(|s| s.to_lowercase()),
+                );
             }
         }
         self
@@ -46,27 +57,31 @@ impl UrlFilter {
     /// Set extensions to include
     pub fn with_extensions(&mut self, extensions: Vec<String>) -> &mut Self {
         // Merge with existing extensions instead of replacing
-        self.extensions.extend(extensions);
+        self.extensions
+            .extend(extensions.into_iter().map(|s| s.to_lowercase()));
         self
     }
 
     /// Set extensions to exclude
     pub fn with_exclude_extensions(&mut self, exclude_extensions: Vec<String>) -> &mut Self {
-        self.exclude_extensions.extend(exclude_extensions);
+        self.exclude_extensions
+            .extend(exclude_extensions.into_iter().map(|s| s.to_lowercase()));
         self
     }
 
     /// Set patterns to include
     pub fn with_patterns(&mut self, patterns: Vec<String>) -> &mut Self {
         // Merge with existing patterns instead of replacing
-        self.patterns.extend(patterns);
+        self.patterns
+            .extend(patterns.into_iter().map(|s| s.to_lowercase()));
         self
     }
 
     /// Set patterns to exclude
     pub fn with_exclude_patterns(&mut self, exclude_patterns: Vec<String>) -> &mut Self {
         // Merge with existing exclude_patterns instead of replacing
-        self.exclude_patterns.extend(exclude_patterns);
+        self.exclude_patterns
+            .extend(exclude_patterns.into_iter().map(|s| s.to_lowercase()));
         self
     }
 
@@ -141,14 +156,16 @@ impl UrlFilter {
                 }
             };
 
+            // Compute url_lower once per URL iteration if needed
+            let mut url_lower = None;
+
             // Check exclusions first
             if !self.exclude_extensions.is_empty() {
                 if let Some(ext) = &extension {
-                    let lowercase_ext = ext.to_lowercase();
                     if self
                         .exclude_extensions
                         .iter()
-                        .any(|excluded_ext| excluded_ext.to_lowercase() == lowercase_ext)
+                        .any(|excluded_ext| excluded_ext == ext)
                     {
                         continue;
                     }
@@ -156,11 +173,11 @@ impl UrlFilter {
             }
 
             if !self.exclude_patterns.is_empty() {
-                let url_lower = url.to_lowercase();
+                let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
                 if self
                     .exclude_patterns
                     .iter()
-                    .any(|pattern| url_lower.contains(&pattern.to_lowercase()))
+                    .any(|pattern| url_lower_str.contains(pattern))
                 {
                     continue;
                 }
@@ -171,22 +188,18 @@ impl UrlFilter {
 
             if !self.extensions.is_empty() {
                 if let Some(ext) = &extension {
-                    let lowercase_ext = ext.to_lowercase();
-                    include = self
-                        .extensions
-                        .iter()
-                        .any(|included_ext| included_ext.to_lowercase() == lowercase_ext);
+                    include = self.extensions.iter().any(|included_ext| included_ext == ext);
                 } else {
                     include = false; // No extension found but extensions filter is set
                 }
             }
 
             if include && !self.patterns.is_empty() {
-                let url_lower = url.to_lowercase();
+                let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
                 include = self
                     .patterns
                     .iter()
-                    .any(|pattern| url_lower.contains(&pattern.to_lowercase()));
+                    .any(|pattern| url_lower_str.contains(pattern));
             }
 
             if include {
