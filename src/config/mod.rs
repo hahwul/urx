@@ -183,27 +183,38 @@ impl Config {
     /// Apply configuration values to Args, respecting priority
     /// Command line arguments take precedence over config file values
     pub fn apply_to_args(self, args: &mut Args) {
+        self.apply_output_config(args);
+        self.apply_provider_config(args);
+        self.apply_filter_config(args);
+        self.apply_network_config(args);
+        self.apply_testing_config(args);
+        self.apply_cache_config(args);
+    }
+
+    fn apply_output_config(&self, args: &mut Args) {
         // Output options
         if args.output.is_none() {
-            if let Some(output) = self.output.output {
+            if let Some(output) = &self.output.output {
                 args.output = Some(PathBuf::from(output));
             }
         }
 
         if args.format == "plain" {
-            if let Some(format) = self.output.format {
-                args.format = format;
+            if let Some(format) = &self.output.format {
+                args.format = format.clone();
             }
         }
 
         if !args.merge_endpoint && self.output.merge_endpoint.unwrap_or(false) {
             args.merge_endpoint = true;
         }
+    }
 
+    fn apply_provider_config(&self, args: &mut Args) {
         // Provider options
         if args.providers == vec!["wayback", "cc", "otx"] {
-            if let Some(providers) = self.provider.providers {
-                args.providers = providers;
+            if let Some(providers) = &self.provider.providers {
+                args.providers = providers.clone();
             }
         }
 
@@ -212,20 +223,20 @@ impl Config {
         }
 
         if args.cc_index == "CC-MAIN-2025-13" {
-            if let Some(cc_index) = self.provider.cc_index {
-                args.cc_index = cc_index;
+            if let Some(cc_index) = &self.provider.cc_index {
+                args.cc_index = cc_index.clone();
             }
         }
 
         if args.vt_api_key.is_empty() {
-            if let Some(vt_api_key) = self.provider.vt_api_key {
-                args.vt_api_key.push(vt_api_key);
+            if let Some(vt_api_key) = &self.provider.vt_api_key {
+                args.vt_api_key.push(vt_api_key.clone());
             }
         }
 
         if args.urlscan_api_key.is_empty() {
-            if let Some(urlscan_api_key) = self.provider.urlscan_api_key {
-                args.urlscan_api_key.push(urlscan_api_key);
+            if let Some(urlscan_api_key) = &self.provider.urlscan_api_key {
+                args.urlscan_api_key.push(urlscan_api_key.clone());
             }
         }
 
@@ -250,35 +261,37 @@ impl Config {
                 args.include_sitemap = include_sitemap;
             }
         }
+    }
 
+    fn apply_filter_config(&self, args: &mut Args) {
         // Filter options
         if args.preset.is_empty() {
-            if let Some(preset) = self.filter.preset {
-                args.preset = preset;
+            if let Some(preset) = &self.filter.preset {
+                args.preset = preset.clone();
             }
         }
 
         if args.extensions.is_empty() {
-            if let Some(extensions) = self.filter.extensions {
-                args.extensions = extensions;
+            if let Some(extensions) = &self.filter.extensions {
+                args.extensions = extensions.clone();
             }
         }
 
         if args.exclude_extensions.is_empty() {
-            if let Some(exclude_extensions) = self.filter.exclude_extensions {
-                args.exclude_extensions = exclude_extensions;
+            if let Some(exclude_extensions) = &self.filter.exclude_extensions {
+                args.exclude_extensions = exclude_extensions.clone();
             }
         }
 
         if args.patterns.is_empty() {
-            if let Some(patterns) = self.filter.patterns {
-                args.patterns = patterns;
+            if let Some(patterns) = &self.filter.patterns {
+                args.patterns = patterns.clone();
             }
         }
 
         if args.exclude_patterns.is_empty() {
-            if let Some(exclude_patterns) = self.filter.exclude_patterns {
-                args.exclude_patterns = exclude_patterns;
+            if let Some(exclude_patterns) = &self.filter.exclude_patterns {
+                args.exclude_patterns = exclude_patterns.clone();
             }
         }
 
@@ -301,20 +314,22 @@ impl Config {
         if args.max_length.is_none() && self.filter.max_length.is_some() {
             args.max_length = self.filter.max_length;
         }
+    }
 
+    fn apply_network_config(&self, args: &mut Args) {
         // Network options
         if args.network_scope == "all" {
-            if let Some(network_scope) = self.network.network_scope {
-                args.network_scope = network_scope;
+            if let Some(network_scope) = &self.network.network_scope {
+                args.network_scope = network_scope.clone();
             }
         }
 
         if args.proxy.is_none() && self.network.proxy.is_some() {
-            args.proxy = self.network.proxy;
+            args.proxy = self.network.proxy.clone();
         }
 
         if args.proxy_auth.is_none() && self.network.proxy_auth.is_some() {
-            args.proxy_auth = self.network.proxy_auth;
+            args.proxy_auth = self.network.proxy_auth.clone();
         }
 
         if !args.insecure && self.network.insecure.unwrap_or(false) {
@@ -344,47 +359,51 @@ impl Config {
         if args.rate_limit.is_none() && self.network.rate_limit.is_some() {
             args.rate_limit = self.network.rate_limit;
         }
+    }
 
+    fn apply_testing_config(&self, args: &mut Args) {
         // Testing options
         if !args.check_status && self.testing.check_status.unwrap_or(false) {
             args.check_status = true;
         }
 
         if args.include_status.is_empty() {
-            if let Some(include_status) = self.testing.include_status {
-                args.include_status = include_status;
+            if let Some(include_status) = &self.testing.include_status {
+                args.include_status = include_status.clone();
             }
         }
 
         if args.exclude_status.is_empty() {
-            if let Some(exclude_status) = self.testing.exclude_status {
-                args.exclude_status = exclude_status;
+            if let Some(exclude_status) = &self.testing.exclude_status {
+                args.exclude_status = exclude_status.clone();
             }
         }
 
         if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
             args.extract_links = true;
         }
+    }
 
+    fn apply_cache_config(&self, args: &mut Args) {
         // Cache options
         if !args.incremental && self.cache.incremental.unwrap_or(false) {
             args.incremental = true;
         }
 
         if args.cache_type == "sqlite" {
-            if let Some(cache_type) = self.cache.cache_type {
-                args.cache_type = cache_type;
+            if let Some(cache_type) = &self.cache.cache_type {
+                args.cache_type = cache_type.clone();
             }
         }
 
         if args.cache_path.is_none() {
-            if let Some(cache_path) = self.cache.cache_path {
+            if let Some(cache_path) = &self.cache.cache_path {
                 args.cache_path = Some(PathBuf::from(cache_path));
             }
         }
 
         if args.redis_url.is_none() && self.cache.redis_url.is_some() {
-            args.redis_url = self.cache.redis_url;
+            args.redis_url = self.cache.redis_url.clone();
         }
 
         if args.cache_ttl == 86400 {
