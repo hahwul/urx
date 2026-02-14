@@ -12,7 +12,7 @@ impl HostValidator {
     pub fn new(domains: &[String], include_subdomains: bool) -> Self {
         let normalized_domains: HashSet<String> = domains
             .iter()
-            .map(|domain| domain.trim().to_lowercase())
+            .map(|domain| domain.trim().to_lowercase().trim_end_matches('.').to_string())
             .collect();
 
         HostValidator {
@@ -25,18 +25,19 @@ impl HostValidator {
     pub fn is_valid_host(&self, url_str: &str) -> bool {
         if let Ok(url) = Url::parse(url_str) {
             if let Some(host) = url.host_str() {
-                // Normalize the host for comparison
+                // Normalize the host for comparison (lowercase and strip trailing dot)
                 let normalized_host = host.to_lowercase();
+                let host_stripped = normalized_host.trim_end_matches('.');
 
                 // Check if the host exactly matches any of our domains
-                if self.domains.contains(&normalized_host) {
+                if self.domains.contains(host_stripped) {
                     return true;
                 }
 
                 // If subdomains are allowed, check if the host is a subdomain of any of our domains
                 if self.include_subdomains {
                     for domain in &self.domains {
-                        if normalized_host.ends_with(&format!(".{domain}")) {
+                        if host_stripped.ends_with(&format!(".{domain}")) {
                             return true;
                         }
                     }
@@ -65,7 +66,7 @@ mod tests {
         assert!(validator.is_valid_host("https://test.org/page?query=value"));
 
         // Test edge cases with unusual characters in the host
-        assert!(!validator.is_valid_host("https://example.com.")); // Trailing dot
+        assert!(validator.is_valid_host("https://example.com.")); // Trailing dot should be valid
         assert!(!validator.is_valid_host("https://.example.com")); // Leading dot
         assert!(!validator.is_valid_host("https://-example.com")); // Leading hyphen
         assert!(!validator.is_valid_host("https://example-.com")); // Trailing hyphen
@@ -103,5 +104,32 @@ mod tests {
         // Test non-matching domains should still be invalid
         assert!(!validator.is_valid_host("https://example.net/path"));
         assert!(!validator.is_valid_host("https://test.com/path"));
+    }
+
+    #[test]
+    fn test_host_validation_edge_cases() {
+        // Create a validator with a domain that has a trailing dot
+        let domains = vec!["example.com".to_string(), "test.org.".to_string()];
+        let validator = HostValidator::new(&domains, true);
+
+        // Multiple subdomain levels
+        assert!(validator.is_valid_host("https://a.b.c.example.com/path"));
+
+        // Similar looking domains (should be invalid)
+        assert!(!validator.is_valid_host("https://notexample.com"));
+        assert!(!validator.is_valid_host("https://example.com.evil.com"));
+        assert!(!validator.is_valid_host("https://example.com-other.org"));
+
+        // Case sensitivity
+        assert!(validator.is_valid_host("https://SUB.EXAMPLE.COM"));
+
+        // Trailing dots in URL should be handled
+        assert!(validator.is_valid_host("https://example.com."));
+        assert!(validator.is_valid_host("https://sub.example.com."));
+
+        // Domains with trailing dots in the initial list should match hosts without them
+        assert!(validator.is_valid_host("https://test.org"));
+        assert!(validator.is_valid_host("https://sub.test.org"));
+        assert!(validator.is_valid_host("https://sub.test.org."));
     }
 }
