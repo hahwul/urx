@@ -428,4 +428,32 @@ mod tests {
             "https://index.commoncrawl.org/CC-MAIN-2025-13-index?url=*.example.com/*&output=json"
         );
     }
+
+    #[tokio::test]
+    async fn test_fetch_urls_integration() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/CC-MAIN-2025-13-index")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("output".into(), "json".into()),
+            ]))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/page1\"}\n{\"url\": \"https://example.com/page2\"}\n{\"url\": \"https://example.com/page1\"}")
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::new();
+        // Override base_url to point to the mock server
+        provider.base_url = server.url();
+
+        let result = provider.fetch_urls("example.com").await;
+        assert!(result.is_ok());
+
+        let urls = result.unwrap();
+        // Should be deduped and sorted
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://example.com/page1");
+        assert_eq!(urls[1], "https://example.com/page2");
+    }
 }
