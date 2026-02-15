@@ -211,10 +211,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_with_retry_success_first_try() {
         let mut mock_server = mockito::Server::new_async().await;
-        let _m = mock_server.mock("GET", "/test")
+        let _m = mock_server
+            .mock("GET", "/test")
             .with_status(200)
             .with_body("success")
-            .create_async().await;
+            .create_async()
+            .await;
 
         let client = Client::new();
         let url = format!("{}/test", mock_server.url());
@@ -229,17 +231,21 @@ mod tests {
         let mut mock_server = mockito::Server::new_async().await;
 
         // First attempt fails with 500
-        let _m1 = mock_server.mock("GET", "/test")
+        let _m1 = mock_server
+            .mock("GET", "/test")
             .with_status(500)
             .expect(1)
-            .create_async().await;
+            .create_async()
+            .await;
 
         // Second attempt succeeds
-        let _m2 = mock_server.mock("GET", "/test")
+        let _m2 = mock_server
+            .mock("GET", "/test")
             .with_status(200)
             .with_body("success")
             .expect(1)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let client = Client::new();
         let url = format!("{}/test", mock_server.url());
@@ -256,10 +262,12 @@ mod tests {
         let mut mock_server = mockito::Server::new_async().await;
 
         // Always fail. expects 2 calls (initial + 1 retry)
-        let _m = mock_server.mock("GET", "/test")
+        let _m = mock_server
+            .mock("GET", "/test")
             .with_status(500)
             .expect(2)
-            .create_async().await;
+            .create_async()
+            .await;
 
         let client = Client::new();
         let url = format!("{}/test", mock_server.url());
