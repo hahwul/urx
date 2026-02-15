@@ -15,6 +15,10 @@ pub struct RobotsProvider {
     proxy: Option<String>,
     proxy_auth: Option<String>,
     insecure: bool,
+    #[cfg(test)]
+    base_url: String,
+    #[cfg(test)]
+    base_url_http: String,
 }
 
 impl RobotsProvider {
@@ -26,7 +30,23 @@ impl RobotsProvider {
             proxy: None,
             proxy_auth: None,
             insecure: false,
+            #[cfg(test)]
+            base_url: String::new(),
+            #[cfg(test)]
+            base_url_http: String::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_base_url(&mut self, url: String) -> &mut Self {
+        self.base_url = url;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_http_base_url(&mut self, url: String) -> &mut Self {
+        self.base_url_http = url;
+        self
     }
 
     fn build_client(&self) -> Result<Client> {
@@ -59,7 +79,17 @@ impl Provider for RobotsProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
+
+            #[cfg(not(test))]
             let https_url = format!("https://{domain}/robots.txt");
+
+            #[cfg(test)]
+            let https_url = if !self.base_url.is_empty() {
+                format!("{}/robots.txt", self.base_url)
+            } else {
+                format!("https://{domain}/robots.txt")
+            };
+
             let mut urls = Vec::new();
 
             // Try HTTPS first
@@ -69,7 +99,18 @@ impl Provider for RobotsProvider {
                 Ok(resp) if resp.status().is_success() => (true, resp.text().await?),
                 _ => {
                     // If HTTPS fails, try HTTP
+                    #[cfg(not(test))]
                     let http_url = format!("http://{domain}/robots.txt");
+
+                    #[cfg(test)]
+                    let http_url = if !self.base_url_http.is_empty() {
+                        format!("{}/robots.txt", self.base_url_http)
+                    } else if !self.base_url.is_empty() {
+                        format!("{}/robots.txt", self.base_url)
+                    } else {
+                        format!("http://{domain}/robots.txt")
+                    };
+
                     let http_resp = client.get(&http_url).send().await?;
                     if !http_resp.status().is_success() {
                         return Ok(urls);
@@ -141,6 +182,8 @@ mod tests {
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
         assert!(!provider.insecure);
+        assert_eq!(provider.base_url, String::new());
+        assert_eq!(provider.base_url_http, String::new());
     }
 
     #[test]
@@ -283,5 +326,66 @@ Sitemap: https://example.com/sitemap.xml
         let path = "/private/";
         let url = format!("{protocol}://{domain}{path}");
         assert_eq!(url, "https://example.com/private/");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_https_success() {
+        let mut mock_server = mockito::Server::new_async().await;
+
+        let robots_txt = "\
+User-agent: *
+Disallow: /private/
+Sitemap: https://example.com/sitemap.xml
+";
+
+        let _m = mock_server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots_txt)
+            .create();
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(mock_server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        // Protocol should be https because first request (simulated https) succeeded
+        assert!(urls.contains(&"https://example.com/private/".to_string()));
+        assert!(urls.contains(&"https://example.com/sitemap.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_http_fallback() {
+        let mut mock_server_https = mockito::Server::new_async().await;
+        let mut mock_server_http = mockito::Server::new_async().await;
+
+        let robots_txt = "\
+User-agent: *
+Disallow: /private/
+Sitemap: http://example.com/sitemap.xml
+";
+
+        // HTTPS fails
+        let _m1 = mock_server_https
+            .mock("GET", "/robots.txt")
+            .with_status(500)
+            .create();
+
+        // HTTP succeeds
+        let _m2 = mock_server_http
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots_txt)
+            .create();
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(mock_server_https.url());
+        provider.with_http_base_url(mock_server_http.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        // Protocol should be http
+        assert!(urls.contains(&"http://example.com/private/".to_string()));
+        assert!(urls.contains(&"http://example.com/sitemap.xml".to_string()));
     }
 }
