@@ -82,4 +82,30 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_read_warc_content_urls() -> Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "WARC/1.0")?;
+        writeln!(temp_file, "WARC-Type: response")?;
+        writeln!(temp_file, "WARC-Target-URI: https://example.com/header")?;
+        writeln!(temp_file, "Content-Length: 100")?;
+        writeln!(temp_file)?;
+        writeln!(temp_file, "Some text content here")?;
+        writeln!(temp_file, "http://example.org/content1")?;
+        writeln!(temp_file, "  https://example.net/content2  ")?;
+        writeln!(temp_file, "http://invalid-url-with space")?;
+        temp_file.flush()?;
+
+        let reader = WarcFileReader::new();
+        let urls = reader.read_urls(temp_file.path())?;
+
+        assert_eq!(urls.len(), 3);
+        assert!(urls.contains(&"https://example.com/header".to_string()));
+        assert!(urls.contains(&"http://example.org/content1".to_string()));
+        assert!(urls.contains(&"https://example.net/content2".to_string()));
+        assert!(!urls.contains(&"http://invalid-url-with space".to_string()));
+
+        Ok(())
+    }
 }
