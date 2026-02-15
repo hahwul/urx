@@ -247,6 +247,29 @@ mod tests {
     }
 
     #[test]
+    fn test_status_matches_pattern_edge_cases() {
+        let checker = StatusChecker::new();
+
+        // Wrong length with wildcard
+        assert!(!checker.status_matches_pattern(200, "2x"));
+        assert!(!checker.status_matches_pattern(200, "2xxx"));
+        assert!(!checker.status_matches_pattern(200, "x"));
+
+        // Non-numeric characters in exact match
+        assert!(!checker.status_matches_pattern(200, "20a"));
+        assert!(!checker.status_matches_pattern(200, "abc"));
+        assert!(!checker.status_matches_pattern(200, ""));
+
+        // Non-numeric characters in wildcard patterns
+        assert!(!checker.status_matches_pattern(200, "2ax"));
+        assert!(!checker.status_matches_pattern(200, "abx"));
+
+        // Special chars
+        assert!(!checker.status_matches_pattern(200, "20!"));
+        assert!(!checker.status_matches_pattern(200, "2!x"));
+    }
+
+    #[test]
     fn test_matches_any_pattern() {
         let checker = StatusChecker::new();
 
