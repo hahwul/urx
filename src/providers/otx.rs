@@ -27,6 +27,7 @@ pub struct OTXProvider {
     insecure: bool,
     parallel: u32,
     rate_limit: Option<f32>,
+    base_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,7 +73,13 @@ impl OTXProvider {
             insecure: false,
             parallel: 1,
             rate_limit: None,
+            base_url: "https://otx.alienvault.com".to_string(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_base_url(&mut self, url: String) {
+        self.base_url = url;
     }
 
     /// Formats the OTX API URL based on the domain and page number
@@ -88,7 +95,8 @@ impl OTXProvider {
         if domain.split('.').count() <= 2 {
             // This is a second-level domain like example.com
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}"
+                "{}/api/v1/indicators/domain/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
+                self.base_url
             )
         } else if self.include_subdomains {
             // This is a subdomain but we want to include all subdomains
@@ -101,12 +109,14 @@ impl OTXProvider {
             };
 
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/{main_domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}"
+                "{}/api/v1/indicators/domain/{main_domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
+                self.base_url
             )
         } else {
             // This is a subdomain and we don't want to include other subdomains
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/hostname/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}"
+                "{}/api/v1/indicators/hostname/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
+                self.base_url
             )
         }
     }
@@ -532,5 +542,142 @@ mod tests {
                 || err.contains("network"),
             "Unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_pagination() {
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        // Mock page 1 response
+        let _m1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "has_next": true,
+                "url_list": [
+                    { "url": "http://example.com/1" }
+                ]
+            }"#,
+            )
+            .create();
+
+        // Mock page 2 response
+        let _m2 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=2",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "has_next": false,
+                "url_list": [
+                    { "url": "http://example.com/2" }
+                ]
+            }"#,
+            )
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+
+        let result = provider.fetch_urls("example.com").await;
+        assert!(result.is_ok(), "Failed to fetch URLs: {:?}", result.err());
+        let urls = result.unwrap();
+
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"http://example.com/1".to_string()));
+        assert!(urls.contains(&"http://example.com/2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_empty() {
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        let _m1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                "has_next": false,
+                "url_list": []
+            }"#,
+            )
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+
+        let result = provider.fetch_urls("example.com").await;
+        assert!(result.is_ok());
+        let urls = result.unwrap();
+
+        assert!(urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_json_error() {
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        // Respond with malformed JSON
+        let _m1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{ "invalid_json": true "#)
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+        // Reduce retries to speed up test
+        provider.with_retries(0);
+
+        let result = provider.fetch_urls("example.com").await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // The implementation wraps the error, check for "Failed to parse"
+        assert!(err.contains("Failed to parse") || err.contains("Failed to fetch OTX data"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_http_error() {
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        let _m1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(500)
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+        provider.with_retries(0);
+
+        let result = provider.fetch_urls("example.com").await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // Check for HTTP error message
+        assert!(err.contains("HTTP error") || err.contains("Failed to fetch OTX data"));
     }
 }
