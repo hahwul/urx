@@ -33,7 +33,6 @@ pub fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &Netw
 pub async fn process_urls_with_testers(
     transformed_urls: Vec<String>,
     args: &Args,
-    _network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
     testers: Vec<Box<dyn Tester>>,
     should_check_status: bool,

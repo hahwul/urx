@@ -1,6 +1,6 @@
 use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
@@ -148,8 +148,8 @@ pub async fn process_domains(
     let provider_bars = progress_manager.create_provider_bars(provider_names);
 
     // Create a queue for each provider
-    let provider_queues: Vec<Arc<Mutex<Vec<String>>>> = (0..providers.len())
-        .map(|_| Arc::new(Mutex::new(domains.clone())))
+    let provider_queues: Vec<Arc<Mutex<VecDeque<String>>>> = (0..providers.len())
+        .map(|_| Arc::new(Mutex::new(VecDeque::from(domains.clone()))))
         .collect();
 
     // Create a tracking set for each domain to know when it's fully processed
@@ -208,11 +208,13 @@ pub async fn process_domains(
                 // Get the next domain from this provider's queue
                 let domain = {
                     let mut queue = queue.lock().unwrap();
-                    if queue.is_empty() {
-                        break; // No more domains to process for this provider
+                    match queue.pop_front() {
+                        Some(domain) => {
+                            current_domain_idx += 1;
+                            domain
+                        }
+                        None => break, // No more domains to process for this provider
                     }
-                    current_domain_idx += 1;
-                    queue.remove(0)
                 };
 
                 // Update the progress bar message to show which domain is being processed
@@ -263,7 +265,7 @@ pub async fn process_domains(
                 });
 
                 // Fetch URLs for this domain using this provider
-                let result = match provider_clone.fetch_urls(&domain).await {
+                match provider_clone.fetch_urls(&domain).await {
                     Ok(urls) => {
                         provider_bar.set_position(100);
                         provider_bar.set_message(format!(
@@ -304,7 +306,6 @@ pub async fn process_domains(
                             );
                         }
 
-                        Ok(urls.len())
                     }
                     Err(e) => {
                         provider_bar.set_position(100);
@@ -328,14 +329,6 @@ pub async fn process_domains(
                         if verbose && !silent {
                             eprintln!("Error fetching URLs for {domain} from {provider_name}: {e}");
                         }
-
-                        Err(e.to_string())
-                    }
-                };
-
-                if let Err(err) = result {
-                    if verbose && !silent {
-                        println!("  - {provider_name}: Error - {err} for {domain}");
                     }
                 }
 

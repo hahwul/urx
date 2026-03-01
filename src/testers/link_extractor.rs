@@ -6,6 +6,7 @@ use std::pin::Pin;
 use url::Url;
 
 use super::Tester;
+use crate::network::client::HttpClientConfig;
 
 /// HTML link extractor that finds URLs in web pages
 #[derive(Clone)]
@@ -28,6 +29,16 @@ impl LinkExtractor {
             retries: 3,
             random_agent: false,
             insecure: false,
+        }
+    }
+
+    fn client_config(&self) -> HttpClientConfig {
+        HttpClientConfig {
+            timeout: self.timeout,
+            insecure: self.insecure,
+            random_agent: self.random_agent,
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
         }
     }
 
@@ -65,37 +76,7 @@ impl Tester for LinkExtractor {
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            // Create client builder with proxy support
-            let mut client_builder =
-                reqwest::Client::builder().timeout(std::time::Duration::from_secs(self.timeout));
-
-            // Skip SSL verification if insecure is enabled
-            if self.insecure {
-                client_builder = client_builder.danger_accept_invalid_certs(true);
-            }
-
-            // Add random user agent if enabled
-            if self.random_agent {
-                let ua = crate::network::random_user_agent();
-                client_builder = client_builder.user_agent(ua);
-            }
-
-            // Add proxy if configured
-            if let Some(proxy_url) = &self.proxy {
-                let mut proxy = reqwest::Proxy::all(proxy_url)?;
-
-                // Add proxy authentication if provided
-                if let Some(auth) = &self.proxy_auth {
-                    let parts: Vec<&str> = auth.splitn(2, ':').collect();
-                    if parts.len() == 2 {
-                        proxy = proxy.basic_auth(parts[0], parts[1]);
-                    }
-                }
-
-                client_builder = client_builder.proxy(proxy);
-            }
-
-            let client = client_builder.build()?;
+            let client = self.client_config().build_client()?;
 
             // Perform the request with retries
             let mut last_error = None;

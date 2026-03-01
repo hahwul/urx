@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
 /// Utility for transforming and manipulating URL collections
@@ -155,13 +155,15 @@ impl UrlTransformer {
                 if let Ok(base_url) = Url::parse(&group_urls[0]) {
                     let mut merged_url = base_url.clone();
                     let mut all_params = Vec::new();
+                    let mut seen_params = HashSet::new();
 
                     // Collect parameters from all URLs
                     for url_str in &group_urls {
                         if let Ok(url) = Url::parse(url_str) {
                             for (key, value) in url.query_pairs() {
-                                if !all_params.iter().any(|(k, v)| k == &key && v == &value) {
-                                    all_params.push((key.to_string(), value.to_string()));
+                                let pair = (key.to_string(), value.to_string());
+                                if seen_params.insert(pair.clone()) {
+                                    all_params.push(pair);
                                 }
                             }
                         }

@@ -5,6 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::network::client::HttpClientConfig;
 use crate::providers::Provider;
 
 #[derive(Clone)]
@@ -49,13 +50,31 @@ impl RobotsProvider {
         self
     }
 
-    fn build_client(&self) -> Result<Client> {
-        let mut builder = Client::builder()
-            .timeout(self.timeout)
-            .danger_accept_invalid_certs(self.insecure);
+    fn client_config(&self) -> HttpClientConfig {
+        HttpClientConfig {
+            timeout: self.timeout.as_secs(),
+            insecure: self.insecure,
+            random_agent: false, // user_agent is handled separately
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
+        }
+    }
 
-        if let Some(ref proxy_url) = self.proxy {
-            let proxy = reqwest::Proxy::all(proxy_url)?;
+    fn build_client(&self) -> Result<Client> {
+        let config = self.client_config();
+        let mut builder = Client::builder()
+            .timeout(Duration::from_secs(config.timeout))
+            .danger_accept_invalid_certs(config.insecure);
+
+        if let Some(ref proxy_url) = config.proxy {
+            let mut proxy = reqwest::Proxy::all(proxy_url)?;
+
+            if let Some(ref auth) = config.proxy_auth {
+                let username = auth.split(':').next().unwrap_or("");
+                let password = auth.split(':').nth(1).unwrap_or("");
+                proxy = proxy.basic_auth(username, password);
+            }
+
             builder = builder.proxy(proxy);
         }
 

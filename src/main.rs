@@ -562,6 +562,11 @@ async fn main() -> Result<()> {
     let config = Config::load(&args);
     config.apply_to_args(&mut args);
 
+    // Create common network settings and progress manager once
+    let network_settings = NetworkSettings::from_args(&args);
+    let progress_check = args.no_progress || args.silent;
+    let progress_manager = ProgressManager::new(progress_check);
+
     // Check if file input is provided
     let urls_from_file = read_urls_from_files(&args)?;
 
@@ -586,17 +591,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
 
-        // Create common network settings from args
-        let network_settings = NetworkSettings::from_args(&args);
-
         // Initialize providers based on command-line flags and API keys
         let (providers, provider_names) = initialize_providers(&args, &network_settings)?;
-
-        // Check for progress bar options
-        let progress_check = args.no_progress || args.silent;
-
-        // Setup progress bars
-        let progress_manager = ProgressManager::new(progress_check);
 
         // Initialize cache manager if caching is enabled
         let cache_manager = create_cache_manager(&args).await.ok().flatten();
@@ -612,15 +608,6 @@ async fn main() -> Result<()> {
         )
         .await
     };
-
-    // Create common network settings from args (for testing phase)
-    let network_settings = NetworkSettings::from_args(&args);
-
-    // Check for progress bar options
-    let progress_check = args.no_progress || args.silent;
-
-    // Setup progress bars
-    let progress_manager = ProgressManager::new(progress_check);
 
     // Apply URL filtering
     let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager);
@@ -685,7 +672,6 @@ async fn main() -> Result<()> {
         process_urls_with_testers(
             transformed_urls,
             &args,
-            &network_settings,
             &progress_manager,
             testers,
             should_check_status,
@@ -1162,14 +1148,12 @@ mod tests {
             no_cache: false,
         };
 
-        let network_settings = NetworkSettings::new();
         let progress_manager = ProgressManager::new(true);
 
         // Process URLs with mock tester
         let result_data = process_urls_with_testers(
             input_urls,
             &args,
-            &network_settings,
             &progress_manager,
             testers,
             false, // 여기를 false로 변경 (should_check_status)
