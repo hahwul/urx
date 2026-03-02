@@ -1,7 +1,7 @@
----
-title: "Environment Variables"
-weight: 1
----
++++
+title = "Environment Variables"
+weight = 1
++++
 
 ## Environment Variables
 
@@ -37,6 +37,28 @@ export URX_URLSCAN_API_KEY=key1,key2,key3
 urx example.com --providers urlscan
 ```
 
+#### URX_ZOOMEYE_API_KEY
+ZoomEye API key for accessing the ZoomEye provider.
+
+```bash
+export URX_ZOOMEYE_API_KEY=your_api_key_here
+urx example.com --providers zoomeye
+```
+
+**Multiple Keys (Rotation):**
+```bash
+export URX_ZOOMEYE_API_KEY=key1,key2,key3
+urx example.com --providers zoomeye
+```
+
+### Summary
+
+| Variable | Provider | Description |
+|----------|----------|-------------|
+| `URX_VT_API_KEY` | VirusTotal | VirusTotal API key |
+| `URX_URLSCAN_API_KEY` | URLScan | URLScan API key |
+| `URX_ZOOMEYE_API_KEY` | ZoomEye | ZoomEye API key |
+
 ### Usage Notes
 
 - Environment variables are automatically detected when running Urx
@@ -53,6 +75,7 @@ Add to your `~/.bashrc`, `~/.zshrc`, or `~/.profile`:
 # Urx Configuration
 export URX_VT_API_KEY=your_vt_key
 export URX_URLSCAN_API_KEY=your_urlscan_key
+export URX_ZOOMEYE_API_KEY=your_zoomeye_key
 ```
 
 #### Use .env Files
@@ -62,6 +85,7 @@ For project-specific configuration:
 # .env
 URX_VT_API_KEY=your_vt_key
 URX_URLSCAN_API_KEY=your_urlscan_key
+URX_ZOOMEYE_API_KEY=your_zoomeye_key
 ```
 
 Load with:
@@ -75,6 +99,7 @@ urx example.com
 docker run --rm \
   -e URX_VT_API_KEY=your_key \
   -e URX_URLSCAN_API_KEY=your_key \
+  -e URX_ZOOMEYE_API_KEY=your_key \
   ghcr.io/hahwul/urx:latest \
   example.com
 ```
@@ -88,6 +113,7 @@ Store API keys as secrets in your CI/CD platform:
   env:
     URX_VT_API_KEY: ${{ secrets.VT_API_KEY }}
     URX_URLSCAN_API_KEY: ${{ secrets.URLSCAN_API_KEY }}
+    URX_ZOOMEYE_API_KEY: ${{ secrets.ZOOMEYE_API_KEY }}
   run: urx example.com
 ```
 
@@ -97,13 +123,3 @@ Store API keys as secrets in your CI/CD platform:
 - Use secrets management for production environments
 - Rotate keys regularly
 - Use different keys for different environments (dev/staging/prod)
-
-### Future Environment Variables
-
-Additional environment variables may be added in future releases for:
-- Default configuration paths
-- Cache directory locations
-- Network settings
-- Output preferences
-
-Check the [Changelog](../../support/changelog) for updates on new environment variables.

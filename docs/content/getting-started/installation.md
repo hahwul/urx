@@ -1,7 +1,7 @@
----
-title: "Installation"
-weight: 2
----
++++
+title = "Installation"
+weight = 1
++++
 
 ## Installation Methods
 
@@ -61,4 +61,4 @@ You should see the version number displayed.
 
 ## Next Steps
 
-Once installed, proceed to the [Quick Start](../quick-start) guide to learn basic usage.
+Once installed, proceed to the [Quick Start](/getting-started/quick-start/) guide to learn basic usage.

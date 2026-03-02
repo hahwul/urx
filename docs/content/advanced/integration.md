@@ -1,7 +1,7 @@
----
-title: "Integration"
-weight: 1
----
++++
+title = "Integration"
+weight = 1
++++
 
 ## Pipeline Integration
 
@@ -116,24 +116,6 @@ jobs:
           path: results.txt
 ```
 
-### API Integration
-
-#### Custom Processing
-```bash
-urx example.com -f json | python3 process_urls.py
-```
-
-Example Python script:
-```python
-import json
-import sys
-
-for line in sys.stdin:
-    data = json.loads(line)
-    # Process URL data
-    print(f"Processing: {data['url']}")
-```
-
 ### Docker Integration
 
 #### Run in Container
@@ -179,19 +161,6 @@ spec:
             image: ghcr.io/hahwul/urx:latest
             args: ["example.com", "--incremental", "--silent"]
           restartPolicy: OnFailure
-```
-
-### Output Format Integration
-
-#### JSON for jq Processing
-```bash
-urx example.com -f json | jq '.[] | select(.status == 200)'
-```
-
-#### CSV for Spreadsheet Import
-```bash
-urx example.com -f csv -o results.csv
-# Import into Excel, Google Sheets, etc.
 ```
 
 ### Multi-Tool Workflows

@@ -2,6 +2,6 @@
 title = "Advanced"
 weight = 3
 sort_by = "weight"
-
-[extra]
 +++
+
+Advanced topics including tool integration, caching strategies, and performance optimization for power users.

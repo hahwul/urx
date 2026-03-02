@@ -2,6 +2,6 @@
 title = "Reference"
 weight = 4
 sort_by = "weight"
-
-[extra]
 +++
+
+Technical reference for environment variables, version history, and other details.

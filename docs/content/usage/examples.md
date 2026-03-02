@@ -1,7 +1,7 @@
----
-title: "Examples"
-weight: 3
----
++++
+title = "Examples"
+weight = 3
++++
 
 ## Usage Examples
 
@@ -27,7 +27,7 @@ cat domains.txt | urx
 # Single file
 urx --files urls.txt
 
-# Multiple files
+# Multiple files (WARC, compressed, text)
 urx --files urls.txt archive.warc data.gz
 urx --files urls.txt --files archive.warc
 
@@ -85,7 +85,7 @@ urx example.com --patterns api --exclude-patterns test,dev
 # Exclude images
 urx example.com -p no-images
 
-# Exclude all resources (images, CSS, fonts, etc.)
+# Exclude all resources
 urx example.com -p no-resources
 
 # JavaScript files only
@@ -108,8 +108,8 @@ urx example.com --min-length 50 --max-length 200
 # Only Wayback Machine and OTX
 urx example.com --providers wayback,otx
 
-# All available providers
-urx example.com --providers wayback,cc,otx,vt,urlscan
+# All available providers (with API keys)
+urx example.com --providers wayback,cc,otx,vt,urlscan,zoomeye
 ```
 
 ### With API Keys
@@ -117,13 +117,15 @@ urx example.com --providers wayback,cc,otx,vt,urlscan
 #### Command Line
 ```bash
 urx example.com --vt-api-key=YOUR_KEY --urlscan-api-key=YOUR_KEY
+urx example.com --zoomeye-api-key=YOUR_KEY --providers zoomeye
 ```
 
 #### Environment Variables
 ```bash
 export URX_VT_API_KEY=YOUR_KEY
 export URX_URLSCAN_API_KEY=YOUR_KEY
-urx example.com --providers=vt,urlscan
+export URX_ZOOMEYE_API_KEY=YOUR_KEY
+urx example.com --providers=vt,urlscan,zoomeye
 ```
 
 #### API Key Rotation
@@ -131,8 +133,21 @@ urx example.com --providers=vt,urlscan
 # Multiple keys for rate limit distribution
 urx example.com --vt-api-key=key1 --vt-api-key=key2 --vt-api-key=key3
 
-# Or with environment variable
+# Or with environment variable (comma-separated)
 URX_VT_API_KEY=key1,key2,key3 urx example.com
+```
+
+### ZoomEye Provider
+```bash
+# Basic ZoomEye usage
+urx example.com --zoomeye-api-key YOUR_KEY --providers zoomeye
+
+# With subdomains
+urx example.com --zoomeye-api-key YOUR_KEY --providers zoomeye --subs
+
+# Auto-enabled when key is provided
+export URX_ZOOMEYE_API_KEY=YOUR_KEY
+urx example.com
 ```
 
 ## Discovery Options
@@ -228,11 +243,6 @@ urx example.com --normalize-url
 urx example.com --normalize-url --merge-endpoint
 ```
 
-### From File
-```bash
-urx --files urls.txt --normalize-url
-```
-
 ## Caching & Incremental Scanning
 
 ### SQLite Cache (Default)
@@ -253,28 +263,13 @@ urx example.com --incremental
 
 ### Custom TTL
 ```bash
-# Set cache TTL to 12 hours (43200 seconds)
+# Set cache TTL to 12 hours
 urx example.com --cache-ttl 43200
 ```
 
 ### Disable Cache
 ```bash
 urx example.com --no-cache
-```
-
-### Combined Caching Examples
-```bash
-# Daily monitoring with incremental updates
-urx target.com --incremental --silent | notify-tool
-
-# Distributed scanning with shared Redis cache
-urx example.com --cache-type redis --redis-url redis://shared-cache:6379
-
-# Rapid iterations with short cache TTL
-urx test-domain.com --cache-ttl 300
-
-# Incremental scan with filtering
-urx example.com --incremental -e js,php --patterns api
 ```
 
 ## Pipeline Integration
@@ -291,7 +286,7 @@ cat domains.txt | urx --patterns api | other-tool
 
 ### Security Tool Integration
 ```bash
-# With Nuclei for XSS scanning
+# With Nuclei for vulnerability scanning
 urx example.com -e js | nuclei -t xss
 
 # With httpx for HTTP probing
@@ -299,23 +294,6 @@ urx example.com | httpx -silent
 
 # With gf patterns
 urx example.com | gf xss
-```
-
-## Display Options
-
-### Verbose Output
-```bash
-urx example.com -v
-```
-
-### Silent Mode
-```bash
-urx example.com --silent
-```
-
-### Disable Progress Bar
-```bash
-urx example.com --no-progress
 ```
 
 ## Complex Scenarios
