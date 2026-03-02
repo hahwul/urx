@@ -76,7 +76,7 @@ body {
   letter-spacing: -0.02em;
 }
 
-.logo-img { height: 22px; width: auto; }
+.logo-img { height: 40px; width: auto; }
 .logo-text { font-weight: 700; }
 
 .docs-header nav {
@@ -482,7 +482,7 @@ nav.pagination a:hover { color: var(--primary); border-color: var(--primary); }
 }
 
 .terminal-body pre {
-  background: transparent;
+  background: #0d1117;
   border: none;
   margin: 0;
   padding: 1rem 1.25rem;
