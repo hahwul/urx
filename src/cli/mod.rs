@@ -62,6 +62,11 @@ pub struct Args {
     #[clap(long, action = clap::ArgAction::Append)]
     pub urlscan_api_key: Vec<String>,
 
+    #[clap(help_heading = "Provider Options")]
+    /// API key for ZoomEye (can be used multiple times for rotation, can also use URX_ZOOMEYE_API_KEY environment variable with comma-separated keys)
+    #[clap(long, action = clap::ArgAction::Append)]
+    pub zoomeye_api_key: Vec<String>,
+
     /// Include robots.txt discovery (default: true)
     #[clap(long, default_value = "true", hide = true)]
     pub include_robots: bool,

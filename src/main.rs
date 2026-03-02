@@ -25,7 +25,7 @@ use output::create_outputter;
 use progress::ProgressManager;
 use providers::{
     CommonCrawlProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider,
-    VirusTotalProvider, WaybackMachineProvider,
+    VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
 };
 use readers::read_urls_from_file;
 use runner::{add_provider, process_domains};
@@ -86,6 +86,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     // Get VirusTotal and Urlscan API keys (from CLI and env vars)
     let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
     let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
+    let zoomeye_api_keys = parse_api_keys(args.zoomeye_api_key.clone(), "URX_ZOOMEYE_API_KEY");
 
     // Auto-enable providers if API keys are provided but not explicitly included in providers
     let mut providers_list = args.providers.clone();
@@ -102,6 +103,13 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         &mut providers_list,
         &urlscan_api_keys,
         "urlscan",
+        args.verbose,
+        args.silent,
+    );
+    auto_enable_provider(
+        &mut providers_list,
+        &zoomeye_api_keys,
+        "zoomeye",
         args.verbose,
         args.silent,
     );
@@ -191,9 +199,24 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         }
     }
 
+    if providers_list.iter().any(|p| p == "zoomeye") {
+        if !zoomeye_api_keys.is_empty() {
+            add_provider(
+                args,
+                network_settings,
+                &mut providers,
+                &mut provider_names,
+                "ZoomEye".to_string(),
+                || ZoomEyeProvider::new_with_keys(zoomeye_api_keys.clone()),
+            );
+        } else if !args.silent {
+            eprintln!("Error: The ZoomEye provider (zoomeye) requires an API key. Please use --zoomeye-api-key or set the URX_ZOOMEYE_API_KEY environment variable.");
+        }
+    }
+
     if providers.is_empty() {
         if !args.silent {
-            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan)");
+            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan, zoomeye)");
         }
         return Err(anyhow::anyhow!("No valid providers specified"));
     }
@@ -1017,6 +1040,7 @@ mod tests {
             cc_index: "CC-MAIN-2025-13".to_string(),
             vt_api_key: vec![],
             urlscan_api_key: vec![],
+            zoomeye_api_key: vec![],
             verbose: false,
             silent: true,      // Silent to avoid console output during tests
             no_progress: true, // No progress bars during tests
@@ -1109,6 +1133,7 @@ mod tests {
             cc_index: "CC-MAIN-2025-13".to_string(),
             vt_api_key: vec![],
             urlscan_api_key: vec![],
+            zoomeye_api_key: vec![],
             verbose: false,
             silent: true,
             no_progress: true,

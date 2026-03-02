@@ -42,6 +42,7 @@ pub struct ProviderConfig {
     pub cc_index: Option<String>,
     pub vt_api_key: Option<String>,
     pub urlscan_api_key: Option<String>,
+    pub zoomeye_api_key: Option<String>,
     pub include_robots: Option<bool>,
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
@@ -237,6 +238,12 @@ impl Config {
         if args.urlscan_api_key.is_empty() {
             if let Some(urlscan_api_key) = &self.provider.urlscan_api_key {
                 args.urlscan_api_key.push(urlscan_api_key.clone());
+            }
+        }
+
+        if args.zoomeye_api_key.is_empty() {
+            if let Some(zoomeye_api_key) = &self.provider.zoomeye_api_key {
+                args.zoomeye_api_key.push(zoomeye_api_key.clone());
             }
         }
 
@@ -540,6 +547,7 @@ mod tests {
             cc_index: "CC-MAIN-2025-13".to_string(),
             vt_api_key: vec![],
             urlscan_api_key: vec![],
+            zoomeye_api_key: vec![],
             verbose: false,
             silent: false,
             no_progress: false,

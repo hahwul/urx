@@ -9,6 +9,7 @@ mod robots;
 mod sitemap;
 mod urlscan;
 mod vt;
+mod zoomeye;
 mod wayback;
 pub use api_key_rotation::ApiKeyRotator;
 pub use commoncrawl::CommonCrawlProvider;
@@ -18,6 +19,7 @@ pub use sitemap::SitemapProvider;
 pub use urlscan::UrlscanProvider;
 pub use vt::VirusTotalProvider;
 pub use wayback::WaybackMachineProvider;
+pub use zoomeye::ZoomEyeProvider;
 
 /// Provider trait for URL discovery services
 ///
