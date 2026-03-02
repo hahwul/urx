@@ -175,10 +175,8 @@ impl Provider for ZoomEyeProvider {
 
                 while attempt <= self.retries {
                     if attempt > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            500 * attempt as u64,
-                        ))
-                        .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
+                            .await;
                     }
 
                     let req = client

@@ -305,7 +305,6 @@ pub async fn process_domains(
                                 domain
                             );
                         }
-
                     }
                     Err(e) => {
                         provider_bar.set_position(100);
