@@ -1,6 +1,6 @@
 +++
 title = "Performance"
-weight = 3
+weight = 7
 +++
 
 ## Optimizing Urx Performance

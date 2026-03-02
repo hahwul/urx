@@ -1,6 +1,6 @@
 +++
 title = "Integration"
-weight = 1
+weight = 6
 +++
 
 ## Pipeline Integration

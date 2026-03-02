@@ -1,6 +1,6 @@
 +++
 title = "Changelog"
-weight = 2
+weight = 1
 +++
 
 ## Version History

@@ -153,5 +153,5 @@ The default config file location is `~/.config/urx/config.toml`. You can overrid
 ### Tips
 
 - Start with a minimal config and add sections as needed.
-- Use environment variables for sensitive API keys instead of storing them in the config file. See [Environment Variables](/reference/environment-variables/).
+- Use environment variables for sensitive API keys instead of storing them in the config file. See [Environment Variables](/guide/environment-variables/).
 - Create multiple config files for different scanning profiles and switch with `-c`.

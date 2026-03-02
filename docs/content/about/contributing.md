@@ -1,6 +1,6 @@
 +++
 title = "Contributing"
-weight = 1
+weight = 2
 +++
 
 ## Contributing to Urx

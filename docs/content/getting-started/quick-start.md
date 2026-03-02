@@ -93,6 +93,6 @@ urx --help
 
 ## Next Steps
 
-- Learn about all available [CLI Options](/usage/cli-options/)
-- Explore more [Examples](/usage/examples/)
-- Set up a [Configuration](/usage/configuration/) file for advanced use
+- Learn about all available [CLI Options](/guide/cli-options/)
+- Explore more [Examples](/guide/examples/)
+- Set up a [Configuration](/guide/configuration/) file for advanced use

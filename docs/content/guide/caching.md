@@ -1,6 +1,6 @@
 +++
 title = "Caching"
-weight = 2
+weight = 5
 +++
 
 ## Caching & Incremental Scanning
@@ -112,7 +112,7 @@ urx example.com --incremental -e js,php --patterns api
 
 ### Configuration File
 
-Caching can also be configured in a [config file](/usage/configuration/):
+Caching can also be configured in a [config file](/guide/configuration/):
 
 ```toml
 [cache]
