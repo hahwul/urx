@@ -1,0 +1,24 @@
+    <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+{{ highlight_js }}
+{{ auto_includes_js }}
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

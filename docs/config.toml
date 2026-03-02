@@ -1,50 +1,101 @@
-# The URL the site will be built for
-base_url = "https://urx.hahwul.com"
+# =============================================================================
+# Site Configuration
+# =============================================================================
+
 title = "Urx"
-theme = "goyo"
+description = "Extracts URLs from OSINT Archives for Security Insights"
+base_url = "" #"https://urx.hahwul.com"
 
-# Whether to automatically compile all Sass files in the sass directory
-compile_sass = false
+# =============================================================================
+# Plugins
+# =============================================================================
 
-# Whether to build a search index to be used later on by a JavaScript library
-build_search_index = true
+[plugins]
+processors = ["markdown"]
 
-[markdown]
-bottom_footnotes = true
+# =============================================================================
+# Content Files
+# =============================================================================
 
-[markdown.highlighting]
+[content.files]
+allow_extensions = ["jpg", "jpeg", "png", "gif", "svg", "webp"]
+
+# =============================================================================
+# Syntax Highlighting
+# =============================================================================
+
+[highlight]
+enabled = true
 theme = "github-dark"
+use_cdn = true
 
-[extra]
-default_thumbnail = "images/preview.jpg"
-footer_html = "<div style='display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap;'><a href='https://www.hahwul.com' target='_blank' rel='noopener noreferrer' style='display: inline-flex; align-items: center;'><img src='https://www.hahwul.com/images/logo-gray.png' alt='HAHWUL' style='height: 30px' /></a><span style='opacity: 0.6;'>•</span><span>Powered by <a href='https://www.getzola.org' class='font-medium text-base-content/70 hover:text-base-content transition-colors duration-200'>Zola</a> and <a href='https://github.com/hahwul/goyo' class='font-medium text-base-content/70 hover:text-base-content transition-colors duration-200'>Goyo</a></span></div>"
+# =============================================================================
+# OpenGraph & Twitter Cards
+# =============================================================================
 
-nav = [
-    { name = "Documents", url = "/getting_started/introduction", type = "url", icon = "fa-solid fa-book" },
-    { name = "GitHub", url = "https://github.com/hahwul/urx", type = "url", icon = "fa-brands fa-github" },
-    { name = "Links", type = "dropdown", icon = "fa-solid fa-link", members = [
-        { name = "Crates", url = "https://crates.io/crates/urx", type = "url", icon = "fa-solid fa-box" },
-        { name = "Creator Blog", url = "https://www.hahwul.com", type = "url", icon = "fa-solid fa-fire-flame-curved" },
-    ] },
+[og]
+default_image = "/images/preview.jpg"
+type = "website"
+twitter_card = "summary_large_image"
+twitter_site = "@hahwul"
+twitter_creator = "@hahwul"
+
+# =============================================================================
+# Search Configuration
+# =============================================================================
+
+[search]
+enabled = true
+format = "fuse_json"
+fields = ["title", "content"]
+filename = "search.json"
+exclude = []
+
+# =============================================================================
+# SEO: Sitemap
+# =============================================================================
+
+[sitemap]
+enabled = true
+filename = "sitemap.xml"
+changefreq = "weekly"
+priority = 0.5
+exclude = []
+
+# =============================================================================
+# SEO: Robots.txt
+# =============================================================================
+
+[robots]
+enabled = true
+filename = "robots.txt"
+rules = [
+  { user_agent = "*", disallow = [] },
+  { user_agent = "GPTBot", disallow = ["/"] }
 ]
 
-# Twitter Configuration (structured format)
-[extra.twitter]
-site = "@hahwul"
-creator = "@hahwul"
+# =============================================================================
+# SEO: LLMs.txt
+# =============================================================================
 
-[extra.logo]
-text = "Urx"                              # Text when no logo image
-image_path = "images/urx-dark.png"             # Default logo image path
-image_padding = "10px"                      # Optional padding
-dark_image_path = "images/urx-dark.png"   # Logo for dark theme (optional)
-light_image_path = "images/urx-light.png" # Logo for light theme (optional)
+[llms]
+enabled = true
+filename = "llms.txt"
+instructions = "This is the documentation for Urx, a URL extraction tool for OSINT."
+full_enabled = false
+full_filename = "llms-full.txt"
 
-[extra.theme]
-colorset = "dark"           # Options: "dark" or "light"
-brightness = "normal"       # Common brightness: "darker", "normal", "lighter"
-dark_brightness = "darker"  # Override brightness for dark theme (optional)
-light_brightness = "normal" # Override brightness for light theme (optional)
-disable_toggle = false      # Hides dark/light mode toggle
-default_theme_dark = "goyo-dark" # Default dark theme (e.g., "goyo-dark", "dracula", "abyss")
-default_theme_light = "goyo-light" # Default light theme (e.g., "goyo-light", "cupcake", "retro")
+# =============================================================================
+# RSS/Atom Feeds
+# =============================================================================
+
+[feeds]
+enabled = false
+
+# =============================================================================
+# Markdown Configuration
+# =============================================================================
+
+[markdown]
+safe = false
+lazy_loading = false

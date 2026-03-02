@@ -1,7 +1,7 @@
----
-title: "Changelog"
-weight: 3
----
++++
+title = "Changelog"
+weight = 1
++++
 
 ## Version History
 
@@ -10,6 +10,7 @@ Track the evolution of Urx with release notes for each version.
 ## Version 0.8.0
 
 **New Features:**
+- **ZoomEye Provider**: Search URLs via ZoomEye API with `--zoomeye-api-key` flag and `URX_ZOOMEYE_API_KEY` environment variable
 - **Multiple API Key Rotation**: Support for rotating multiple API keys (e.g., `--vt-api-key key1 --vt-api-key key2`)
 - **URL Normalization**: Added `--normalize-url` flag for URL normalization and deduplication
 - **Endpoint Merging**: Added `--merge-endpoint` flag to merge endpoints with same path
@@ -53,8 +54,8 @@ Track the evolution of Urx with release notes for each version.
 - **HTTP Status Highlighting**: Added `--check-status` flag for response status checking (#59)
 
 **Improvements:**
-- Enhanced API key handling - auto-enables VirusTotal and URLScan when keys are provided (#60)
-- Improved network reliability with increased default timeout (30s → 120s) and optimized retry settings (#68)
+- Enhanced API key handling — auto-enables VirusTotal and URLScan when keys are provided (#60)
+- Improved network reliability with increased default timeout (30s -> 120s) and optimized retry settings (#68)
 
 **Bug Fixes:**
 - Resolved OTX provider parsing bug for null values (#70)

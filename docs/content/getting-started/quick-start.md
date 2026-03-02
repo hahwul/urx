@@ -1,7 +1,7 @@
----
-title: "Quick Start"
-weight: 3
----
++++
+title = "Quick Start"
+weight = 2
++++
 
 ## Basic Usage
 
@@ -93,6 +93,6 @@ urx --help
 
 ## Next Steps
 
-- Learn about all available [Options & Flags](../../usage/options-flags)
-- Explore more [Examples](../../usage/examples)
-- Set up [Configuration](../../usage/configuration) for advanced use
+- Learn about all available [CLI Options](/guide/cli-options/)
+- Explore more [Examples](/guide/examples/)
+- Set up a [Configuration](/guide/configuration/) file for advanced use

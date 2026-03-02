@@ -1,11 +1,11 @@
----
-title: "Contributing"
-weight: 4
----
++++
+title = "Contributing"
+weight = 2
++++
 
 ## Contributing to Urx
 
-Urx is an open-source project made with ❤️, and we welcome contributions from the community!
+Urx is an open-source project, and we welcome contributions from the community!
 
 ## How to Contribute
 
@@ -97,13 +97,8 @@ Documentation improvements are always welcome!
 - Fix typos or unclear explanations
 - Add examples and use cases
 - Improve existing guides
-- Translate documentation (future)
 
-Documentation is in `docs/content/` directory using Markdown format.
-
-## Code of Conduct
-
-This project follows the [Contributor Covenant Code of Conduct](https://github.com/hahwul/urx/blob/main/CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
+Documentation is in the `docs/content/` directory using Markdown format with TOML front matter.
 
 ## Development Guidelines
 
@@ -134,7 +129,6 @@ This project follows the [Contributor Covenant Code of Conduct](https://github.c
 - Keep changes focused and atomic
 - Update CHANGELOG.md for significant changes
 - Ensure CI passes before requesting review
-- Be responsive to feedback
 
 ## Project Structure
 
@@ -146,16 +140,19 @@ urx/
 │   ├── filters/     # URL filtering logic
 │   ├── testers/     # HTTP testing
 │   └── network/     # Network configuration
-├── docs/            # Documentation (Zola site)
+├── docs/            # Documentation (Hwaro site)
 ├── example/         # Example configurations
 └── tests/           # Integration tests
 ```
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant Code of Conduct](https://github.com/hahwul/urx/blob/main/CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
 
 ## Need Help?
 
 - Read the full [CONTRIBUTING.md](https://github.com/hahwul/urx/blob/main/CONTRIBUTING.md) guide
 - Join [GitHub Discussions](https://github.com/hahwul/urx/discussions)
-- Check the [documentation](../../getting_started/introduction)
 - Ask questions in issues
 
 ## Recognition
@@ -167,7 +164,3 @@ All contributors are recognized in the project!
 ## License
 
 By contributing to Urx, you agree that your contributions will be licensed under the project's [MIT License](https://github.com/hahwul/urx/blob/main/LICENSE).
-
----
-
-Thank you for contributing to Urx! Your support helps make the project better for everyone. 🚀
