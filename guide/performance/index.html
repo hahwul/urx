@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Performance - Urx</title>
+  <meta property="og:title" content="Performance">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/guide/performance/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Performance">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="guide">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Performance</h1>
+        <h2 id="optimizing-urx-performance">Optimizing Urx Performance</h2>
+<h3 id="parallel-processing">Parallel Processing</h3>
+<h4 id="adjust-parallelism">Adjust Parallelism</h4>
+<pre><code class="language-bash hljs"># Default parallelism (5 concurrent requests)
+urx example.com
+
+# Increase for faster processing
+urx example.com --parallel 20
+
+# Decrease for rate-limit sensitive targets
+urx example.com --parallel 2
+</code></pre>
+<p>The <code>--parallel</code> flag controls both maximum concurrent requests per provider and maximum concurrent domain processing.</p>
+<p><strong>Recommendations:</strong></p>
+<ul>
+<li>Fast connections: <code>--parallel 15-20</code></li>
+<li>Normal connections: <code>--parallel 5-10</code></li>
+<li>Slow/rate-limited: <code>--parallel 2-3</code></li>
+</ul>
+<h3 id="network-optimization">Network Optimization</h3>
+<h4 id="timeout-configuration">Timeout Configuration</h4>
+<pre><code class="language-bash hljs"># Fast timeout for quick scans
+urx example.com --timeout 15
+
+# Extended timeout for slow providers
+urx example.com --timeout 120
+</code></pre>
+<h4 id="retry-settings">Retry Settings</h4>
+<pre><code class="language-bash hljs"># Fewer retries for speed
+urx example.com --retries 1
+
+# More retries for reliability
+urx example.com --retries 5
+</code></pre>
+<h4 id="network-scope">Network Scope</h4>
+<p>Control which components use network settings:</p>
+<pre><code class="language-bash hljs"># Apply to all components (default)
+urx example.com --network-scope all --parallel 20
+
+# Only providers (faster URL collection)
+urx example.com --network-scope providers --parallel 20
+
+# Only testers (for status checking)
+urx example.com --network-scope testers --check-status --parallel 10
+</code></pre>
+<h3 id="provider-selection">Provider Selection</h3>
+<h4 id="choose-fast-providers">Choose Fast Providers</h4>
+<pre><code class="language-bash hljs"># Only fast providers
+urx example.com --providers wayback
+
+# Exclude slow providers when speed is critical
+urx example.com --providers wayback,cc
+</code></pre>
+<h4 id="api-key-rotation">API Key Rotation</h4>
+<p>Distribute load across multiple API keys to bypass rate limits:</p>
+<pre><code class="language-bash hljs">urx example.com \
+  --vt-api-key=key1 \
+  --vt-api-key=key2 \
+  --vt-api-key=key3 \
+  --providers vt
+</code></pre>
+<h3 id="filtering-early">Filtering Early</h3>
+<p>Filter at collection time rather than post-processing:</p>
+<pre><code class="language-bash hljs"># More efficient — filter during collection
+urx example.com -e js,php --patterns api
+
+# Less efficient — filter after
+urx example.com | grep &quot;api&quot; | grep &quot;\.js$&quot;
+</code></pre>
+<p><strong>Why it's faster:</strong></p>
+<ul>
+<li>Less data to process and deduplicate</li>
+<li>Reduced memory usage</li>
+<li>Faster output generation</li>
+</ul>
+<h4 id="use-presets">Use Presets</h4>
+<pre><code class="language-bash hljs"># Preset filters are optimized
+urx example.com -p no-images,no-resources
+
+# More efficient than manual exclusion
+urx example.com --exclude-extensions jpg,png,gif,css,woff,woff2,ttf
+</code></pre>
+<h3 id="output-optimization">Output Optimization</h3>
+<pre><code class="language-bash hljs"># Disable progress bar for scripts
+urx example.com --no-progress
+
+# Silent mode — minimal output overhead
+urx example.com --silent -o results.txt
+
+# Direct file output — avoids buffering
+urx example.com -o results.txt
+</code></pre>
+<h3 id="batch-processing">Batch Processing</h3>
+<pre><code class="language-bash hljs"># Stream processing (lower memory)
+cat domains.txt | urx --incremental --no-progress -o results.txt
+
+# Parallel domain processing
+cat domains.txt | xargs -P 3 -I {} urx {} --incremental -o {}.txt
+</code></pre>
+<h2 id="best-practices-by-use-case">Best Practices by Use Case</h2>
+<h3 id="rapid-testing">Rapid Testing</h3>
+<pre><code class="language-bash hljs">urx example.com \
+  --providers wayback \
+  --parallel 20 \
+  --timeout 15 \
+  --retries 1 \
+  --no-progress
+</code></pre>
+<h3 id="production-monitoring">Production Monitoring</h3>
+<pre><code class="language-bash hljs">urx example.com \
+  --incremental \
+  --cache-type redis \
+  --redis-url redis://cache:6379 \
+  --parallel 10 \
+  --timeout 60 \
+  --retries 3 \
+  --silent
+</code></pre>
+<h3 id="comprehensive-discovery">Comprehensive Discovery</h3>
+<pre><code class="language-bash hljs">urx example.com \
+  --providers wayback,cc,otx,vt,urlscan,zoomeye \
+  --subs \
+  --parallel 15 \
+  --timeout 120 \
+  --retries 5 \
+  --cache-type sqlite \
+  --incremental
+</code></pre>
+<h3 id="resource-constrained-environment">Resource-Constrained Environment</h3>
+<pre><code class="language-bash hljs">urx example.com \
+  --providers wayback \
+  --parallel 2 \
+  --timeout 30 \
+  --no-cache \
+  --no-progress
+</code></pre>
+<h2 id="troubleshooting-performance-issues">Troubleshooting Performance Issues</h2>
+<h3 id="slow-scans">Slow Scans</h3>
+<ol>
+<li>Increase <code>--parallel</code> value</li>
+<li>Reduce <code>--timeout</code> if appropriate</li>
+<li>Use <code>--incremental</code> for subsequent scans</li>
+<li>Select faster providers only</li>
+<li>Filter early to reduce processing</li>
+</ol>
+<h3 id="high-memory-usage">High Memory Usage</h3>
+<ol>
+<li>Decrease <code>--parallel</code> value</li>
+<li>Process fewer domains simultaneously</li>
+<li>Use streaming output (<code>-o file</code>)</li>
+<li>Clear cache if very large</li>
+</ol>
+<h3 id="rate-limiting">Rate Limiting</h3>
+<ol>
+<li>Reduce <code>--parallel</code> value</li>
+<li>Use <code>--rate-limit</code> flag</li>
+<li>Implement API key rotation</li>
+<li>Increase <code>--timeout</code> value</li>
+</ol>
+<h3 id="network-timeouts">Network Timeouts</h3>
+<ol>
+<li>Increase <code>--timeout</code> value</li>
+<li>Increase <code>--retries</code> value</li>
+<li>Check network connectivity</li>
+<li>Try different providers</li>
+</ol>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>

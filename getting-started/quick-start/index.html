@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Quick Start - Urx</title>
+  <meta property="og:title" content="Quick Start">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/getting-started/quick-start/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Quick Start">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="getting-started">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Quick Start</h1>
+        <h2 id="basic-usage">Basic Usage</h2>
+<p>Get started with Urx in minutes using these simple examples.</p>
+<h3 id="single-domain">Single Domain</h3>
+<p>Fetch URLs for a single domain:</p>
+<pre><code class="language-bash hljs">urx example.com
+</code></pre>
+<p>This will retrieve URLs from default providers (Wayback Machine, Common Crawl, and OTX) and output them to the console.</p>
+<h3 id="multiple-domains">Multiple Domains</h3>
+<p>Process multiple domains at once:</p>
+<pre><code class="language-bash hljs">urx example.com example.org
+</code></pre>
+<h3 id="from-standard-input">From Standard Input</h3>
+<p>Read domains from a file or pipeline:</p>
+<pre><code class="language-bash hljs">cat domains.txt | urx
+</code></pre>
+<h3 id="save-output-to-file">Save Output to File</h3>
+<p>Save results to a file instead of displaying in console:</p>
+<pre><code class="language-bash hljs">urx example.com -o results.txt
+</code></pre>
+<h3 id="json-output">JSON Output</h3>
+<p>Output in JSON format for parsing with other tools:</p>
+<pre><code class="language-bash hljs">urx example.com -f json -o results.json
+</code></pre>
+<h2 id="common-use-cases">Common Use Cases</h2>
+<h3 id="security-scanning">Security Scanning</h3>
+<p>Filter for JavaScript files that may contain sensitive information:</p>
+<pre><code class="language-bash hljs">urx example.com -e js -o js-files.txt
+</code></pre>
+<h3 id="api-endpoint-discovery">API Endpoint Discovery</h3>
+<p>Find API endpoints using pattern matching:</p>
+<pre><code class="language-bash hljs">urx example.com --patterns api,v1,v2,graphql
+</code></pre>
+<h3 id="exclude-common-resources">Exclude Common Resources</h3>
+<p>Use presets to exclude images and other non-interesting files:</p>
+<pre><code class="language-bash hljs">urx example.com -p no-images,no-resources
+</code></pre>
+<h3 id="with-http-status-checking">With HTTP Status Checking</h3>
+<p>Validate which URLs are still active:</p>
+<pre><code class="language-bash hljs">urx example.com --check-status --include-status 200
+</code></pre>
+<h2 id="getting-help">Getting Help</h2>
+<p>For a complete list of options and flags:</p>
+<pre><code class="language-bash hljs">urx --help
+</code></pre>
+<h2 id="next-steps">Next Steps</h2>
+<ul>
+<li>Learn about all available <a href="/guide/cli-options/">CLI Options</a></li>
+<li>Explore more <a href="/guide/examples/">Examples</a></li>
+<li>Set up a <a href="/guide/configuration/">Configuration</a> file for advanced use</li>
+</ul>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>

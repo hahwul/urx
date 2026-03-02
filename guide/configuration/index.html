@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Configuration - Urx</title>
+  <meta property="og:title" content="Configuration">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/guide/configuration/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Configuration">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="guide">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Configuration</h1>
+        <h2 id="configuration-file">Configuration File</h2>
+<p>Urx supports loading settings from a TOML configuration file. This avoids repeating options on every command and lets you manage profiles for different scanning scenarios.</p>
+<h3 id="loading-a-config-file">Loading a Config File</h3>
+<pre><code class="language-bash hljs"># Explicit path
+urx -c /path/to/config.toml example.com
+
+# Default location (auto-detected)
+# ~/.config/urx/config.toml
+urx example.com
+</code></pre>
+<p>Command-line flags always take precedence over config file values.</p>
+<h3 id="full-configuration-reference">Full Configuration Reference</h3>
+<p>Below is a complete annotated configuration file. All sections and keys are optional.</p>
+<pre><code class="language-toml hljs"># Domain configuration
+domains = [&quot;example.com&quot;, &quot;example.org&quot;]
+
+# ─── Output ──────────────────────────────────────────────
+[output]
+output = &quot;results.txt&quot;
+format = &quot;plain&quot;           # plain, json, csv
+merge_endpoint = false
+normalize_url = false
+
+# ─── Providers ───────────────────────────────────────────
+[provider]
+providers = [&quot;wayback&quot;, &quot;cc&quot;, &quot;otx&quot;]
+subs = false                          # Include subdomains
+cc_index = &quot;CC-MAIN-2025-13&quot;         # Common Crawl index
+vt_api_key = &quot;&quot;                       # VirusTotal API key
+urlscan_api_key = &quot;&quot;                  # URLScan API key
+zoomeye_api_key = &quot;&quot;                  # ZoomEye API key
+exclude_robots = false                # Skip robots.txt discovery
+exclude_sitemap = false               # Skip sitemap.xml discovery
+
+# ─── Display ─────────────────────────────────────────────
+verbose = false
+silent = false
+no_progress = false
+
+# ─── Filters ─────────────────────────────────────────────
+[filter]
+preset = [&quot;no-resources&quot;, &quot;no-images&quot;]
+extensions = [&quot;js&quot;, &quot;php&quot;, &quot;aspx&quot;]
+exclude_extensions = [&quot;html&quot;, &quot;txt&quot;]
+patterns = [&quot;admin&quot;, &quot;api&quot;]
+exclude_patterns = [&quot;logout&quot;, &quot;static&quot;]
+show_only_host = false
+show_only_path = false
+show_only_param = false
+min_length = 10
+max_length = 500
+strict = true
+
+# ─── Network ─────────────────────────────────────────────
+[network]
+network_scope = &quot;all&quot;                  # all, providers, testers
+proxy = &quot;http://proxy.example.com:8080&quot;
+proxy_auth = &quot;username:password&quot;
+insecure = false
+random_agent = true
+timeout = 30
+retries = 3
+parallel = 5
+rate_limit = 10
+
+# ─── Testing ─────────────────────────────────────────────
+[testing]
+check_status = false
+include_status = [&quot;200&quot;, &quot;30x&quot;]
+exclude_status = [&quot;404&quot;, &quot;50x&quot;]
+extract_links = false
+
+# ─── Cache ────────────────────────────────────────────────
+[cache]
+incremental = false
+cache_type = &quot;sqlite&quot;                  # sqlite or redis
+cache_path = &quot;~/.urx/cache.db&quot;
+redis_url = &quot;redis://localhost:6379&quot;
+cache_ttl = 86400                      # 24 hours
+no_cache = false
+</code></pre>
+<h3 id="minimal-config-examples">Minimal Config Examples</h3>
+<p><strong>Bug bounty profile:</strong></p>
+<pre><code class="language-toml hljs">[provider]
+providers = [&quot;wayback&quot;, &quot;cc&quot;, &quot;otx&quot;, &quot;vt&quot;]
+vt_api_key = &quot;YOUR_KEY&quot;
+subs = true
+
+[filter]
+preset = [&quot;no-resources&quot;]
+patterns = [&quot;api&quot;, &quot;admin&quot;, &quot;login&quot;]
+
+[cache]
+incremental = true
+</code></pre>
+<p><strong>API-focused discovery:</strong></p>
+<pre><code class="language-toml hljs">[provider]
+providers = [&quot;wayback&quot;, &quot;cc&quot;, &quot;otx&quot;, &quot;vt&quot;, &quot;urlscan&quot;, &quot;zoomeye&quot;]
+vt_api_key = &quot;YOUR_VT_KEY&quot;
+urlscan_api_key = &quot;YOUR_URLSCAN_KEY&quot;
+zoomeye_api_key = &quot;YOUR_ZOOMEYE_KEY&quot;
+subs = true
+
+[filter]
+patterns = [&quot;api&quot;, &quot;graphql&quot;, &quot;rest&quot;, &quot;v1&quot;, &quot;v2&quot;]
+extensions = [&quot;json&quot;, &quot;xml&quot;]
+
+[network]
+parallel = 10
+timeout = 60
+</code></pre>
+<p><strong>Monitoring with Redis:</strong></p>
+<pre><code class="language-toml hljs">[provider]
+providers = [&quot;wayback&quot;, &quot;cc&quot;, &quot;otx&quot;]
+
+silent = true
+
+[cache]
+incremental = true
+cache_type = &quot;redis&quot;
+redis_url = &quot;redis://cache-server:6379&quot;
+cache_ttl = 43200
+</code></pre>
+<h3 id="config-file-location">Config File Location</h3>
+<p>The default config file location is <code>~/.config/urx/config.toml</code>. You can override this with the <code>-c</code> / <code>--config</code> flag.</p>
+<h3 id="tips">Tips</h3>
+<ul>
+<li>Start with a minimal config and add sections as needed.</li>
+<li>Use environment variables for sensitive API keys instead of storing them in the config file. See <a href="/guide/environment-variables/">Environment Variables</a>.</li>
+<li>Create multiple config files for different scanning profiles and switch with <code>-c</code>.</li>
+</ul>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>

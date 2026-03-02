@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>CLI Options - Urx</title>
+  <meta property="og:title" content="CLI Options">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/guide/cli-options/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="CLI Options">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="guide">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>CLI Options</h1>
+        <h2 id="command-line-options">Command Line Options</h2>
+<p>Urx provides a comprehensive set of command-line options for customizing behavior.</p>
+<pre><code>Usage: urx [OPTIONS] [DOMAINS]...
+
+Arguments:
+  [DOMAINS]...  Domains to fetch URLs for
+
+Options:
+  -c, --config &lt;CONFIG&gt;  Config file to load
+  -h, --help             Print help
+  -V, --version          Print version
+
+Input Options:
+      --files &lt;FILES&gt;...  Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
+
+Output Options:
+  -o, --output &lt;OUTPUT&gt;  Output file to write results
+  -f, --format &lt;FORMAT&gt;  Output format (e.g., &quot;plain&quot;, &quot;json&quot;, &quot;csv&quot;) [default: plain]
+      --merge-endpoint   Merge endpoints with the same path and merge URL parameters
+      --normalize-url    Normalize URLs for better deduplication
+
+Provider Options:
+  --providers &lt;PROVIDERS&gt;                Providers to use (comma-separated) [default: wayback,cc,otx]
+  --subs                                 Include subdomains when searching
+  --cc-index &lt;CC_INDEX&gt;                  Common Crawl index to use [default: CC-MAIN-2025-13]
+  --vt-api-key &lt;VT_API_KEY&gt;             API key for VirusTotal
+  --urlscan-api-key &lt;URLSCAN_API_KEY&gt;   API key for Urlscan
+  --zoomeye-api-key &lt;ZOOMEYE_API_KEY&gt;   API key for ZoomEye
+
+Discovery Options:
+  --exclude-robots   Exclude robots.txt discovery
+  --exclude-sitemap  Exclude sitemap.xml discovery
+
+Display Options:
+  -v, --verbose      Show verbose output
+      --silent       Silent mode (no output)
+      --no-progress  No progress bar
+
+Filter Options:
+  -p, --preset &lt;PRESET&gt;                     Filter Presets (e.g., &quot;no-resources,no-images,only-js,only-style&quot;)
+  -e, --extensions &lt;EXTENSIONS&gt;              Filter by extensions (e.g., &quot;js,php,aspx&quot;)
+      --exclude-extensions &lt;EXTENSIONS&gt;      Exclude extensions (e.g., &quot;html,txt&quot;)
+      --patterns &lt;PATTERNS&gt;                  Include URLs containing patterns
+      --exclude-patterns &lt;PATTERNS&gt;          Exclude URLs containing patterns
+      --show-only-host                       Only show the host part
+      --show-only-path                       Only show the path part
+      --show-only-param                      Only show the parameters part
+      --min-length &lt;MIN_LENGTH&gt;              Minimum URL length
+      --max-length &lt;MAX_LENGTH&gt;              Maximum URL length
+      --strict                               Enforce exact host validation (default)
+
+Network Options:
+  --network-scope &lt;SCOPE&gt;        Apply settings to: all, providers, testers [default: all]
+  --proxy &lt;PROXY&gt;                HTTP proxy (e.g., http://proxy:8080)
+  --proxy-auth &lt;PROXY_AUTH&gt;      Proxy credentials (username:password)
+  --insecure                     Skip SSL certificate verification
+  --random-agent                 Use a random User-Agent
+  --timeout &lt;TIMEOUT&gt;            Request timeout in seconds [default: 120]
+  --retries &lt;RETRIES&gt;            Retries for failed requests [default: 2]
+  --parallel &lt;PARALLEL&gt;          Max parallel requests per provider [default: 5]
+  --rate-limit &lt;RATE_LIMIT&gt;      Requests per second
+
+Testing Options:
+  --check-status                     Check HTTP status code of collected URLs
+  --include-status &lt;INCLUDE_STATUS&gt;  Include specific status codes (e.g., 200,30x)
+  --exclude-status &lt;EXCLUDE_STATUS&gt;  Exclude specific status codes (e.g., 404,50x)
+  --extract-links                    Extract additional links from collected URLs
+
+Cache Options:
+  --incremental              Only return new URLs compared to previous scans
+  --cache-type &lt;CACHE_TYPE&gt;  Cache backend: sqlite or redis [default: sqlite]
+  --cache-path &lt;CACHE_PATH&gt;  Path for SQLite cache database
+  --redis-url &lt;REDIS_URL&gt;    Redis connection URL
+  --cache-ttl &lt;CACHE_TTL&gt;    Cache TTL in seconds [default: 86400]
+  --no-cache                 Disable caching entirely
+</code></pre>
+<h2 id="available-providers">Available Providers</h2>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Flag</th>
+<th>API Key Required</th>
+<th>Environment Variable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Wayback Machine</td>
+<td><code>wayback</code></td>
+<td>No</td>
+<td>-</td>
+</tr>
+<tr>
+<td>Common Crawl</td>
+<td><code>cc</code></td>
+<td>No</td>
+<td>-</td>
+</tr>
+<tr>
+<td>OTX (AlienVault)</td>
+<td><code>otx</code></td>
+<td>No</td>
+<td>-</td>
+</tr>
+<tr>
+<td>VirusTotal</td>
+<td><code>vt</code></td>
+<td>Yes</td>
+<td><code>URX_VT_API_KEY</code></td>
+</tr>
+<tr>
+<td>URLScan</td>
+<td><code>urlscan</code></td>
+<td>Yes</td>
+<td><code>URX_URLSCAN_API_KEY</code></td>
+</tr>
+<tr>
+<td>ZoomEye</td>
+<td><code>zoomeye</code></td>
+<td>Yes</td>
+<td><code>URX_ZOOMEYE_API_KEY</code></td>
+</tr>
+</tbody>
+</table>
+<p>Default providers: <code>wayback,cc,otx</code>. Providers requiring API keys are automatically enabled when their keys are provided.</p>
+<h2 id="filter-presets">Filter Presets</h2>
+<table>
+<thead>
+<tr>
+<th>Preset</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>no-resources</code></td>
+<td>Exclude resource files (images, CSS, fonts, etc.)</td>
+</tr>
+<tr>
+<td><code>no-images</code></td>
+<td>Exclude image files</td>
+</tr>
+<tr>
+<td><code>only-js</code></td>
+<td>Only JavaScript files</td>
+</tr>
+<tr>
+<td><code>only-style</code></td>
+<td>Only stylesheet files</td>
+</tr>
+</tbody>
+</table>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>

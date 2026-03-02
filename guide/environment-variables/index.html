@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Environment Variables - Urx</title>
+  <meta property="og:title" content="Environment Variables">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/guide/environment-variables/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Environment Variables">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="guide">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Environment Variables</h1>
+        <h2 id="environment-variables">Environment Variables</h2>
+<p>Urx supports configuration through environment variables for sensitive data and default settings.</p>
+<h3 id="api-keys">API Keys</h3>
+<h4 id="urxvtapikey">URX_VT_API_KEY</h4>
+<p>VirusTotal API key for accessing the VirusTotal provider.</p>
+<pre><code class="language-bash hljs">export URX_VT_API_KEY=your_api_key_here
+urx example.com --providers vt
+</code></pre>
+<p><strong>Multiple Keys (Rotation):</strong></p>
+<pre><code class="language-bash hljs">export URX_VT_API_KEY=key1,key2,key3
+urx example.com --providers vt
+</code></pre>
+<h4 id="urxurlscanapikey">URX_URLSCAN_API_KEY</h4>
+<p>URLScan API key for accessing the URLScan provider.</p>
+<pre><code class="language-bash hljs">export URX_URLSCAN_API_KEY=your_api_key_here
+urx example.com --providers urlscan
+</code></pre>
+<p><strong>Multiple Keys (Rotation):</strong></p>
+<pre><code class="language-bash hljs">export URX_URLSCAN_API_KEY=key1,key2,key3
+urx example.com --providers urlscan
+</code></pre>
+<h4 id="urxzoomeyeapikey">URX_ZOOMEYE_API_KEY</h4>
+<p>ZoomEye API key for accessing the ZoomEye provider.</p>
+<pre><code class="language-bash hljs">export URX_ZOOMEYE_API_KEY=your_api_key_here
+urx example.com --providers zoomeye
+</code></pre>
+<p><strong>Multiple Keys (Rotation):</strong></p>
+<pre><code class="language-bash hljs">export URX_ZOOMEYE_API_KEY=key1,key2,key3
+urx example.com --providers zoomeye
+</code></pre>
+<h3 id="summary">Summary</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Provider</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>URX_VT_API_KEY</code></td>
+<td>VirusTotal</td>
+<td>VirusTotal API key</td>
+</tr>
+<tr>
+<td><code>URX_URLSCAN_API_KEY</code></td>
+<td>URLScan</td>
+<td>URLScan API key</td>
+</tr>
+<tr>
+<td><code>URX_ZOOMEYE_API_KEY</code></td>
+<td>ZoomEye</td>
+<td>ZoomEye API key</td>
+</tr>
+</tbody>
+</table>
+<h3 id="usage-notes">Usage Notes</h3>
+<ul>
+<li>Environment variables are automatically detected when running Urx</li>
+<li>Command-line flags take precedence over environment variables</li>
+<li>Multiple API keys can be comma-separated for rotation</li>
+<li>API keys enable automatic activation of the respective providers</li>
+</ul>
+<h3 id="best-practices">Best Practices</h3>
+<h4 id="store-in-profile">Store in Profile</h4>
+<p>Add to your <code>~/.bashrc</code>, <code>~/.zshrc</code>, or <code>~/.profile</code>:</p>
+<pre><code class="language-bash hljs"># Urx Configuration
+export URX_VT_API_KEY=your_vt_key
+export URX_URLSCAN_API_KEY=your_urlscan_key
+export URX_ZOOMEYE_API_KEY=your_zoomeye_key
+</code></pre>
+<h4 id="use-env-files">Use .env Files</h4>
+<p>For project-specific configuration:</p>
+<pre><code class="language-bash hljs"># .env
+URX_VT_API_KEY=your_vt_key
+URX_URLSCAN_API_KEY=your_urlscan_key
+URX_ZOOMEYE_API_KEY=your_zoomeye_key
+</code></pre>
+<p>Load with:</p>
+<pre><code class="language-bash hljs">source .env
+urx example.com
+</code></pre>
+<h4 id="docker-environment">Docker Environment</h4>
+<pre><code class="language-bash hljs">docker run --rm \
+  -e URX_VT_API_KEY=your_key \
+  -e URX_URLSCAN_API_KEY=your_key \
+  -e URX_ZOOMEYE_API_KEY=your_key \
+  ghcr.io/hahwul/urx:latest \
+  example.com
+</code></pre>
+<h4 id="cicd-secrets">CI/CD Secrets</h4>
+<p>Store API keys as secrets in your CI/CD platform:</p>
+<p><strong>GitHub Actions:</strong></p>
+<pre><code class="language-yaml hljs">- name: Run Urx
+  env:
+    URX_VT_API_KEY: ${{ secrets.VT_API_KEY }}
+    URX_URLSCAN_API_KEY: ${{ secrets.URLSCAN_API_KEY }}
+    URX_ZOOMEYE_API_KEY: ${{ secrets.ZOOMEYE_API_KEY }}
+  run: urx example.com
+</code></pre>
+<h3 id="security-considerations">Security Considerations</h3>
+<ul>
+<li>Never commit API keys to version control</li>
+<li>Use secrets management for production environments</li>
+<li>Rotate keys regularly</li>
+<li>Use different keys for different environments (dev/staging/prod)</li>
+</ul>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>

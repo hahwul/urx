@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Caching - Urx</title>
+  <meta property="og:title" content="Caching">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/guide/caching/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Caching">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="guide">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Caching</h1>
+        <h2 id="caching-amp-incremental-scanning">Caching &amp; Incremental Scanning</h2>
+<p>Urx includes a built-in caching system that stores previously seen URLs, enabling incremental scanning and faster subsequent runs.</p>
+<h3 id="how-it-works">How It Works</h3>
+<p>When caching is enabled, Urx stores each discovered URL in a local (SQLite) or remote (Redis) cache. On subsequent runs with <code>--incremental</code>, only URLs not already in the cache are returned.</p>
+<h3 id="incremental-scanning">Incremental Scanning</h3>
+<pre><code class="language-bash hljs"># First scan — builds the cache and outputs all URLs
+urx example.com --incremental -o initial.txt
+
+# Subsequent scans — only new URLs since the last run
+urx example.com --incremental -o new-urls.txt
+</code></pre>
+<p><strong>Benefits:</strong></p>
+<ul>
+<li>Dramatically faster subsequent scans</li>
+<li>Only fetches and processes new data</li>
+<li>Perfect for continuous monitoring</li>
+</ul>
+<h3 id="sqlite-cache-default">SQLite Cache (Default)</h3>
+<p>SQLite is the default backend, storing the cache in a local database file.</p>
+<pre><code class="language-bash hljs"># Default location
+urx example.com --incremental
+
+# Custom location
+urx example.com --incremental --cache-path /path/to/cache.db
+</code></pre>
+<p><strong>Best for:</strong></p>
+<ul>
+<li>Single-machine scanning</li>
+<li>Local development</li>
+<li>Personal projects</li>
+</ul>
+<h3 id="redis-cache">Redis Cache</h3>
+<p>Redis provides a shared cache accessible from multiple machines.</p>
+<pre><code class="language-bash hljs">urx example.com --cache-type redis --redis-url redis://localhost:6379
+</code></pre>
+<p><strong>Best for:</strong></p>
+<ul>
+<li>Team environments</li>
+<li>Distributed scanning across multiple machines</li>
+<li>Kubernetes/container deployments</li>
+<li>High-performance scenarios</li>
+</ul>
+<h3 id="cache-ttl">Cache TTL</h3>
+<p>The time-to-live (TTL) controls how long entries stay in the cache before expiring.</p>
+<pre><code class="language-bash hljs"># Short TTL for frequently changing targets (5 minutes)
+urx example.com --cache-ttl 300
+
+# Medium TTL for daily scans (12 hours)
+urx example.com --cache-ttl 43200
+
+# Long TTL for stable targets (7 days)
+urx example.com --cache-ttl 604800
+</code></pre>
+<p>Default TTL is 86400 seconds (24 hours).</p>
+<h3 id="disabling-the-cache">Disabling the Cache</h3>
+<pre><code class="language-bash hljs">urx example.com --no-cache
+</code></pre>
+<h3 id="clearing-the-cache">Clearing the Cache</h3>
+<p>For SQLite, delete the database file:</p>
+<pre><code class="language-bash hljs">rm ~/.urx/cache.db
+</code></pre>
+<p>For Redis, use the Redis CLI:</p>
+<pre><code class="language-bash hljs">redis-cli FLUSHDB
+</code></pre>
+<h3 id="combined-examples">Combined Examples</h3>
+<pre><code class="language-bash hljs"># Daily monitoring with incremental updates
+urx target.com --incremental --silent | notify-tool
+
+# Distributed scanning with shared Redis cache
+urx example.com --cache-type redis --redis-url redis://shared-cache:6379
+
+# Rapid iterations with short cache TTL
+urx test-domain.com --cache-ttl 300
+
+# Incremental scan with filtering
+urx example.com --incremental -e js,php --patterns api
+</code></pre>
+<h3 id="configuration-file">Configuration File</h3>
+<p>Caching can also be configured in a <a href="/guide/configuration/">config file</a>:</p>
+<pre><code class="language-toml hljs">[cache]
+incremental = true
+cache_type = &quot;sqlite&quot;
+cache_path = &quot;~/.urx/cache.db&quot;
+cache_ttl = 86400
+</code></pre>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>
