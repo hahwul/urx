@@ -4,7 +4,7 @@ description = "Extracts URLs from OSINT Archives for Security Insights"
 +++
 
 <div class="landing-hero">
-  <span class="badge">v0.8.0</span>
+  <span class="badge">v0.9.0</span>
   <h1>The URL Extraction Tool<br>for Security Research</h1>
   <p>A fast, Rust-based CLI tool that extracts URLs from OSINT archives for bug bounty hunting, security research, and attack surface mapping.</p>
   <div class="landing-cta">

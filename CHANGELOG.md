@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.0
+
+- Add ZoomEye Provider
+- Code Refactoring and Enhanced Testing
+
 ## 0.8.0
 
 - Add Multiple API Key Rotation (e.g., `--vt-api-key` key1 `--vt-api-key` key2)

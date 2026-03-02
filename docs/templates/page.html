@@ -1,48 +1,98 @@
 {% include "header.html" %}
 <header class="docs-header">
-  <div class="header-left">
-    <button class="menu-toggle" onclick="document.querySelector('.docs-sidebar').classList.toggle('open')" aria-label="Toggle menu">
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-    </button>
-    <a href="{{ base_url }}/" class="logo"><img src="{{ base_url }}/images/urx-dark.png" alt="Urx" class="logo-img"></a>
-  </div>
-  <nav>
-    <a href="{{ base_url }}/getting-started/">Getting Started</a>
-    <a href="{{ base_url }}/guide/">Guide</a>
-    <a href="{{ base_url }}/about/">About</a>
-    <a href="https://github.com/hahwul/urx" class="nav-github" target="_blank" rel="noopener">GitHub</a>
-  </nav>
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="{{ base_url }}/" class="logo"
+            ><img
+                src="{{ base_url }}/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="{{ base_url }}/getting-started/">Getting Started</a>
+        <a href="{{ base_url }}/guide/">Guide</a>
+        <a href="{{ base_url }}/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
 </header>
 <div class="docs-container">
-  <aside class="docs-sidebar">
-    <div class="sidebar-section">
-      <div class="sidebar-title">Getting Started</div>
-      <ul class="sidebar-links">
-        <li><a href="{{ base_url }}/getting-started/installation/">Installation</a></li>
-        <li><a href="{{ base_url }}/getting-started/quick-start/">Quick Start</a></li>
-      </ul>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-title">Guide</div>
-      <ul class="sidebar-links">
-        <li><a href="{{ base_url }}/guide/cli-options/">CLI Options</a></li>
-        <li><a href="{{ base_url }}/guide/configuration/">Configuration</a></li>
-        <li><a href="{{ base_url }}/guide/examples/">Examples</a></li>
-        <li><a href="{{ base_url }}/guide/environment-variables/">Environment Variables</a></li>
-        <li><a href="{{ base_url }}/guide/caching/">Caching</a></li>
-        <li><a href="{{ base_url }}/guide/integration/">Integration</a></li>
-        <li><a href="{{ base_url }}/guide/performance/">Performance</a></li>
-      </ul>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-title">About</div>
-      <ul class="sidebar-links">
-        <li><a href="{{ base_url }}/about/changelog/">Changelog</a></li>
-        <li><a href="{{ base_url }}/about/contributing/">Contributing</a></li>
-      </ul>
-    </div>
-  </aside>
-  <main class="docs-main">
-    <h1>{{ page.title }}</h1>
-    {{ content }}
-{% include "footer.html" %}
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="{{ base_url }}/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="{{ base_url }}/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="{{ base_url }}/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="{{ base_url }}/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="{{ base_url }}/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="{{ base_url }}/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="{{ base_url }}/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="{{ base_url }}/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="{{ base_url }}/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="{{ base_url }}/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>{{ page.title }}</h1>
+        {{ content }} {% include "footer.html" %}
+    </main>
+</div>
