@@ -347,13 +347,13 @@ impl Config {
             args.random_agent = true;
         }
 
-        if args.timeout == 30 {
+        if args.timeout == 120 {
             if let Some(timeout) = self.network.timeout {
                 args.timeout = timeout;
             }
         }
 
-        if args.retries == 3 {
+        if args.retries == 2 {
             if let Some(retries) = self.network.retries {
                 args.retries = retries;
             }
@@ -567,8 +567,8 @@ mod tests {
             proxy_auth: None,
             insecure: false,
             random_agent: false,
-            timeout: 30,
-            retries: 3,
+            timeout: 120,
+            retries: 2,
             parallel: Some(5),
             rate_limit: None,
             check_status: false,

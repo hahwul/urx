@@ -1,10 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::Provider;
+use crate::network::client::HttpClientConfig;
 
 #[derive(Clone)]
 pub struct VirusTotalProvider {
@@ -70,6 +71,16 @@ impl VirusTotalProvider {
         self.base_url = url;
         self
     }
+
+    fn client_config(&self) -> HttpClientConfig {
+        HttpClientConfig {
+            timeout: self.timeout,
+            insecure: self.insecure,
+            random_agent: self.random_agent,
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
+        }
+    }
 }
 
 impl Provider for VirusTotalProvider {
@@ -110,39 +121,7 @@ impl Provider for VirusTotalProvider {
                 api_key, encoded_domain
             );
 
-            // Create client builder with proxy support
-            let mut client_builder =
-                reqwest::Client::builder().timeout(std::time::Duration::from_secs(self.timeout));
-
-            // Skip SSL verification if insecure is enabled
-            if self.insecure {
-                client_builder = client_builder.danger_accept_invalid_certs(true);
-            }
-
-            // Add random user agent if enabled
-            if self.random_agent {
-                let ua = crate::network::random_user_agent();
-                client_builder = client_builder.user_agent(ua);
-            }
-
-            // Add proxy if configured
-            if let Some(proxy_url) = &self.proxy {
-                let mut proxy = reqwest::Proxy::all(proxy_url)
-                    .context(format!("Invalid proxy URL: {proxy_url}"))?;
-
-                // Add proxy authentication if provided
-                if let Some(auth) = &self.proxy_auth {
-                    if let Some((username, password)) = auth.split_once(':') {
-                        proxy = proxy.basic_auth(username, password);
-                    }
-                }
-
-                client_builder = client_builder.proxy(proxy);
-            }
-
-            let client = client_builder
-                .build()
-                .context("Failed to build HTTP client")?;
+            let client = self.client_config().build_client()?;
 
             // Implement retry logic
             let mut last_error = None;

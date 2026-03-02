@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -6,6 +6,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::Provider;
+use crate::network::client::HttpClientConfig;
 
 #[derive(Clone)]
 pub struct ZoomEyeProvider {
@@ -90,6 +91,16 @@ impl ZoomEyeProvider {
         self
     }
 
+    fn client_config(&self) -> HttpClientConfig {
+        HttpClientConfig {
+            timeout: self.timeout,
+            insecure: self.insecure,
+            random_agent: self.random_agent,
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
+        }
+    }
+
     fn build_dork(&self, domain: &str) -> String {
         if self.include_subdomains {
             format!("site:*.{domain}")
@@ -127,34 +138,7 @@ impl Provider for ZoomEyeProvider {
             #[cfg(not(test))]
             let api_url = "https://api.zoomeye.ai/v2/search".to_string();
 
-            let mut client_builder =
-                reqwest::Client::builder().timeout(std::time::Duration::from_secs(self.timeout));
-
-            if self.insecure {
-                client_builder = client_builder.danger_accept_invalid_certs(true);
-            }
-
-            if self.random_agent {
-                let ua = crate::network::random_user_agent();
-                client_builder = client_builder.user_agent(ua);
-            }
-
-            if let Some(proxy_url) = &self.proxy {
-                let mut proxy = reqwest::Proxy::all(proxy_url)
-                    .context(format!("Invalid proxy URL: {proxy_url}"))?;
-
-                if let Some(auth) = &self.proxy_auth {
-                    if let Some((username, password)) = auth.split_once(':') {
-                        proxy = proxy.basic_auth(username, password);
-                    }
-                }
-
-                client_builder = client_builder.proxy(proxy);
-            }
-
-            let client = client_builder
-                .build()
-                .context("Failed to build HTTP client")?;
+            let client = self.client_config().build_client()?;
 
             let mut all_urls: Vec<String> = Vec::new();
             let mut page: u32 = 1;

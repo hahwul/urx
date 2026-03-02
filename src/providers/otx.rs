@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -6,6 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::Provider;
+use crate::network::client::HttpClientConfig;
 
 // Helper function to deserialize null as default value for i32
 fn deserialize_null_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
@@ -82,6 +83,16 @@ impl OTXProvider {
         self.base_url = url;
     }
 
+    fn client_config(&self) -> HttpClientConfig {
+        HttpClientConfig {
+            timeout: self.timeout,
+            insecure: self.insecure,
+            random_agent: self.random_agent,
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
+        }
+    }
+
     /// Formats the OTX API URL based on the domain and page number
     ///
     /// This handles different endpoints for second-level domains and subdomains,
@@ -134,43 +145,10 @@ impl Provider for OTXProvider {
         Box::pin(async move {
             let mut all_urls = Vec::new();
             let mut page = 0;
+            let client = self.client_config().build_client()?;
 
             loop {
                 let url = self.format_url(domain, page);
-
-                // Create client builder with proxy support
-                let mut client_builder = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(self.timeout));
-
-                // Skip SSL verification if insecure is enabled
-                if self.insecure {
-                    client_builder = client_builder.danger_accept_invalid_certs(true);
-                }
-
-                // Add random user agent if enabled
-                if self.random_agent {
-                    let ua = crate::network::random_user_agent();
-                    client_builder = client_builder.user_agent(ua);
-                }
-
-                // Add proxy if configured
-                if let Some(proxy_url) = &self.proxy {
-                    let mut proxy = reqwest::Proxy::all(proxy_url)
-                        .context(format!("Invalid proxy URL: {proxy_url}"))?;
-
-                    // Add proxy authentication if provided
-                    if let Some(auth) = &self.proxy_auth {
-                        if let Some((username, password)) = auth.split_once(':') {
-                            proxy = proxy.basic_auth(username, password);
-                        }
-                    }
-
-                    client_builder = client_builder.proxy(proxy);
-                }
-
-                let client = client_builder
-                    .build()
-                    .context("Failed to build HTTP client")?;
 
                 // Retry logic
                 let mut last_error = None;
