@@ -1,4 +1,4 @@
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 use rand::Rng;
 
 /// Centralized random User-Agent generator
@@ -17,8 +17,8 @@ impl UserAgent {
     /// Returns a random realistic User-Agent with desktop/mobile weighting.
     /// Roughly 65% desktop, 35% mobile.
     pub fn random() -> String {
-        let mut rng = rand::thread_rng();
-        let pick_mobile = rng.gen_bool(0.35);
+        let mut rng = rand::rng();
+        let pick_mobile = rng.random_bool(0.35);
         if pick_mobile {
             Self::random_mobile()
         } else {
@@ -28,7 +28,7 @@ impl UserAgent {
 
     /// Returns a random realistic desktop User-Agent.
     pub fn random_desktop() -> String {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let desktop_generators: &[fn(&mut rand::rngs::ThreadRng) -> String] = &[
             Self::ua_win_chrome,
             Self::ua_win_edge,
@@ -46,7 +46,7 @@ impl UserAgent {
 
     /// Returns a random realistic mobile User-Agent (phones and tablets).
     pub fn random_mobile() -> String {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mobile_generators: &[fn(&mut rand::rngs::ThreadRng) -> String] = &[
             Self::ua_ios_iphone_safari,
             Self::ua_ios_ipad_safari,
@@ -188,15 +188,15 @@ impl UserAgent {
     /// - build: 6000..=7100
     /// - patch: 10..=200
     fn chrome_ver(rng: &mut rand::rngs::ThreadRng) -> (u32, u32, u32) {
-        let major = rng.gen_range(120..=128);
-        let build = rng.gen_range(6000..=7100);
-        let patch = rng.gen_range(10..=200);
+        let major = rng.random_range(120..=128);
+        let build = rng.random_range(6000..=7100);
+        let patch = rng.random_range(10..=200);
         (major, build, patch)
     }
 
     /// Generates a realistic Firefox major version: 115..=130
     fn firefox_major(rng: &mut rand::rngs::ThreadRng) -> u32 {
-        rng.gen_range(115..=130)
+        rng.random_range(115..=130)
     }
 }
 
