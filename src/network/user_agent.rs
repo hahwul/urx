@@ -1,5 +1,5 @@
 use rand::prelude::IndexedRandom;
-use rand::Rng;
+use rand::RngExt;
 
 /// Centralized random User-Agent generator
 ///
