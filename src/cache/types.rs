@@ -34,7 +34,11 @@ impl std::fmt::Display for CacheKey {
         hasher.update(&self.domain);
         hasher.update(self.providers.join(","));
         hasher.update(&self.filters_hash);
-        write!(f, "{:x}", hasher.finalize())
+        let result = hasher.finalize();
+        for byte in result {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
     }
 }
 
@@ -71,7 +75,11 @@ impl CacheFilters {
         hasher.update(if self.normalize_url { "1" } else { "0" });
         hasher.update(if self.merge_endpoint { "1" } else { "0" });
 
-        format!("{:x}", hasher.finalize())
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
 }
 
