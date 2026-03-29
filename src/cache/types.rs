@@ -75,7 +75,11 @@ impl CacheFilters {
         hasher.update(if self.normalize_url { "1" } else { "0" });
         hasher.update(if self.merge_endpoint { "1" } else { "0" });
 
-        hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
 }
 
