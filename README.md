@@ -108,7 +108,7 @@ Provider Options:
       --subs
           Include subdomains when searching
       --cc-index <CC_INDEX>
-          Common Crawl index to use (e.g., CC-MAIN-2025-13) [default: CC-MAIN-2025-13]
+          Common Crawl index to use (e.g., CC-MAIN-2026-17, or "latest" to auto-resolve from collinfo.json) [default: CC-MAIN-2026-17]
       --vt-api-key <VT_API_KEY>
           API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>

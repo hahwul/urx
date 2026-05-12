@@ -1,5 +1,4 @@
 use anyhow::Result;
-use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -28,7 +27,7 @@ impl WaybackMachineProvider {
             include_subdomains: false,
             proxy: None,
             proxy_auth: None,
-            timeout: 30,
+            timeout: 60,
             retries: 3,
             random_agent: false,
             insecure: false,
@@ -72,15 +71,17 @@ impl Provider for WaybackMachineProvider {
             #[cfg(test)]
             let base_url = &self.base_url;
 
-            // Handle subdomain inclusion in URL construction
+            // Plain-text streaming response is far more reliable than output=json
+            // for large domains (the JSON variant buffers the entire result server-side
+            // and frequently times out). collapse=urlkey trims server-side duplicates.
             let url = if self.include_subdomains {
                 format!(
-                    "{}/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original",
+                    "{}/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey",
                     base_url
                 )
             } else {
                 format!(
-                    "{}/cdx/search/cdx?url={domain}/*&output=json&fl=original",
+                    "{}/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey",
                     base_url
                 )
             };
@@ -92,26 +93,13 @@ impl Provider for WaybackMachineProvider {
                 return Ok(Vec::new());
             }
 
-            let json_data: Value = serde_json::from_str(&text)?;
-            let mut urls = Vec::new();
+            let mut urls: Vec<String> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect();
 
-            // Skip the first array which is the header
-            if let Value::Array(arrays) = json_data {
-                for (i, array) in arrays.iter().enumerate() {
-                    // Skip the header row
-                    if i == 0 {
-                        continue;
-                    }
-
-                    if let Value::Array(elements) = array {
-                        if let Some(Value::String(url)) = elements.first() {
-                            urls.push(url.clone());
-                        }
-                    }
-                }
-            }
-
-            // Remove duplicates
             urls.sort();
             urls.dedup();
 
@@ -169,7 +157,7 @@ mod tests {
         assert!(!provider.include_subdomains);
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 30);
+        assert_eq!(provider.timeout, 60);
         assert_eq!(provider.retries, 3);
         assert!(!provider.random_agent);
         assert!(!provider.insecure);
@@ -277,16 +265,18 @@ mod tests {
 
         // 실제 URL 형식 검증만 합니다
         let expected_url = format!(
-            "https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original"
+            "https://web.archive.org/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey"
         );
 
         // URL 구성이 올바른지 확인합니다
         let url = if provider.include_subdomains {
             format!(
-                "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
+                "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey"
             )
         } else {
-            format!("https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original")
+            format!(
+                "https://web.archive.org/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey"
+            )
         };
 
         assert_eq!(url, expected_url);
@@ -303,16 +293,18 @@ mod tests {
 
         // 실제 URL 형식 검증만 합니다
         let expected_url = format!(
-            "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
+            "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey"
         );
 
         // URL 구성이 올바른지 확인합니다
         let url = if provider.include_subdomains {
             format!(
-                "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
+                "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey"
             )
         } else {
-            format!("https://web.archive.org/cdx/search/cdx?url={domain}/*&output=json&fl=original")
+            format!(
+                "https://web.archive.org/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey"
+            )
         };
 
         assert_eq!(url, expected_url);
@@ -327,18 +319,13 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
-                mockito::Matcher::UrlEncoded("output".into(), "json".into()),
                 mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+                mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
             ]))
             .with_status(200)
-            .with_header("content-type", "application/json")
+            .with_header("content-type", "text/plain")
             .with_body(
-                r#"[
-                    ["original"],
-                    ["http://example.com/page1"],
-                    ["http://example.com/page2"],
-                    ["http://example.com/page1"]
-                ]"#,
+                "http://example.com/page1\nhttp://example.com/page2\nhttp://example.com/page1\n",
             )
             .create_async()
             .await;
@@ -365,17 +352,12 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "*.example.com/*".into()),
-                mockito::Matcher::UrlEncoded("output".into(), "json".into()),
                 mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+                mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
             ]))
             .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"[
-                    ["original"],
-                    ["http://sub.example.com/page1"]
-                ]"#,
-            )
+            .with_header("content-type", "text/plain")
+            .with_body("http://sub.example.com/page1\n")
             .create_async()
             .await;
 
