@@ -89,7 +89,8 @@ Arguments:
   [DOMAINS]...  Domains to fetch URLs for
 
 Options:
-  -c, --config <CONFIG>  Config file to load
+  -c, --config <CONFIG>           Config file to load
+      --provider-config <PATH>    Separate provider config file holding only API keys (default: $XDG_CONFIG_HOME/urx/provider-config.toml). CLI/env > provider-config > main config.
   -h, --help             Print help
   -V, --version          Print version
 
@@ -166,6 +167,7 @@ Network Options:
       --retries <RETRIES>              Number of retries for failed requests [default: 2]
       --parallel <PARALLEL>            Maximum number of parallel requests per provider and maximum concurrent domain processing [default: 5]
       --rate-limit <RATE_LIMIT>        Rate limit (requests per second)
+      --rate-limit-by <PAIRS>          Per-provider rate overrides (e.g. `vt=1,wayback=10`); falls back to --rate-limit for unlisted providers
       --max-time <MAX_TIME>            Global ceiling on provider enumeration time in seconds (0 = unlimited) [default: 0]
 
 Testing Options:

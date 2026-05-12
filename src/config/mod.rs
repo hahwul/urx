@@ -49,6 +49,120 @@ pub struct ProviderConfig {
     pub exclude_sitemap: Option<bool>,
 }
 
+/// Provider-config file: a small TOML that holds only API keys so the main
+/// config (filter rules, output formatting, etc.) can be checked into source
+/// control without leaking secrets. Comma-separated values rotate.
+#[derive(Debug, Deserialize, Default)]
+pub struct ProviderKeysConfig {
+    pub vt_api_key: Option<String>,
+    pub urlscan_api_key: Option<String>,
+    pub zoomeye_api_key: Option<String>,
+}
+
+impl ProviderKeysConfig {
+    /// Parse a provider-config TOML file from `path`. Returns the parsed
+    /// struct or an error.
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let content = fs::read_to_string(&path).with_context(|| {
+            format!(
+                "Failed to read provider-config file: {}",
+                path.as_ref().display()
+            )
+        })?;
+        let parsed: ProviderKeysConfig = toml::from_str(&content).with_context(|| {
+            format!(
+                "Failed to parse provider-config file: {}",
+                path.as_ref().display()
+            )
+        })?;
+        Ok(parsed)
+    }
+
+    /// Default lookup path mirrors the main config: $XDG_CONFIG_HOME/urx or
+    /// %APPDATA%\urx. Returns None when neither exists; unlike `Config`, we
+    /// do NOT auto-create the file because that would land an empty
+    /// "credentials" path the user didn't ask for.
+    pub fn default_path() -> Option<PathBuf> {
+        #[cfg(windows)]
+        {
+            if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+                let p = app_data.join("urx").join("provider-config.toml");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if let Some(home) = home_dir() {
+                let p = home
+                    .join(".config")
+                    .join("urx")
+                    .join("provider-config.toml");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    /// Load using the same precedence as the main config: --provider-config
+    /// flag wins, then the default path. Returns an empty config when no file
+    /// is found so callers can chain it freely.
+    pub fn load(args: &Args) -> Self {
+        if let Some(path) = &args.provider_config {
+            if let Ok(cfg) = Self::from_file(path) {
+                return cfg;
+            }
+        }
+        if let Some(path) = Self::default_path() {
+            if let Ok(cfg) = Self::from_file(path) {
+                return cfg;
+            }
+        }
+        ProviderKeysConfig::default()
+    }
+
+    /// Apply keys to args, but only for slots not already supplied via CLI
+    /// (or env-via-CLI). The main `Config` runs first and may have filled
+    /// these slots; this method then overwrites them when the provider-config
+    /// has a value, so provider-config beats main config.
+    ///
+    /// `cli_supplied_*` flags carry the original CLI state captured BEFORE
+    /// either config layer ran, so CLI input is preserved.
+    pub fn apply_to_args(
+        &self,
+        args: &mut Args,
+        cli_supplied_vt: bool,
+        cli_supplied_urlscan: bool,
+        cli_supplied_zoomeye: bool,
+    ) {
+        fn split_csv(s: &str) -> Vec<String> {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        }
+
+        if !cli_supplied_vt {
+            if let Some(keys) = &self.vt_api_key {
+                args.vt_api_key = split_csv(keys);
+            }
+        }
+        if !cli_supplied_urlscan {
+            if let Some(keys) = &self.urlscan_api_key {
+                args.urlscan_api_key = split_csv(keys);
+            }
+        }
+        if !cli_supplied_zoomeye {
+            if let Some(keys) = &self.zoomeye_api_key {
+                args.zoomeye_api_key = split_csv(keys);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct FilterConfig {
     pub preset: Option<Vec<String>>,
@@ -592,6 +706,8 @@ mod tests {
             stats: false,
             domain_list: vec![],
             max_time: 0,
+            rate_limit_by: vec![],
+            provider_config: None,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");
@@ -604,5 +720,53 @@ mod tests {
         assert_eq!(args.output, Some(PathBuf::from("output.txt")));
         assert_eq!(args.format, "json");
         assert_eq!(args.providers, vec!["cc"]);
+    }
+
+    #[test]
+    fn test_provider_keys_config_parses_csv() -> Result<()> {
+        let content = r#"
+            vt_api_key = "key1, key2 ,key3"
+            urlscan_api_key = "us1"
+        "#;
+        let file = create_temp_config_file(content);
+        let cfg = ProviderKeysConfig::from_file(file.path())?;
+        assert_eq!(cfg.vt_api_key.as_deref(), Some("key1, key2 ,key3"));
+        assert_eq!(cfg.urlscan_api_key.as_deref(), Some("us1"));
+        assert_eq!(cfg.zoomeye_api_key, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_provider_keys_apply_to_args_respects_cli_supplied() {
+        let cfg = ProviderKeysConfig {
+            vt_api_key: Some("from-file".to_string()),
+            urlscan_api_key: Some("us-from-file".to_string()),
+            zoomeye_api_key: None,
+        };
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
+        // Pretend the user supplied vt via CLI: provider-config should NOT
+        // overwrite that.
+        args.vt_api_key = vec!["cli-key".to_string()];
+
+        cfg.apply_to_args(&mut args, true, false, false);
+
+        assert_eq!(args.vt_api_key, vec!["cli-key".to_string()]);
+        // urlscan was empty and not CLI-supplied -> file value applies and
+        // is split on commas.
+        assert_eq!(args.urlscan_api_key, vec!["us-from-file".to_string()]);
+        // zoomeye not supplied anywhere -> stays empty.
+        assert!(args.zoomeye_api_key.is_empty());
+    }
+
+    #[test]
+    fn test_provider_keys_apply_to_args_splits_csv() {
+        let cfg = ProviderKeysConfig {
+            vt_api_key: Some("k1, k2 , ,k3".to_string()),
+            urlscan_api_key: None,
+            zoomeye_api_key: None,
+        };
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
+        cfg.apply_to_args(&mut args, false, false, false);
+        assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
     }
 }
