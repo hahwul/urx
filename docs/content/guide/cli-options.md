@@ -29,6 +29,9 @@ Output Options:
 
 Provider Options:
   --providers <PROVIDERS>                Providers to use (comma-separated) [default: wayback,cc,otx]
+  --exclude-providers <PROVIDERS>        Providers to exclude (wins on conflict)
+  --all-providers                        Enable every supported provider (API-keyed ones only if a key is available)
+  --list-providers                       List every supported provider then exit
   --subs                                 Include subdomains when searching
   --cc-index <CC_INDEX>                  Common Crawl index to use, or "latest" to auto-resolve [default: CC-MAIN-2026-17]
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
@@ -40,9 +43,11 @@ Discovery Options:
   --exclude-sitemap  Exclude sitemap.xml discovery
 
 Display Options:
-  -v, --verbose      Show verbose output
-      --silent       Silent mode (no output)
-      --no-progress  No progress bar
+  -v, --verbose       Show verbose output
+      --silent        Silent mode (no output)
+      --no-progress   No progress bar
+      --show-sources  Annotate output URLs with the providers that returned them
+      --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
   -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,only-js,only-style")

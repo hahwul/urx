@@ -28,7 +28,7 @@ use providers::{
     VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
 };
 use readers::read_urls_from_file;
-use runner::{add_provider, process_domains};
+use runner::{add_provider, process_domains, ProviderRunResult};
 use tester_manager::{apply_network_settings_to_tester, process_urls_with_testers};
 use testers::{LinkExtractor, StatusChecker, Tester};
 use utils::verbose_print;
@@ -36,6 +36,96 @@ use utils::UrlTransformer;
 
 /// Type alias for provider initialization result
 type ProviderList = (Vec<Box<dyn Provider>>, Vec<String>);
+
+/// Static metadata for one of urx's URL providers.
+struct ProviderInfo {
+    /// Short identifier accepted on the command line (e.g. "wayback").
+    id: &'static str,
+    /// Human-readable display name shown in stats and `--list-providers`.
+    display_name: &'static str,
+    /// True when the provider can only be enabled with an API key.
+    requires_key: bool,
+    /// One-line description shown by `--list-providers`.
+    summary: &'static str,
+}
+
+/// Catalog of every provider urx knows about. The order here drives the
+/// `--list-providers` output and the meaning of `--all-providers`.
+fn provider_catalog() -> &'static [ProviderInfo] {
+    &[
+        ProviderInfo {
+            id: "wayback",
+            display_name: "Wayback Machine",
+            requires_key: false,
+            summary: "Internet Archive CDX index",
+        },
+        ProviderInfo {
+            id: "cc",
+            display_name: "Common Crawl",
+            requires_key: false,
+            summary: "Common Crawl monthly URL index",
+        },
+        ProviderInfo {
+            id: "otx",
+            display_name: "OTX",
+            requires_key: false,
+            summary: "AlienVault Open Threat Exchange passive DNS / URLs",
+        },
+        ProviderInfo {
+            id: "vt",
+            display_name: "VirusTotal",
+            requires_key: true,
+            summary: "VirusTotal observed URLs (URX_VT_API_KEY)",
+        },
+        ProviderInfo {
+            id: "urlscan",
+            display_name: "Urlscan",
+            requires_key: true,
+            summary: "Urlscan.io search (URX_URLSCAN_API_KEY)",
+        },
+        ProviderInfo {
+            id: "zoomeye",
+            display_name: "ZoomEye",
+            requires_key: true,
+            summary: "ZoomEye search (URX_ZOOMEYE_API_KEY)",
+        },
+        ProviderInfo {
+            id: "robots",
+            display_name: "robots.txt",
+            requires_key: false,
+            summary: "Discovery from the target's robots.txt",
+        },
+        ProviderInfo {
+            id: "sitemap",
+            display_name: "sitemap.xml",
+            requires_key: false,
+            summary: "Discovery from the target's sitemap.xml",
+        },
+    ]
+}
+
+/// Print the provider catalog to stdout in a `--list-providers` format.
+fn print_provider_list() {
+    println!("Available providers:");
+    println!("  {:<9}  {:<16}  {:<8}  description", "id", "name", "key");
+    println!(
+        "  {:<9}  {:<16}  {:<8}  -----------",
+        "---------", "----------------", "--------"
+    );
+    for p in provider_catalog() {
+        println!(
+            "  {:<9}  {:<16}  {:<8}  {}",
+            p.id,
+            p.display_name,
+            if p.requires_key { "required" } else { "—" },
+            p.summary
+        );
+    }
+    println!();
+    println!("Use --providers id1,id2 to select. --all-providers enables every entry");
+    println!("(API-keyed providers only activate when a key is available).");
+    println!("--exclude-providers wins on conflict.");
+}
 
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
 pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
@@ -88,31 +178,70 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
     let zoomeye_api_keys = parse_api_keys(args.zoomeye_api_key.clone(), "URX_ZOOMEYE_API_KEY");
 
-    // Auto-enable providers if API keys are provided but not explicitly included in providers
-    let mut providers_list = args.providers.clone();
+    // Build the effective providers list. `--all-providers` expands to every
+    // catalog entry whose required key (if any) is available; otherwise we
+    // start from the user-supplied list and let auto-enable add API-keyed
+    // providers whenever a key is set.
+    let mut providers_list: Vec<String> = if args.all_providers {
+        provider_catalog()
+            .iter()
+            .filter(|p| {
+                if !p.requires_key {
+                    return true;
+                }
+                match p.id {
+                    "vt" => !vt_api_keys.is_empty(),
+                    "urlscan" => !urlscan_api_keys.is_empty(),
+                    "zoomeye" => !zoomeye_api_keys.is_empty(),
+                    _ => false,
+                }
+            })
+            // Robots/sitemap are gated by the dedicated should_use_* flags, so
+            // we leave them out here and let those code paths add them.
+            .filter(|p| p.id != "robots" && p.id != "sitemap")
+            .map(|p| p.id.to_string())
+            .collect()
+    } else {
+        args.providers.clone()
+    };
 
-    // Auto-enable VirusTotal and Urlscan providers
-    auto_enable_provider(
-        &mut providers_list,
-        &vt_api_keys,
-        "vt",
-        args.verbose,
-        args.silent,
-    );
-    auto_enable_provider(
-        &mut providers_list,
-        &urlscan_api_keys,
-        "urlscan",
-        args.verbose,
-        args.silent,
-    );
-    auto_enable_provider(
-        &mut providers_list,
-        &zoomeye_api_keys,
-        "zoomeye",
-        args.verbose,
-        args.silent,
-    );
+    // Auto-enable API-keyed providers when a key is present but the user did
+    // not list them explicitly. Skipped under --all-providers (already
+    // expanded above).
+    if !args.all_providers {
+        auto_enable_provider(
+            &mut providers_list,
+            &vt_api_keys,
+            "vt",
+            args.verbose,
+            args.silent,
+        );
+        auto_enable_provider(
+            &mut providers_list,
+            &urlscan_api_keys,
+            "urlscan",
+            args.verbose,
+            args.silent,
+        );
+        auto_enable_provider(
+            &mut providers_list,
+            &zoomeye_api_keys,
+            "zoomeye",
+            args.verbose,
+            args.silent,
+        );
+    }
+
+    // Apply negative selection: --exclude-providers wins on conflict.
+    if !args.exclude_providers.is_empty() {
+        let excluded: std::collections::HashSet<&str> =
+            args.exclude_providers.iter().map(String::as_str).collect();
+        providers_list.retain(|p| !excluded.contains(p.as_str()));
+    }
+
+    // --all-providers users don't want a noisy error when a key is missing,
+    // so suppress the per-provider "needs API key" messages in that mode.
+    let suppress_key_errors = args.all_providers;
 
     if providers_list.iter().any(|p| p == "wayback") {
         add_provider(
@@ -136,7 +265,10 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         );
     }
 
-    if args.should_use_robots() {
+    let excluded: std::collections::HashSet<&str> =
+        args.exclude_providers.iter().map(String::as_str).collect();
+
+    if args.should_use_robots() && !excluded.contains("robots") {
         add_provider(
             args,
             network_settings,
@@ -147,7 +279,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         );
     }
 
-    if args.should_use_sitemap() {
+    if args.should_use_sitemap() && !excluded.contains("sitemap") {
         add_provider(
             args,
             network_settings,
@@ -179,7 +311,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 "VirusTotal".to_string(),
                 || VirusTotalProvider::new_with_keys(vt_api_keys.clone()),
             );
-        } else if !args.silent {
+        } else if !args.silent && !suppress_key_errors {
             eprintln!("Error: The VirusTotal provider (vt) requires an API key. Please use --vt-api-key or set the URX_VT_API_KEY environment variable.");
         }
     }
@@ -194,7 +326,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 "Urlscan".to_string(),
                 || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
             );
-        } else if !args.silent {
+        } else if !args.silent && !suppress_key_errors {
             eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
         }
     }
@@ -209,7 +341,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 "ZoomEye".to_string(),
                 || ZoomEyeProvider::new_with_keys(zoomeye_api_keys.clone()),
             );
-        } else if !args.silent {
+        } else if !args.silent && !suppress_key_errors {
             eprintln!("Error: The ZoomEye provider (zoomeye) requires an API key. Please use --zoomeye-api-key or set the URX_ZOOMEYE_API_KEY environment variable.");
         }
     }
@@ -457,10 +589,10 @@ async fn process_domains_with_cache(
     providers: &[Box<dyn Provider>],
     provider_names: &[String],
     cache_manager: Option<&CacheManager>,
-) -> std::collections::HashSet<String> {
-    use std::collections::HashSet;
+) -> ProviderRunResult {
+    use std::collections::{HashMap, HashSet};
 
-    let mut final_urls = HashSet::new();
+    let mut final_result = ProviderRunResult::default();
 
     // If caching is disabled, use normal processing
     if cache_manager.is_none() {
@@ -469,7 +601,7 @@ async fn process_domains_with_cache(
 
     let cache = cache_manager.unwrap();
     let mut domains_to_process = Vec::new();
-    let mut cached_urls = HashSet::new();
+    let mut cached_urls: HashMap<String, HashSet<String>> = HashMap::new();
 
     // Check cache for each domain
     for domain in &domains {
@@ -487,8 +619,12 @@ async fn process_domains_with_cache(
                     // For incremental mode, we still need to fetch fresh URLs to compare
                     domains_to_process.push(domain.clone());
                 } else {
-                    // Use cached results directly
-                    cached_urls.extend(cached_entry.urls);
+                    // Use cached results directly. Source attribution isn't
+                    // persisted in the cache, so cached URLs surface with an
+                    // empty provider set.
+                    for url in cached_entry.urls {
+                        cached_urls.entry(url).or_default();
+                    }
                     continue;
                 }
             }
@@ -499,7 +635,9 @@ async fn process_domains_with_cache(
     }
 
     // Add cached URLs to final result
-    final_urls.extend(cached_urls);
+    for (url, sources) in cached_urls {
+        final_result.urls.entry(url).or_default().extend(sources);
+    }
 
     // Process domains that need fresh data
     if !domains_to_process.is_empty() {
@@ -511,7 +649,7 @@ async fn process_domains_with_cache(
             ),
         );
 
-        let fresh_urls = process_domains(
+        let fresh_run = process_domains(
             domains_to_process.clone(),
             args,
             progress_manager,
@@ -520,14 +658,18 @@ async fn process_domains_with_cache(
         )
         .await;
 
+        // Carry the provider stats from the fresh run through to the caller.
+        final_result.stats = fresh_run.stats;
+
         // Handle incremental scanning and cache updates
         if args.incremental {
             for domain in &domains_to_process {
                 let cache_key = create_cache_key(domain, args);
 
                 // Get domain-specific URLs (this is a simplification - in reality we'd need to track per-domain)
-                let domain_fresh_urls: HashSet<String> = fresh_urls
-                    .iter()
+                let domain_fresh_urls: HashSet<String> = fresh_run
+                    .urls
+                    .keys()
                     .filter(|url| url.contains(domain))
                     .cloned()
                     .collect();
@@ -542,7 +684,17 @@ async fn process_domains_with_cache(
                         args,
                         format!("Found {} new URLs for domain: {}", new_urls.len(), domain),
                     );
-                    final_urls.extend(new_urls);
+                    for url in new_urls {
+                        if let Some(sources) = fresh_run.urls.get(&url) {
+                            final_result
+                                .urls
+                                .entry(url)
+                                .or_default()
+                                .extend(sources.iter().cloned());
+                        } else {
+                            final_result.urls.entry(url).or_default();
+                        }
+                    }
                 }
 
                 // Update cache with all fresh URLs for this domain
@@ -550,14 +702,21 @@ async fn process_domains_with_cache(
                 let _ = cache.store_urls(&cache_key, &entry).await;
             }
         } else {
-            // Normal mode: add all fresh URLs and update cache
-            final_urls.extend(fresh_urls.clone());
+            // Normal mode: merge all fresh URLs (and their providers) into the result.
+            for (url, sources) in &fresh_run.urls {
+                final_result
+                    .urls
+                    .entry(url.clone())
+                    .or_default()
+                    .extend(sources.iter().cloned());
+            }
 
             // For simplicity, store all URLs for each domain (this could be optimized)
             for domain in &domains_to_process {
                 let cache_key = create_cache_key(domain, args);
-                let domain_urls: Vec<String> = fresh_urls
-                    .iter()
+                let domain_urls: Vec<String> = fresh_run
+                    .urls
+                    .keys()
                     .filter(|url| url.contains(domain))
                     .cloned()
                     .collect();
@@ -573,12 +732,18 @@ async fn process_domains_with_cache(
     // Clean up expired cache entries
     let _ = cache.cleanup_expired(args.cache_ttl * 2).await;
 
-    final_urls
+    final_result
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    // Short-circuit: list providers and exit without doing any I/O.
+    if args.list_providers {
+        print_provider_list();
+        return Ok(());
+    }
 
     // Load configuration and apply it to args
     // This ensures command line options take precedence over config file
@@ -593,9 +758,18 @@ async fn main() -> Result<()> {
     // Check if file input is provided
     let urls_from_file = read_urls_from_files(&args)?;
 
-    let all_urls = if let Some(urls) = urls_from_file {
-        // URLs read from file(s) - skip provider processing
-        urls.into_iter().collect()
+    let run_result = if let Some(urls) = urls_from_file {
+        // URLs read from file(s) - skip provider processing. Mark every URL
+        // as coming from "file" so downstream `--show-sources` is consistent.
+        let mut url_map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        for url in urls {
+            url_map.entry(url).or_default().insert("file".to_string());
+        }
+        ProviderRunResult {
+            urls: url_map,
+            stats: Vec::new(),
+        }
     } else {
         // No file input - use traditional domain-based approach
         // Collect domains either from arguments or stdin
@@ -632,6 +806,9 @@ async fn main() -> Result<()> {
         .await
     };
 
+    // URL-only view for filters (they don't care about sources).
+    let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
+
     // Apply URL filtering
     let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager);
 
@@ -644,7 +821,7 @@ async fn main() -> Result<()> {
     let should_check_status =
         args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty();
 
-    let final_urls = if should_check_status || args.extract_links {
+    let mut final_urls = if should_check_status || args.extract_links {
         // Initialize appropriate testers
         let mut testers: Vec<Box<dyn Tester>> = Vec::new();
 
@@ -708,6 +885,20 @@ async fn main() -> Result<()> {
             .collect()
     };
 
+    // Attach provider attribution to each surviving UrlData record when the
+    // user opted in. URLs introduced by the link extractor — not present in
+    // the run result — keep an empty `sources` list.
+    if args.show_sources {
+        for entry in final_urls.iter_mut() {
+            if let Some(providers) = run_result.urls.get(&entry.url) {
+                let mut sources: Vec<String> = providers.iter().cloned().collect();
+                sources.sort();
+                sources.dedup();
+                entry.sources = sources;
+            }
+        }
+    }
+
     match outputter.output(&final_urls, args.output.clone(), args.silent) {
         Ok(_) => {
             if args.verbose && !args.silent {
@@ -723,7 +914,41 @@ async fn main() -> Result<()> {
         }
     }
 
+    if args.stats && !args.silent {
+        print_provider_stats(&run_result.stats);
+    }
+
     Ok(())
+}
+
+/// Render the per-provider summary table to stderr (so it doesn't pollute
+/// stdout when callers pipe URL results into other tools).
+fn print_provider_stats(stats: &[runner::ProviderStats]) {
+    if stats.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!("Provider stats:");
+    eprintln!(
+        "  {:<18}  {:>8}  {:>7}  {:>10}",
+        "provider", "urls", "errors", "elapsed"
+    );
+    eprintln!(
+        "  {:<18}  {:>8}  {:>7}  {:>10}",
+        "------------------", "--------", "-------", "----------"
+    );
+    for s in stats {
+        let elapsed_ms = s.elapsed.as_millis();
+        let elapsed_label = if elapsed_ms >= 1000 {
+            format!("{:.2}s", s.elapsed.as_secs_f64())
+        } else {
+            format!("{}ms", elapsed_ms)
+        };
+        eprintln!(
+            "  {:<18}  {:>8}  {:>7}  {:>10}",
+            s.name, s.url_count, s.error_count, elapsed_label
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1078,12 +1303,17 @@ mod tests {
             redis_url: None,
             cache_ttl: 86400,
             no_cache: false,
+            exclude_providers: vec![],
+            all_providers: false,
+            list_providers: false,
+            show_sources: false,
+            stats: false,
         };
 
         let progress_manager = ProgressManager::new(true);
 
         // Process domains with mock provider
-        let urls = process_domains(
+        let result = process_domains(
             vec!["example.com".to_string()],
             &args,
             &progress_manager,
@@ -1097,10 +1327,17 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], "example.com");
 
-        // Verify that the URLs were correctly returned
-        assert_eq!(urls.len(), 2);
-        assert!(urls.contains("https://example.com/page1"));
-        assert!(urls.contains("https://example.com/page2"));
+        // Verify that the URLs were correctly returned and attributed.
+        assert_eq!(result.urls.len(), 2);
+        assert!(result.urls.contains_key("https://example.com/page1"));
+        assert!(result.urls.contains_key("https://example.com/page2"));
+        assert!(result.urls["https://example.com/page1"].contains("MockProvider"));
+
+        // Stats reflect the provider's URL count.
+        assert_eq!(result.stats.len(), 1);
+        assert_eq!(result.stats[0].name, "MockProvider");
+        assert_eq!(result.stats[0].url_count, 2);
+        assert_eq!(result.stats[0].error_count, 0);
     }
 
     #[tokio::test]
@@ -1171,6 +1408,11 @@ mod tests {
             redis_url: None,
             cache_ttl: 86400,
             no_cache: false,
+            exclude_providers: vec![],
+            all_providers: false,
+            list_providers: false,
+            show_sources: false,
+            stats: false,
         };
 
         let progress_manager = ProgressManager::new(true);

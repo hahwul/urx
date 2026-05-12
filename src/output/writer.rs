@@ -126,19 +126,19 @@ impl Outputter for CsvOutputter {
     }
 
     fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+        let has_status = urls.iter().any(|url| url.status.is_some());
+        let has_sources = urls.iter().any(|url| !url.sources.is_empty());
+        let header: &[u8] = match (has_status, has_sources) {
+            (false, false) => b"url\n",
+            (true, false) => b"url,status\n",
+            (false, true) => b"url,status,sources\n",
+            (true, true) => b"url,status,sources\n",
+        };
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
-
-                // Write CSV header (including status if any URLs have status info)
-                let has_status = urls.iter().any(|url| url.status.is_some());
-                if has_status {
-                    file.write_all(b"url,status\n")
-                        .context("Failed to write CSV header")?;
-                } else {
-                    file.write_all(b"url\n")
-                        .context("Failed to write CSV header")?;
-                }
+                file.write_all(header)
+                    .context("Failed to write CSV header")?;
 
                 for (i, url_data) in urls.iter().enumerate() {
                     let formatted = self.format(url_data, i == urls.len() - 1);
@@ -153,13 +153,7 @@ impl Outputter for CsvOutputter {
                     return Ok(());
                 };
 
-                // Determine if we should include status in header
-                let has_status = urls.iter().any(|url| url.status.is_some());
-                if has_status {
-                    println!("url,status");
-                } else {
-                    println!("url");
-                }
+                print!("{}", std::str::from_utf8(header).unwrap_or(""));
 
                 for (i, url_data) in urls.iter().enumerate() {
                     let formatted = self.format(url_data, i == urls.len() - 1);
@@ -305,6 +299,30 @@ mod tests {
             "url,status\nhttps://example.com/page1,\nhttps://example.com/page2,200 OK\n"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_csv_outputter_with_sources_header() -> Result<()> {
+        let outputter = CsvOutputter::new();
+        let urls = vec![
+            UrlData::new("https://example.com/a".to_string()).with_sources(vec!["wayback".into()]),
+            UrlData::with_status("https://example.com/b".to_string(), "200 OK".to_string())
+                .with_sources(vec!["cc".into(), "otx".into()]),
+        ];
+
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
+
+        let mut content = String::new();
+        let mut file = File::open(&temp_path)?;
+        file.read_to_string(&mut content)?;
+
+        assert_eq!(
+            content,
+            "url,status,sources\nhttps://example.com/a,,wayback\nhttps://example.com/b,200 OK,cc|otx\n"
+        );
         Ok(())
     }
 

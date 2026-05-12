@@ -105,6 +105,12 @@ Output Options:
 Provider Options:
       --providers <PROVIDERS>
           Providers to use (comma-separated, e.g., "wayback,cc,otx,vt,urlscan") [default: wayback,cc,otx]
+      --exclude-providers <EXCLUDE_PROVIDERS>
+          Providers to exclude (comma-separated). Wins on conflict with --providers / --all-providers.
+      --all-providers
+          Enable every supported provider. API-keyed providers only activate when a key is available.
+      --list-providers
+          List every supported provider then exit.
       --subs
           Include subdomains when searching
       --cc-index <CC_INDEX>
@@ -119,9 +125,11 @@ Discovery Options:
       --exclude-sitemap  Exclude sitemap.xml discovery
 
 Display Options:
-  -v, --verbose      Show verbose output
-      --silent       Silent mode (no output)
-      --no-progress  No progress bar
+  -v, --verbose       Show verbose output
+      --silent        Silent mode (no output)
+      --no-progress   No progress bar
+      --show-sources  Annotate output URLs with the providers that returned them
+      --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
   -p, --preset <PRESET>

@@ -14,12 +14,18 @@ pub struct UrlData {
     pub url: String,
     /// Optional status information (e.g., HTTP status code)
     pub status: Option<String>,
+    /// Providers that reported this URL (sorted, deduped). Empty when unknown.
+    pub sources: Vec<String>,
 }
 
 impl UrlData {
     /// Create a new URL data entry without status information
     pub fn new(url: String) -> Self {
-        UrlData { url, status: None }
+        UrlData {
+            url,
+            status: None,
+            sources: Vec::new(),
+        }
     }
 
     /// Create a new URL data entry with status information
@@ -27,7 +33,17 @@ impl UrlData {
         UrlData {
             url,
             status: Some(status),
+            sources: Vec::new(),
         }
+    }
+
+    /// Attach the list of providers that reported this URL. The input is
+    /// sorted and deduplicated so output ordering is deterministic.
+    pub fn with_sources(mut self, mut sources: Vec<String>) -> Self {
+        sources.sort();
+        sources.dedup();
+        self.sources = sources;
+        self
     }
 
     /// Parse a URL data entry from a string
@@ -42,12 +58,14 @@ impl UrlData {
             UrlData {
                 url: url.to_string(),
                 status: Some(status),
+                sources: Vec::new(),
             }
         } else {
             // No status information found
             UrlData {
                 url: data,
                 status: None,
+                sources: Vec::new(),
             }
         }
     }
@@ -196,6 +214,17 @@ mod tests {
         let url_data = UrlData::new("https://example.com".to_string());
         let debug_str = format!("{:?}", url_data);
         assert!(debug_str.contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_url_data_with_sources_sorts_and_dedupes() {
+        let data = UrlData::new("https://example.com".to_string()).with_sources(vec![
+            "wayback".into(),
+            "otx".into(),
+            "wayback".into(),
+            "cc".into(),
+        ]);
+        assert_eq!(data.sources, vec!["cc", "otx", "wayback"]);
     }
 
     #[test]

@@ -124,18 +124,54 @@ pub fn add_provider<T: Provider + 'static>(
     provider_names.push(provider_name);
 }
 
-/// Process domains using a provider-based concurrency pattern
+/// Per-provider tally for end-of-run summaries (`--stats`).
+#[derive(Debug, Clone, Default)]
+pub struct ProviderStats {
+    /// Provider name (e.g. "Wayback Machine").
+    pub name: String,
+    /// Cumulative URLs returned across all domains.
+    pub url_count: usize,
+    /// Number of domain fetches that failed.
+    pub error_count: usize,
+    /// Total wall-clock time spent in fetch_urls across domains.
+    pub elapsed: std::time::Duration,
+}
+
+/// Result of a provider run: URLs mapped to the providers that reported them,
+/// plus per-provider stats indexed in the same order as `provider_names`.
+#[derive(Debug, Default)]
+pub struct ProviderRunResult {
+    pub urls: HashMap<String, HashSet<String>>,
+    pub stats: Vec<ProviderStats>,
+}
+
+/// Process domains using a provider-based concurrency pattern.
+///
+/// Returns each discovered URL along with the set of providers that reported
+/// it. Order within each source set is preserved by the caller via sort+dedup.
 pub async fn process_domains(
     domains: Vec<String>,
     args: &Args,
     progress_manager: &ProgressManager,
     providers: &[Box<dyn Provider>],
     provider_names: &[String],
-) -> HashSet<String> {
-    // Create a shared set to collect all URLs
-    let all_urls = Arc::new(Mutex::new(HashSet::new()));
+) -> ProviderRunResult {
+    // Map URL -> set of provider names that reported it.
+    let all_urls: Arc<Mutex<HashMap<String, HashSet<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let total_domains = domains.len();
     let total_providers = providers.len();
+
+    // Per-provider stats, indexed identically to `provider_names`.
+    let stats: Arc<Mutex<Vec<ProviderStats>>> = Arc::new(Mutex::new(
+        provider_names
+            .iter()
+            .map(|n| ProviderStats {
+                name: n.clone(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
 
     // Create a progress bar for overall progress
     let overall_bar = progress_manager.create_domain_bar(total_domains);
@@ -185,6 +221,7 @@ pub async fn process_domains(
         provider_data.into_iter().enumerate()
     {
         let all_urls_clone = Arc::clone(&all_urls);
+        let stats_clone = Arc::clone(&stats);
         let queue = Arc::clone(&provider_queues[p_idx]);
         let provider_bar = provider_bars[original_idx].clone();
 
@@ -265,7 +302,10 @@ pub async fn process_domains(
                 });
 
                 // Fetch URLs for this domain using this provider
-                match provider_clone.fetch_urls(&domain).await {
+                let fetch_start = std::time::Instant::now();
+                let fetch_result = provider_clone.fetch_urls(&domain).await;
+                let fetch_elapsed = fetch_start.elapsed();
+                match fetch_result {
                     Ok(urls) => {
                         provider_bar.set_position(100);
                         provider_bar.set_message(format!(
@@ -287,12 +327,24 @@ pub async fn process_domains(
                         // Force refresh to maintain line position
                         provider_bar.tick();
 
-                        // Add URLs to the shared set
+                        let url_count = urls.len();
+
+                        // Add URLs to the shared map (URL -> set of providers).
                         {
-                            let mut url_set = all_urls_clone.lock().unwrap();
-                            for url in &urls {
-                                url_set.insert(url.clone());
+                            let mut url_map = all_urls_clone.lock().unwrap();
+                            for url in urls {
+                                url_map
+                                    .entry(url)
+                                    .or_default()
+                                    .insert(provider_name.clone());
                             }
+                        }
+
+                        // Update per-provider stats.
+                        {
+                            let mut s = stats_clone.lock().unwrap();
+                            s[original_idx].url_count += url_count;
+                            s[original_idx].elapsed += fetch_elapsed;
                         }
 
                         completion_ctx.track(&domain);
@@ -300,9 +352,7 @@ pub async fn process_domains(
                         if verbose && !silent {
                             println!(
                                 "  - {}: Found {} URLs for {}",
-                                provider_name,
-                                urls.len(),
-                                domain
+                                provider_name, url_count, domain
                             );
                         }
                     }
@@ -322,6 +372,12 @@ pub async fn process_domains(
 
                         // Force refresh to maintain line position
                         provider_bar.tick();
+
+                        {
+                            let mut s = stats_clone.lock().unwrap();
+                            s[original_idx].error_count += 1;
+                            s[original_idx].elapsed += fetch_elapsed;
+                        }
 
                         completion_ctx.track(&domain);
 
@@ -357,6 +413,7 @@ pub async fn process_domains(
 
     overall_bar.finish_with_message("All domains processed");
 
-    // Return the collected URLs
-    Arc::try_unwrap(all_urls).unwrap().into_inner().unwrap()
+    let urls = Arc::try_unwrap(all_urls).unwrap().into_inner().unwrap();
+    let stats = Arc::try_unwrap(stats).unwrap().into_inner().unwrap();
+    ProviderRunResult { urls, stats }
 }
