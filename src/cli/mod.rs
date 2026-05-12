@@ -42,6 +42,24 @@ pub struct Args {
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
     pub providers: Vec<String>,
 
+    /// Providers to exclude from enumeration (comma-separated). Applied after
+    /// --providers / --all-providers, so it wins on conflict.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long, value_delimiter = ',')]
+    pub exclude_providers: Vec<String>,
+
+    /// Enable every supported provider. API-keyed providers only activate
+    /// when a key is available via flag, env, or config file.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long)]
+    pub all_providers: bool,
+
+    /// List every supported provider (name, API key requirement, summary)
+    /// then exit.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long)]
+    pub list_providers: bool,
+
     /// Include subdomains when searching
     #[clap(help_heading = "Provider Options")]
     #[clap(long)]
@@ -97,6 +115,19 @@ pub struct Args {
     /// No progress bar
     #[clap(long)]
     pub no_progress: bool,
+
+    /// Annotate each output URL with the providers that returned it.
+    /// For JSON/CSV this adds a `sources` field/column; for plain text it
+    /// appends `[provider1,provider2]` after the URL.
+    #[clap(help_heading = "Display Options")]
+    #[clap(long)]
+    pub show_sources: bool,
+
+    /// Print a per-provider summary (URLs found, errors, elapsed) to stderr
+    /// when the run finishes.
+    #[clap(help_heading = "Display Options")]
+    #[clap(long)]
+    pub stats: bool,
 
     /// Filter Presets (e.g., "no-resources,no-images,only-js,only-style")
     #[clap(help_heading = "Filter Options")]

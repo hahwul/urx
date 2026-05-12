@@ -4,12 +4,16 @@ use colored::*;
 use serde::Serialize;
 use std::fmt;
 
-/// Helper struct for JSON serialization with guaranteed field order (url first, then status).
+/// Helper struct for JSON serialization with guaranteed field order
+/// (url, status, sources). `sources` is omitted when empty so the output
+/// stays backward-compatible with callers that don't ask for attribution.
 #[derive(Serialize)]
 struct JsonUrlEntry<'a> {
     url: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    sources: &'a [String],
 }
 
 /// Formatter trait for converting URL data to different output formats
@@ -43,7 +47,7 @@ impl PlainFormatter {
 
 impl Formatter for PlainFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        match &url_data.status {
+        let mut line = match &url_data.status {
             Some(status) => {
                 let status_code_str = status.split_whitespace().next().unwrap_or("");
                 let colored_status = match status_code_str.parse::<u16>() {
@@ -56,10 +60,15 @@ impl Formatter for PlainFormatter {
                     },
                     Err(_) => status.normal(),
                 };
-                format!("{} [{}]\n", url_data.url, colored_status)
+                format!("{} [{}]", url_data.url, colored_status)
             }
-            None => format!("{}\n", url_data.url),
+            None => url_data.url.clone(),
+        };
+        if !url_data.sources.is_empty() {
+            line.push_str(&format!(" [{}]", url_data.sources.join(",").cyan()));
         }
+        line.push('\n');
+        line
     }
 
     fn clone_box(&self) -> Box<dyn Formatter> {
@@ -83,6 +92,7 @@ impl Formatter for JsonFormatter {
         let entry = JsonUrlEntry {
             url: &url_data.url,
             status: url_data.status.as_deref(),
+            sources: &url_data.sources,
         };
         let json = serde_json::to_string(&entry).unwrap_or_default();
 
@@ -112,12 +122,16 @@ impl CsvFormatter {
 impl Formatter for CsvFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
         let escaped_url = csv_escape(&url_data.url);
-        match &url_data.status {
-            Some(status) => {
-                let escaped_status = csv_escape(status);
-                format!("{escaped_url},{escaped_status}\n")
-            }
-            None => format!("{escaped_url},\n"),
+        let status_field = url_data
+            .status
+            .as_deref()
+            .map(csv_escape)
+            .unwrap_or_default();
+        if url_data.sources.is_empty() {
+            format!("{escaped_url},{status_field}\n")
+        } else {
+            let sources_field = csv_escape(&url_data.sources.join("|"));
+            format!("{escaped_url},{status_field},{sources_field}\n")
         }
     }
 
@@ -340,6 +354,47 @@ mod tests {
             formatter.format(&url_data, false),
             "\"https://example.com/path?a=1,2&b=3\",\n"
         );
+    }
+
+    #[test]
+    fn test_json_formatter_with_sources() {
+        let formatter = JsonFormatter::new();
+        let url_data = UrlData::new("https://example.com".to_string()).with_sources(vec![
+            "wayback".into(),
+            "otx".into(),
+            "wayback".into(),
+        ]);
+        // Sources are sorted and deduped; field appears after url/status.
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "{\"url\":\"https://example.com\",\"sources\":[\"otx\",\"wayback\"]}\n"
+        );
+    }
+
+    #[test]
+    fn test_csv_formatter_with_sources() {
+        let formatter = CsvFormatter::new();
+        let url_data =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string())
+                .with_sources(vec!["wayback".into(), "cc".into()]);
+        // Sources column is pipe-separated when present.
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "https://example.com,200 OK,cc|wayback\n"
+        );
+    }
+
+    #[test]
+    fn test_plain_formatter_with_sources() {
+        let formatter = PlainFormatter::new();
+        let url_data = UrlData::new("https://example.com".to_string())
+            .with_sources(vec!["wayback".into(), "cc".into()]);
+        let out = formatter.format(&url_data, true);
+        // Plain output appends [provider,provider] (ANSI codes may be present).
+        assert!(out.starts_with("https://example.com "));
+        assert!(out.contains("cc"));
+        assert!(out.contains("wayback"));
+        assert!(out.ends_with('\n'));
     }
 
     #[test]

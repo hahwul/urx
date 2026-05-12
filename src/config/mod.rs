@@ -585,6 +585,11 @@ mod tests {
             redis_url: None,
             cache_ttl: 86400,
             no_cache: false,
+            exclude_providers: vec![],
+            all_providers: false,
+            list_providers: false,
+            show_sources: false,
+            stats: false,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

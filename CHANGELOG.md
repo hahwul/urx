@@ -4,6 +4,9 @@
 
 - Fix Wayback Machine timeouts on large domains: switch CDX to plain-text response with `collapse=urlkey` server-side dedup, raise default timeout to 60s, and filter non-URL response bodies
 - Bump default Common Crawl index to `CC-MAIN-2026-17`, and add `--cc-index latest` to auto-resolve the newest index via `collinfo.json` (cached per run, validated against `CC-MAIN-YYYY-WW` shape)
+- Track provider attribution per URL and surface it via `--show-sources` (JSON adds a `sources` field, CSV adds a `sources` column, plain text appends `[provider1,provider2]`)
+- Add `--list-providers` to enumerate every supported provider, `--exclude-providers` for negative selection, and `--all-providers` to enable every catalog entry (API-keyed providers only activate when a key is set)
+- Add `--stats` to print a per-provider summary (URLs found, errors, elapsed) to stderr at end of run
 
 ## 0.9.0
 
