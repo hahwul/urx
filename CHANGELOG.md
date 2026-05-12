@@ -7,6 +7,8 @@
 - Track provider attribution per URL and surface it via `--show-sources` (JSON adds a `sources` field, CSV adds a `sources` column, plain text appends `[provider1,provider2]`)
 - Add `--list-providers` to enumerate every supported provider, `--exclude-providers` for negative selection, and `--all-providers` to enable every catalog entry (API-keyed providers only activate when a key is set)
 - Add `--stats` to print a per-provider summary (URLs found, errors, elapsed) to stderr at end of run
+- Add `--domain-list FILE` (alias `--dL`) to read newline-separated domains from a file (repeatable; merged with positional DOMAINS and stdin; `#` comments allowed)
+- Add `--max-time SECONDS` global ceiling on provider enumeration; on deadline urx aborts in-flight fetches and returns whatever URLs have been collected so far (0 = unlimited; default)
 
 ## 0.9.0
 

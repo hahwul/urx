@@ -17,7 +17,7 @@ mod testers;
 mod utils;
 
 use cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
-use cli::{read_domains_from_stdin, Args};
+use cli::{read_domains_from_file, read_domains_from_stdin, Args};
 use config::Config;
 use filters::{HostValidator, UrlFilter};
 use network::NetworkSettings;
@@ -125,6 +125,35 @@ fn print_provider_list() {
     println!("Use --providers id1,id2 to select. --all-providers enables every entry");
     println!("(API-keyed providers only activate when a key is available).");
     println!("--exclude-providers wins on conflict.");
+}
+
+/// Collect the effective domain list from CLI positional args, `--domain-list`
+/// files, and (when both are empty) stdin. Duplicates are removed while
+/// preserving first-seen order so the run order is predictable.
+fn collect_domains(args: &Args) -> Result<Vec<String>> {
+    let mut domains: Vec<String> = args.domains.clone();
+
+    for path in &args.domain_list {
+        let file_domains = read_domains_from_file(path)?;
+        if args.verbose && !args.silent {
+            println!(
+                "Loaded {} domains from {}",
+                file_domains.len(),
+                path.display()
+            );
+        }
+        domains.extend(file_domains);
+    }
+
+    // Only fall back to stdin when no domains were supplied via flags/files,
+    // otherwise piped data would silently get appended on every invocation.
+    if domains.is_empty() {
+        domains.extend(read_domains_from_stdin()?);
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    domains.retain(|d| seen.insert(d.clone()));
+    Ok(domains)
 }
 
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
@@ -442,12 +471,15 @@ fn apply_url_filters(
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-        // We need to get domains from the original input
-        let domains = if args.domains.is_empty() {
-            read_domains_from_stdin().unwrap_or_default()
-        } else {
-            args.domains.clone()
-        };
+        // Re-resolve the original domain list. We can't read stdin a second
+        // time, so the host validator falls back to whatever positional args
+        // and --domain-list files supplied.
+        let mut domains: Vec<String> = args.domains.clone();
+        for path in &args.domain_list {
+            if let Ok(more) = read_domains_from_file(path) {
+                domains.extend(more);
+            }
+        }
 
         if !domains.is_empty() {
             let host_validator = HostValidator::new(&domains, args.subs);
@@ -772,17 +804,12 @@ async fn main() -> Result<()> {
         }
     } else {
         // No file input - use traditional domain-based approach
-        // Collect domains either from arguments or stdin
-        let domains = if args.domains.is_empty() {
-            read_domains_from_stdin()?
-        } else {
-            args.domains.clone()
-        };
+        let domains = collect_domains(&args)?;
 
         if domains.is_empty() {
             if !args.silent {
                 eprintln!(
-                    "No domains provided. Please specify domains or pipe them through stdin."
+                    "No domains provided. Pass DOMAINS positionally, use --domain-list FILE, or pipe them through stdin."
                 );
             }
             return Ok(());
@@ -1155,6 +1182,7 @@ mod tests {
     struct MockProvider {
         urls: Vec<String>,
         should_fail: bool,
+        delay_ms: u64,
         calls: Arc<Mutex<Vec<String>>>,
     }
 
@@ -1163,8 +1191,14 @@ mod tests {
             MockProvider {
                 urls,
                 should_fail,
+                delay_ms: 0,
                 calls: Arc::new(Mutex::new(vec![])),
             }
+        }
+
+        fn with_delay_ms(mut self, ms: u64) -> Self {
+            self.delay_ms = ms;
+            self
         }
     }
 
@@ -1181,9 +1215,14 @@ mod tests {
             let should_fail = self.should_fail;
             let calls = self.calls.clone();
 
+            let delay = self.delay_ms;
             Box::pin(async move {
                 // Record the call
                 calls.lock().unwrap().push(domain.to_string());
+
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
 
                 if should_fail {
                     Err(anyhow::anyhow!("Mock provider failure"))
@@ -1308,6 +1347,8 @@ mod tests {
             list_providers: false,
             show_sources: false,
             stats: false,
+            domain_list: vec![],
+            max_time: 0,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -1338,6 +1379,127 @@ mod tests {
         assert_eq!(result.stats[0].name, "MockProvider");
         assert_eq!(result.stats[0].url_count, 2);
         assert_eq!(result.stats[0].error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_max_time_aborts_slow_provider() {
+        // A provider that sleeps for 5s should be cut off when max_time=1.
+        let slow = MockProvider::new(vec!["https://example.com/never".to_string()], false)
+            .with_delay_ms(5_000);
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(slow)];
+        let provider_names = vec!["SlowProvider".to_string()];
+
+        let mut args = build_test_args();
+        args.max_time = 1;
+        let progress_manager = ProgressManager::new(true);
+
+        let started = std::time::Instant::now();
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        // Should bail out well before the provider's 5s sleep finishes.
+        assert!(
+            elapsed.as_secs() < 4,
+            "expected --max-time to abort within ~1s, got {:?}",
+            elapsed
+        );
+        // No URLs were produced because the provider was cut off mid-await.
+        assert!(
+            result.urls.is_empty(),
+            "expected no URLs, got {:?}",
+            result.urls
+        );
+    }
+
+    #[test]
+    fn test_collect_domains_merges_inputs_and_dedupes() -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new()?;
+        writeln!(file, "from-file.test\nexample.com")?; // example.com overlaps positional
+
+        let mut args = build_test_args();
+        args.domains = vec!["example.com".to_string(), "another.test".to_string()];
+        args.domain_list = vec![file.path().to_path_buf()];
+
+        let domains = collect_domains(&args)?;
+        // Positional first, file second, dedupe keeps first occurrence.
+        assert_eq!(
+            domains,
+            vec!["example.com", "another.test", "from-file.test"]
+        );
+        Ok(())
+    }
+
+    /// Helper to build a fully-defaulted Args for tests that only care about
+    /// a couple of fields. Keep this in sync with the `Args` struct.
+    fn build_test_args() -> Args {
+        Args {
+            domains: vec![],
+            config: None,
+            files: vec![],
+            output: None,
+            format: "plain".to_string(),
+            merge_endpoint: false,
+            normalize_url: false,
+            providers: vec!["mock".to_string()],
+            subs: false,
+            cc_index: "CC-MAIN-2026-17".to_string(),
+            vt_api_key: vec![],
+            urlscan_api_key: vec![],
+            zoomeye_api_key: vec![],
+            verbose: false,
+            silent: true,
+            no_progress: true,
+            preset: vec![],
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            min_length: None,
+            max_length: None,
+            strict: false,
+            network_scope: "all".to_string(),
+            proxy: None,
+            proxy_auth: None,
+            insecure: false,
+            random_agent: false,
+            timeout: 30,
+            retries: 3,
+            parallel: Some(5),
+            rate_limit: None,
+            check_status: false,
+            include_status: vec![],
+            exclude_status: vec![],
+            extract_links: false,
+            include_robots: false,
+            include_sitemap: false,
+            exclude_robots: true,
+            exclude_sitemap: true,
+            incremental: false,
+            cache_type: "sqlite".to_string(),
+            cache_path: None,
+            redis_url: None,
+            cache_ttl: 86400,
+            no_cache: false,
+            exclude_providers: vec![],
+            all_providers: false,
+            list_providers: false,
+            show_sources: false,
+            stats: false,
+            domain_list: vec![],
+            max_time: 0,
+        }
     }
 
     #[tokio::test]
@@ -1413,6 +1575,8 @@ mod tests {
             list_providers: false,
             show_sources: false,
             stats: false,
+            domain_list: vec![],
+            max_time: 0,
         };
 
         let progress_manager = ProgressManager::new(true);
