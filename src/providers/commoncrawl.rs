@@ -170,7 +170,10 @@ impl Provider for CommonCrawlProvider {
             let base_url = self.index_base_url();
 
             let url_pattern = if self.include_subdomains {
-                format!("{}/{}-index?url=*.{}/*&output=json", base_url, index, domain)
+                format!(
+                    "{}/{}-index?url=*.{}/*&output=json",
+                    base_url, index, domain
+                )
             } else {
                 format!("{}/{}-index?url={}/*&output=json", base_url, index, domain)
             };
@@ -605,7 +608,9 @@ mod tests {
         provider.with_retries(0);
 
         let err = provider.fetch_urls("example.com").await.unwrap_err();
-        assert!(err.to_string().contains("collinfo.json returned no entries"));
+        assert!(err
+            .to_string()
+            .contains("collinfo.json returned no entries"));
     }
 
     #[tokio::test]
