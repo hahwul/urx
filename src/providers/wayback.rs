@@ -93,10 +93,12 @@ impl Provider for WaybackMachineProvider {
                 return Ok(Vec::new());
             }
 
+            // Defensive: a 200 OK from Wayback can occasionally carry a maintenance
+            // page or non-URL body. Restrict to lines that actually look like URLs.
             let mut urls: Vec<String> = text
                 .lines()
                 .map(str::trim)
-                .filter(|l| !l.is_empty())
+                .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
                 .map(String::from)
                 .collect();
 
@@ -394,5 +396,31 @@ mod tests {
         assert_eq!(urls.len(), 0);
 
         mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_filters_non_url_lines() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                "<html><body>Service temporarily unavailable</body></html>\n\
+                 http://example.com/real\n\
+                 not-a-url\n",
+            )
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert_eq!(urls, vec!["http://example.com/real".to_string()]);
     }
 }

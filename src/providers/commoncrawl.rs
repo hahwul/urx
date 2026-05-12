@@ -10,7 +10,25 @@ use crate::network::client::{get_with_retry, HttpClientConfig};
 
 /// Sentinel value that asks the provider to resolve the most recent Common
 /// Crawl index at runtime via `collinfo.json`.
-pub const LATEST_INDEX_ALIAS: &str = "latest";
+pub(crate) const LATEST_INDEX_ALIAS: &str = "latest";
+
+/// Validate that a Common Crawl index identifier matches the expected
+/// `CC-MAIN-YYYY-WW` shape before we splice it into a URL path. This guards
+/// against a hostile or corrupted `collinfo.json` causing path manipulation.
+fn is_valid_cc_index_id(id: &str) -> bool {
+    // Expected: "CC-MAIN-YYYY-WW" — fixed prefix, 4-digit year, 2-digit week.
+    let Some(rest) = id.strip_prefix("CC-MAIN-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    let (Some(year), Some(week), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    year.len() == 4
+        && year.chars().all(|c| c.is_ascii_digit())
+        && week.len() == 2
+        && week.chars().all(|c| c.is_ascii_digit())
+}
 
 #[derive(Clone)]
 pub struct CommonCrawlProvider {
@@ -120,11 +138,17 @@ impl CommonCrawlProvider {
                 let client = self.client_config().build_client()?;
                 let body = get_with_retry(&client, &url, self.retries).await?;
                 let entries: Vec<CollInfoEntry> = serde_json::from_str(&body)?;
-                entries
+                let id = entries
                     .into_iter()
                     .next()
                     .map(|e| e.id)
-                    .ok_or_else(|| anyhow::anyhow!("collinfo.json returned no entries"))
+                    .ok_or_else(|| anyhow::anyhow!("collinfo.json returned no entries"))?;
+                if !is_valid_cc_index_id(&id) {
+                    return Err(anyhow::anyhow!(
+                        "collinfo.json returned an unexpected index id: {id:?}"
+                    ));
+                }
+                Ok(id)
             })
             .await?;
 
@@ -582,5 +606,36 @@ mod tests {
 
         let err = provider.fetch_urls("example.com").await.unwrap_err();
         assert!(err.to_string().contains("collinfo.json returned no entries"));
+    }
+
+    #[tokio::test]
+    async fn test_latest_alias_rejects_malformed_index_id() {
+        let mut server = mockito::Server::new_async().await;
+
+        let _collinfo = server
+            .mock("GET", "/collinfo.json")
+            .with_status(200)
+            .with_body(r#"[{"id": "../../etc/passwd"}]"#)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::with_index(LATEST_INDEX_ALIAS.to_string());
+        provider.base_url = server.url();
+        provider.with_retries(0);
+
+        let err = provider.fetch_urls("example.com").await.unwrap_err();
+        assert!(err.to_string().contains("unexpected index id"));
+    }
+
+    #[test]
+    fn test_is_valid_cc_index_id() {
+        assert!(is_valid_cc_index_id("CC-MAIN-2026-17"));
+        assert!(is_valid_cc_index_id("CC-MAIN-2099-01"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-2026-1"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-2026"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-2026-17-extra"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-202X-17"));
+        assert!(!is_valid_cc_index_id("../../etc/passwd"));
+        assert!(!is_valid_cc_index_id(""));
     }
 }
