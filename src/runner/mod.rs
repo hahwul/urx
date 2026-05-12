@@ -408,12 +408,50 @@ pub async fn process_domains(
         provider_futures.push(provider_future);
     }
 
-    // Wait for all provider tasks to finish
-    join_all(provider_futures).await;
+    // Wait for all provider tasks to finish, honouring --max-time when set.
+    // We grab abort handles up front so a timeout can cancel in-flight tasks
+    // while we keep whatever URLs they've already pushed into the shared map.
+    let abort_handles: Vec<_> = provider_futures.iter().map(|h| h.abort_handle()).collect();
+    let join_future = join_all(provider_futures);
+    let deadline = (args.max_time > 0).then(|| std::time::Duration::from_secs(args.max_time));
 
-    overall_bar.finish_with_message("All domains processed");
+    let finished_within_deadline = if let Some(d) = deadline {
+        match tokio::time::timeout(d, join_future).await {
+            Ok(_) => true,
+            Err(_) => {
+                for h in abort_handles {
+                    h.abort();
+                }
+                if !args.silent {
+                    eprintln!(
+                        "[urx] --max-time {}s elapsed; aborting in-flight provider fetches and returning partial results",
+                        d.as_secs()
+                    );
+                }
+                false
+            }
+        }
+    } else {
+        join_future.await;
+        true
+    };
 
-    let urls = Arc::try_unwrap(all_urls).unwrap().into_inner().unwrap();
-    let stats = Arc::try_unwrap(stats).unwrap().into_inner().unwrap();
+    if finished_within_deadline {
+        overall_bar.finish_with_message("All domains processed");
+    } else {
+        overall_bar.finish_with_message("Stopped by --max-time deadline");
+    }
+
+    // Reclaim the shared state. If tasks were aborted the inner Arc may still
+    // have outstanding strong counts for a brief moment; drain via clone in
+    // that case rather than panicking.
+    let urls = match Arc::try_unwrap(all_urls) {
+        Ok(m) => m.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    };
+    let stats = match Arc::try_unwrap(stats) {
+        Ok(s) => s.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    };
     ProviderRunResult { urls, stats }
 }

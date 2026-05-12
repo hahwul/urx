@@ -590,6 +590,8 @@ mod tests {
             list_providers: false,
             show_sources: false,
             stats: false,
+            domain_list: vec![],
+            max_time: 0,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

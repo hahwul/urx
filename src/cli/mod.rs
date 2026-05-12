@@ -17,6 +17,13 @@ pub struct Args {
     #[clap(long, action = clap::ArgAction::Append, num_args = 1.., value_parser)]
     pub files: Vec<PathBuf>,
 
+    /// File(s) containing newline-separated domains to scan. Repeatable;
+    /// merged with positional DOMAINS and stdin. Blank lines and `#` comments
+    /// are ignored.
+    #[clap(help_heading = "Input Options")]
+    #[clap(long = "domain-list", alias = "dL", visible_alias = "--dL", action = clap::ArgAction::Append, value_parser)]
+    pub domain_list: Vec<PathBuf>,
+
     #[clap(help_heading = "Output Options")]
     /// Output file to write results
     #[clap(short, long, value_parser)]
@@ -229,6 +236,14 @@ pub struct Args {
     #[clap(long)]
     pub rate_limit: Option<f32>,
 
+    /// Global ceiling on provider enumeration time, in seconds. When the
+    /// deadline elapses, in-flight provider fetches are aborted and urx
+    /// proceeds with whatever URLs have been collected so far. `0` (the
+    /// default) means no ceiling.
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, default_value = "0")]
+    pub max_time: u64,
+
     /// Check HTTP status code of collected URLs
     #[clap(help_heading = "Testing Options")]
     #[clap(long, alias = "cs", visible_alias = "--cs")]
@@ -289,12 +304,43 @@ pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
 
     for line in stdin.lock().lines() {
         let domain = line.context("Failed to read line from stdin")?;
-        if !domain.trim().is_empty() {
-            domains.push(domain.trim().to_string());
+        let domain = parse_domain_line(&domain);
+        if let Some(d) = domain {
+            domains.push(d);
         }
     }
 
     Ok(domains)
+}
+
+/// Read newline-separated domains from a file. Blank lines and lines that
+/// start with `#` (after trimming) are skipped so users can keep notes
+/// alongside the list.
+pub fn read_domains_from_file(path: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    use anyhow::Context;
+    use std::io::{BufRead, BufReader};
+
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open domain list: {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut domains = Vec::new();
+    for line in reader.lines() {
+        let raw = line.with_context(|| format!("Failed to read {}", path.display()))?;
+        if let Some(d) = parse_domain_line(&raw) {
+            domains.push(d);
+        }
+    }
+    Ok(domains)
+}
+
+/// Trim whitespace and drop blank / comment lines from a single text line.
+fn parse_domain_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 impl Args {
@@ -459,6 +505,53 @@ mod tests {
         assert_eq!(args.files.len(), 2);
         assert_eq!(args.files[0].to_str().unwrap(), "file1.txt");
         assert_eq!(args.files[1].to_str().unwrap(), "file2.warc");
+    }
+
+    #[test]
+    fn test_parse_domain_line_skips_blank_and_comments() {
+        assert_eq!(parse_domain_line(""), None);
+        assert_eq!(parse_domain_line("   "), None);
+        assert_eq!(parse_domain_line("# comment"), None);
+        assert_eq!(parse_domain_line("  # leading-space comment"), None);
+        assert_eq!(
+            parse_domain_line("  example.com  "),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_read_domains_from_file() -> anyhow::Result<()> {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new()?;
+        writeln!(
+            file,
+            "example.com\n  # comment\n\n  another.test  \n#trailing"
+        )?;
+        let domains = read_domains_from_file(file.path())?;
+        assert_eq!(domains, vec!["example.com", "another.test"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_domain_list_flag_parsed() {
+        let args = Args::parse_from([
+            "urx",
+            "--domain-list",
+            "domains.txt",
+            "--domain-list",
+            "more.txt",
+        ]);
+        assert_eq!(args.domain_list.len(), 2);
+        assert_eq!(args.domain_list[0].to_str().unwrap(), "domains.txt");
+        assert_eq!(args.domain_list[1].to_str().unwrap(), "more.txt");
+    }
+
+    #[test]
+    fn test_max_time_defaults_to_zero() {
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert_eq!(args.max_time, 0);
+        let args = Args::parse_from(["urx", "--max-time", "300", "example.com"]);
+        assert_eq!(args.max_time, 300);
     }
 
     #[test]

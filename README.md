@@ -94,7 +94,8 @@ Options:
   -V, --version          Print version
 
 Input Options:
-      --files <FILES>...  Read URLs directly from files (supports WARC, URLTeam compressed, and text files). Use multiple --files flags or space-separate multiple files
+      --files <FILES>...        Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
+      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS and stdin; `#` comments allowed)
 
 Output Options:
   -o, --output <OUTPUT>  Output file to write results
@@ -165,6 +166,7 @@ Network Options:
       --retries <RETRIES>              Number of retries for failed requests [default: 2]
       --parallel <PARALLEL>            Maximum number of parallel requests per provider and maximum concurrent domain processing [default: 5]
       --rate-limit <RATE_LIMIT>        Rate limit (requests per second)
+      --max-time <MAX_TIME>            Global ceiling on provider enumeration time in seconds (0 = unlimited) [default: 0]
 
 Testing Options:
       --check-status
