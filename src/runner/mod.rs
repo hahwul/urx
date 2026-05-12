@@ -88,38 +88,53 @@ pub fn add_provider<T: Provider + 'static>(
     network_settings: &NetworkSettings,
     providers: &mut Vec<Box<dyn Provider>>,
     provider_names: &mut Vec<String>,
+    provider_id: &str,
     provider_name: String,
     provider_builder: impl FnOnce() -> T,
 ) {
+    // Apply a per-provider rate limit override when --rate-limit-by lists this
+    // provider id. Cloning lets us thread the override into the existing
+    // apply_network_settings_to_provider helper without changing its API.
+    let per_provider_rate = args.rate_limit_overrides().get(provider_id).copied();
+    let mut effective_settings = network_settings.clone();
+    if per_provider_rate.is_some() {
+        effective_settings.rate_limit = per_provider_rate;
+    }
+
     if args.verbose && !args.silent {
         let mut config_info = vec![
             format!("Adding {provider_name} provider"),
-            format!("  Timeout: {} seconds", network_settings.timeout),
-            format!("  Retries: {}", network_settings.retries),
-            format!("  Parallel requests: {}", network_settings.parallel),
+            format!("  Timeout: {} seconds", effective_settings.timeout),
+            format!("  Retries: {}", effective_settings.retries),
+            format!("  Parallel requests: {}", effective_settings.parallel),
         ];
 
-        if network_settings.include_subdomains {
+        if effective_settings.include_subdomains {
             config_info.push("  Subdomain inclusion: enabled".to_string());
         }
 
-        if let Some(proxy) = &network_settings.proxy {
+        if let Some(proxy) = &effective_settings.proxy {
             config_info.push(format!("  Proxy: {}", proxy));
         }
 
-        if network_settings.random_agent {
+        if effective_settings.random_agent {
             config_info.push("  Random User-Agent: enabled".to_string());
         }
 
-        if let Some(rate) = network_settings.rate_limit {
-            config_info.push(format!("  Rate limit: {} requests/second", rate));
+        if let Some(rate) = effective_settings.rate_limit {
+            let label = if per_provider_rate.is_some() {
+                " (per-provider override)"
+            } else {
+                ""
+            };
+            config_info.push(format!("  Rate limit: {rate} requests/second{label}"));
         }
 
         println!("{}", config_info.join("\n"));
     }
 
     let mut provider = provider_builder();
-    apply_network_settings_to_provider(&mut provider, network_settings);
+    apply_network_settings_to_provider(&mut provider, &effective_settings);
     providers.push(Box::new(provider));
     provider_names.push(provider_name);
 }

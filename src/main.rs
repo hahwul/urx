@@ -278,6 +278,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             network_settings,
             &mut providers,
             &mut provider_names,
+            "wayback",
             "Wayback Machine".to_string(),
             WaybackMachineProvider::new,
         );
@@ -289,6 +290,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             network_settings,
             &mut providers,
             &mut provider_names,
+            "cc",
             args.cc_index.to_string(),
             || CommonCrawlProvider::with_index(args.cc_index.clone()),
         );
@@ -303,6 +305,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             network_settings,
             &mut providers,
             &mut provider_names,
+            "robots",
             "Robots.txt".to_string(),
             RobotsProvider::new,
         );
@@ -314,6 +317,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             network_settings,
             &mut providers,
             &mut provider_names,
+            "sitemap",
             "Sitemap".to_string(),
             SitemapProvider::new,
         );
@@ -325,6 +329,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             network_settings,
             &mut providers,
             &mut provider_names,
+            "otx",
             "OTX".to_string(),
             OTXProvider::new,
         );
@@ -337,6 +342,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 network_settings,
                 &mut providers,
                 &mut provider_names,
+                "vt",
                 "VirusTotal".to_string(),
                 || VirusTotalProvider::new_with_keys(vt_api_keys.clone()),
             );
@@ -352,6 +358,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 network_settings,
                 &mut providers,
                 &mut provider_names,
+                "urlscan",
                 "Urlscan".to_string(),
                 || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
             );
@@ -367,6 +374,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 network_settings,
                 &mut providers,
                 &mut provider_names,
+                "zoomeye",
                 "ZoomEye".to_string(),
                 || ZoomEyeProvider::new_with_keys(zoomeye_api_keys.clone()),
             );
@@ -779,8 +787,26 @@ async fn main() -> Result<()> {
 
     // Load configuration and apply it to args
     // This ensures command line options take precedence over config file
+    // Capture whether the user provided API keys directly via CLI/env *before*
+    // either config layer fills them in — this drives the precedence rule
+    // CLI/env > provider-config > main config.
+    let cli_supplied_vt = !args.vt_api_key.is_empty();
+    let cli_supplied_urlscan = !args.urlscan_api_key.is_empty();
+    let cli_supplied_zoomeye = !args.zoomeye_api_key.is_empty();
+
     let config = Config::load(&args);
     config.apply_to_args(&mut args);
+
+    // Provider-config file (separate from main config) loads API keys that
+    // would otherwise live in the shared config. It overrides main-config
+    // values but still loses to anything supplied on the CLI / env.
+    let provider_keys = config::ProviderKeysConfig::load(&args);
+    provider_keys.apply_to_args(
+        &mut args,
+        cli_supplied_vt,
+        cli_supplied_urlscan,
+        cli_supplied_zoomeye,
+    );
 
     // Create common network settings and progress manager once
     let network_settings = NetworkSettings::from_args(&args);
@@ -1349,6 +1375,8 @@ mod tests {
             stats: false,
             domain_list: vec![],
             max_time: 0,
+            rate_limit_by: vec![],
+            provider_config: None,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -1499,6 +1527,8 @@ mod tests {
             stats: false,
             domain_list: vec![],
             max_time: 0,
+            rate_limit_by: vec![],
+            provider_config: None,
         }
     }
 
@@ -1577,6 +1607,8 @@ mod tests {
             stats: false,
             domain_list: vec![],
             max_time: 0,
+            rate_limit_by: vec![],
+            provider_config: None,
         };
 
         let progress_manager = ProgressManager::new(true);

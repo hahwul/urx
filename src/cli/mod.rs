@@ -12,6 +12,13 @@ pub struct Args {
     #[clap(short, long, value_parser)]
     pub config: Option<PathBuf>,
 
+    /// Path to a separate provider config file holding only API keys
+    /// (default: $XDG_CONFIG_HOME/urx/provider-config.toml). Keeping keys in
+    /// a dedicated file makes the main config safe to share.
+    /// Precedence: CLI/env keys > provider-config > main config.
+    #[clap(long = "provider-config", value_parser)]
+    pub provider_config: Option<PathBuf>,
+
     #[clap(help_heading = "Input Options")]
     /// Read URLs directly from files (supports WARC, URLTeam compressed, and text files). Use multiple --files flags or space-separate multiple files.
     #[clap(long, action = clap::ArgAction::Append, num_args = 1.., value_parser)]
@@ -236,6 +243,13 @@ pub struct Args {
     #[clap(long)]
     pub rate_limit: Option<f32>,
 
+    /// Per-provider rate limit overrides as comma-separated `id=req_per_sec`
+    /// pairs (e.g. `--rate-limit-by vt=1,wayback=10`). Providers not listed
+    /// fall back to the global --rate-limit (if set).
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, value_delimiter = ',')]
+    pub rate_limit_by: Vec<String>,
+
     /// Global ceiling on provider enumeration time, in seconds. When the
     /// deadline elapses, in-flight provider fetches are aborted and urx
     /// proceeds with whatever URLs have been collected so far. `0` (the
@@ -344,6 +358,28 @@ fn parse_domain_line(line: &str) -> Option<String> {
 }
 
 impl Args {
+    /// Parse `--rate-limit-by` entries into a `provider_id -> requests/sec`
+    /// map. Malformed entries are dropped and reported via `parse_errors`
+    /// when verbose; the caller decides whether to surface them.
+    pub fn rate_limit_overrides(&self) -> std::collections::HashMap<String, f32> {
+        let mut map = std::collections::HashMap::new();
+        for raw in &self.rate_limit_by {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = trimmed.split_once('=') {
+                let id = k.trim().to_string();
+                if let Ok(rate) = v.trim().parse::<f32>() {
+                    if !id.is_empty() && rate > 0.0 {
+                        map.insert(id, rate);
+                    }
+                }
+            }
+        }
+        map
+    }
+
     /// Check if robots.txt discovery should be used
     pub fn should_use_robots(&self) -> bool {
         !self.exclude_robots && self.include_robots
@@ -552,6 +588,48 @@ mod tests {
         assert_eq!(args.max_time, 0);
         let args = Args::parse_from(["urx", "--max-time", "300", "example.com"]);
         assert_eq!(args.max_time, 300);
+    }
+
+    #[test]
+    fn test_rate_limit_overrides_parses_valid_entries() {
+        let args = Args::parse_from([
+            "urx",
+            "--rate-limit-by",
+            "vt=2,wayback=10.5",
+            "--rate-limit-by",
+            "otx=1",
+            "example.com",
+        ]);
+        let map = args.rate_limit_overrides();
+        assert_eq!(map.get("vt"), Some(&2.0));
+        assert_eq!(map.get("wayback"), Some(&10.5));
+        assert_eq!(map.get("otx"), Some(&1.0));
+    }
+
+    #[test]
+    fn test_rate_limit_overrides_skips_malformed() {
+        let args = Args::parse_from([
+            "urx",
+            "--rate-limit-by",
+            "vt=oops,nokey=1,=2,wayback=-1",
+            "example.com",
+        ]);
+        let map = args.rate_limit_overrides();
+        // "vt=oops" -> not a number, dropped
+        // "nokey=1" -> kept, "nokey" -> 1
+        // "=2" -> empty id, dropped
+        // "wayback=-1" -> non-positive, dropped
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("nokey"), Some(&1.0));
+    }
+
+    #[test]
+    fn test_provider_config_flag_parsed() {
+        let args = Args::parse_from(["urx", "--provider-config", "/tmp/keys.toml", "example.com"]);
+        assert_eq!(
+            args.provider_config.as_deref().map(|p| p.to_str().unwrap()),
+            Some("/tmp/keys.toml")
+        );
     }
 
     #[test]

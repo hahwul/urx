@@ -9,6 +9,8 @@
 - Add `--stats` to print a per-provider summary (URLs found, errors, elapsed) to stderr at end of run
 - Add `--domain-list FILE` (alias `--dL`) to read newline-separated domains from a file (repeatable; merged with positional DOMAINS and stdin; `#` comments allowed)
 - Add `--max-time SECONDS` global ceiling on provider enumeration; on deadline urx aborts in-flight fetches and returns whatever URLs have been collected so far (0 = unlimited; default)
+- Add `--rate-limit-by id=req_per_sec,...` for per-provider rate limits; providers not listed fall back to global `--rate-limit`
+- Add `--provider-config FILE` for a separate API-keys-only TOML (default `$XDG_CONFIG_HOME/urx/provider-config.toml`); precedence is CLI/env > provider-config > main config, so the main config can be safely committed to source control
 
 ## 0.9.0
 
