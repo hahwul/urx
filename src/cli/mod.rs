@@ -48,8 +48,8 @@ pub struct Args {
     pub subs: bool,
 
     #[clap(help_heading = "Provider Options")]
-    /// Common Crawl index to use (e.g., CC-MAIN-2025-13)
-    #[clap(long, default_value = "CC-MAIN-2025-13")]
+    /// Common Crawl index to use (e.g., CC-MAIN-2026-17, or "latest" to auto-resolve from collinfo.json)
+    #[clap(long, default_value = "CC-MAIN-2026-17")]
     pub cc_index: String,
 
     #[clap(help_heading = "Provider Options")]
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(args.domains, vec!["example.com"]);
         assert_eq!(args.format, "plain");
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
-        assert_eq!(args.cc_index, "CC-MAIN-2025-13");
+        assert_eq!(args.cc_index, "CC-MAIN-2026-17");
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
         assert!(args.include_robots);

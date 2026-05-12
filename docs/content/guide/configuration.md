@@ -39,7 +39,7 @@ normalize_url = false
 [provider]
 providers = ["wayback", "cc", "otx"]
 subs = false                          # Include subdomains
-cc_index = "CC-MAIN-2025-13"         # Common Crawl index
+cc_index = "CC-MAIN-2026-17"         # Common Crawl index (or "latest" to auto-resolve via collinfo.json)
 vt_api_key = ""                       # VirusTotal API key
 urlscan_api_key = ""                  # URLScan API key
 zoomeye_api_key = ""                  # ZoomEye API key

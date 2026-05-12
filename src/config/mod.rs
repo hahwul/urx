@@ -223,7 +223,7 @@ impl Config {
             args.subs = true;
         }
 
-        if args.cc_index == "CC-MAIN-2025-13" {
+        if args.cc_index == "CC-MAIN-2026-17" {
             if let Some(cc_index) = &self.provider.cc_index {
                 args.cc_index = cc_index.clone();
             }
@@ -544,7 +544,7 @@ mod tests {
             normalize_url: false,
             providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
             subs: false,
-            cc_index: "CC-MAIN-2025-13".to_string(),
+            cc_index: "CC-MAIN-2026-17".to_string(),
             vt_api_key: vec![],
             urlscan_api_key: vec![],
             zoomeye_api_key: vec![],

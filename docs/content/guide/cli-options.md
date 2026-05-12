@@ -30,7 +30,7 @@ Output Options:
 Provider Options:
   --providers <PROVIDERS>                Providers to use (comma-separated) [default: wayback,cc,otx]
   --subs                                 Include subdomains when searching
-  --cc-index <CC_INDEX>                  Common Crawl index to use [default: CC-MAIN-2025-13]
+  --cc-index <CC_INDEX>                  Common Crawl index to use, or "latest" to auto-resolve [default: CC-MAIN-2026-17]
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
   --urlscan-api-key <URLSCAN_API_KEY>   API key for Urlscan
   --zoomeye-api-key <ZOOMEYE_API_KEY>   API key for ZoomEye

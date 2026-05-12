@@ -2,13 +2,40 @@ use anyhow::Result;
 use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
 
+/// Sentinel value that asks the provider to resolve the most recent Common
+/// Crawl index at runtime via `collinfo.json`.
+pub(crate) const LATEST_INDEX_ALIAS: &str = "latest";
+
+/// Validate that a Common Crawl index identifier matches the expected
+/// `CC-MAIN-YYYY-WW` shape before we splice it into a URL path. This guards
+/// against a hostile or corrupted `collinfo.json` causing path manipulation.
+fn is_valid_cc_index_id(id: &str) -> bool {
+    // Expected: "CC-MAIN-YYYY-WW" — fixed prefix, 4-digit year, 2-digit week.
+    let Some(rest) = id.strip_prefix("CC-MAIN-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    let (Some(year), Some(week), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    year.len() == 4
+        && year.chars().all(|c| c.is_ascii_digit())
+        && week.len() == 2
+        && week.chars().all(|c| c.is_ascii_digit())
+}
+
 #[derive(Clone)]
 pub struct CommonCrawlProvider {
     index: String,
+    /// Cached resolution of `LATEST_INDEX_ALIAS`. Shared across clones so the
+    /// `collinfo.json` lookup happens at most once per run.
+    resolved_index: Arc<OnceCell<String>>,
     include_subdomains: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
@@ -27,11 +54,17 @@ struct CCRecord {
     url: String,
 }
 
+#[derive(Deserialize)]
+struct CollInfoEntry {
+    id: String,
+}
+
 impl CommonCrawlProvider {
     #[allow(dead_code)]
     pub fn new() -> Self {
         CommonCrawlProvider {
-            index: "CC-MAIN-2025-13".to_string(),
+            index: "CC-MAIN-2026-17".to_string(),
+            resolved_index: Arc::new(OnceCell::new()),
             include_subdomains: false,
             proxy: None,
             proxy_auth: None,
@@ -46,10 +79,15 @@ impl CommonCrawlProvider {
         }
     }
 
-    /// Creates a provider instance with a specific Common Crawl index
+    /// Creates a provider instance with a specific Common Crawl index.
+    ///
+    /// Pass [`LATEST_INDEX_ALIAS`] (`"latest"`) to defer resolution until the
+    /// first fetch — the provider will then look up `collinfo.json` and use
+    /// the most recent published index.
     pub fn with_index(index: String) -> Self {
         CommonCrawlProvider {
             index,
+            resolved_index: Arc::new(OnceCell::new()),
             include_subdomains: false,
             proxy: None,
             proxy_auth: None,
@@ -74,6 +112,48 @@ impl CommonCrawlProvider {
             proxy_auth: self.proxy_auth.clone(),
         }
     }
+
+    fn index_base_url(&self) -> &str {
+        #[cfg(test)]
+        {
+            &self.base_url
+        }
+        #[cfg(not(test))]
+        {
+            "https://index.commoncrawl.org"
+        }
+    }
+
+    /// Resolve `self.index`, fetching `collinfo.json` once if the user passed
+    /// the `latest` alias. The resolved value is memoised across all clones.
+    async fn effective_index(&self) -> Result<String> {
+        if !self.index.eq_ignore_ascii_case(LATEST_INDEX_ALIAS) {
+            return Ok(self.index.clone());
+        }
+
+        let cached = self
+            .resolved_index
+            .get_or_try_init(|| async {
+                let url = format!("{}/collinfo.json", self.index_base_url());
+                let client = self.client_config().build_client()?;
+                let body = get_with_retry(&client, &url, self.retries).await?;
+                let entries: Vec<CollInfoEntry> = serde_json::from_str(&body)?;
+                let id = entries
+                    .into_iter()
+                    .next()
+                    .map(|e| e.id)
+                    .ok_or_else(|| anyhow::anyhow!("collinfo.json returned no entries"))?;
+                if !is_valid_cc_index_id(&id) {
+                    return Err(anyhow::anyhow!(
+                        "collinfo.json returned an unexpected index id: {id:?}"
+                    ));
+                }
+                Ok(id)
+            })
+            .await?;
+
+        Ok(cached.clone())
+    }
 }
 
 impl Provider for CommonCrawlProvider {
@@ -86,31 +166,16 @@ impl Provider for CommonCrawlProvider {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            // Construct URL based on subdomain inclusion
-            #[cfg(test)]
+            let index = self.effective_index().await?;
+            let base_url = self.index_base_url();
+
             let url_pattern = if self.include_subdomains {
                 format!(
                     "{}/{}-index?url=*.{}/*&output=json",
-                    self.base_url, self.index, domain
+                    base_url, index, domain
                 )
             } else {
-                format!(
-                    "{}/{}-index?url={}/*&output=json",
-                    self.base_url, self.index, domain
-                )
-            };
-
-            #[cfg(not(test))]
-            let url_pattern = if self.include_subdomains {
-                format!(
-                    "https://index.commoncrawl.org/{}-index?url=*.{}/*&output=json",
-                    self.index, domain
-                )
-            } else {
-                format!(
-                    "https://index.commoncrawl.org/{}-index?url={}/*&output=json",
-                    self.index, domain
-                )
+                format!("{}/{}-index?url={}/*&output=json", base_url, index, domain)
             };
 
             let client = self.client_config().build_client()?;
@@ -235,7 +300,7 @@ mod tests {
     #[test]
     fn test_new_provider() {
         let provider = CommonCrawlProvider::new();
-        assert_eq!(provider.index, "CC-MAIN-2025-13");
+        assert_eq!(provider.index, "CC-MAIN-2026-17");
         assert!(!provider.include_subdomains);
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
@@ -407,7 +472,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://index.commoncrawl.org/CC-MAIN-2025-13-index?url=example.com/*&output=json"
+            "https://index.commoncrawl.org/CC-MAIN-2026-17-index?url=example.com/*&output=json"
         );
     }
 
@@ -425,7 +490,7 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://index.commoncrawl.org/CC-MAIN-2025-13-index?url=*.example.com/*&output=json"
+            "https://index.commoncrawl.org/CC-MAIN-2026-17-index?url=*.example.com/*&output=json"
         );
     }
 
@@ -433,7 +498,7 @@ mod tests {
     async fn test_fetch_urls_integration() {
         let mut server = mockito::Server::new_async().await;
         let _mock = server
-            .mock("GET", "/CC-MAIN-2025-13-index")
+            .mock("GET", "/CC-MAIN-2026-17-index")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
                 mockito::Matcher::UrlEncoded("output".into(), "json".into()),
@@ -455,5 +520,127 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page2");
+    }
+
+    #[tokio::test]
+    async fn test_latest_alias_resolves_via_collinfo() {
+        let mut server = mockito::Server::new_async().await;
+
+        let collinfo = server
+            .mock("GET", "/collinfo.json")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"[
+                    {"id": "CC-MAIN-2099-01", "name": "Latest"},
+                    {"id": "CC-MAIN-2098-50", "name": "Previous"}
+                ]"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let index_mock = server
+            .mock("GET", "/CC-MAIN-2099-01-index")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("output".into(), "json".into()),
+            ]))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/a\"}")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::with_index(LATEST_INDEX_ALIAS.to_string());
+        provider.base_url = server.url();
+
+        // First fetch triggers collinfo lookup; second reuses the cached value.
+        let first = provider.fetch_urls("example.com").await.unwrap();
+        let second = provider.fetch_urls("example.com").await.unwrap();
+
+        assert_eq!(first, vec!["https://example.com/a".to_string()]);
+        assert_eq!(second, first);
+
+        collinfo.assert();
+        index_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_latest_alias_is_case_insensitive() {
+        let mut server = mockito::Server::new_async().await;
+
+        let _collinfo = server
+            .mock("GET", "/collinfo.json")
+            .with_status(200)
+            .with_body(r#"[{"id": "CC-MAIN-2099-01"}]"#)
+            .create_async()
+            .await;
+
+        let _idx = server
+            .mock("GET", "/CC-MAIN-2099-01-index")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("")
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::with_index("LATEST".to_string());
+        provider.base_url = server.url();
+
+        let result = provider.fetch_urls("example.com").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_latest_alias_errors_on_empty_collinfo() {
+        let mut server = mockito::Server::new_async().await;
+
+        let _collinfo = server
+            .mock("GET", "/collinfo.json")
+            .with_status(200)
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::with_index(LATEST_INDEX_ALIAS.to_string());
+        provider.base_url = server.url();
+        provider.with_retries(0);
+
+        let err = provider.fetch_urls("example.com").await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("collinfo.json returned no entries"));
+    }
+
+    #[tokio::test]
+    async fn test_latest_alias_rejects_malformed_index_id() {
+        let mut server = mockito::Server::new_async().await;
+
+        let _collinfo = server
+            .mock("GET", "/collinfo.json")
+            .with_status(200)
+            .with_body(r#"[{"id": "../../etc/passwd"}]"#)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::with_index(LATEST_INDEX_ALIAS.to_string());
+        provider.base_url = server.url();
+        provider.with_retries(0);
+
+        let err = provider.fetch_urls("example.com").await.unwrap_err();
+        assert!(err.to_string().contains("unexpected index id"));
+    }
+
+    #[test]
+    fn test_is_valid_cc_index_id() {
+        assert!(is_valid_cc_index_id("CC-MAIN-2026-17"));
+        assert!(is_valid_cc_index_id("CC-MAIN-2099-01"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-2026-1"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-2026"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-2026-17-extra"));
+        assert!(!is_valid_cc_index_id("CC-MAIN-202X-17"));
+        assert!(!is_valid_cc_index_id("../../etc/passwd"));
+        assert!(!is_valid_cc_index_id(""));
     }
 }

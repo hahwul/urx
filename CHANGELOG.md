@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix Wayback Machine timeouts on large domains: switch CDX to plain-text response with `collapse=urlkey` server-side dedup, raise default timeout to 60s, and filter non-URL response bodies
+- Bump default Common Crawl index to `CC-MAIN-2026-17`, and add `--cc-index latest` to auto-resolve the newest index via `collinfo.json` (cached per run, validated against `CC-MAIN-YYYY-WW` shape)
+
 ## 0.9.0
 
 - Add ZoomEye Provider
