@@ -11,6 +11,7 @@
 - Add `--max-time SECONDS` global ceiling on provider enumeration; on deadline urx aborts in-flight fetches and returns whatever URLs have been collected so far (0 = unlimited; default)
 - Add `--rate-limit-by id=req_per_sec,...` for per-provider rate limits; providers not listed fall back to global `--rate-limit`
 - Add `--provider-config FILE` for a separate API-keys-only TOML (default `$XDG_CONFIG_HOME/urx/provider-config.toml`); precedence is CLI/env > provider-config > main config, so the main config can be safely committed to source control
+- Add `--output-dir PATH` (alias `--oD`) to split results into one file per domain (`<host>.<ext>`), with `<ext>` matching `--format`. Coexists with `--output` and stdout; the directory is created if missing; unparseable URLs land in `_unknown.<ext>`
 
 ## 0.9.0
 

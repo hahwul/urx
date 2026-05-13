@@ -967,10 +967,65 @@ async fn main() -> Result<()> {
         }
     }
 
+    if let Some(dir) = args.output_dir.clone() {
+        if let Err(e) = write_per_domain_output(&final_urls, &dir, &args.format, args.silent) {
+            if !args.silent {
+                eprintln!("Error writing per-domain output to {}: {e}", dir.display());
+            }
+        } else if args.verbose && !args.silent {
+            println!("Per-domain results written under: {}", dir.display());
+        }
+    }
+
     if args.stats && !args.silent {
         print_provider_stats(&run_result.stats);
     }
 
+    Ok(())
+}
+
+/// Best-effort filename extension matching `--format`. Anything other than
+/// json/csv falls back to `.txt`, mirroring how `create_outputter` treats
+/// unknown formats as plain text.
+fn output_dir_extension(format: &str) -> &'static str {
+    match format.to_lowercase().as_str() {
+        "json" => "json",
+        "csv" => "csv",
+        _ => "txt",
+    }
+}
+
+/// Group URLs by their host and write one file per domain into `dir`.
+/// URLs that fail to parse a host (rare after filtering) land in
+/// `_unknown.<ext>` so nothing is silently dropped.
+fn write_per_domain_output(
+    urls: &[output::UrlData],
+    dir: &std::path::Path,
+    format: &str,
+    silent: bool,
+) -> anyhow::Result<()> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut grouped: std::collections::BTreeMap<String, Vec<output::UrlData>> =
+        std::collections::BTreeMap::new();
+    for entry in urls {
+        let host = url::Url::parse(&entry.url)
+            .ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "_unknown".to_string());
+        grouped.entry(host).or_default().push(entry.clone());
+    }
+
+    let outputter = output::create_outputter(format);
+    let ext = output_dir_extension(format);
+
+    for (host, entries) in &grouped {
+        let file_name = format!("{host}.{ext}");
+        let path = dir.join(file_name);
+        outputter.output(entries, Some(path), silent)?;
+    }
     Ok(())
 }
 
@@ -1377,6 +1432,7 @@ mod tests {
             max_time: 0,
             rate_limit_by: vec![],
             provider_config: None,
+            output_dir: None,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -1445,6 +1501,55 @@ mod tests {
             "expected no URLs, got {:?}",
             result.urls
         );
+    }
+
+    #[test]
+    fn test_output_dir_extension() {
+        assert_eq!(output_dir_extension("json"), "json");
+        assert_eq!(output_dir_extension("JSON"), "json");
+        assert_eq!(output_dir_extension("csv"), "csv");
+        assert_eq!(output_dir_extension("plain"), "txt");
+        assert_eq!(output_dir_extension("anything-else"), "txt");
+    }
+
+    #[test]
+    fn test_write_per_domain_output_groups_by_host() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let urls = vec![
+            output::UrlData::new("https://example.com/a".to_string()),
+            output::UrlData::new("https://example.com/b".to_string()),
+            output::UrlData::new("https://other.test/x".to_string()),
+            output::UrlData::new("not-a-url".to_string()),
+        ];
+
+        write_per_domain_output(&urls, dir.path(), "plain", true)?;
+
+        let example = std::fs::read_to_string(dir.path().join("example.com.txt"))?;
+        assert!(example.contains("https://example.com/a"));
+        assert!(example.contains("https://example.com/b"));
+
+        let other = std::fs::read_to_string(dir.path().join("other.test.txt"))?;
+        assert!(other.contains("https://other.test/x"));
+
+        // Unparseable URLs land in _unknown.txt instead of being dropped.
+        let unknown = std::fs::read_to_string(dir.path().join("_unknown.txt"))?;
+        assert!(unknown.contains("not-a-url"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_per_domain_output_creates_missing_dir() -> anyhow::Result<()> {
+        let base = tempfile::tempdir()?;
+        let nested = base.path().join("nested/output/dir");
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        write_per_domain_output(&urls, &nested, "json", true)?;
+
+        assert!(nested.is_dir());
+        let example = std::fs::read_to_string(nested.join("example.com.json"))?;
+        assert!(example.starts_with('['));
+        assert!(example.contains("https://example.com/a"));
+        Ok(())
     }
 
     #[test]
@@ -1529,6 +1634,7 @@ mod tests {
             max_time: 0,
             rate_limit_by: vec![],
             provider_config: None,
+            output_dir: None,
         }
     }
 
@@ -1609,6 +1715,7 @@ mod tests {
             max_time: 0,
             rate_limit_by: vec![],
             provider_config: None,
+            output_dir: None,
         };
 
         let progress_manager = ProgressManager::new(true);
