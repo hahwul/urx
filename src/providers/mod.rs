@@ -9,7 +9,7 @@ mod robots;
 mod sitemap;
 mod urlscan;
 mod vt;
-mod wayback;
+pub mod wayback;
 mod zoomeye;
 pub use api_key_rotation::ApiKeyRotator;
 pub use commoncrawl::CommonCrawlProvider;

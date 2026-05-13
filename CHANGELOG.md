@@ -12,6 +12,8 @@
 - Add `--rate-limit-by id=req_per_sec,...` for per-provider rate limits; providers not listed fall back to global `--rate-limit`
 - Add `--provider-config FILE` for a separate API-keys-only TOML (default `$XDG_CONFIG_HOME/urx/provider-config.toml`); precedence is CLI/env > provider-config > main config, so the main config can be safely committed to source control
 - Add `--output-dir PATH` (alias `--oD`) to split results into one file per domain (`<host>.<ext>`), with `<ext>` matching `--format`. Coexists with `--output` and stdout; the directory is created if missing; unparseable URLs land in `_unknown.<ext>`
+- Add `--wayback-from` / `--wayback-to` to restrict Wayback Machine results to a date window. Accepts YYYY / YYYYMM / YYYYMMDD / YYYYMMDDhhmmss; partial dates pad toward the appropriate end of the range; malformed values are dropped with a warning
+- `--cc-index` now accepts a comma-separated list (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`); each entry becomes its own provider instance running in parallel, with separate stats lines
 
 ## 0.9.0
 

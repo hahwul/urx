@@ -273,6 +273,25 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     let suppress_key_errors = args.all_providers;
 
     if providers_list.iter().any(|p| p == "wayback") {
+        // Normalise --wayback-from/--wayback-to up front so a malformed value
+        // produces a single warning instead of one per domain. CDX wants
+        // YYYYMMDDhhmmss.
+        let wayback_from = args.wayback_from.as_deref().and_then(|s| {
+            let parsed = providers::wayback::normalize_cdx_timestamp(s, false);
+            if parsed.is_none() && !args.silent {
+                eprintln!("Ignoring --wayback-from={s:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss");
+            }
+            parsed
+        });
+        let wayback_to = args.wayback_to.as_deref().and_then(|s| {
+            let parsed = providers::wayback::normalize_cdx_timestamp(s, true);
+            if parsed.is_none() && !args.silent {
+                eprintln!("Ignoring --wayback-to={s:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss");
+            }
+            parsed
+        });
+        let wb_from = wayback_from.clone();
+        let wb_to = wayback_to.clone();
         add_provider(
             args,
             network_settings,
@@ -280,20 +299,29 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             &mut provider_names,
             "wayback",
             "Wayback Machine".to_string(),
-            WaybackMachineProvider::new,
+            move || {
+                let mut p = WaybackMachineProvider::new();
+                p.with_from(wb_from).with_to(wb_to);
+                p
+            },
         );
     }
 
     if providers_list.iter().any(|p| p == "cc") {
-        add_provider(
-            args,
-            network_settings,
-            &mut providers,
-            &mut provider_names,
-            "cc",
-            args.cc_index.to_string(),
-            || CommonCrawlProvider::with_index(args.cc_index.clone()),
-        );
+        // Each --cc-index entry becomes its own provider instance so they
+        // run in parallel and the per-provider stats stay distinct.
+        for index in &args.cc_index {
+            let index = index.clone();
+            add_provider(
+                args,
+                network_settings,
+                &mut providers,
+                &mut provider_names,
+                "cc",
+                index.clone(),
+                || CommonCrawlProvider::with_index(index.clone()),
+            );
+        }
     }
 
     let excluded: std::collections::HashSet<&str> =
@@ -1382,7 +1410,7 @@ mod tests {
             normalize_url: false,
             providers: vec!["mock".to_string()],
             subs: false,
-            cc_index: "CC-MAIN-2026-17".to_string(),
+            cc_index: vec!["CC-MAIN-2026-17".to_string()],
             vt_api_key: vec![],
             urlscan_api_key: vec![],
             zoomeye_api_key: vec![],
@@ -1433,6 +1461,8 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
+            wayback_from: None,
+            wayback_to: None,
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -1584,7 +1614,7 @@ mod tests {
             normalize_url: false,
             providers: vec!["mock".to_string()],
             subs: false,
-            cc_index: "CC-MAIN-2026-17".to_string(),
+            cc_index: vec!["CC-MAIN-2026-17".to_string()],
             vt_api_key: vec![],
             urlscan_api_key: vec![],
             zoomeye_api_key: vec![],
@@ -1635,6 +1665,8 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
+            wayback_from: None,
+            wayback_to: None,
         }
     }
 
@@ -1665,7 +1697,7 @@ mod tests {
             normalize_url: false,
             providers: vec![],
             subs: false,
-            cc_index: "CC-MAIN-2026-17".to_string(),
+            cc_index: vec!["CC-MAIN-2026-17".to_string()],
             vt_api_key: vec![],
             urlscan_api_key: vec![],
             zoomeye_api_key: vec![],
@@ -1716,6 +1748,8 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
+            wayback_from: None,
+            wayback_to: None,
         };
 
         let progress_manager = ProgressManager::new(true);
