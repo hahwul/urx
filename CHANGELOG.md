@@ -14,6 +14,7 @@
 - Add `--output-dir PATH` (alias `--oD`) to split results into one file per domain (`<host>.<ext>`), with `<ext>` matching `--format`. Coexists with `--output` and stdout; the directory is created if missing; unparseable URLs land in `_unknown.<ext>`
 - Add `--wayback-from` / `--wayback-to` to restrict Wayback Machine results to a date window. Accepts YYYY / YYYYMM / YYYYMMDD / YYYYMMDDhhmmss; partial dates pad toward the appropriate end of the range; malformed values are dropped with a warning
 - `--cc-index` now accepts a comma-separated list (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`); each entry becomes its own provider instance running in parallel, with separate stats lines
+- Add `github` provider for GitHub Code Search. Enabled via `--github-api-key` (or `URX_GITHUB_API_KEY`, comma-separated for rotation). Pulls URLs out of `text_matches` fragments and requires an exact host or subdomain match before keeping a URL
 
 ## 0.9.0
 
