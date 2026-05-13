@@ -708,6 +708,7 @@ mod tests {
             max_time: 0,
             rate_limit_by: vec![],
             provider_config: None,
+            output_dir: None,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

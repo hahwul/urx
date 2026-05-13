@@ -36,6 +36,19 @@ pub struct Args {
     #[clap(short, long, value_parser)]
     pub output: Option<PathBuf>,
 
+    /// Write one file per domain into this directory (e.g. `example.com.json`).
+    /// Coexists with --output (which still writes the aggregated file) and
+    /// stdout. The directory is created if missing. The extension matches
+    /// --format (`json`, `csv`, or `txt` for plain).
+    #[clap(help_heading = "Output Options")]
+    #[clap(
+        long = "output-dir",
+        alias = "oD",
+        visible_alias = "--oD",
+        value_parser
+    )]
+    pub output_dir: Option<PathBuf>,
+
     /// Output format (e.g., "plain", "json", "csv")
     #[clap(help_heading = "Output Options")]
     #[clap(short, long, default_value = "plain")]
@@ -621,6 +634,15 @@ mod tests {
         // "wayback=-1" -> non-positive, dropped
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("nokey"), Some(&1.0));
+    }
+
+    #[test]
+    fn test_output_dir_flag_parsed() {
+        let args = Args::parse_from(["urx", "--output-dir", "out/", "example.com"]);
+        assert_eq!(
+            args.output_dir.as_deref().map(|p| p.to_str().unwrap()),
+            Some("out/")
+        );
     }
 
     #[test]

@@ -24,8 +24,9 @@ Input Options:
       --domain-list <PATH>   File of newline-separated domains to scan (repeatable; merged with positional DOMAINS and stdin; `#` comments allowed)
 
 Output Options:
-  -o, --output <OUTPUT>  Output file to write results
-  -f, --format <FORMAT>  Output format (e.g., "plain", "json", "csv") [default: plain]
+  -o, --output <OUTPUT>          Output file to write results
+      --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout.
+  -f, --format <FORMAT>          Output format (e.g., "plain", "json", "csv") [default: plain]
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication
 
