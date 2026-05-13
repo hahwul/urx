@@ -1,0 +1,29 @@
+# Urx
+
+> Extracts URLs from OSINT Archives for Security Insights
+
+This is the documentation for Urx, a URL extraction tool for OSINT.
+
+## Pages
+
+- [Urx Documentation](/): Extracts URLs from OSINT Archives for Security Insights
+
+## About
+
+- [Contributing](/about/contributing/)
+
+## Getting Started
+
+- [Installation](/getting-started/installation/)
+- [Quick Start](/getting-started/quick-start/)
+
+## Guide
+
+- [Caching](/guide/caching/)
+- [CLI Options](/guide/cli-options/)
+- [Configuration](/guide/configuration/)
+- [Environment Variables](/guide/environment-variables/)
+- [Examples](/guide/examples/)
+- [Integration](/guide/integration/)
+- [Performance](/guide/performance/)
+

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Contributing - Urx</title>
+  <meta property="og:title" content="Contributing">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/about/contributing/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Contributing">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="about">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Contributing</h1>
+        <h2 id="contributing-to-urx">Contributing to Urx</h2>
+<p>Urx is an open-source project, and we welcome contributions from the community!</p>
+<h2 id="how-to-contribute">How to Contribute</h2>
+<h3 id="reporting-issues">Reporting Issues</h3>
+<p>Found a bug or have a feature request?</p>
+<ol>
+<li><strong>Search existing issues</strong> to avoid duplicates</li>
+<li><strong>Create a new issue</strong> with a clear title and description</li>
+<li><strong>Provide details</strong>:
+<ul>
+<li>Urx version (<code>urx --version</code>)</li>
+<li>Operating system</li>
+<li>Command used</li>
+<li>Expected vs actual behavior</li>
+<li>Steps to reproduce</li>
+</ul>
+</li>
+</ol>
+<p><a href="https://github.com/hahwul/urx/issues/new">Report an issue on GitHub</a></p>
+<h3 id="contributing-code">Contributing Code</h3>
+<h4 id="prerequisites">Prerequisites</h4>
+<ul>
+<li>Rust (latest stable version)</li>
+<li>Git</li>
+<li>Familiarity with the Rust ecosystem</li>
+</ul>
+<h4 id="development-setup">Development Setup</h4>
+<ol>
+<li>
+<p><strong>Fork the repository</strong> on GitHub</p>
+</li>
+<li>
+<p><strong>Clone your fork</strong>:</p>
+<pre><code class="language-bash hljs">git clone https://github.com/YOUR_USERNAME/urx.git
+cd urx
+</code></pre>
+</li>
+<li>
+<p><strong>Build the project</strong>:</p>
+<pre><code class="language-bash hljs">cargo build
+</code></pre>
+</li>
+<li>
+<p><strong>Run tests</strong>:</p>
+<pre><code class="language-bash hljs">cargo test
+</code></pre>
+</li>
+<li>
+<p><strong>Create a feature branch</strong>:</p>
+<pre><code class="language-bash hljs">git checkout -b feature/your-feature-name
+</code></pre>
+</li>
+</ol>
+<h4 id="making-changes">Making Changes</h4>
+<ol>
+<li><strong>Write clean code</strong> following Rust best practices</li>
+<li><strong>Add tests</strong> for new functionality</li>
+<li><strong>Update documentation</strong> if needed</li>
+<li><strong>Run formatting</strong>:
+<pre><code class="language-bash hljs">cargo fmt
+</code></pre>
+</li>
+<li><strong>Run linting</strong>:
+<pre><code class="language-bash hljs">cargo clippy -- --deny warnings
+</code></pre>
+</li>
+</ol>
+<h4 id="submitting-changes">Submitting Changes</h4>
+<ol>
+<li>
+<p><strong>Commit your changes</strong>:</p>
+<pre><code class="language-bash hljs">git add .
+git commit -m &quot;Add feature: description&quot;
+</code></pre>
+</li>
+<li>
+<p><strong>Push to your fork</strong>:</p>
+<pre><code class="language-bash hljs">git push origin feature/your-feature-name
+</code></pre>
+</li>
+<li>
+<p><strong>Create a Pull Request</strong> on GitHub:</p>
+<ul>
+<li>Clear title and description</li>
+<li>Reference related issues</li>
+<li>Describe changes made</li>
+<li>Include any breaking changes</li>
+</ul>
+</li>
+</ol>
+<h3 id="contributing-documentation">Contributing Documentation</h3>
+<p>Documentation improvements are always welcome!</p>
+<ul>
+<li>Fix typos or unclear explanations</li>
+<li>Add examples and use cases</li>
+<li>Improve existing guides</li>
+</ul>
+<p>Documentation is in the <code>docs/content/</code> directory using Markdown format with TOML front matter.</p>
+<h2 id="development-guidelines">Development Guidelines</h2>
+<h3 id="code-style">Code Style</h3>
+<ul>
+<li>Follow Rust standard formatting (use <code>cargo fmt</code>)</li>
+<li>Write clear, self-documenting code</li>
+<li>Add comments for complex logic</li>
+<li>Keep functions focused and small</li>
+</ul>
+<h3 id="testing">Testing</h3>
+<ul>
+<li>Add unit tests for new functions</li>
+<li>Add integration tests for features</li>
+<li>Ensure all tests pass before submitting</li>
+<li>Aim for high test coverage</li>
+</ul>
+<h3 id="commit-messages">Commit Messages</h3>
+<ul>
+<li>Use clear, descriptive commit messages</li>
+<li>Start with a verb (Add, Fix, Update, Remove)</li>
+<li>Reference issue numbers when applicable</li>
+<li>Keep the first line under 72 characters</li>
+</ul>
+<h3 id="pull-request-guidelines">Pull Request Guidelines</h3>
+<ul>
+<li>One feature/fix per pull request</li>
+<li>Keep changes focused and atomic</li>
+<li>Update CHANGELOG.md for significant changes</li>
+<li>Ensure CI passes before requesting review</li>
+</ul>
+<h2 id="project-structure">Project Structure</h2>
+<pre><code>urx/
+├── src/              # Source code
+│   ├── cli/         # CLI argument parsing
+│   ├── providers/   # URL data providers
+│   ├── filters/     # URL filtering logic
+│   ├── testers/     # HTTP testing
+│   └── network/     # Network configuration
+├── docs/            # Documentation (Hwaro site)
+├── example/         # Example configurations
+└── tests/           # Integration tests
+</code></pre>
+<h2 id="code-of-conduct">Code of Conduct</h2>
+<p>This project follows the <a href="https://github.com/hahwul/urx/blob/main/CODE_OF_CONDUCT.md">Contributor Covenant Code of Conduct</a>. By participating, you are expected to uphold this code.</p>
+<h2 id="need-help">Need Help?</h2>
+<ul>
+<li>Read the full <a href="https://github.com/hahwul/urx/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> guide</li>
+<li>Join <a href="https://github.com/hahwul/urx/discussions">GitHub Discussions</a></li>
+<li>Ask questions in issues</li>
+</ul>
+<h2 id="recognition">Recognition</h2>
+<p>All contributors are recognized in the project!</p>
+<p><a href="https://github.com/hahwul/urx/graphs/contributors"><img src="https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/CONTRIBUTORS.svg" alt="Contributors" /></a></p>
+<h2 id="license">License</h2>
+<p>By contributing to Urx, you agree that your contributions will be licensed under the project's <a href="https://github.com/hahwul/urx/blob/main/LICENSE">MIT License</a>.</p>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>

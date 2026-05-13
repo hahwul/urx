@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Examples - Urx</title>
+  <meta property="og:title" content="Examples">
+<meta property="og:type" content="website">
+<meta property="og:url" content="/guide/examples/">
+<meta property="og:image" content="/images/preview.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Examples">
+<meta name="twitter:image" content="/images/preview.jpg">
+<meta name="twitter:site" content="@hahwul">
+<meta name="twitter:creator" content="@hahwul">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="guide">
+<header class="docs-header">
+    <div class="header-left">
+        <button
+            class="menu-toggle"
+            onclick="
+                document.querySelector('.docs-sidebar').classList.toggle('open')
+            "
+            aria-label="Toggle menu"
+        >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path
+                    d="M3 5h14M3 10h14M3 15h14"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                />
+            </svg>
+        </button>
+        <a href="/" class="logo"
+            ><img
+                src="/images/urx-dark.png"
+                alt="Urx"
+                class="logo-img"
+        /></a>
+    </div>
+    <nav>
+        <a href="/getting-started/">Getting Started</a>
+        <a href="/guide/">Guide</a>
+        <a href="/about/">About</a>
+        <a
+            href="https://github.com/hahwul/urx"
+            class="nav-github"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+        >
+    </nav>
+</header>
+<div class="docs-container">
+    <aside class="docs-sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-title">Getting Started</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/getting-started/installation/"
+                        >Installation</a
+                    >
+                </li>
+                <li>
+                    <a href="/getting-started/quick-start/"
+                        >Quick Start</a
+                    >
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">Guide</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/guide/cli-options/">CLI Options</a>
+                </li>
+                <li>
+                    <a href="/guide/configuration/"
+                        >Configuration</a
+                    >
+                </li>
+                <li><a href="/guide/examples/">Examples</a></li>
+                <li>
+                    <a href="/guide/environment-variables/"
+                        >Environment Variables</a
+                    >
+                </li>
+                <li><a href="/guide/caching/">Caching</a></li>
+                <li>
+                    <a href="/guide/integration/">Integration</a>
+                </li>
+                <li>
+                    <a href="/guide/performance/">Performance</a>
+                </li>
+            </ul>
+        </div>
+        <div class="sidebar-section">
+            <div class="sidebar-title">About</div>
+            <ul class="sidebar-links">
+                <li>
+                    <a href="/about/contributing/"
+                        >Contributing</a
+                    >
+                </li>
+            </ul>
+        </div>
+    </aside>
+    <main class="docs-main">
+        <h1>Examples</h1>
+        <h2 id="usage-examples">Usage Examples</h2>
+<h3 id="basic-usage">Basic Usage</h3>
+<h4 id="single-domain">Single Domain</h4>
+<pre><code class="language-bash hljs">urx example.com
+</code></pre>
+<h4 id="multiple-domains">Multiple Domains</h4>
+<pre><code class="language-bash hljs">urx example.com example.org
+</code></pre>
+<h4 id="from-standard-input">From Standard Input</h4>
+<pre><code class="language-bash hljs">cat domains.txt | urx
+</code></pre>
+<h4 id="file-input">File Input</h4>
+<pre><code class="language-bash hljs"># Single file
+urx --files urls.txt
+
+# Multiple files (WARC, compressed, text)
+urx --files urls.txt archive.warc data.gz
+urx --files urls.txt --files archive.warc
+
+# With filters
+urx --files data.txt --patterns api,admin -f json
+</code></pre>
+<h2 id="output-formats">Output Formats</h2>
+<h3 id="save-to-file">Save to File</h3>
+<pre><code class="language-bash hljs">urx example.com -o results.txt
+</code></pre>
+<h3 id="json-format">JSON Format</h3>
+<pre><code class="language-bash hljs">urx example.com -f json -o results.json
+</code></pre>
+<h3 id="csv-format">CSV Format</h3>
+<pre><code class="language-bash hljs">urx example.com -f csv -o results.csv
+</code></pre>
+<h2 id="filtering-examples">Filtering Examples</h2>
+<h3 id="include-specific-extensions">Include Specific Extensions</h3>
+<pre><code class="language-bash hljs"># JavaScript files only
+urx example.com -e js
+
+# Multiple extensions
+urx example.com -e js,php,aspx
+</code></pre>
+<h3 id="exclude-extensions">Exclude Extensions</h3>
+<pre><code class="language-bash hljs">urx example.com --exclude-extensions html,txt
+</code></pre>
+<h3 id="pattern-matching">Pattern Matching</h3>
+<pre><code class="language-bash hljs"># Include patterns
+urx example.com --patterns api,v1,graphql
+
+# Exclude patterns
+urx example.com --exclude-patterns static,images
+
+# Combined
+urx example.com --patterns api --exclude-patterns test,dev
+</code></pre>
+<h3 id="using-presets">Using Presets</h3>
+<pre><code class="language-bash hljs"># Exclude images
+urx example.com -p no-images
+
+# Exclude all resources
+urx example.com -p no-resources
+
+# JavaScript files only
+urx example.com -p only-js
+</code></pre>
+<h3 id="advanced-filtering">Advanced Filtering</h3>
+<pre><code class="language-bash hljs"># Multiple filters
+urx example.com -e js,php --patterns admin,login --min-length 20
+
+# URL length constraints
+urx example.com --min-length 50 --max-length 200
+</code></pre>
+<h2 id="provider-selection">Provider Selection</h2>
+<h3 id="specific-providers">Specific Providers</h3>
+<pre><code class="language-bash hljs"># Only Wayback Machine and OTX
+urx example.com --providers wayback,otx
+
+# All available providers (with API keys)
+urx example.com --providers wayback,cc,otx,vt,urlscan,zoomeye
+</code></pre>
+<h3 id="with-api-keys">With API Keys</h3>
+<h4 id="command-line">Command Line</h4>
+<pre><code class="language-bash hljs">urx example.com --vt-api-key=YOUR_KEY --urlscan-api-key=YOUR_KEY
+urx example.com --zoomeye-api-key=YOUR_KEY --providers zoomeye
+</code></pre>
+<h4 id="environment-variables">Environment Variables</h4>
+<pre><code class="language-bash hljs">export URX_VT_API_KEY=YOUR_KEY
+export URX_URLSCAN_API_KEY=YOUR_KEY
+export URX_ZOOMEYE_API_KEY=YOUR_KEY
+urx example.com --providers=vt,urlscan,zoomeye
+</code></pre>
+<h4 id="api-key-rotation">API Key Rotation</h4>
+<pre><code class="language-bash hljs"># Multiple keys for rate limit distribution
+urx example.com --vt-api-key=key1 --vt-api-key=key2 --vt-api-key=key3
+
+# Or with environment variable (comma-separated)
+URX_VT_API_KEY=key1,key2,key3 urx example.com
+</code></pre>
+<h3 id="zoomeye-provider">ZoomEye Provider</h3>
+<pre><code class="language-bash hljs"># Basic ZoomEye usage
+urx example.com --zoomeye-api-key YOUR_KEY --providers zoomeye
+
+# With subdomains
+urx example.com --zoomeye-api-key YOUR_KEY --providers zoomeye --subs
+
+# Auto-enabled when key is provided
+export URX_ZOOMEYE_API_KEY=YOUR_KEY
+urx example.com
+</code></pre>
+<h2 id="discovery-options">Discovery Options</h2>
+<h3 id="exclude-discovery-features">Exclude Discovery Features</h3>
+<pre><code class="language-bash hljs"># Exclude robots.txt
+urx example.com --exclude-robots
+
+# Exclude sitemap.xml
+urx example.com --exclude-sitemap
+
+# Exclude both
+urx example.com --exclude-robots --exclude-sitemap
+</code></pre>
+<h2 id="testing-amp-validation">Testing &amp; Validation</h2>
+<h3 id="include-subdomains">Include Subdomains</h3>
+<pre><code class="language-bash hljs">urx example.com --subs
+</code></pre>
+<h3 id="check-http-status">Check HTTP Status</h3>
+<pre><code class="language-bash hljs">urx example.com --check-status
+</code></pre>
+<h3 id="extract-links">Extract Links</h3>
+<pre><code class="language-bash hljs">urx example.com --extract-links
+</code></pre>
+<h3 id="status-filtering">Status Filtering</h3>
+<pre><code class="language-bash hljs"># Include only successful responses
+urx example.com --check-status --include-status 200
+
+# Include redirects and success
+urx example.com --check-status --include-status 200,30x
+
+# Exclude errors
+urx example.com --check-status --exclude-status 404,50x
+</code></pre>
+<h2 id="network-configuration">Network Configuration</h2>
+<h3 id="proxy-usage">Proxy Usage</h3>
+<pre><code class="language-bash hljs">urx example.com --proxy http://localhost:8080
+</code></pre>
+<h3 id="proxy-with-authentication">Proxy with Authentication</h3>
+<pre><code class="language-bash hljs">urx example.com --proxy http://localhost:8080 --proxy-auth username:password
+</code></pre>
+<h3 id="custom-timeouts-and-parallelism">Custom Timeouts and Parallelism</h3>
+<pre><code class="language-bash hljs">urx example.com --timeout 60 --parallel 10
+</code></pre>
+<h3 id="skip-ssl-verification">Skip SSL Verification</h3>
+<pre><code class="language-bash hljs">urx example.com --insecure
+</code></pre>
+<h3 id="random-user-agent">Random User-Agent</h3>
+<pre><code class="language-bash hljs">urx example.com --random-agent
+</code></pre>
+<h3 id="complete-network-configuration">Complete Network Configuration</h3>
+<pre><code class="language-bash hljs">urx example.com \
+  --proxy http://localhost:8080 \
+  --timeout 60 \
+  --parallel 10 \
+  --retries 5 \
+  --insecure \
+  --random-agent
+</code></pre>
+<h2 id="url-normalization">URL Normalization</h2>
+<h3 id="basic-normalization">Basic Normalization</h3>
+<pre><code class="language-bash hljs">urx example.com --normalize-url
+</code></pre>
+<h3 id="with-endpoint-merging">With Endpoint Merging</h3>
+<pre><code class="language-bash hljs">urx example.com --normalize-url --merge-endpoint
+</code></pre>
+<h2 id="caching-amp-incremental-scanning">Caching &amp; Incremental Scanning</h2>
+<h3 id="sqlite-cache-default">SQLite Cache (Default)</h3>
+<pre><code class="language-bash hljs">urx example.com --cache-type sqlite --cache-path ~/.urx/cache.db
+</code></pre>
+<h3 id="redis-cache">Redis Cache</h3>
+<pre><code class="language-bash hljs">urx example.com --cache-type redis --redis-url redis://localhost:6379
+</code></pre>
+<h3 id="incremental-mode">Incremental Mode</h3>
+<pre><code class="language-bash hljs"># Only return new URLs not seen before
+urx example.com --incremental
+</code></pre>
+<h3 id="custom-ttl">Custom TTL</h3>
+<pre><code class="language-bash hljs"># Set cache TTL to 12 hours
+urx example.com --cache-ttl 43200
+</code></pre>
+<h3 id="disable-cache">Disable Cache</h3>
+<pre><code class="language-bash hljs">urx example.com --no-cache
+</code></pre>
+<h2 id="pipeline-integration">Pipeline Integration</h2>
+<h3 id="filter-with-grep">Filter with grep</h3>
+<pre><code class="language-bash hljs">echo &quot;example.com&quot; | urx | grep &quot;login&quot; &gt; targets.txt
+</code></pre>
+<h3 id="chain-with-other-tools">Chain with Other Tools</h3>
+<pre><code class="language-bash hljs">cat domains.txt | urx --patterns api | other-tool
+</code></pre>
+<h3 id="security-tool-integration">Security Tool Integration</h3>
+<pre><code class="language-bash hljs"># With Nuclei for vulnerability scanning
+urx example.com -e js | nuclei -t xss
+
+# With httpx for HTTP probing
+urx example.com | httpx -silent
+
+# With gf patterns
+urx example.com | gf xss
+</code></pre>
+<h2 id="complex-scenarios">Complex Scenarios</h2>
+<h3 id="complete-bug-bounty-workflow">Complete Bug Bounty Workflow</h3>
+<pre><code class="language-bash hljs">urx target.com \
+  --subs \
+  -e js,json,xml \
+  --patterns api,v1,v2,admin,panel \
+  --exclude-patterns cdn,static \
+  --check-status \
+  --include-status 200,30x \
+  --incremental \
+  --parallel 15 \
+  -o results.txt
+</code></pre>
+<h3 id="api-endpoint-discovery">API Endpoint Discovery</h3>
+<pre><code class="language-bash hljs">urx example.com \
+  --patterns api,graphql,rest,v1,v2,v3 \
+  -e json,xml \
+  --exclude-patterns test,staging \
+  -f json \
+  -o api-endpoints.json
+</code></pre>
+<h3 id="javascript-analysis-pipeline">JavaScript Analysis Pipeline</h3>
+<pre><code class="language-bash hljs">urx target.com \
+  -p only-js \
+  --check-status \
+  --include-status 200 \
+  --extract-links \
+  | tee js-files.txt \
+  | nuclei -t exposures/
+</code></pre>
+     <div class="docs-footer">
+      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
+    </div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+<script>
+(function() {
+  var path = window.location.pathname.replace(/\/$/, '') + '/';
+  var links = document.querySelectorAll('.sidebar-links a');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    if (href) {
+      var linkPath = href.replace(/\/$/, '') + '/';
+      if (linkPath === path) {
+        link.classList.add('active');
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
+    </main>
+</div>
