@@ -117,7 +117,11 @@ Provider Options:
       --subs
           Include subdomains when searching
       --cc-index <CC_INDEX>
-          Common Crawl index to use (e.g., CC-MAIN-2026-17, or "latest" to auto-resolve from collinfo.json) [default: CC-MAIN-2026-17]
+          Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` resolves the newest via collinfo.json. [default: CC-MAIN-2026-17]
+      --wayback-from <DATE>
+          Restrict Wayback Machine results to snapshots at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
+      --wayback-to <DATE>
+          Restrict Wayback Machine results to snapshots at or before DATE (same format as --wayback-from)
       --vt-api-key <VT_API_KEY>
           API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>

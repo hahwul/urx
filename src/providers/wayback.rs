@@ -5,6 +5,75 @@ use std::pin::Pin;
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
 
+/// Normalise a user-supplied date into a 14-digit Wayback CDX timestamp
+/// (`YYYYMMDDhhmmss`). Accepts `YYYY`, `YYYYMM`, `YYYYMMDD` and the full
+/// 14-digit form. When `end_of_range` is true the missing tail is padded
+/// toward the end of the range (`31 23:59:59`) rather than the start
+/// (`01 00:00:00`) — pass `false` for `--wayback-from`, `true` for
+/// `--wayback-to`. Returns `None` for malformed input so the CLI can warn.
+pub fn normalize_cdx_timestamp(input: &str, end_of_range: bool) -> Option<String> {
+    let digits: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
+    if !matches!(digits.len(), 4 | 6 | 8 | 14) {
+        return None;
+    }
+
+    let year: u32 = digits.get(0..4)?.parse().ok()?;
+    if !(1996..=9999).contains(&year) {
+        // CDX coverage only starts in 1996; reject anything earlier.
+        return None;
+    }
+
+    // Pad each segment toward the appropriate end of the range.
+    let month = match digits.get(4..6) {
+        Some(s) => {
+            let m: u32 = s.parse().ok()?;
+            if !(1..=12).contains(&m) {
+                return None;
+            }
+            format!("{m:02}")
+        }
+        None => {
+            if end_of_range {
+                "12".to_string()
+            } else {
+                "01".to_string()
+            }
+        }
+    };
+    let day = match digits.get(6..8) {
+        Some(s) => {
+            let d: u32 = s.parse().ok()?;
+            if !(1..=31).contains(&d) {
+                return None;
+            }
+            format!("{d:02}")
+        }
+        None => {
+            if end_of_range {
+                // 28 is the only day every month has — CDX accepts impossible
+                // dates so 31 also works, but 28 avoids false widening at
+                // month-only granularity. Wait: we WANT widening for `to`.
+                // Use 31; CDX clamps gracefully.
+                "31".to_string()
+            } else {
+                "01".to_string()
+            }
+        }
+    };
+    let tail = match digits.get(8..14) {
+        Some(s) => s.to_string(),
+        None => {
+            if end_of_range {
+                "235959".to_string()
+            } else {
+                "000000".to_string()
+            }
+        }
+    };
+
+    Some(format!("{year:04}{month}{day}{tail}"))
+}
+
 #[derive(Clone)]
 pub struct WaybackMachineProvider {
     include_subdomains: bool,
@@ -16,6 +85,10 @@ pub struct WaybackMachineProvider {
     insecure: bool,
     parallel: u32,
     rate_limit: Option<f32>,
+    /// CDX `from=` timestamp (already normalised to 14 digits).
+    from: Option<String>,
+    /// CDX `to=` timestamp (already normalised to 14 digits).
+    to: Option<String>,
     #[cfg(test)]
     base_url: String,
 }
@@ -33,9 +106,25 @@ impl WaybackMachineProvider {
             insecure: false,
             parallel: 5,
             rate_limit: None,
+            from: None,
+            to: None,
             #[cfg(test)]
             base_url: "https://web.archive.org".to_string(),
         }
+    }
+
+    /// Restrict crawled snapshots to those at or after `ts` (14-digit CDX
+    /// timestamp, see `normalize_cdx_timestamp`). Pass `None` to clear.
+    pub fn with_from(&mut self, ts: Option<String>) -> &mut Self {
+        self.from = ts;
+        self
+    }
+
+    /// Restrict crawled snapshots to those at or before `ts`. Pass `None` to
+    /// clear. Pair with `with_from` for a closed window.
+    pub fn with_to(&mut self, ts: Option<String>) -> &mut Self {
+        self.to = ts;
+        self
     }
 
     #[cfg(test)]
@@ -74,7 +163,7 @@ impl Provider for WaybackMachineProvider {
             // Plain-text streaming response is far more reliable than output=json
             // for large domains (the JSON variant buffers the entire result server-side
             // and frequently times out). collapse=urlkey trims server-side duplicates.
-            let url = if self.include_subdomains {
+            let mut url = if self.include_subdomains {
                 format!(
                     "{}/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey",
                     base_url
@@ -85,6 +174,14 @@ impl Provider for WaybackMachineProvider {
                     base_url
                 )
             };
+            if let Some(ts) = &self.from {
+                url.push_str("&from=");
+                url.push_str(ts);
+            }
+            if let Some(ts) = &self.to {
+                url.push_str("&to=");
+                url.push_str(ts);
+            }
 
             let client = self.client_config().build_client()?;
             let text = get_with_retry(&client, &url, self.retries).await?;
@@ -422,5 +519,90 @@ mod tests {
         let urls = provider.fetch_urls("example.com").await.unwrap();
 
         assert_eq!(urls, vec!["http://example.com/real".to_string()]);
+    }
+
+    #[test]
+    fn test_normalize_cdx_timestamp_year_only() {
+        assert_eq!(
+            normalize_cdx_timestamp("2020", false).as_deref(),
+            Some("20200101000000")
+        );
+        assert_eq!(
+            normalize_cdx_timestamp("2020", true).as_deref(),
+            Some("20201231235959")
+        );
+    }
+
+    #[test]
+    fn test_normalize_cdx_timestamp_year_month() {
+        assert_eq!(
+            normalize_cdx_timestamp("202003", false).as_deref(),
+            Some("20200301000000")
+        );
+        assert_eq!(
+            normalize_cdx_timestamp("202003", true).as_deref(),
+            Some("20200331235959")
+        );
+    }
+
+    #[test]
+    fn test_normalize_cdx_timestamp_day_and_full() {
+        assert_eq!(
+            normalize_cdx_timestamp("20200315", false).as_deref(),
+            Some("20200315000000")
+        );
+        assert_eq!(
+            normalize_cdx_timestamp("20200315123045", false).as_deref(),
+            Some("20200315123045")
+        );
+        // Hyphens and slashes are stripped before length check.
+        assert_eq!(
+            normalize_cdx_timestamp("2020-03-15", false).as_deref(),
+            Some("20200315000000")
+        );
+    }
+
+    #[test]
+    fn test_normalize_cdx_timestamp_rejects_invalid() {
+        // Length not in {4, 6, 8, 14}.
+        assert!(normalize_cdx_timestamp("20203", false).is_none());
+        // Out-of-range month.
+        assert!(normalize_cdx_timestamp("202013", false).is_none());
+        // Out-of-range day.
+        assert!(normalize_cdx_timestamp("20200300", false).is_none());
+        // Pre-1996 year.
+        assert!(normalize_cdx_timestamp("1995", false).is_none());
+        // Empty / non-digit garbage.
+        assert!(normalize_cdx_timestamp("oops", false).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_passes_date_range() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+                mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
+                mockito::Matcher::UrlEncoded("from".into(), "20200101000000".into()),
+                mockito::Matcher::UrlEncoded("to".into(), "20201231235959".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "text/plain")
+            .with_body("http://example.com/page\n")
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_from(Some("20200101000000".to_string()));
+        provider.with_to(Some("20201231235959".to_string()));
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["http://example.com/page".to_string()]);
+        mock.assert();
     }
 }

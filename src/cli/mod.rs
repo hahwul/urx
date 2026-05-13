@@ -93,9 +93,25 @@ pub struct Args {
     pub subs: bool,
 
     #[clap(help_heading = "Provider Options")]
-    /// Common Crawl index to use (e.g., CC-MAIN-2026-17, or "latest" to auto-resolve from collinfo.json)
-    #[clap(long, default_value = "CC-MAIN-2026-17")]
-    pub cc_index: String,
+    /// Common Crawl index to use. Accepts a comma-separated list to query
+    /// multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`).
+    /// The literal `latest` resolves to the newest index via collinfo.json.
+    #[clap(long, default_value = "CC-MAIN-2026-17", value_delimiter = ',')]
+    pub cc_index: Vec<String>,
+
+    /// Restrict Wayback Machine results to snapshots at or after this date.
+    /// Accepts YYYY, YYYYMM, YYYYMMDD, or the full 14-digit CDX timestamp.
+    /// Partial dates pad toward the start of the range.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long)]
+    pub wayback_from: Option<String>,
+
+    /// Restrict Wayback Machine results to snapshots at or before this date.
+    /// Same format as --wayback-from; partial dates pad toward the end of
+    /// the range.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long)]
+    pub wayback_to: Option<String>,
 
     #[clap(help_heading = "Provider Options")]
     /// API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
@@ -421,7 +437,7 @@ mod tests {
         assert_eq!(args.domains, vec!["example.com"]);
         assert_eq!(args.format, "plain");
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
-        assert_eq!(args.cc_index, "CC-MAIN-2026-17");
+        assert_eq!(args.cc_index, vec!["CC-MAIN-2026-17"]);
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
         assert!(args.include_robots);
@@ -634,6 +650,31 @@ mod tests {
         // "wayback=-1" -> non-positive, dropped
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("nokey"), Some(&1.0));
+    }
+
+    #[test]
+    fn test_cc_index_accepts_comma_separated_list() {
+        let args = Args::parse_from([
+            "urx",
+            "--cc-index",
+            "CC-MAIN-2026-17,CC-MAIN-2025-51",
+            "example.com",
+        ]);
+        assert_eq!(args.cc_index, vec!["CC-MAIN-2026-17", "CC-MAIN-2025-51"]);
+    }
+
+    #[test]
+    fn test_wayback_date_flags_parsed() {
+        let args = Args::parse_from([
+            "urx",
+            "--wayback-from",
+            "2020",
+            "--wayback-to",
+            "2023-06-30",
+            "example.com",
+        ]);
+        assert_eq!(args.wayback_from.as_deref(), Some("2020"));
+        assert_eq!(args.wayback_to.as_deref(), Some("2023-06-30"));
     }
 
     #[test]

@@ -337,9 +337,20 @@ impl Config {
             args.subs = true;
         }
 
-        if args.cc_index == "CC-MAIN-2026-17" {
+        // Treat the default singleton list as "not user-supplied" so the file
+        // value wins. Config file still accepts a single string; we split it
+        // on commas so users can configure multi-index there too.
+        let cc_default = vec!["CC-MAIN-2026-17".to_string()];
+        if args.cc_index == cc_default {
             if let Some(cc_index) = &self.provider.cc_index {
-                args.cc_index = cc_index.clone();
+                let split: Vec<String> = cc_index
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !split.is_empty() {
+                    args.cc_index = split;
+                }
             }
         }
 
@@ -658,7 +669,7 @@ mod tests {
             normalize_url: false,
             providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
             subs: false,
-            cc_index: "CC-MAIN-2026-17".to_string(),
+            cc_index: vec!["CC-MAIN-2026-17".to_string()],
             vt_api_key: vec![],
             urlscan_api_key: vec![],
             zoomeye_api_key: vec![],
@@ -709,6 +720,8 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
+            wayback_from: None,
+            wayback_to: None,
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");
