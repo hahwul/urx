@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 mod api_key_rotation;
 mod commoncrawl;
+mod github;
 mod otx;
 mod robots;
 mod sitemap;
@@ -13,6 +14,7 @@ pub mod wayback;
 mod zoomeye;
 pub use api_key_rotation::ApiKeyRotator;
 pub use commoncrawl::CommonCrawlProvider;
+pub use github::GitHubProvider;
 pub use otx::OTXProvider;
 pub use robots::RobotsProvider;
 pub use sitemap::SitemapProvider;

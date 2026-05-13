@@ -126,6 +126,8 @@ Provider Options:
           API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>
           API key for Urlscan (can be used multiple times for rotation, can also use URX_URLSCAN_API_KEY environment variable with comma-separated keys)
+      --github-api-key <GITHUB_API_KEY>
+          Personal access token for the GitHub Code Search provider (also reads URX_GITHUB_API_KEY, comma-separated for rotation)
 
 Discovery Options:
       --exclude-robots   Exclude robots.txt discovery

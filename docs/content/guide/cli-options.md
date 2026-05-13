@@ -42,6 +42,7 @@ Provider Options:
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
   --urlscan-api-key <URLSCAN_API_KEY>   API key for Urlscan
   --zoomeye-api-key <ZOOMEYE_API_KEY>   API key for ZoomEye
+  --github-api-key <GITHUB_API_KEY>     Personal access token for GitHub Code Search (URX_GITHUB_API_KEY)
 
 Discovery Options:
   --exclude-robots   Exclude robots.txt discovery

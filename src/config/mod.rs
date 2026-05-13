@@ -722,6 +722,7 @@ mod tests {
             output_dir: None,
             wayback_from: None,
             wayback_to: None,
+            github_api_key: vec![],
         };
         assert_eq!(args.output, None);
         assert_eq!(args.format, "plain");

@@ -24,8 +24,8 @@ use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{
-    CommonCrawlProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider,
-    VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
+    CommonCrawlProvider, GitHubProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider,
+    UrlscanProvider, VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
 };
 use readers::read_urls_from_file;
 use runner::{add_provider, process_domains, ProviderRunResult};
@@ -88,6 +88,12 @@ fn provider_catalog() -> &'static [ProviderInfo] {
             display_name: "ZoomEye",
             requires_key: true,
             summary: "ZoomEye search (URX_ZOOMEYE_API_KEY)",
+        },
+        ProviderInfo {
+            id: "github",
+            display_name: "GitHub",
+            requires_key: true,
+            summary: "GitHub Code Search (URX_GITHUB_API_KEY)",
         },
         ProviderInfo {
             id: "robots",
@@ -202,10 +208,11 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
 
-    // Get VirusTotal and Urlscan API keys (from CLI and env vars)
+    // Get API keys (from CLI and env vars)
     let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
     let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
     let zoomeye_api_keys = parse_api_keys(args.zoomeye_api_key.clone(), "URX_ZOOMEYE_API_KEY");
+    let github_api_keys = parse_api_keys(args.github_api_key.clone(), "URX_GITHUB_API_KEY");
 
     // Build the effective providers list. `--all-providers` expands to every
     // catalog entry whose required key (if any) is available; otherwise we
@@ -222,6 +229,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                     "vt" => !vt_api_keys.is_empty(),
                     "urlscan" => !urlscan_api_keys.is_empty(),
                     "zoomeye" => !zoomeye_api_keys.is_empty(),
+                    "github" => !github_api_keys.is_empty(),
                     _ => false,
                 }
             })
@@ -256,6 +264,13 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             &mut providers_list,
             &zoomeye_api_keys,
             "zoomeye",
+            args.verbose,
+            args.silent,
+        );
+        auto_enable_provider(
+            &mut providers_list,
+            &github_api_keys,
+            "github",
             args.verbose,
             args.silent,
         );
@@ -408,6 +423,22 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             );
         } else if !args.silent && !suppress_key_errors {
             eprintln!("Error: The ZoomEye provider (zoomeye) requires an API key. Please use --zoomeye-api-key or set the URX_ZOOMEYE_API_KEY environment variable.");
+        }
+    }
+
+    if providers_list.iter().any(|p| p == "github") {
+        if !github_api_keys.is_empty() {
+            add_provider(
+                args,
+                network_settings,
+                &mut providers,
+                &mut provider_names,
+                "github",
+                "GitHub".to_string(),
+                || GitHubProvider::new_with_keys(github_api_keys.clone()),
+            );
+        } else if !args.silent && !suppress_key_errors {
+            eprintln!("Error: The GitHub provider (github) requires an API key. Please use --github-api-key or set the URX_GITHUB_API_KEY environment variable.");
         }
     }
 
@@ -1463,6 +1494,7 @@ mod tests {
             output_dir: None,
             wayback_from: None,
             wayback_to: None,
+            github_api_key: vec![],
         };
 
         let progress_manager = ProgressManager::new(true);
@@ -1667,6 +1699,7 @@ mod tests {
             output_dir: None,
             wayback_from: None,
             wayback_to: None,
+            github_api_key: vec![],
         }
     }
 
@@ -1750,6 +1783,7 @@ mod tests {
             output_dir: None,
             wayback_from: None,
             wayback_to: None,
+            github_api_key: vec![],
         };
 
         let progress_manager = ProgressManager::new(true);
