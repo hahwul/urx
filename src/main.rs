@@ -750,14 +750,16 @@ async fn process_domains_with_cache(
     providers: &[Box<dyn Provider>],
     provider_names: &[String],
     cache_manager: Option<&CacheManager>,
-) -> ProviderRunResult {
+) -> Result<ProviderRunResult> {
     use std::collections::{HashMap, HashSet};
 
     let mut final_result = ProviderRunResult::default();
 
     // If caching is disabled, use normal processing
     if cache_manager.is_none() {
-        return process_domains(domains, args, progress_manager, providers, provider_names).await;
+        return Ok(
+            process_domains(domains, args, progress_manager, providers, provider_names).await,
+        );
     }
 
     let cache = cache_manager.unwrap();
@@ -768,12 +770,8 @@ async fn process_domains_with_cache(
     for domain in &domains {
         let cache_key = create_cache_key(domain, args);
 
-        if cache
-            .is_valid(&cache_key, args.cache_ttl)
-            .await
-            .unwrap_or(false)
-        {
-            if let Ok(Some(cached_entry)) = cache.get_cached_urls(&cache_key).await {
+        if cache.is_valid(&cache_key, args.cache_ttl).await? {
+            if let Some(cached_entry) = cache.get_cached_urls(&cache_key).await? {
                 verbose_print(args, format!("Using cached results for domain: {}", domain));
 
                 if args.incremental {
@@ -829,10 +827,7 @@ async fn process_domains_with_cache(
 
                 let domain_fresh_urls = collect_domain_urls(&fresh_run.urls, domain, args.subs);
 
-                let new_urls = cache
-                    .get_new_urls(&cache_key, &domain_fresh_urls)
-                    .await
-                    .unwrap_or(domain_fresh_urls.clone());
+                let new_urls = cache.get_new_urls(&cache_key, &domain_fresh_urls).await?;
 
                 if !new_urls.is_empty() {
                     verbose_print(
@@ -854,7 +849,7 @@ async fn process_domains_with_cache(
 
                 // Update cache with all fresh URLs for this domain
                 let entry = CacheEntry::new(domain_fresh_urls.into_iter().collect());
-                let _ = cache.store_urls(&cache_key, &entry).await;
+                cache.store_urls(&cache_key, &entry).await?;
             }
         } else {
             // Normal mode: merge all fresh URLs (and their providers) into the result.
@@ -876,16 +871,16 @@ async fn process_domains_with_cache(
 
                 if !domain_urls.is_empty() {
                     let entry = CacheEntry::new(domain_urls);
-                    let _ = cache.store_urls(&cache_key, &entry).await;
+                    cache.store_urls(&cache_key, &entry).await?;
                 }
             }
         }
     }
 
     // Clean up expired cache entries
-    let _ = cache.cleanup_expired(args.cache_ttl * 2).await;
+    cache.cleanup_expired(args.cache_ttl * 2).await?;
 
-    final_result
+    Ok(final_result)
 }
 
 #[tokio::main]
@@ -971,7 +966,7 @@ async fn main() -> Result<()> {
             &provider_names,
             cache_manager.as_ref(),
         )
-        .await
+        .await?
     };
 
     // URL-only view for filters (they don't care about sources).
@@ -1570,6 +1565,31 @@ mod tests {
         fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
+    struct FailingCacheBackend;
+
+    #[async_trait::async_trait]
+    impl cache::CacheBackend for FailingCacheBackend {
+        async fn get(&self, _key: &CacheKey) -> Result<Option<CacheEntry>> {
+            Err(anyhow::anyhow!("cache get failed"))
+        }
+
+        async fn set(&self, _key: &CacheKey, _entry: &CacheEntry) -> Result<()> {
+            Err(anyhow::anyhow!("cache set failed"))
+        }
+
+        async fn delete(&self, _key: &CacheKey) -> Result<()> {
+            Err(anyhow::anyhow!("cache delete failed"))
+        }
+
+        async fn cleanup_expired(&self, _ttl_seconds: u64) -> Result<()> {
+            Err(anyhow::anyhow!("cache cleanup failed"))
+        }
+
+        async fn exists(&self, _key: &CacheKey) -> Result<bool> {
+            Err(anyhow::anyhow!("cache exists failed"))
+        }
+    }
+
     #[tokio::test]
     async fn test_process_domains() {
         // Create mock providers
@@ -1751,6 +1771,31 @@ mod tests {
             Ok(_) => panic!("expected invalid cache type to error"),
             Err(err) => assert!(err.to_string().contains("Invalid cache type")),
         }
+    }
+
+    #[tokio::test]
+    async fn test_process_domains_with_cache_surfaces_backend_errors() {
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(MockProvider::new(
+            vec!["https://example.com/page1".to_string()],
+            false,
+        ))];
+        let provider_names = vec!["MockProvider".to_string()];
+        let cache = CacheManager::new_for_test(Box::new(FailingCacheBackend));
+        let args = build_test_args();
+        let progress_manager = ProgressManager::new(true);
+
+        let err = process_domains_with_cache(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+            Some(&cache),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("cache get failed"));
     }
 
     #[test]

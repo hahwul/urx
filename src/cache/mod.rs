@@ -79,6 +79,11 @@ impl CacheManager {
     pub async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
         self.backend.cleanup_expired(ttl_seconds).await
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(backend: Box<dyn CacheBackend>) -> Self {
+        Self { backend }
+    }
 }
 
 #[cfg(test)]
