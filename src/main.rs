@@ -229,9 +229,12 @@ pub fn auto_enable_provider(
     }
 }
 
+fn valid_provider_ids() -> std::collections::HashSet<&'static str> {
+    provider_catalog().iter().map(|p| p.id).collect()
+}
+
 fn validate_provider_ids(ids: &[String], flag_name: &str) -> Result<()> {
-    let valid_ids: std::collections::HashSet<&str> =
-        provider_catalog().iter().map(|p| p.id).collect();
+    let valid_ids = valid_provider_ids();
 
     let unknown: Vec<&str> = ids
         .iter()
@@ -250,6 +253,11 @@ fn validate_provider_ids(ids: &[String], flag_name: &str) -> Result<()> {
         unknown.join(", "),
         allowed.join(", ")
     ))
+}
+
+fn validate_rate_limit_override_ids(args: &Args) -> Result<()> {
+    let override_ids: Vec<String> = args.rate_limit_overrides().into_keys().collect();
+    validate_provider_ids(&override_ids, "--rate-limit-by")
 }
 
 fn effective_provider_ids(args: &Args) -> Vec<String> {
@@ -326,6 +334,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
 
     validate_provider_ids(&args.providers, "--providers")?;
     validate_provider_ids(&args.exclude_providers, "--exclude-providers")?;
+    validate_rate_limit_override_ids(args)?;
 
     // Get API keys (from CLI and env vars)
     let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
@@ -1280,6 +1289,20 @@ mod tests {
             Err(err) => assert!(err
                 .to_string()
                 .contains("Unknown provider id(s) in --exclude-providers")),
+        }
+    }
+
+    #[test]
+    fn test_initialize_providers_rejects_unknown_rate_limit_override_ids() {
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.rate_limit_by = vec!["bogus=1".to_string()];
+
+        match initialize_providers(&args, &NetworkSettings::default()) {
+            Ok(_) => panic!("expected unknown rate-limit override id to error"),
+            Err(err) => assert!(err
+                .to_string()
+                .contains("Unknown provider id(s) in --rate-limit-by")),
         }
     }
 
