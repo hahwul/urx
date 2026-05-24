@@ -163,18 +163,24 @@ fn collect_domains(args: &Args) -> Result<Vec<String>> {
 }
 
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
+fn parse_env_api_keys(env_var_name: &str) -> Vec<String> {
+    std::env::var(env_var_name)
+        .ok()
+        .map(|env_keys| {
+            env_keys
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> {
     let mut all_keys = cli_keys;
 
     // Add keys from environment variable if present (comma-separated)
-    if let Ok(env_keys) = std::env::var(env_var_name) {
-        let env_keys: Vec<String> = env_keys
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        all_keys.extend(env_keys);
-    }
+    all_keys.extend(parse_env_api_keys(env_var_name));
 
     // Remove duplicates while preserving order
     let mut unique_keys = Vec::new();
@@ -185,6 +191,26 @@ pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> 
     }
 
     unique_keys
+}
+
+/// Seed API-key args from environment variables before config files are applied
+/// so the documented precedence stays `CLI/env > provider-config > main config`.
+fn seed_api_keys_from_env(args: &mut Args) -> (bool, bool, bool) {
+    let vt = parse_env_api_keys("URX_VT_API_KEY");
+    let urlscan = parse_env_api_keys("URX_URLSCAN_API_KEY");
+    let zoomeye = parse_env_api_keys("URX_ZOOMEYE_API_KEY");
+
+    if args.vt_api_key.is_empty() && !vt.is_empty() {
+        args.vt_api_key = vt.clone();
+    }
+    if args.urlscan_api_key.is_empty() && !urlscan.is_empty() {
+        args.urlscan_api_key = urlscan.clone();
+    }
+    if args.zoomeye_api_key.is_empty() && !zoomeye.is_empty() {
+        args.zoomeye_api_key = zoomeye.clone();
+    }
+
+    (!vt.is_empty(), !urlscan.is_empty(), !zoomeye.is_empty())
 }
 
 /// Helper function to auto-enable providers if API key is present
@@ -857,6 +883,8 @@ async fn main() -> Result<()> {
     let cli_supplied_vt = !args.vt_api_key.is_empty();
     let cli_supplied_urlscan = !args.urlscan_api_key.is_empty();
     let cli_supplied_zoomeye = !args.zoomeye_api_key.is_empty();
+    let (env_supplied_vt, env_supplied_urlscan, env_supplied_zoomeye) =
+        seed_api_keys_from_env(&mut args);
 
     let config = Config::load(&args)?;
     config.apply_to_args(&mut args);
@@ -867,9 +895,9 @@ async fn main() -> Result<()> {
     let provider_keys = config::ProviderKeysConfig::load(&args)?;
     provider_keys.apply_to_args(
         &mut args,
-        cli_supplied_vt,
-        cli_supplied_urlscan,
-        cli_supplied_zoomeye,
+        cli_supplied_vt || env_supplied_vt,
+        cli_supplied_urlscan || env_supplied_urlscan,
+        cli_supplied_zoomeye || env_supplied_zoomeye,
     );
 
     // Create common network settings and progress manager once
@@ -1319,6 +1347,53 @@ mod tests {
         match old_vt_key {
             Some(val) => env::set_var("URX_VT_API_KEY", val),
             None => env::remove_var("URX_VT_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn test_env_api_keys_override_config_layers() {
+        let _env_lock = env_mutex().lock().unwrap();
+
+        let old_vt_key = env::var("URX_VT_API_KEY").ok();
+        let old_urlscan_key = env::var("URX_URLSCAN_API_KEY").ok();
+        let old_zoomeye_key = env::var("URX_ZOOMEYE_API_KEY").ok();
+
+        env::set_var("URX_VT_API_KEY", "env-vt-1,env-vt-2");
+        env::set_var("URX_URLSCAN_API_KEY", "env-urlscan");
+        env::set_var("URX_ZOOMEYE_API_KEY", "env-zoomeye");
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        let (env_vt, env_urlscan, env_zoomeye) = seed_api_keys_from_env(&mut args);
+        assert!(env_vt && env_urlscan && env_zoomeye);
+
+        let mut config = Config::default();
+        config.provider.vt_api_key = Some("config-vt".to_string());
+        config.provider.urlscan_api_key = Some("config-urlscan".to_string());
+        config.provider.zoomeye_api_key = Some("config-zoomeye".to_string());
+        config.apply_to_args(&mut args);
+
+        let provider_keys = config::ProviderKeysConfig {
+            vt_api_key: Some("provider-vt".to_string()),
+            urlscan_api_key: Some("provider-urlscan".to_string()),
+            zoomeye_api_key: Some("provider-zoomeye".to_string()),
+        };
+        provider_keys.apply_to_args(&mut args, env_vt, env_urlscan, env_zoomeye);
+
+        assert_eq!(args.vt_api_key, vec!["env-vt-1", "env-vt-2"]);
+        assert_eq!(args.urlscan_api_key, vec!["env-urlscan"]);
+        assert_eq!(args.zoomeye_api_key, vec!["env-zoomeye"]);
+
+        match old_vt_key {
+            Some(val) => env::set_var("URX_VT_API_KEY", val),
+            None => env::remove_var("URX_VT_API_KEY"),
+        }
+        match old_urlscan_key {
+            Some(val) => env::set_var("URX_URLSCAN_API_KEY", val),
+            None => env::remove_var("URX_URLSCAN_API_KEY"),
+        }
+        match old_zoomeye_key {
+            Some(val) => env::set_var("URX_ZOOMEYE_API_KEY", val),
+            None => env::remove_var("URX_ZOOMEYE_API_KEY"),
         }
     }
 
