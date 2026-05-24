@@ -474,7 +474,13 @@ impl Config {
 
         if args.timeout == 120 {
             if let Some(timeout) = self.network.timeout {
-                args.timeout = timeout;
+                if timeout > 0 {
+                    args.timeout = timeout;
+                } else if !args.silent {
+                    eprintln!(
+                        "Ignoring [network].timeout=0 in config: value must be at least 1 second"
+                    );
+                }
             }
         }
 
@@ -485,7 +491,13 @@ impl Config {
         }
 
         if args.parallel.unwrap_or(5) == 5 && self.network.parallel.is_some() {
-            args.parallel = self.network.parallel;
+            if let Some(parallel) = self.network.parallel {
+                if parallel > 0 {
+                    args.parallel = Some(parallel);
+                } else if !args.silent {
+                    eprintln!("Ignoring [network].parallel=0 in config: value must be at least 1");
+                }
+            }
         }
 
         if args.rate_limit.is_none() && self.network.rate_limit.is_some() {
@@ -578,6 +590,7 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -735,6 +748,19 @@ mod tests {
         assert_eq!(args.output, Some(PathBuf::from("output.txt")));
         assert_eq!(args.format, "json");
         assert_eq!(args.providers, vec!["cc"]);
+    }
+
+    #[test]
+    fn test_apply_to_args_ignores_invalid_network_values() {
+        let mut config = Config::default();
+        config.network.timeout = Some(0);
+        config.network.parallel = Some(0);
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args);
+
+        assert_eq!(args.timeout, 120);
+        assert_eq!(args.parallel, Some(5));
     }
 
     #[test]

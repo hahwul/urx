@@ -227,7 +227,7 @@ pub async fn process_domains(
     let mut provider_futures = Vec::new();
 
     // Extract the values we need from Args to avoid lifetime issues
-    let timeout = args.timeout;
+    let timeout = args.timeout.max(1);
     let verbose = args.verbose;
     let silent = args.silent;
     let no_progress = args.no_progress;

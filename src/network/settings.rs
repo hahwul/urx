@@ -127,11 +127,11 @@ impl NetworkSettings {
     /// Apply settings from command line arguments
     pub fn from_args(args: &crate::cli::Args) -> Self {
         let mut settings = NetworkSettings::new()
-            .with_timeout(args.timeout)
+            .with_timeout(args.timeout.max(1))
             .with_retries(args.retries)
             .with_random_agent(args.random_agent)
             .with_insecure(args.insecure)
-            .with_parallel(args.parallel.unwrap_or(5))
+            .with_parallel(args.parallel.unwrap_or(5).max(1))
             .with_subdomains(args.subs);
 
         // Parse network scope from args
@@ -343,6 +343,21 @@ mod tests {
         assert_eq!(settings.parallel, 10);
         assert_eq!(settings.rate_limit, Some(2.5));
         assert!(settings.include_subdomains);
+    }
+
+    #[test]
+    fn test_from_args_clamps_zero_timeout_and_parallel() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        args.timeout = 0;
+        args.parallel = Some(0);
+
+        let settings = NetworkSettings::from_args(&args);
+
+        assert_eq!(settings.timeout, 1);
+        assert_eq!(settings.parallel, 1);
     }
 
     #[test]

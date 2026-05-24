@@ -260,7 +260,7 @@ pub struct Args {
 
     /// Request timeout in seconds
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "120")]
+    #[clap(long, default_value = "120", value_parser = validate_positive_timeout)]
     pub timeout: u64,
 
     /// Number of retries for failed requests
@@ -270,7 +270,7 @@ pub struct Args {
 
     /// Maximum number of parallel requests per provider and maximum concurrent domain processing
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "5")]
+    #[clap(long, default_value = "5", value_parser = validate_positive_parallel)]
     pub parallel: Option<u32>,
 
     /// Rate limit (requests per second)
@@ -433,6 +433,28 @@ fn validate_network_scope(s: &str) -> Result<String, String> {
     }
 }
 
+fn validate_positive_timeout(s: &str) -> Result<u64, String> {
+    let value = s
+        .parse::<u64>()
+        .map_err(|_| format!("Invalid timeout: {s}. Must be a positive integer"))?;
+    if value == 0 {
+        Err("Invalid timeout: 0. Must be at least 1 second".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+fn validate_positive_parallel(s: &str) -> Result<u32, String> {
+    let value = s
+        .parse::<u32>()
+        .map_err(|_| format!("Invalid parallel value: {s}. Must be a positive integer"))?;
+    if value == 0 {
+        Err("Invalid parallel value: 0. Must be at least 1".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +509,20 @@ mod tests {
         ]);
         assert_eq!(args.proxy.unwrap(), "http://proxy:8080");
         assert_eq!(args.timeout, 60);
+    }
+
+    #[test]
+    fn test_timeout_must_be_positive() {
+        let err = Args::try_parse_from(["urx", "example.com", "--timeout", "0"]).unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("Invalid timeout: 0"));
+    }
+
+    #[test]
+    fn test_parallel_must_be_positive() {
+        let err = Args::try_parse_from(["urx", "example.com", "--parallel", "0"]).unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("Invalid parallel value: 0"));
     }
 
     #[test]
@@ -557,6 +593,20 @@ mod tests {
     #[test]
     fn test_validate_network_scope_invalid() {
         assert!(validate_network_scope("invalid").is_err());
+    }
+
+    #[test]
+    fn test_validate_positive_timeout() {
+        assert_eq!(validate_positive_timeout("1"), Ok(1));
+        assert!(validate_positive_timeout("0").is_err());
+        assert!(validate_positive_timeout("abc").is_err());
+    }
+
+    #[test]
+    fn test_validate_positive_parallel() {
+        assert_eq!(validate_positive_parallel("1"), Ok(1));
+        assert!(validate_positive_parallel("0").is_err());
+        assert!(validate_positive_parallel("abc").is_err());
     }
 
     #[test]

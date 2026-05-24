@@ -680,6 +680,21 @@ fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
     CacheKey::new(domain, &args.providers, &filters)
 }
 
+/// Collect URLs that truly belong to `domain`, using host validation instead of
+/// substring matching so cache entries don't bleed across similar domains or
+/// query strings.
+fn collect_domain_urls(
+    urls: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    domain: &str,
+    include_subdomains: bool,
+) -> std::collections::HashSet<String> {
+    let validator = HostValidator::new(&[domain.to_string()], include_subdomains);
+    urls.keys()
+        .filter(|url| validator.is_valid_host(url))
+        .cloned()
+        .collect()
+}
+
 /// Process domains with cache support
 async fn process_domains_with_cache(
     domains: Vec<String>,
@@ -765,13 +780,7 @@ async fn process_domains_with_cache(
             for domain in &domains_to_process {
                 let cache_key = create_cache_key(domain, args);
 
-                // Get domain-specific URLs (this is a simplification - in reality we'd need to track per-domain)
-                let domain_fresh_urls: HashSet<String> = fresh_run
-                    .urls
-                    .keys()
-                    .filter(|url| url.contains(domain))
-                    .cloned()
-                    .collect();
+                let domain_fresh_urls = collect_domain_urls(&fresh_run.urls, domain, args.subs);
 
                 let new_urls = cache
                     .get_new_urls(&cache_key, &domain_fresh_urls)
@@ -813,12 +822,10 @@ async fn process_domains_with_cache(
             // For simplicity, store all URLs for each domain (this could be optimized)
             for domain in &domains_to_process {
                 let cache_key = create_cache_key(domain, args);
-                let domain_urls: Vec<String> = fresh_run
-                    .urls
-                    .keys()
-                    .filter(|url| url.contains(domain))
-                    .cloned()
-                    .collect();
+                let domain_urls: Vec<String> =
+                    collect_domain_urls(&fresh_run.urls, domain, args.subs)
+                        .into_iter()
+                        .collect();
 
                 if !domain_urls.is_empty() {
                     let entry = CacheEntry::new(domain_urls);
@@ -1565,6 +1572,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_zero_timeout_does_not_panic() {
+        let provider = MockProvider::new(vec!["https://example.com/page1".to_string()], false)
+            .with_delay_ms(25);
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+
+        let mut args = build_test_args();
+        args.timeout = 0;
+        let progress_manager = ProgressManager::new(true);
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await;
+
+        assert!(result.urls.contains_key("https://example.com/page1"));
+    }
+
     #[test]
     fn test_output_dir_extension() {
         assert_eq!(output_dir_extension("json"), "json");
@@ -1701,6 +1731,43 @@ mod tests {
             wayback_to: None,
             github_api_key: vec![],
         }
+    }
+
+    #[test]
+    fn test_collect_domain_urls_matches_host_only() {
+        let urls = std::collections::HashMap::from([
+            (
+                "https://example.com/path".to_string(),
+                std::collections::HashSet::new(),
+            ),
+            (
+                "https://notexample.com/redirect?next=example.com".to_string(),
+                std::collections::HashSet::new(),
+            ),
+            (
+                "https://example.com.evil.test/path".to_string(),
+                std::collections::HashSet::new(),
+            ),
+            (
+                "https://api.example.com/path".to_string(),
+                std::collections::HashSet::new(),
+            ),
+        ]);
+
+        let exact = collect_domain_urls(&urls, "example.com", false);
+        assert_eq!(
+            exact,
+            std::collections::HashSet::from(["https://example.com/path".to_string()])
+        );
+
+        let with_subdomains = collect_domain_urls(&urls, "example.com", true);
+        assert_eq!(
+            with_subdomains,
+            std::collections::HashSet::from([
+                "https://example.com/path".to_string(),
+                "https://api.example.com/path".to_string(),
+            ])
+        );
     }
 
     #[tokio::test]
