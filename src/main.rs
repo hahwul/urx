@@ -497,7 +497,7 @@ fn apply_url_filters(
     args: &Args,
     urls: &std::collections::HashSet<String>,
     progress_manager: &ProgressManager,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     // Create a progress bar for filtering
     let filter_bar = if !args.extensions.is_empty()
         || !args.patterns.is_empty()
@@ -543,9 +543,7 @@ fn apply_url_filters(
         // and --domain-list files supplied.
         let mut domains: Vec<String> = args.domains.clone();
         for path in &args.domain_list {
-            if let Ok(more) = read_domains_from_file(path) {
-                domains.extend(more);
-            }
+            domains.extend(read_domains_from_file(path)?);
         }
 
         if !domains.is_empty() {
@@ -569,7 +567,7 @@ fn apply_url_filters(
         println!("Total unique URLs after filtering: {}", sorted_urls.len());
     }
 
-    sorted_urls
+    Ok(sorted_urls)
 }
 
 /// Apply URL transformations
@@ -929,7 +927,7 @@ async fn main() -> Result<()> {
     let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
 
     // Apply URL filtering
-    let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager);
+    let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager)?;
 
     // Apply URL transformations
     let transformed_urls = apply_url_transformations(&args, sorted_urls, &progress_manager);
@@ -1897,6 +1895,19 @@ mod tests {
         assert!(filtered.contains(&"https://example.com/script.js".to_string()));
         assert!(!filtered.contains(&"https://example.com/image.jpg".to_string()));
         assert!(!filtered.contains(&"https://example.com/styles.css".to_string()));
+    }
+
+    #[test]
+    fn test_apply_url_filters_errors_when_domain_list_cannot_be_read() {
+        let urls = HashSet::from(["https://example.com/page1.html".to_string()]);
+        let mut args = build_test_args();
+        args.strict = true;
+        args.domain_list = vec![std::path::PathBuf::from("/definitely/missing-domains.txt")];
+
+        let progress_manager = ProgressManager::new(true);
+        let err = apply_url_filters(&args, &urls, &progress_manager).unwrap_err();
+
+        assert!(err.to_string().contains("Failed to open domain list"));
     }
 
     #[test]
