@@ -860,13 +860,13 @@ async fn main() -> Result<()> {
     let cli_supplied_urlscan = !args.urlscan_api_key.is_empty();
     let cli_supplied_zoomeye = !args.zoomeye_api_key.is_empty();
 
-    let config = Config::load(&args);
+    let config = Config::load(&args)?;
     config.apply_to_args(&mut args);
 
     // Provider-config file (separate from main config) loads API keys that
     // would otherwise live in the shared config. It overrides main-config
     // values but still loses to anything supplied on the CLI / env.
-    let provider_keys = config::ProviderKeysConfig::load(&args);
+    let provider_keys = config::ProviderKeysConfig::load(&args)?;
     provider_keys.apply_to_args(
         &mut args,
         cli_supplied_vt,

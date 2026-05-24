@@ -110,18 +110,14 @@ impl ProviderKeysConfig {
     /// Load using the same precedence as the main config: --provider-config
     /// flag wins, then the default path. Returns an empty config when no file
     /// is found so callers can chain it freely.
-    pub fn load(args: &Args) -> Self {
+    pub fn load(args: &Args) -> Result<Self> {
         if let Some(path) = &args.provider_config {
-            if let Ok(cfg) = Self::from_file(path) {
-                return cfg;
-            }
+            return Self::from_file(path);
         }
         if let Some(path) = Self::default_path() {
-            if let Ok(cfg) = Self::from_file(path) {
-                return cfg;
-            }
+            return Self::from_file(path);
         }
-        ProviderKeysConfig::default()
+        Ok(ProviderKeysConfig::default())
     }
 
     /// Apply keys to args, but only for slots not already supplied via CLI
@@ -276,23 +272,19 @@ impl Config {
 
     /// Load configuration based on command line arguments
     /// Priority: --config flag > default path > default values
-    pub fn load(args: &Args) -> Self {
+    pub fn load(args: &Args) -> Result<Self> {
         // Try to load from --config flag first
         if let Some(path) = &args.config {
-            if let Ok(config) = Self::from_file(path) {
-                return config;
-            }
+            return Self::from_file(path);
         }
 
         // Then try default location
         if let Some(default_path) = Self::default_path() {
-            if let Ok(config) = Self::from_file(default_path.clone()) {
-                return config;
-            }
+            return Self::from_file(default_path);
         }
 
         // Otherwise use default values
-        Config::default()
+        Ok(Config::default())
     }
 
     /// Apply configuration values to Args, respecting priority
@@ -774,6 +766,41 @@ mod tests {
         assert_eq!(cfg.vt_api_key.as_deref(), Some("key1, key2 ,key3"));
         assert_eq!(cfg.urlscan_api_key.as_deref(), Some("us1"));
         assert_eq!(cfg.zoomeye_api_key, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_load_returns_error_for_explicit_missing_file() {
+        let args = Args::parse_from(["urx", "--config", "/definitely/missing.toml", "example.com"]);
+        let err = Config::load(&args).unwrap_err();
+        assert!(err.to_string().contains("Failed to read config file"));
+    }
+
+    #[test]
+    fn test_provider_keys_load_returns_error_for_explicit_missing_file() {
+        let args = Args::parse_from([
+            "urx",
+            "--provider-config",
+            "/definitely/missing-provider.toml",
+            "example.com",
+        ]);
+        let err = ProviderKeysConfig::load(&args).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("Failed to read provider-config file"));
+    }
+
+    #[test]
+    fn test_config_load_succeeds_without_explicit_file() -> Result<()> {
+        let args = Args::parse_from(["urx", "example.com"]);
+        let _cfg = Config::load(&args)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_provider_keys_load_succeeds_without_explicit_file() -> Result<()> {
+        let args = Args::parse_from(["urx", "example.com"]);
+        let _cfg = ProviderKeysConfig::load(&args)?;
         Ok(())
     }
 
