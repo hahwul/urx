@@ -204,6 +204,25 @@ pub struct CacheConfig {
     pub no_cache: Option<bool>,
 }
 
+fn normalize_output_format(format: &str) -> Option<String> {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "plain" => Some("plain".to_string()),
+        "json" => Some("json".to_string()),
+        "csv" => Some("csv".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_network_scope(scope: &str) -> Option<String> {
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "all" => Some("all".to_string()),
+        "providers" => Some("providers".to_string()),
+        "testers" => Some("testers".to_string()),
+        "providers,testers" | "testers,providers" => Some("providers,testers".to_string()),
+        _ => None,
+    }
+}
+
 impl Config {
     /// Load configuration from a specific file path
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -308,7 +327,13 @@ impl Config {
 
         if args.format == "plain" {
             if let Some(format) = &self.output.format {
-                args.format = format.clone();
+                if let Some(format) = normalize_output_format(format) {
+                    args.format = format;
+                } else if !args.silent {
+                    eprintln!(
+                        "Ignoring [output].format={format:?} in config: expected plain, json, or csv"
+                    );
+                }
             }
         }
 
@@ -444,7 +469,13 @@ impl Config {
         // Network options
         if args.network_scope == "all" {
             if let Some(network_scope) = &self.network.network_scope {
-                args.network_scope = network_scope.clone();
+                if let Some(network_scope) = normalize_network_scope(network_scope) {
+                    args.network_scope = network_scope;
+                } else if !args.silent {
+                    eprintln!(
+                        "Ignoring [network].network_scope={network_scope:?} in config: expected all, providers, testers, or providers,testers"
+                    );
+                }
             }
         }
 
@@ -753,6 +784,32 @@ mod tests {
 
         assert_eq!(args.timeout, 120);
         assert_eq!(args.parallel, Some(5));
+    }
+
+    #[test]
+    fn test_apply_to_args_ignores_invalid_output_format_and_network_scope() {
+        let mut config = Config::default();
+        config.output.format = Some("yaml".to_string());
+        config.network.network_scope = Some("providers only".to_string());
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args);
+
+        assert_eq!(args.format, "plain");
+        assert_eq!(args.network_scope, "all");
+    }
+
+    #[test]
+    fn test_apply_to_args_normalizes_output_format_and_network_scope() {
+        let mut config = Config::default();
+        config.output.format = Some("JSON".to_string());
+        config.network.network_scope = Some("TESTERS,PROVIDERS".to_string());
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args);
+
+        assert_eq!(args.format, "json");
+        assert_eq!(args.network_scope, "providers,testers");
     }
 
     #[test]
