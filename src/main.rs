@@ -229,21 +229,12 @@ pub fn auto_enable_provider(
     }
 }
 
-/// Initialize all providers based on args and API keys
-fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
-    let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-    let mut provider_names: Vec<String> = Vec::new();
-
-    // Get API keys (from CLI and env vars)
+fn effective_provider_ids(args: &Args) -> Vec<String> {
     let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
     let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
     let zoomeye_api_keys = parse_api_keys(args.zoomeye_api_key.clone(), "URX_ZOOMEYE_API_KEY");
     let github_api_keys = parse_api_keys(args.github_api_key.clone(), "URX_GITHUB_API_KEY");
 
-    // Build the effective providers list. `--all-providers` expands to every
-    // catalog entry whose required key (if any) is available; otherwise we
-    // start from the user-supplied list and let auto-enable add API-keyed
-    // providers whenever a key is set.
     let mut providers_list: Vec<String> = if args.all_providers {
         provider_catalog()
             .iter()
@@ -259,8 +250,6 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                     _ => false,
                 }
             })
-            // Robots/sitemap are gated by the dedicated should_use_* flags, so
-            // we leave them out here and let those code paths add them.
             .filter(|p| p.id != "robots" && p.id != "sitemap")
             .map(|p| p.id.to_string())
             .collect()
@@ -268,46 +257,57 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         args.providers.clone()
     };
 
-    // Auto-enable API-keyed providers when a key is present but the user did
-    // not list them explicitly. Skipped under --all-providers (already
-    // expanded above).
     if !args.all_providers {
-        auto_enable_provider(
-            &mut providers_list,
-            &vt_api_keys,
-            "vt",
-            args.verbose,
-            args.silent,
-        );
+        auto_enable_provider(&mut providers_list, &vt_api_keys, "vt", false, true);
         auto_enable_provider(
             &mut providers_list,
             &urlscan_api_keys,
             "urlscan",
-            args.verbose,
-            args.silent,
+            false,
+            true,
         );
         auto_enable_provider(
             &mut providers_list,
             &zoomeye_api_keys,
             "zoomeye",
-            args.verbose,
-            args.silent,
+            false,
+            true,
         );
-        auto_enable_provider(
-            &mut providers_list,
-            &github_api_keys,
-            "github",
-            args.verbose,
-            args.silent,
-        );
+        auto_enable_provider(&mut providers_list, &github_api_keys, "github", false, true);
     }
 
-    // Apply negative selection: --exclude-providers wins on conflict.
-    if !args.exclude_providers.is_empty() {
-        let excluded: std::collections::HashSet<&str> =
-            args.exclude_providers.iter().map(String::as_str).collect();
-        providers_list.retain(|p| !excluded.contains(p.as_str()));
+    let excluded: std::collections::HashSet<&str> =
+        args.exclude_providers.iter().map(String::as_str).collect();
+    providers_list.retain(|p| !excluded.contains(p.as_str()));
+
+    if args.should_use_robots()
+        && !excluded.contains("robots")
+        && !providers_list.iter().any(|p| p == "robots")
+    {
+        providers_list.push("robots".to_string());
     }
+    if args.should_use_sitemap()
+        && !excluded.contains("sitemap")
+        && !providers_list.iter().any(|p| p == "sitemap")
+    {
+        providers_list.push("sitemap".to_string());
+    }
+
+    providers_list
+}
+
+/// Initialize all providers based on args and API keys
+fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
+    let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+    let mut provider_names: Vec<String> = Vec::new();
+
+    // Get API keys (from CLI and env vars)
+    let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
+    let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
+    let zoomeye_api_keys = parse_api_keys(args.zoomeye_api_key.clone(), "URX_ZOOMEYE_API_KEY");
+    let github_api_keys = parse_api_keys(args.github_api_key.clone(), "URX_GITHUB_API_KEY");
+
+    let providers_list = effective_provider_ids(args);
 
     // --all-providers users don't want a noisy error when a key is missing,
     // so suppress the per-provider "needs API key" messages in that mode.
@@ -365,10 +365,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         }
     }
 
-    let excluded: std::collections::HashSet<&str> =
-        args.exclude_providers.iter().map(String::as_str).collect();
-
-    if args.should_use_robots() && !excluded.contains("robots") {
+    if providers_list.iter().any(|p| p == "robots") {
         add_provider(
             args,
             network_settings,
@@ -380,7 +377,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         );
     }
 
-    if args.should_use_sitemap() && !excluded.contains("sitemap") {
+    if providers_list.iter().any(|p| p == "sitemap") {
         add_provider(
             args,
             network_settings,
@@ -701,7 +698,7 @@ fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         merge_endpoint: args.merge_endpoint,
     };
 
-    CacheKey::new(domain, &args.providers, &filters)
+    CacheKey::new(domain, &effective_provider_ids(args), &filters)
 }
 
 /// Collect URLs that truly belong to `domain`, using host validation instead of
@@ -1394,6 +1391,30 @@ mod tests {
         match old_zoomeye_key {
             Some(val) => env::set_var("URX_ZOOMEYE_API_KEY", val),
             None => env::remove_var("URX_ZOOMEYE_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn test_cache_key_uses_effective_provider_ids() {
+        let _env_lock = env_mutex().lock().unwrap();
+
+        let old_vt_key = env::var("URX_VT_API_KEY").ok();
+        env::set_var("URX_VT_API_KEY", "env-vt");
+
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.include_robots = true;
+        args.exclude_robots = false;
+        args.include_sitemap = false;
+        args.exclude_sitemap = true;
+
+        let key = create_cache_key("example.com", &args);
+
+        assert_eq!(key.providers, vec!["robots", "vt", "wayback"]);
+
+        match old_vt_key {
+            Some(val) => env::set_var("URX_VT_API_KEY", val),
+            None => env::remove_var("URX_VT_API_KEY"),
         }
     }
 
