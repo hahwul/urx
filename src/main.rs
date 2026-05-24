@@ -229,6 +229,29 @@ pub fn auto_enable_provider(
     }
 }
 
+fn validate_provider_ids(ids: &[String], flag_name: &str) -> Result<()> {
+    let valid_ids: std::collections::HashSet<&str> =
+        provider_catalog().iter().map(|p| p.id).collect();
+
+    let unknown: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !valid_ids.contains(id))
+        .collect();
+
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    let mut allowed: Vec<&str> = valid_ids.into_iter().collect();
+    allowed.sort_unstable();
+    Err(anyhow::anyhow!(
+        "Unknown provider id(s) in {flag_name}: {}. Allowed values: {}",
+        unknown.join(", "),
+        allowed.join(", ")
+    ))
+}
+
 fn effective_provider_ids(args: &Args) -> Vec<String> {
     let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
     let urlscan_api_keys = parse_api_keys(args.urlscan_api_key.clone(), "URX_URLSCAN_API_KEY");
@@ -300,6 +323,9 @@ fn effective_provider_ids(args: &Args) -> Vec<String> {
 fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
+
+    validate_provider_ids(&args.providers, "--providers")?;
+    validate_provider_ids(&args.exclude_providers, "--exclude-providers")?;
 
     // Get API keys (from CLI and env vars)
     let vt_api_keys = parse_api_keys(args.vt_api_key.clone(), "URX_VT_API_KEY");
@@ -1232,6 +1258,33 @@ mod tests {
         match old_urlscan_key {
             Some(val) => env::set_var("URX_URLSCAN_API_KEY", val),
             None => env::remove_var("URX_URLSCAN_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn test_initialize_providers_rejects_unknown_provider_ids() {
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string(), "bogus".to_string()];
+
+        match initialize_providers(&args, &NetworkSettings::default()) {
+            Ok(_) => panic!("expected unknown provider id to error"),
+            Err(err) => assert!(err
+                .to_string()
+                .contains("Unknown provider id(s) in --providers")),
+        }
+    }
+
+    #[test]
+    fn test_initialize_providers_rejects_unknown_excluded_provider_ids() {
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.exclude_providers = vec!["bogus".to_string()];
+
+        match initialize_providers(&args, &NetworkSettings::default()) {
+            Ok(_) => panic!("expected unknown excluded provider id to error"),
+            Err(err) => assert!(err
+                .to_string()
+                .contains("Unknown provider id(s) in --exclude-providers")),
         }
     }
 
