@@ -909,7 +909,7 @@ async fn main() -> Result<()> {
         let (providers, provider_names) = initialize_providers(&args, &network_settings)?;
 
         // Initialize cache manager if caching is enabled
-        let cache_manager = create_cache_manager(&args).await.ok().flatten();
+        let cache_manager = create_cache_manager(&args).await?;
 
         // Process each domain with caching support
         process_domains_with_cache(
@@ -1591,6 +1591,17 @@ mod tests {
         .await;
 
         assert!(result.urls.contains_key("https://example.com/page1"));
+    }
+
+    #[tokio::test]
+    async fn test_create_cache_manager_invalid_type_errors() {
+        let mut args = build_test_args();
+        args.cache_type = "bogus".to_string();
+
+        match create_cache_manager(&args).await {
+            Ok(_) => panic!("expected invalid cache type to error"),
+            Err(err) => assert!(err.to_string().contains("Invalid cache type")),
+        }
     }
 
     #[test]
