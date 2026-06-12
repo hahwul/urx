@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::io::{BufRead, Read};
 use std::path::Path;
 
 mod text_reader;
@@ -8,6 +9,56 @@ mod warc_reader;
 pub use text_reader::TextFileReader;
 pub use urlteam_reader::UrlTeamFileReader;
 pub use warc_reader::WarcFileReader;
+
+/// Maximum bytes buffered for a single input line. Real URL lines are far
+/// shorter; the cap keeps a corrupt or malicious file (e.g. a gzip bomb that
+/// decompresses to one enormous "line") from exhausting memory.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// Call `f` for each line of `reader`, decoding lossily so binary content
+/// (common inside WARC response bodies) doesn't abort the whole read the way
+/// `BufRead::lines()` does on invalid UTF-8. Lines longer than
+/// `MAX_LINE_BYTES` are truncated and the remainder skipped.
+fn for_each_line_lossy<R: BufRead>(mut reader: R, mut f: impl FnMut(&str)) -> std::io::Result<()> {
+    let mut buf = Vec::with_capacity(8 * 1024);
+    loop {
+        buf.clear();
+        let n = reader
+            .by_ref()
+            .take(MAX_LINE_BYTES as u64)
+            .read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let hit_cap = n == MAX_LINE_BYTES && buf.last() != Some(&b'\n');
+        let line = String::from_utf8_lossy(&buf);
+        f(line.trim_end_matches(['\n', '\r']));
+        if hit_cap {
+            skip_to_newline(&mut reader)?;
+        }
+    }
+    Ok(())
+}
+
+/// Discard input up to and including the next newline (or EOF).
+fn skip_to_newline<R: BufRead>(reader: &mut R) -> std::io::Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        match available.iter().position(|&b| b == b'\n') {
+            Some(pos) => {
+                reader.consume(pos + 1);
+                return Ok(());
+            }
+            None => {
+                let len = available.len();
+                reader.consume(len);
+            }
+        }
+    }
+}
 
 /// Trait for reading URLs from different file formats
 pub trait FileReader {
@@ -130,5 +181,42 @@ mod tests {
 
         let path = PathBuf::from("unknown_file");
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+    }
+
+    #[test]
+    fn test_for_each_line_lossy_handles_invalid_utf8() {
+        // Binary content (e.g. inside a WARC response body) must not abort
+        // the read; subsequent valid lines still come through.
+        let data = b"https://example.com/a\n\xff\xfe\x00binary\nhttps://example.com/b\n";
+        let mut lines = Vec::new();
+        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "https://example.com/a");
+        assert_eq!(lines[2], "https://example.com/b");
+    }
+
+    #[test]
+    fn test_for_each_line_lossy_caps_long_lines() {
+        // One enormous "line" is truncated at the cap and skipped to the next
+        // newline instead of buffering it all in memory.
+        let mut data = vec![b'x'; MAX_LINE_BYTES * 2];
+        data.push(b'\n');
+        data.extend_from_slice(b"https://example.com/after\n");
+        let mut lines = Vec::new();
+        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES);
+        assert_eq!(lines[1], "https://example.com/after");
+    }
+
+    #[test]
+    fn test_for_each_line_lossy_no_trailing_newline() {
+        let data = b"https://example.com/a\nhttps://example.com/b";
+        let mut lines = Vec::new();
+        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        assert_eq!(
+            lines,
+            vec!["https://example.com/a", "https://example.com/b"]
+        );
     }
 }

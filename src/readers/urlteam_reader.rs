@@ -41,15 +41,7 @@ impl FileReader for UrlTeamFileReader {
         };
 
         let mut urls = Vec::new();
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line.with_context(|| {
-                format!(
-                    "Failed to read line {} from URLTeam file: {}",
-                    line_num + 1,
-                    file_path.display()
-                )
-            })?;
-
+        super::for_each_line_lossy(reader, |line| {
             let trimmed = line.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
                 // URLTeam files often contain URLs in various formats
@@ -58,7 +50,8 @@ impl FileReader for UrlTeamFileReader {
                     urls.push(url);
                 }
             }
-        }
+        })
+        .with_context(|| format!("Failed to read URLTeam file: {}", file_path.display()))?;
 
         Ok(urls)
     }

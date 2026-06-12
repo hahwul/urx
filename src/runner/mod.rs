@@ -10,6 +10,15 @@ use crate::progress::ProgressManager;
 use crate::providers::Provider;
 use crate::utils::verbose_print;
 
+/// Lock a mutex, recovering the inner data if another task panicked while
+/// holding it. One failed provider task must not poison the shared state and
+/// take down the rest of the run or lose already-collected URLs.
+fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Shared state for tracking domain completion across provider tasks.
 struct DomainCompletionCtx {
     total_providers: usize,
@@ -28,7 +37,7 @@ impl DomainCompletionCtx {
     fn track(&self, domain: &str) -> bool {
         let mut is_domain_complete = false;
         {
-            let mut completion_map = self.domain_completion.lock().unwrap();
+            let mut completion_map = lock_ignore_poison(&self.domain_completion);
             if let Some(count) = completion_map.get_mut(domain) {
                 *count += 1;
                 is_domain_complete = *count >= self.total_providers;
@@ -36,7 +45,7 @@ impl DomainCompletionCtx {
         }
 
         if is_domain_complete {
-            let mut count = self.processed_domains.lock().unwrap();
+            let mut count = lock_ignore_poison(&self.processed_domains);
             *count += 1;
             self.overall_bar.set_position(*count as u64);
             self.overall_bar.set_message(format!(
@@ -259,7 +268,7 @@ pub async fn process_domains(
             loop {
                 // Get the next domain from this provider's queue
                 let domain = {
-                    let mut queue = queue.lock().unwrap();
+                    let mut queue = lock_ignore_poison(&queue);
                     match queue.pop_front() {
                         Some(domain) => {
                             current_domain_idx += 1;
@@ -346,7 +355,7 @@ pub async fn process_domains(
 
                         // Add URLs to the shared map (URL -> set of providers).
                         {
-                            let mut url_map = all_urls_clone.lock().unwrap();
+                            let mut url_map = lock_ignore_poison(&all_urls_clone);
                             for url in urls {
                                 url_map
                                     .entry(url)
@@ -357,7 +366,7 @@ pub async fn process_domains(
 
                         // Update per-provider stats.
                         {
-                            let mut s = stats_clone.lock().unwrap();
+                            let mut s = lock_ignore_poison(&stats_clone);
                             s[original_idx].url_count += url_count;
                             s[original_idx].elapsed += fetch_elapsed;
                         }
@@ -389,7 +398,7 @@ pub async fn process_domains(
                         provider_bar.tick();
 
                         {
-                            let mut s = stats_clone.lock().unwrap();
+                            let mut s = lock_ignore_poison(&stats_clone);
                             s[original_idx].error_count += 1;
                             s[original_idx].elapsed += fetch_elapsed;
                         }
@@ -461,12 +470,16 @@ pub async fn process_domains(
     // have outstanding strong counts for a brief moment; drain via clone in
     // that case rather than panicking.
     let urls = match Arc::try_unwrap(all_urls) {
-        Ok(m) => m.into_inner().unwrap(),
-        Err(arc) => arc.lock().unwrap().clone(),
+        Ok(m) => m
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        Err(arc) => lock_ignore_poison(&arc).clone(),
     };
     let stats = match Arc::try_unwrap(stats) {
-        Ok(s) => s.into_inner().unwrap(),
-        Err(arc) => arc.lock().unwrap().clone(),
+        Ok(s) => s
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        Err(arc) => lock_ignore_poison(&arc).clone(),
     };
     ProviderRunResult { urls, stats }
 }

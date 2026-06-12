@@ -84,9 +84,10 @@ impl UrlTransformer {
             if let Ok(mut url) = Url::parse(&url_str) {
                 // Normalize the path - remove trailing slash if it's not just "/"
                 let path = url.path().to_string();
-                if path.len() > 1 && path.ends_with('/') {
-                    let normalized_path = &path[..path.len() - 1];
-                    url.set_path(normalized_path);
+                if path.len() > 1 {
+                    if let Some(normalized_path) = path.strip_suffix('/') {
+                        url.set_path(normalized_path);
+                    }
                 }
 
                 // Normalize query parameters - sort them alphabetically

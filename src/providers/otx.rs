@@ -133,6 +133,21 @@ impl OTXProvider {
     }
 }
 
+/// Truncate response text for error previews. Cutting at a fixed byte index
+/// would panic when byte 100 falls inside a multi-byte UTF-8 character, so
+/// back off to the nearest character boundary.
+fn preview_text(text: &str) -> String {
+    const MAX_PREVIEW_BYTES: usize = 100;
+    if text.len() <= MAX_PREVIEW_BYTES {
+        return text.to_string();
+    }
+    let mut end = MAX_PREVIEW_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}... (truncated)", &text[..end])
+}
+
 impl Provider for OTXProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
@@ -196,14 +211,7 @@ impl Provider for OTXProvider {
                                                                 break;
                                                             }
                                                             Err(e) => {
-                                                                let preview = if text.len() > 100 {
-                                                                    format!(
-                                                                        "{}... (truncated)",
-                                                                        &text[..100]
-                                                                    )
-                                                                } else {
-                                                                    text.clone()
-                                                                };
+                                                                let preview = preview_text(&text);
 
                                                                 last_error = Some(anyhow::anyhow!(
                                                                     "Failed to parse url_list entries: {}. Response preview: {}",
@@ -212,14 +220,7 @@ impl Provider for OTXProvider {
                                                             }
                                                         }
                                                     } else {
-                                                        let preview = if text.len() > 100 {
-                                                            format!(
-                                                                "{}... (truncated)",
-                                                                &text[..100]
-                                                            )
-                                                        } else {
-                                                            text.clone()
-                                                        };
+                                                        let preview = preview_text(&text);
 
                                                         last_error = Some(anyhow::anyhow!(
                                                             "Response is missing url_list field. Response preview: {}",
@@ -228,11 +229,7 @@ impl Provider for OTXProvider {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    let preview = if text.len() > 100 {
-                                                        format!("{}... (truncated)", &text[..100])
-                                                    } else {
-                                                        text.clone()
-                                                    };
+                                                    let preview = preview_text(&text);
 
                                                     last_error = Some(anyhow::anyhow!(
                                                         "Failed to parse OTX response as JSON: {}. Response preview: {}",
@@ -329,6 +326,30 @@ impl Provider for OTXProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_preview_text_multibyte_boundary() {
+        // 50 two-byte characters: byte 100 falls right past the string, and a
+        // 51-character string puts the cut point inside a character. Neither
+        // case may panic.
+        let short = "é".repeat(50);
+        assert_eq!(preview_text(&short), short);
+
+        let long = "é".repeat(51); // 102 bytes; byte 100 is mid-character
+        let preview = preview_text(&long);
+        assert!(preview.ends_with("... (truncated)"));
+        assert!(preview.starts_with(&"é".repeat(49)));
+    }
+
+    #[test]
+    fn test_preview_text_ascii() {
+        assert_eq!(preview_text("short"), "short");
+        let long = "a".repeat(150);
+        assert_eq!(
+            preview_text(&long),
+            format!("{}... (truncated)", "a".repeat(100))
+        );
+    }
 
     #[test]
     fn test_new_provider() {

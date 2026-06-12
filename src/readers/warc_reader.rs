@@ -15,7 +15,7 @@ impl WarcFileReader {
 impl FileReader for WarcFileReader {
     fn read_urls(&self, file_path: &Path) -> Result<Vec<String>> {
         use std::fs::File;
-        use std::io::{BufRead, BufReader};
+        use std::io::BufReader;
 
         let file = File::open(file_path)
             .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
@@ -23,15 +23,14 @@ impl FileReader for WarcFileReader {
         let reader = BufReader::new(file);
         let mut urls = Vec::new();
 
-        for line in reader.lines() {
-            let line = line?;
+        // WARC files mix headers with raw response bodies, so lines are read
+        // lossily: binary content must not abort the read.
+        super::for_each_line_lossy(reader, |line| {
             // Look for WARC-Target-URI headers
-            if line.starts_with("WARC-Target-URI:") {
-                if let Some(url) = line.strip_prefix("WARC-Target-URI:") {
-                    let url = url.trim();
-                    if url.starts_with("http://") || url.starts_with("https://") {
-                        urls.push(url.to_string());
-                    }
+            if let Some(url) = line.strip_prefix("WARC-Target-URI:") {
+                let url = url.trim();
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    urls.push(url.to_string());
                 }
             }
             // Also look for plain URLs in the content
@@ -42,7 +41,8 @@ impl FileReader for WarcFileReader {
                     urls.push(url.to_string());
                 }
             }
-        }
+        })
+        .with_context(|| format!("Failed to read WARC file: {}", file_path.display()))?;
 
         Ok(urls)
     }

@@ -1,7 +1,7 @@
 use super::FileReader;
 use anyhow::{Context, Result};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 
 /// Reader for plain text files containing URLs (one per line)
@@ -21,15 +21,7 @@ impl FileReader for TextFileReader {
         let reader = BufReader::new(file);
         let mut urls = Vec::new();
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line.with_context(|| {
-                format!(
-                    "Failed to read line {} from file: {}",
-                    line_num + 1,
-                    file_path.display()
-                )
-            })?;
-
+        super::for_each_line_lossy(reader, |line| {
             let trimmed = line.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
                 // Basic URL validation - must start with http or https
@@ -37,7 +29,8 @@ impl FileReader for TextFileReader {
                     urls.push(trimmed.to_string());
                 }
             }
-        }
+        })
+        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
         Ok(urls)
     }

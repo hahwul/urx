@@ -51,13 +51,10 @@ impl UrlData {
     /// Can handle strings in the format "{url} - {status}" or plain URLs
     pub fn from_string(data: String) -> Self {
         // Parse strings in the format "{url} - {status}" if possible
-        if let Some(idx) = data.find(" - ") {
-            let (url, status) = data.split_at(idx);
-            // Remove the " - " prefix from status
-            let status = status[3..].to_string();
+        if let Some((url, status)) = data.split_once(" - ") {
             UrlData {
                 url: url.to_string(),
-                status: Some(status),
+                status: Some(status.to_string()),
                 sources: Vec::new(),
             }
         } else {
