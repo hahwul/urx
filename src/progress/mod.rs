@@ -22,9 +22,11 @@ const BAR_TICK_MS: u64 = 80;
 /// Style for a provider line while a fetch is in flight: animated spinner,
 /// bold provider name, free-form status message, and a dimmed elapsed timer.
 pub fn provider_running_style() -> ProgressStyle {
-    ProgressStyle::with_template("  {spinner:.cyan.bold} {prefix:.bold} {wide_msg} {elapsed:>5.dim}")
-        .expect("static provider running template is valid")
-        .tick_strings(SPINNER_FRAMES)
+    ProgressStyle::with_template(
+        "  {spinner:.cyan.bold} {prefix:.bold} {wide_msg} {elapsed:>5.dim}",
+    )
+    .expect("static provider running template is valid")
+    .tick_strings(SPINNER_FRAMES)
 }
 
 /// Terminal style for a provider line after a successful fetch. The message is

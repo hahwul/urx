@@ -363,10 +363,8 @@ pub async fn process_domains(
                             }
                         } else {
                             provider_bar.set_style(provider_success_style());
-                            provider_bar.set_message(format!(
-                                "✓ {domain} · {} URLs",
-                                fmt_count(url_count)
-                            ));
+                            provider_bar
+                                .set_message(format!("✓ {domain} · {} URLs", fmt_count(url_count)));
                         }
                         provider_bar.tick();
 

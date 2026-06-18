@@ -242,7 +242,6 @@ impl WaybackMachineProvider {
         }
         url
     }
-
 }
 
 impl Provider for WaybackMachineProvider {
@@ -598,7 +597,10 @@ mod tests {
         // dedup, and carries no trailing key so the walk terminates.
         let page2 = server
             .mock("GET", "/cdx/search/cdx")
-            .match_query(mockito::Matcher::UrlEncoded("resumeKey".into(), "KEY2".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
             .with_status(200)
             .with_body("http://example.com/b\nhttp://example.com/c\n")
             .expect(1)
@@ -642,7 +644,10 @@ mod tests {
         // ...but the follow-up fails. We should keep page one rather than error.
         let _page2 = server
             .mock("GET", "/cdx/search/cdx")
-            .match_query(mockito::Matcher::UrlEncoded("resumeKey".into(), "KEY2".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
             .with_status(503)
             .create_async()
             .await;
