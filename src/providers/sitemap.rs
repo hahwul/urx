@@ -3,6 +3,7 @@ use async_recursion::async_recursion;
 use async_trait::async_trait;
 use reqwest::Client;
 use roxmltree::Document;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -10,11 +11,19 @@ use std::time::Duration;
 use crate::network::client::HttpClientConfig;
 use crate::providers::Provider;
 
+/// Max nesting depth for sitemap-index → sitemap recursion. A hostile or
+/// misconfigured index can chain or cycle indefinitely; this bounds it.
+const MAX_SITEMAP_DEPTH: usize = 10;
+
+/// Overall cap on URLs collected from one domain's sitemaps, so a giant (or
+/// adversarial) sitemap tree can't grow memory without bound.
+const MAX_SITEMAP_URLS: usize = 1_000_000;
+
 #[derive(Clone)]
 pub struct SitemapProvider {
     timeout: Duration,
     retries: u32,
-    user_agent: Option<String>,
+    random_agent: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
     insecure: bool,
@@ -25,7 +34,7 @@ impl SitemapProvider {
         Self {
             timeout: Duration::from_secs(30),
             retries: 3,
-            user_agent: None,
+            random_agent: false,
             proxy: None,
             proxy_auth: None,
             insecure: false,
@@ -36,39 +45,39 @@ impl SitemapProvider {
         HttpClientConfig {
             timeout: self.timeout.as_secs(),
             insecure: self.insecure,
-            random_agent: false, // user_agent is handled separately
+            random_agent: self.random_agent,
             proxy: self.proxy.clone(),
             proxy_auth: self.proxy_auth.clone(),
         }
     }
 
+    /// Build the HTTP client via the shared config so it always sends a
+    /// User-Agent (a UA-less request is rejected with 400 by some servers).
     fn build_client(&self) -> Result<Client> {
-        let config = self.client_config();
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(config.timeout))
-            .danger_accept_invalid_certs(config.insecure);
-
-        if let Some(ref proxy_url) = config.proxy {
-            let mut proxy = reqwest::Proxy::all(proxy_url)?;
-
-            if let Some(ref auth) = config.proxy_auth {
-                let username = auth.split(':').next().unwrap_or("");
-                let password = auth.split(':').nth(1).unwrap_or("");
-                proxy = proxy.basic_auth(username, password);
-            }
-
-            builder = builder.proxy(proxy);
-        }
-
-        if let Some(ref agent) = self.user_agent {
-            builder = builder.user_agent(agent);
-        }
-
-        Ok(builder.build()?)
+        self.client_config().build_client()
     }
 
+    /// Recursively fetch and parse a sitemap (or sitemap index).
+    ///
+    /// `visited` records already-fetched sitemap URLs to break cycles
+    /// (`A → A`, `A → B → A`); `depth` bounds straight-line nesting; and the
+    /// caller stops feeding work once [`MAX_SITEMAP_URLS`] is reached. Together
+    /// these stop a malicious sitemap from hanging the run or exhausting memory.
     #[async_recursion]
-    async fn parse_sitemap(client: &Client, sitemap_url: &str) -> Result<Vec<String>> {
+    async fn parse_sitemap(
+        client: &Client,
+        sitemap_url: &str,
+        depth: usize,
+        visited: &mut HashSet<String>,
+    ) -> Result<Vec<String>> {
+        if depth > MAX_SITEMAP_DEPTH {
+            return Ok(Vec::new());
+        }
+        // A sitemap URL we've already fetched in this walk is a cycle — skip it.
+        if !visited.insert(sitemap_url.to_string()) {
+            return Ok(Vec::new());
+        }
+
         let resp = client.get(sitemap_url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
@@ -85,15 +94,22 @@ impl SitemapProvider {
                 if is_sitemap_index {
                     // This is a sitemap index file, so we need to process each sitemap
                     for sitemap_node in doc.descendants().filter(|n| n.has_tag_name("sitemap")) {
+                        if urls.len() >= MAX_SITEMAP_URLS {
+                            break;
+                        }
                         if let Some(loc_node) =
                             sitemap_node.descendants().find(|n| n.has_tag_name("loc"))
                         {
                             if let Some(nested_sitemap_url) = loc_node.text() {
-                                // Recursively fetch and parse nested sitemaps
-                                // Box::pin the future to avoid infinitely sized futures
-                                let nested_urls =
-                                    Box::pin(Self::parse_sitemap(client, nested_sitemap_url))
-                                        .await?;
+                                // Recursively fetch and parse nested sitemaps.
+                                // Box::pin the future to avoid infinitely sized futures.
+                                let nested_urls = Box::pin(Self::parse_sitemap(
+                                    client,
+                                    nested_sitemap_url,
+                                    depth + 1,
+                                    visited,
+                                ))
+                                .await?;
                                 urls.extend(nested_urls);
                             }
                         }
@@ -101,6 +117,9 @@ impl SitemapProvider {
                 } else {
                     // This is a regular sitemap file
                     for url_node in doc.descendants().filter(|n| n.has_tag_name("url")) {
+                        if urls.len() >= MAX_SITEMAP_URLS {
+                            break;
+                        }
                         if let Some(loc_node) =
                             url_node.descendants().find(|n| n.has_tag_name("loc"))
                         {
@@ -114,6 +133,9 @@ impl SitemapProvider {
             Err(_) => {
                 // If XML parsing fails, try to handle it as a text file (some sitemaps are just lists of URLs)
                 for line in content.lines() {
+                    if urls.len() >= MAX_SITEMAP_URLS {
+                        break;
+                    }
                     let line = line.trim();
                     if line.starts_with("http") {
                         urls.push(line.to_string());
@@ -139,6 +161,9 @@ impl Provider for SitemapProvider {
         Box::pin(async move {
             let client = self.build_client()?;
             let mut urls = Vec::new();
+            // Shared across all candidate locations so a sitemap reachable from
+            // more than one entry point is fetched at most once.
+            let mut visited = HashSet::new();
 
             // Try common sitemap locations
             let sitemap_urls = vec![
@@ -156,7 +181,8 @@ impl Provider for SitemapProvider {
                 if let Ok(resp) = resp {
                     if resp.status().is_success() {
                         // Found a valid sitemap, parse it
-                        let sitemap_urls = Self::parse_sitemap(&client, &sitemap_url).await?;
+                        let sitemap_urls =
+                            Self::parse_sitemap(&client, &sitemap_url, 0, &mut visited).await?;
                         urls.extend(sitemap_urls);
                     }
                 }
@@ -180,11 +206,7 @@ impl Provider for SitemapProvider {
         self.retries = count;
     }
     fn with_random_agent(&mut self, enabled: bool) {
-        if enabled {
-            self.user_agent = Some(crate::network::random_user_agent());
-        } else {
-            self.user_agent = None;
-        }
+        self.random_agent = enabled;
     }
     fn with_insecure(&mut self, enabled: bool) {
         self.insecure = enabled;
@@ -203,7 +225,7 @@ mod tests {
         let provider = SitemapProvider::new();
         assert_eq!(provider.timeout, Duration::from_secs(30));
         assert_eq!(provider.retries, 3);
-        assert_eq!(provider.user_agent, None);
+        assert!(!provider.random_agent);
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
         assert!(!provider.insecure);
@@ -244,15 +266,9 @@ mod tests {
     fn test_with_random_agent() {
         let mut provider = SitemapProvider::new();
         provider.with_random_agent(true);
-        assert!(provider.user_agent.is_some());
-        assert!(provider
-            .user_agent
-            .as_ref()
-            .unwrap()
-            .starts_with("Mozilla/5.0"));
-        // Disabling should reset UA to None
+        assert!(provider.random_agent);
         provider.with_random_agent(false);
-        assert_eq!(provider.user_agent, None);
+        assert!(!provider.random_agent);
     }
 
     #[test]
@@ -429,6 +445,36 @@ mod tests {
         let urls = result.unwrap();
         assert_eq!(urls.len(), 1);
         assert!(urls.contains(&"https://example.com/nested-page".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_sitemap_index_self_cycle_terminates() {
+        // A sitemap index that references itself must not loop forever.
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+
+        let self_ref_index = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>http://{host}/sitemap_index.xml</loc></sitemap>
+</sitemapindex>"#
+        );
+
+        // Allow many hits; the cycle guard should make far fewer (ideally 1-2).
+        let _m = server
+            .mock("GET", "/sitemap_index.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(self_ref_index)
+            .expect_at_most(5)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        // Completing at all (not hanging) is the assertion.
+        let result = provider.fetch_urls(&host).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -28,12 +28,30 @@ impl CacheKey {
     }
 }
 
+/// Feed one field into the hasher length-prefixed, so that adjacent fields can
+/// never be confused for one another. Without this, concatenating raw bytes
+/// lets distinct configs collide (e.g. domain `"ab"`+provider `"c"` hashes the
+/// same as domain `"a"`+provider `"bc"`), which would cross-pollinate caches.
+fn feed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+/// Feed a list of strings unambiguously: element count, then each element
+/// length-prefixed.
+fn feed_list(hasher: &mut Sha256, items: &[String]) {
+    hasher.update((items.len() as u64).to_le_bytes());
+    for item in items {
+        feed(hasher, item.as_bytes());
+    }
+}
+
 impl std::fmt::Display for CacheKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut hasher = Sha256::new();
-        hasher.update(&self.domain);
-        hasher.update(self.providers.join(","));
-        hasher.update(&self.filters_hash);
+        feed(&mut hasher, self.domain.as_bytes());
+        feed_list(&mut hasher, &self.providers);
+        feed(&mut hasher, self.filters_hash.as_bytes());
         let result = hasher.finalize();
         for byte in result {
             write!(f, "{:02x}", byte)?;
@@ -59,21 +77,38 @@ pub struct CacheFilters {
 }
 
 impl CacheFilters {
-    /// Compute a hash of the filter configuration
+    /// Compute a hash of the filter configuration.
+    ///
+    /// Every field is fed length-prefixed (see [`feed`]/[`feed_list`]) so that
+    /// no two distinct filter sets can hash to the same value through field-
+    /// boundary ambiguity — e.g. `presets=["a"], min_length=Some(1)` must not
+    /// collide with `presets=["a1"], min_length=None`.
     pub fn compute_hash(&self) -> String {
         let mut hasher = Sha256::new();
 
-        hasher.update(if self.subs { "1" } else { "0" });
-        hasher.update(self.extensions.join(","));
-        hasher.update(self.exclude_extensions.join(","));
-        hasher.update(self.patterns.join(","));
-        hasher.update(self.exclude_patterns.join(","));
-        hasher.update(self.presets.join(","));
-        hasher.update(self.min_length.map(|l| l.to_string()).unwrap_or_default());
-        hasher.update(self.max_length.map(|l| l.to_string()).unwrap_or_default());
-        hasher.update(if self.strict { "1" } else { "0" });
-        hasher.update(if self.normalize_url { "1" } else { "0" });
-        hasher.update(if self.merge_endpoint { "1" } else { "0" });
+        hasher.update([self.subs as u8]);
+        feed_list(&mut hasher, &self.extensions);
+        feed_list(&mut hasher, &self.exclude_extensions);
+        feed_list(&mut hasher, &self.patterns);
+        feed_list(&mut hasher, &self.exclude_patterns);
+        feed_list(&mut hasher, &self.presets);
+        feed(
+            &mut hasher,
+            self.min_length
+                .map(|l| l.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        feed(
+            &mut hasher,
+            self.max_length
+                .map(|l| l.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        hasher.update([self.strict as u8]);
+        hasher.update([self.normalize_url as u8]);
+        hasher.update([self.merge_endpoint as u8]);
 
         hasher
             .finalize()
@@ -491,6 +526,57 @@ mod tests {
 
         assert_eq!(key1.providers, key2.providers);
         assert_eq!(format!("{}", key1), format!("{}", key2));
+    }
+
+    #[test]
+    fn test_cache_filters_hash_no_field_boundary_collision() {
+        // presets=["a"] + min_length=Some(1) must NOT hash the same as
+        // presets=["a1"] + min_length=None (the old concatenation collided).
+        let base = CacheFilters {
+            subs: false,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: false,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+        let a = CacheFilters {
+            presets: vec!["a".to_string()],
+            min_length: Some(1),
+            ..base.clone()
+        };
+        let b = CacheFilters {
+            presets: vec!["a1".to_string()],
+            min_length: None,
+            ..base.clone()
+        };
+        assert_ne!(a.compute_hash(), b.compute_hash());
+    }
+
+    #[test]
+    fn test_cache_key_no_field_boundary_collision() {
+        let filters = CacheFilters {
+            subs: false,
+            extensions: vec![],
+            exclude_extensions: vec![],
+            patterns: vec![],
+            exclude_patterns: vec![],
+            presets: vec![],
+            min_length: None,
+            max_length: None,
+            strict: false,
+            normalize_url: false,
+            merge_endpoint: false,
+        };
+        // domain "ab" + provider "c" vs domain "a" + provider "bc".
+        let k1 = CacheKey::new("ab", &["c".to_string()], &filters);
+        let k2 = CacheKey::new("a", &["bc".to_string()], &filters);
+        assert_ne!(format!("{}", k1), format!("{}", k2));
     }
 
     #[test]
