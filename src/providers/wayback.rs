@@ -4,6 +4,67 @@ use std::pin::Pin;
 
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::progress::ProgressReporter;
+
+/// How many rows to ask the CDX server for per request. A bounded `limit` is
+/// what keeps large domains from failing: an unbounded query makes the server
+/// compute and buffer the *entire* result set (it then routinely times out),
+/// whereas a capped request streams a slice and returns promptly. Most domains
+/// fit in a single page; only the large ones the user cares about paginate.
+const PAGE_LIMIT: usize = 50_000;
+
+/// Hard ceiling on the number of pages we will follow, so a misbehaving cursor
+/// can never spin forever. At `PAGE_LIMIT` rows each, this covers domains with
+/// up to ~500M captured URLs — far beyond anything real.
+const MAX_PAGES: usize = 10_000;
+
+/// Split a CDX `showResumeKey=true` response into its URL rows and the resume
+/// key for the next page (if any).
+///
+/// The server streams the result rows, then — *only while more results remain*
+/// — a blank line followed by an opaque resume key:
+///
+/// ```text
+/// https://example.com/a
+/// https://example.com/b
+///                          <- blank separator
+/// eJxLzs_V...              <- resume key
+/// ```
+///
+/// We treat a trailing, non-URL token *that is preceded by a blank line* as the
+/// cursor. Requiring the blank separator is what stops stray non-URL junk in a
+/// malformed/error body from being mistaken for a key (which would trigger a
+/// spurious follow-up request). No such trailing token ⇒ this was the last page.
+fn split_page(text: &str) -> (Vec<String>, Option<String>) {
+    let lines: Vec<&str> = text.lines().collect();
+
+    let mut resume_key = None;
+    let mut url_scan_end = lines.len();
+    if let Some(idx) = lines.iter().rposition(|l| !l.trim().is_empty()) {
+        let candidate = lines[idx].trim();
+        let is_url = candidate.starts_with("http://") || candidate.starts_with("https://");
+        let preceded_by_blank = idx > 0 && lines[idx - 1].trim().is_empty();
+        if !is_url && preceded_by_blank {
+            resume_key = Some(candidate.to_string());
+            url_scan_end = idx; // keep the key line out of the URL scan
+        }
+    }
+
+    let urls = lines[..url_scan_end]
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
+        .map(String::from)
+        .collect();
+
+    (urls, resume_key)
+}
+
+/// Percent-encode a resume key so opaque cursor bytes (`+`, `/`, `=` in some
+/// base64 variants) survive being spliced back into the query string.
+fn encode_resume_key(key: &str) -> String {
+    url::form_urlencoded::byte_serialize(key.as_bytes()).collect()
+}
 
 /// Normalise a user-supplied date into a 14-digit Wayback CDX timestamp
 /// (`YYYYMMDDhhmmss`). Accepts `YYYY`, `YYYYMM`, `YYYYMMDD` and the full
@@ -143,6 +204,44 @@ impl WaybackMachineProvider {
             proxy_auth: self.proxy_auth.clone(),
         }
     }
+
+    /// Archive origin. Overridable in tests so the mock server can stand in.
+    fn base_url(&self) -> &str {
+        #[cfg(test)]
+        {
+            &self.base_url
+        }
+        #[cfg(not(test))]
+        {
+            "https://web.archive.org"
+        }
+    }
+
+    /// Build the CDX query *without* pagination params. Plain-text streaming
+    /// (`fl=original`) is far more reliable than `output=json` for large
+    /// domains, and `collapse=urlkey` trims server-side duplicates.
+    fn query_base(&self, domain: &str) -> String {
+        let mut url = if self.include_subdomains {
+            format!(
+                "{}/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey",
+                self.base_url()
+            )
+        } else {
+            format!(
+                "{}/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey",
+                self.base_url()
+            )
+        };
+        if let Some(ts) = &self.from {
+            url.push_str("&from=");
+            url.push_str(ts);
+        }
+        if let Some(ts) = &self.to {
+            url.push_str("&to=");
+            url.push_str(ts);
+        }
+        url
+    }
 }
 
 impl Provider for WaybackMachineProvider {
@@ -154,50 +253,79 @@ impl Provider for WaybackMachineProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            #[cfg(not(test))]
-            let base_url = "https://web.archive.org";
-            #[cfg(test)]
-            let base_url = &self.base_url;
-
-            // Plain-text streaming response is far more reliable than output=json
-            // for large domains (the JSON variant buffers the entire result server-side
-            // and frequently times out). collapse=urlkey trims server-side duplicates.
-            let mut url = if self.include_subdomains {
-                format!(
-                    "{}/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey",
-                    base_url
-                )
-            } else {
-                format!(
-                    "{}/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey",
-                    base_url
-                )
-            };
-            if let Some(ts) = &self.from {
-                url.push_str("&from=");
-                url.push_str(ts);
-            }
-            if let Some(ts) = &self.to {
-                url.push_str("&to=");
-                url.push_str(ts);
-            }
-
             let client = self.client_config().build_client()?;
-            let text = get_with_retry(&client, &url, self.retries).await?;
+            let query_base = self.query_base(domain);
 
-            if text.trim().is_empty() {
-                return Ok(Vec::new());
+            if let Some(r) = &reporter {
+                r.detail("fetching…");
             }
 
-            // Defensive: a 200 OK from Wayback can occasionally carry a maintenance
-            // page or non-URL body. Restrict to lines that actually look like URLs.
-            let mut urls: Vec<String> = text
-                .lines()
-                .map(str::trim)
-                .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
-                .map(String::from)
-                .collect();
+            // Walk the CDX cursor: each request returns at most PAGE_LIMIT rows
+            // plus a resume key pointing at the next slice. Following the key
+            // lets arbitrarily large domains complete as a series of bounded,
+            // fast requests instead of one unbounded request that times out.
+            let mut urls: Vec<String> = Vec::new();
+            let mut resume_key: Option<String> = None;
+            let mut pages = 0usize;
+
+            loop {
+                pages += 1;
+                if pages > MAX_PAGES {
+                    break;
+                }
+
+                let mut url = format!("{query_base}&limit={PAGE_LIMIT}&showResumeKey=true");
+                if let Some(key) = &resume_key {
+                    url.push_str("&resumeKey=");
+                    url.push_str(&encode_resume_key(key));
+                }
+
+                let text = match get_with_retry(&client, &url, self.retries).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        // Best effort: a mid-cursor failure shouldn't discard
+                        // the pages we already pulled. Only a failure on the
+                        // very first request (nothing collected) is fatal.
+                        if urls.is_empty() {
+                            return Err(e);
+                        }
+                        // We're returning a truncated result. Flag it so the
+                        // caller can mark the line partial and warn rather than
+                        // present an incomplete crawl as a clean success.
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
+                        break;
+                    }
+                };
+
+                let (page_urls, next_key) = split_page(&text);
+                let got = page_urls.len();
+                urls.extend(page_urls);
+
+                if let Some(r) = &reporter {
+                    r.detail(format!("{} URLs…", urls.len()));
+                }
+
+                // Continue only when the cursor actually advanced: a new resume
+                // key AND a non-empty page. Otherwise we've reached the end (or
+                // a stuck cursor) and must stop to avoid looping forever.
+                match next_key {
+                    Some(key) if got > 0 && resume_key.as_deref() != Some(key.as_str()) => {
+                        resume_key = Some(key);
+                    }
+                    _ => break,
+                }
+            }
 
             urls.sort();
             urls.dedup();
@@ -414,18 +542,22 @@ mod tests {
         use mockito;
 
         let mut server = mockito::Server::new_async().await;
+        // A small domain fits in one page: results, no trailing resume key, so
+        // exactly one request is made.
         let mock = server
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
                 mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
+                mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "text/plain")
             .with_body(
                 "http://example.com/page1\nhttp://example.com/page2\nhttp://example.com/page1\n",
             )
+            .expect(1)
             .create_async()
             .await;
 
@@ -434,12 +566,178 @@ mod tests {
 
         let urls = provider.fetch_urls("example.com").await.unwrap();
 
-        // Should return unique URLs sorted
+        // Should return unique URLs sorted.
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "http://example.com/page1");
         assert_eq!(urls[1], "http://example.com/page2");
 
         mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_paginates_via_resume_key() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        // First page: rows + a blank line + the resume key (more results remain).
+        // It fires before the continuation, so once it has served its single
+        // hit, mockito routes the keyed request to the page-two mock.
+        let page1 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
+            ]))
+            .with_status(200)
+            .with_body("http://example.com/a\nhttp://example.com/b\n\nKEY2\n")
+            .expect(1)
+            .create_async()
+            .await;
+        // Second page: keyed by the cursor; overlaps /b to prove cross-page
+        // dedup, and carries no trailing key so the walk terminates.
+        let page2 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/b\nhttp://example.com/c\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+                "http://example.com/c".to_string(),
+            ]
+        );
+        page1.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_keeps_partial_results_on_midcursor_failure() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        // First page succeeds and hands us a cursor...
+        let _page1 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
+            ]))
+            .with_status(200)
+            .with_body("http://example.com/a\nhttp://example.com/b\n\nKEY2\n")
+            .expect(1)
+            .create_async()
+            .await;
+        // ...but the follow-up fails. We should keep page one rather than error.
+        let _page2 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_retries(0); // fail fast, don't sleep through back-off
+
+        // Drive it through a reporter so we can assert the partial flag is set.
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+            ]
+        );
+        // The lost second page must be surfaced as a partial result, not a
+        // clean success.
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_errors_when_first_request_fails() {
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+
+        // Nothing collected yet → a hard failure must propagate.
+        assert!(provider.fetch_urls("example.com").await.is_err());
+    }
+
+    #[test]
+    fn test_split_page_extracts_resume_key_after_blank_line() {
+        let body = "http://example.com/a\nhttps://example.com/b\n\neJxKEY\n";
+        let (urls, key) = split_page(body);
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ]
+        );
+        assert_eq!(key.as_deref(), Some("eJxKEY"));
+    }
+
+    #[test]
+    fn test_split_page_no_resume_key_on_last_page() {
+        let body = "http://example.com/a\nhttp://example.com/b\n";
+        let (urls, key) = split_page(body);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_split_page_ignores_trailing_junk_without_blank_separator() {
+        // A non-URL line *not* preceded by a blank line is junk (e.g. an error
+        // page line), never a resume key — so no spurious follow-up request.
+        let body = "<html>Service unavailable</html>\nhttp://example.com/real\nnot-a-url\n";
+        let (urls, key) = split_page(body);
+        assert_eq!(urls, vec!["http://example.com/real".to_string()]);
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_split_page_empty_body() {
+        let (urls, key) = split_page("");
+        assert!(urls.is_empty());
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_encode_resume_key() {
+        // URL-safe base64 chars pass through; +, /, = get percent-encoded.
+        assert_eq!(encode_resume_key("eJx-_09Az"), "eJx-_09Az");
+        assert_eq!(encode_resume_key("a+b/c="), "a%2Bb%2Fc%3D");
     }
 
     #[tokio::test]
@@ -453,10 +751,12 @@ mod tests {
                 mockito::Matcher::UrlEncoded("url".into(), "*.example.com/*".into()),
                 mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
+                mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "text/plain")
             .with_body("http://sub.example.com/page1\n")
+            .expect(1)
             .create_async()
             .await;
 
@@ -482,6 +782,7 @@ mod tests {
             .match_query(mockito::Matcher::Any)
             .with_status(200)
             .with_body("")
+            .expect(1)
             .create_async()
             .await;
 
@@ -589,10 +890,12 @@ mod tests {
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
                 mockito::Matcher::UrlEncoded("from".into(), "20200101000000".into()),
                 mockito::Matcher::UrlEncoded("to".into(), "20201231235959".into()),
+                mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "text/plain")
             .with_body("http://example.com/page\n")
+            .expect(1)
             .create_async()
             .await;
 

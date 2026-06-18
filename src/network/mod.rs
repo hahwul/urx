@@ -8,4 +8,4 @@ mod settings;
 pub mod user_agent;
 
 pub use settings::{NetworkScope, NetworkSettings};
-pub use user_agent::random_user_agent;
+pub use user_agent::{default_user_agent, random_user_agent};
