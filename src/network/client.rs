@@ -46,10 +46,17 @@ impl HttpClientConfig {
             builder = builder.danger_accept_invalid_certs(true);
         }
 
-        if self.random_agent {
-            let ua = crate::network::random_user_agent();
-            builder = builder.user_agent(ua);
-        }
+        // Always send a User-Agent. reqwest sends none by default, and several
+        // upstreams — notably the Wayback CDX API — answer a UA-less request
+        // with `400 Bad Request`, so an unset header was a silent, blanket
+        // source of provider failures. `--random-agent` rotates realistic
+        // browser strings; otherwise we send a polite, tool-identifying default.
+        let ua = if self.random_agent {
+            crate::network::random_user_agent()
+        } else {
+            crate::network::default_user_agent()
+        };
+        builder = builder.user_agent(ua);
 
         if let Some(proxy_url) = &self.proxy {
             let mut proxy = reqwest::Proxy::all(proxy_url)?;

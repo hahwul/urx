@@ -202,6 +202,22 @@ impl UserAgent {
 
 // Convenience free functions
 
+/// Polite, tool-identifying User-Agent used when UA randomisation is off.
+///
+/// Sending *some* User-Agent is mandatory, not cosmetic: the Wayback CDX
+/// endpoint (and some others) reject a request with no `User-Agent` header
+/// outright with `400 Bad Request`. The `Mozilla/5.0 (compatible; …)` form is
+/// the conventional "polite bot" shape that upstreams accept while still
+/// honestly identifying urx.
+pub fn default_user_agent() -> String {
+    concat!(
+        "Mozilla/5.0 (compatible; urx/",
+        env!("CARGO_PKG_VERSION"),
+        "; +https://github.com/hahwul/urx)"
+    )
+    .to_string()
+}
+
 /// Returns a random realistic User-Agent with desktop/mobile weighting.
 /// Roughly 65% desktop, 35% mobile.
 pub fn random_user_agent() -> String {
@@ -232,6 +248,15 @@ mod tests {
             "UA must start with Mozilla/5.0, got: {ua}"
         );
         assert!(ua.len() > 40, "UA too short: {ua}");
+    }
+
+    #[test]
+    fn default_user_agent_is_nonempty_and_identifies_urx() {
+        let ua = default_user_agent();
+        // Must be non-empty: an absent UA makes the Wayback CDX API 400.
+        assert!(!ua.is_empty());
+        assert!(ua.contains("urx/"), "default UA should identify urx: {ua}");
+        assert!(ua.contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

@@ -1,14 +1,45 @@
 use futures::future::join_all;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
 use crate::cli::Args;
 use crate::network::{NetworkScope, NetworkSettings};
-use crate::progress::ProgressManager;
+use crate::progress::{
+    provider_error_style, provider_partial_style, provider_running_style, provider_success_style,
+    ProgressManager, ProgressReporter,
+};
 use crate::providers::Provider;
 use crate::utils::verbose_print;
+
+/// Format an integer with thousands separators (e.g. `12345` → `12,345`) so
+/// large URL counts stay legible in the progress summary.
+fn fmt_count(n: usize) -> String {
+    let digits = n.to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
+}
+
+/// Render an error as a single short line for a progress label, truncating on
+/// a char boundary so a verbose chain doesn't blow out the terminal width.
+fn short_error(e: &anyhow::Error) -> String {
+    let msg = e.to_string();
+    let one_line = msg.split('\n').next().unwrap_or(&msg);
+    let truncated: String = one_line.chars().take(80).collect();
+    if truncated.chars().count() < one_line.chars().count() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
 
 /// Lock a mutex, recovering the inner data if another task panicked while
 /// holding it. One failed provider task must not poison the shared state and
@@ -236,7 +267,6 @@ pub async fn process_domains(
     let mut provider_futures = Vec::new();
 
     // Extract the values we need from Args to avoid lifetime issues
-    let timeout = args.timeout.max(1);
     let verbose = args.verbose;
     let silent = args.silent;
     let no_progress = args.no_progress;
@@ -261,8 +291,12 @@ pub async fn process_domains(
 
         // Spawn a task for this provider
         let provider_future = task::spawn(async move {
-            // Track the current domain index for this provider
+            // Track the current domain index for this provider, plus running
+            // totals used to freeze the line on an honest end-of-run summary.
             let mut current_domain_idx = 0;
+            let mut provider_url_total = 0usize;
+            let mut provider_err_total = 0usize;
+            let mut provider_partial_total = 0usize;
 
             // Process all domains assigned to this provider
             loop {
@@ -278,80 +312,63 @@ pub async fn process_domains(
                     }
                 };
 
-                // Update the progress bar message to show which domain is being processed
-                provider_bar.set_message(format!(
-                    "({current_domain_idx}/{total_domains}) Fetching data for {domain}"
-                ));
-
-                // Use ticker for progress visualization
-                let bar_clone = provider_bar.clone();
-
-                // Clear line after setting initial message to ensure proper positioning
+                // Re-arm the spinner and reset the per-domain elapsed timer so
+                // the line reads as "this fetch", not "since the run started".
+                let prefix = format!("({current_domain_idx}/{total_domains}) {domain} · ");
+                provider_bar.set_style(provider_running_style());
+                provider_bar.reset_elapsed();
+                provider_bar.set_message(format!("{prefix}fetching…"));
                 if !no_progress && !silent {
                     provider_bar.tick();
                 }
 
-                let ticker_handle = tokio::spawn(async move {
-                    let start_time = std::time::Instant::now();
-                    let total_duration_ms = timeout * 1000;
+                // A paginating provider (Wayback) uses this handle to surface
+                // real page-by-page progress and to flag incomplete results.
+                // Built whenever output is allowed — including under
+                // --no-progress, so the partial-result signal still reaches the
+                // warning path; only --silent suppresses it.
+                let reporter = if !silent {
+                    Some(ProgressReporter::new(provider_bar.clone(), prefix))
+                } else {
+                    None
+                };
 
-                    let spinner_phase_duration =
-                        std::time::Duration::from_millis(total_duration_ms / 10);
-                    tokio::time::sleep(spinner_phase_duration).await;
-
-                    let progress_style = ProgressStyle::with_template(
-                        "{prefix:.bold.dim} [{bar:40.green/white}] {spinner} {wide_msg}",
-                    )
-                    .unwrap()
-                    .progress_chars("=> ")
-                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
-
-                    bar_clone.set_style(progress_style);
-
-                    let update_interval_ms = 100;
-                    let end_time = start_time + std::time::Duration::from_millis(total_duration_ms);
-
-                    while std::time::Instant::now() < end_time {
-                        let now = std::time::Instant::now();
-                        let elapsed = now.duration_since(start_time).as_millis() as u64;
-                        let progress = (elapsed * 100) / total_duration_ms;
-
-                        bar_clone.set_position(progress.min(99));
-
-                        tokio::time::sleep(std::time::Duration::from_millis(update_interval_ms))
-                            .await;
-                    }
-
-                    bar_clone.set_position(100);
-                });
-
-                // Fetch URLs for this domain using this provider
+                // Fetch URLs for this domain using this provider.
                 let fetch_start = std::time::Instant::now();
-                let fetch_result = provider_clone.fetch_urls(&domain).await;
+                let fetch_result = provider_clone
+                    .fetch_urls_with_progress(&domain, reporter.clone())
+                    .await;
                 let fetch_elapsed = fetch_start.elapsed();
                 match fetch_result {
                     Ok(urls) => {
-                        provider_bar.set_position(100);
-                        provider_bar.set_message(format!(
-                            "({}/{}) Found {} URLs for {}",
-                            current_domain_idx,
-                            total_domains,
-                            urls.len(),
-                            domain
-                        ));
-                        ticker_handle.abort();
-                        provider_bar.set_style(
-                            ProgressStyle::with_template(
-                                "{prefix:.bold.dim} [{bar:40.green/white}] ✓ {wide_msg}",
-                            )
-                            .unwrap()
-                            .progress_chars("=>"),
-                        );
-
-                        // Force refresh to maintain line position
-                        provider_bar.tick();
-
                         let url_count = urls.len();
+                        provider_url_total += url_count;
+
+                        // The provider may have returned a *partial* result
+                        // (e.g. a page failed mid-pagination). Surface that as a
+                        // distinct, warned state rather than a clean success, so
+                        // a truncated crawl is never mistaken for a complete one.
+                        let partial = reporter.as_ref().is_some_and(|r| r.is_partial());
+                        if partial {
+                            provider_partial_total += 1;
+                            provider_bar.set_style(provider_partial_style());
+                            provider_bar.set_message(format!(
+                                "✓ {domain} · {} URLs (partial)",
+                                fmt_count(url_count)
+                            ));
+                            if verbose && !silent {
+                                eprintln!(
+                                    "Warning: partial results for {domain} from {provider_name}: a request failed mid-fetch; returning {url_count} URL(s) collected so far"
+                                );
+                            }
+                        } else {
+                            provider_bar.set_style(provider_success_style());
+                            provider_bar.set_message(format!(
+                                "✓ {domain} · {} URLs",
+                                fmt_count(url_count)
+                            ));
+                        }
+                        provider_bar.tick();
 
                         // Add URLs to the shared map (URL -> set of providers).
                         {
@@ -381,20 +398,10 @@ pub async fn process_domains(
                         }
                     }
                     Err(e) => {
-                        provider_bar.set_position(100);
-                        provider_bar.set_message(format!(
-                            "({current_domain_idx}/{total_domains}) Error: for {domain}"
-                        ));
-                        ticker_handle.abort();
-                        provider_bar.set_style(
-                            ProgressStyle::with_template(
-                                "{prefix:.bold.dim} [{bar:40.red/white}] ✗ {wide_msg}",
-                            )
-                            .unwrap()
-                            .progress_chars("=>"),
-                        );
+                        provider_err_total += 1;
 
-                        // Force refresh to maintain line position
+                        provider_bar.set_style(provider_error_style());
+                        provider_bar.set_message(format!("✗ {domain} · {}", short_error(&e)));
                         provider_bar.tick();
 
                         {
@@ -410,18 +417,30 @@ pub async fn process_domains(
                         }
                     }
                 }
-
-                // Get ready for the next domain if any
-                if current_domain_idx < total_domains {
-                    provider_bar.set_position(0); // Reset progress for next domain
-                }
             }
 
-            // This provider has finished all its domains
-            if current_domain_idx >= total_domains {
-                provider_bar.finish_with_message(format!(
-                    "({total_domains}/{total_domains}) Completed all domains"
-                ));
+            // Freeze this provider's line on a one-line summary that reflects
+            // what actually happened across all of its domains.
+            if provider_url_total == 0 && provider_err_total > 0 {
+                provider_bar.set_style(provider_error_style());
+                provider_bar
+                    .finish_with_message(format!("✗ all {provider_err_total} fetch(es) failed"));
+            } else {
+                // A partial anywhere keeps the line yellow so the run doesn't
+                // read as a clean, complete success at a glance.
+                provider_bar.set_style(if provider_partial_total > 0 {
+                    provider_partial_style()
+                } else {
+                    provider_success_style()
+                });
+                let mut summary = format!("✓ {} URLs", fmt_count(provider_url_total));
+                if provider_partial_total > 0 {
+                    summary.push_str(&format!(" · {provider_partial_total} partial"));
+                }
+                if provider_err_total > 0 {
+                    summary.push_str(&format!(" · {provider_err_total} error(s)"));
+                }
+                provider_bar.finish_with_message(summary);
             }
 
             if verbose && !silent {

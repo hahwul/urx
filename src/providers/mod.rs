@@ -37,6 +37,20 @@ pub trait Provider: Send + Sync {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>>;
 
+    /// Fetch URLs while optionally reporting fine-grained progress (e.g. a
+    /// paginating provider can surface "page 3/12") through `reporter`.
+    ///
+    /// The default implementation ignores the reporter and delegates to
+    /// [`Provider::fetch_urls`], so providers that have nothing interesting to
+    /// report need not implement it.
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        _reporter: Option<crate::progress::ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls(domain)
+    }
+
     // Configuration options
     /// Include or exclude subdomains in the search
     fn with_subdomains(&mut self, include: bool);
