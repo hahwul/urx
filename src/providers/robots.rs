@@ -12,7 +12,7 @@ use crate::providers::Provider;
 pub struct RobotsProvider {
     timeout: Duration,
     retries: u32,
-    user_agent: Option<String>,
+    random_agent: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
     insecure: bool,
@@ -27,7 +27,7 @@ impl RobotsProvider {
         Self {
             timeout: Duration::from_secs(30),
             retries: 3,
-            user_agent: None,
+            random_agent: false,
             proxy: None,
             proxy_auth: None,
             insecure: false,
@@ -54,35 +54,16 @@ impl RobotsProvider {
         HttpClientConfig {
             timeout: self.timeout.as_secs(),
             insecure: self.insecure,
-            random_agent: false, // user_agent is handled separately
+            random_agent: self.random_agent,
             proxy: self.proxy.clone(),
             proxy_auth: self.proxy_auth.clone(),
         }
     }
 
+    /// Build the HTTP client via the shared config so it always sends a
+    /// User-Agent (a UA-less request is rejected with 400 by some servers).
     fn build_client(&self) -> Result<Client> {
-        let config = self.client_config();
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(config.timeout))
-            .danger_accept_invalid_certs(config.insecure);
-
-        if let Some(ref proxy_url) = config.proxy {
-            let mut proxy = reqwest::Proxy::all(proxy_url)?;
-
-            if let Some(ref auth) = config.proxy_auth {
-                let username = auth.split(':').next().unwrap_or("");
-                let password = auth.split(':').nth(1).unwrap_or("");
-                proxy = proxy.basic_auth(username, password);
-            }
-
-            builder = builder.proxy(proxy);
-        }
-
-        if let Some(ref agent) = self.user_agent {
-            builder = builder.user_agent(agent);
-        }
-
-        Ok(builder.build()?)
+        self.client_config().build_client()
     }
 }
 
@@ -175,11 +156,7 @@ impl Provider for RobotsProvider {
         self.retries = count;
     }
     fn with_random_agent(&mut self, enabled: bool) {
-        if enabled {
-            self.user_agent = Some(crate::network::random_user_agent());
-        } else {
-            self.user_agent = None;
-        }
+        self.random_agent = enabled;
     }
     fn with_insecure(&mut self, enabled: bool) {
         self.insecure = enabled;
@@ -197,7 +174,7 @@ mod tests {
         let provider = RobotsProvider::new();
         assert_eq!(provider.timeout, Duration::from_secs(30));
         assert_eq!(provider.retries, 3);
-        assert_eq!(provider.user_agent, None);
+        assert!(!provider.random_agent);
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
         assert!(!provider.insecure);
@@ -240,16 +217,11 @@ mod tests {
     fn test_with_random_agent() {
         let mut provider = RobotsProvider::new();
         provider.with_random_agent(true);
-        assert!(provider.user_agent.is_some());
-        assert!(provider
-            .user_agent
-            .as_ref()
-            .unwrap()
-            .starts_with("Mozilla/5.0"));
+        assert!(provider.random_agent);
 
         // Test disabling the random agent
         provider.with_random_agent(false);
-        assert_eq!(provider.user_agent, None);
+        assert!(!provider.random_agent);
     }
 
     #[test]

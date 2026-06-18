@@ -233,6 +233,12 @@ pub struct Args {
     #[clap(long, default_value = "true")]
     pub strict: bool,
 
+    /// Disable host validation entirely (keep every URL a provider returns,
+    /// regardless of host). Convenience inverse of `--strict`; wins over it.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long)]
+    pub no_strict: bool,
+
     /// Control which components network settings apply to (all, providers, testers, or providers,testers)
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "all", value_parser = validate_network_scope)]
@@ -392,6 +398,40 @@ fn parse_domain_line(line: &str) -> Option<String> {
     }
 }
 
+/// Reduce a user-supplied target to a bare host. People routinely paste a full
+/// URL (`https://example.com/path?q=1`) or `example.com/` as the target; left
+/// as-is those produce a malformed provider query (`url=https://example.com/...`)
+/// that silently returns nothing. We strip any scheme, path, query, and
+/// fragment and lowercase the host. Returns `None` when nothing host-like
+/// remains. `www.` is intentionally preserved (it can be a distinct host).
+pub fn normalize_domain(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // A pasted full URL: let the URL parser pull out the host. This branch is
+    // authoritative — a `://` means the input is meant as a URL, so if it has
+    // no parseable host we return None rather than mis-reading the scheme.
+    if trimmed.contains("://") {
+        return url::Url::parse(trimmed)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+    }
+    // Otherwise drop a scheme-relative prefix and anything from the first
+    // path/query/fragment separator onward.
+    let host = trimmed
+        .trim_start_matches("//")
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_lowercase())
+}
+
 impl Args {
     /// Parse `--rate-limit-by` entries into a `provider_id -> requests/sec`
     /// map. Malformed entries are dropped and reported via `parse_errors`
@@ -413,6 +453,13 @@ impl Args {
             }
         }
         map
+    }
+
+    /// Effective host-validation setting. `--no-strict` wins over `--strict`,
+    /// so users can disable filtering with the natural flag instead of the
+    /// unusual `--strict false`.
+    pub fn strict_enabled(&self) -> bool {
+        self.strict && !self.no_strict
     }
 
     /// Check if robots.txt discovery should be used
@@ -626,6 +673,49 @@ mod tests {
         assert_eq!(args.files.len(), 2);
         assert_eq!(args.files[0].to_str().unwrap(), "file1.txt");
         assert_eq!(args.files[1].to_str().unwrap(), "file2.warc");
+    }
+
+    #[test]
+    fn test_normalize_domain() {
+        assert_eq!(
+            normalize_domain("example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("https://example.com/path?q=1#frag").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("http://www.example.com/").as_deref(),
+            Some("www.example.com")
+        );
+        assert_eq!(
+            normalize_domain("example.com/foo").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("  EXAMPLE.com.  ").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("//cdn.example.com/x").as_deref(),
+            Some("cdn.example.com")
+        );
+        assert_eq!(normalize_domain(""), None);
+        assert_eq!(normalize_domain("   "), None);
+        assert_eq!(normalize_domain("https://"), None);
+    }
+
+    #[test]
+    fn test_strict_enabled() {
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.strict_enabled()); // default on
+
+        let args = Args::parse_from(["urx", "example.com", "--no-strict"]);
+        assert!(!args.strict_enabled()); // --no-strict wins
+
+        let args = Args::parse_from(["urx", "example.com", "--strict", "true", "--no-strict"]);
+        assert!(!args.strict_enabled()); // --no-strict still wins over --strict true
     }
 
     #[test]

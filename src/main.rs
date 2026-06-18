@@ -157,9 +157,16 @@ fn collect_domains(args: &Args) -> Result<Vec<String>> {
         domains.extend(read_domains_from_stdin()?);
     }
 
+    // Reduce each target to a bare host so a pasted full URL or trailing path
+    // doesn't silently corrupt provider queries (a common copy/paste footgun).
+    let mut normalized: Vec<String> = domains
+        .iter()
+        .filter_map(|d| cli::normalize_domain(d))
+        .collect();
+
     let mut seen = std::collections::HashSet::new();
-    domains.retain(|d| seen.insert(d.clone()));
-    Ok(domains)
+    normalized.retain(|d| seen.insert(d.clone()));
+    Ok(normalized)
 }
 
 /// Parse API keys from environment variable (comma-separated) and combine with CLI keys
@@ -592,21 +599,40 @@ fn apply_url_filters(
     let mut sorted_urls = url_filter.apply_filters(urls);
 
     // Apply host validation if strict mode is enabled and we have domains (not from file)
-    if args.strict && args.files.is_empty() {
+    if args.strict_enabled() && args.files.is_empty() {
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-        // Re-resolve the original domain list. We can't read stdin a second
-        // time, so the host validator falls back to whatever positional args
-        // and --domain-list files supplied.
+        // Re-resolve the original domain list, normalized the same way as the
+        // fetch targets so the validator's hosts line up with what was queried.
+        // We can't read stdin a second time, so this falls back to whatever
+        // positional args and --domain-list files supplied.
         let mut domains: Vec<String> = args.domains.clone();
         for path in &args.domain_list {
             domains.extend(read_domains_from_file(path)?);
         }
+        let domains: Vec<String> = domains
+            .iter()
+            .filter_map(|d| cli::normalize_domain(d))
+            .collect();
 
         if !domains.is_empty() {
+            let before = sorted_urls.len();
             let host_validator = HostValidator::new(&domains, args.subs);
             sorted_urls.retain(|url| host_validator.is_valid_host(url));
+            let removed = before - sorted_urls.len();
+
+            // When validation discards most (or all) of what providers returned,
+            // a quiet, much-smaller result looks like a broken provider. Surface
+            // a single hint (even without -v; --silent still suppresses it). The
+            // most common cause is www.<domain> captures under a bare apex query.
+            let drops_most = before > 0 && (sorted_urls.is_empty() || removed * 2 > before);
+            if drops_most && !args.silent && !args.subs {
+                eprintln!(
+                    "[urx] strict host validation removed {removed}/{before} URLs; \
+                     pass --subs to keep subdomains (incl. www.) or --no-strict to keep all hosts"
+                );
+            }
 
             if args.verbose && !args.silent {
                 println!(
@@ -728,7 +754,7 @@ fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         presets: args.preset.clone(),
         min_length: args.min_length,
         max_length: args.max_length,
-        strict: args.strict,
+        strict: args.strict_enabled(),
         normalize_url: args.normalize_url,
         merge_endpoint: args.merge_endpoint,
     };
@@ -1656,6 +1682,7 @@ mod tests {
             min_length: None,
             max_length: None,
             strict: true, // Default strict mode enabled
+            no_strict: false,
             network_scope: "all".to_string(),
             proxy: None,
             proxy_auth: None,
@@ -1920,6 +1947,7 @@ mod tests {
             min_length: None,
             max_length: None,
             strict: false,
+            no_strict: false,
             network_scope: "all".to_string(),
             proxy: None,
             proxy_auth: None,
@@ -2041,6 +2069,7 @@ mod tests {
             min_length: None,
             max_length: None,
             strict: true,
+            no_strict: false,
             network_scope: "all".to_string(),
             proxy: None,
             proxy_auth: None,
