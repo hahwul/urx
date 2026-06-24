@@ -28,14 +28,24 @@ impl Outputter for PlainOutputter {
     fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
         match output_path {
             Some(path) => {
+                // Writing to a file: suppress ANSI colour. The `colored` crate
+                // decides on color globally from stdout's TTY status, so without
+                // this a run in an interactive terminal would bake escape codes
+                // into the file. Restore auto-detection afterward so a later
+                // stdout write (e.g. --output-dir alongside stdout) stays colored.
+                colored::control::set_override(false);
                 let mut file = File::create(&path).context("Failed to create output file")?;
 
-                for (i, url_data) in urls.iter().enumerate() {
-                    let formatted = self.format(url_data, i == urls.len() - 1);
-                    file.write_all(formatted.as_bytes())
-                        .context("Failed to write to output file")?;
-                }
-                Ok(())
+                let result = (|| {
+                    for (i, url_data) in urls.iter().enumerate() {
+                        let formatted = self.format(url_data, i == urls.len() - 1);
+                        file.write_all(formatted.as_bytes())
+                            .context("Failed to write to output file")?;
+                    }
+                    Ok(())
+                })();
+                colored::control::unset_override();
+                result
             }
             None => {
                 if silent {
@@ -126,22 +136,20 @@ impl Outputter for CsvOutputter {
     }
 
     fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+        // Decide the column layout once for the whole run so the header and
+        // every row emit exactly the same columns (otherwise rows could carry a
+        // trailing/extra comma the header doesn't, breaking strict CSV parsers).
         let has_status = urls.iter().any(|url| url.status.is_some());
         let has_sources = urls.iter().any(|url| !url.sources.is_empty());
-        let header: &[u8] = match (has_status, has_sources) {
-            (false, false) => b"url\n",
-            (true, false) => b"url,status\n",
-            (false, true) => b"url,status,sources\n",
-            (true, true) => b"url,status,sources\n",
-        };
+        let header = super::formatter::csv_header(has_status, has_sources);
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
-                file.write_all(header)
+                file.write_all(header.as_bytes())
                     .context("Failed to write CSV header")?;
 
-                for (i, url_data) in urls.iter().enumerate() {
-                    let formatted = self.format(url_data, i == urls.len() - 1);
+                for url_data in urls {
+                    let formatted = super::formatter::csv_row(url_data, has_status, has_sources);
                     file.write_all(formatted.as_bytes())
                         .context("Failed to write to output file")?;
                 }
@@ -153,10 +161,10 @@ impl Outputter for CsvOutputter {
                     return Ok(());
                 };
 
-                print!("{}", std::str::from_utf8(header).unwrap_or(""));
+                print!("{header}");
 
-                for (i, url_data) in urls.iter().enumerate() {
-                    let formatted = self.format(url_data, i == urls.len() - 1);
+                for url_data in urls {
+                    let formatted = super::formatter::csv_row(url_data, has_status, has_sources);
                     print!("{formatted}");
                 }
 
@@ -208,7 +216,7 @@ mod tests {
     fn test_csv_outputter_format() {
         let outputter = CsvOutputter::new();
         let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(outputter.format(&url_data, false), "https://example.com,\n");
+        assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
 
         let url_data_status =
             UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
@@ -216,6 +224,28 @@ mod tests {
             outputter.format(&url_data_status, true),
             "https://example.com,200 OK\n"
         );
+    }
+
+    #[test]
+    fn test_csv_outputter_no_status_no_sources_single_column() -> Result<()> {
+        // Regression: a url-only run must produce a single `url` column for both
+        // header and every row (no dangling trailing comma).
+        let outputter = CsvOutputter::new();
+        let urls = vec![
+            UrlData::new("https://example.com/a".to_string()),
+            UrlData::new("https://example.com/b".to_string()),
+        ];
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
+
+        let mut content = String::new();
+        File::open(&temp_path)?.read_to_string(&mut content)?;
+        assert_eq!(
+            content,
+            "url\nhttps://example.com/a\nhttps://example.com/b\n"
+        );
+        Ok(())
     }
 
     #[test]

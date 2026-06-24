@@ -7,10 +7,17 @@ use tokio::sync::OnceCell;
 
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
 
 /// Sentinel value that asks the provider to resolve the most recent Common
 /// Crawl index at runtime via `collinfo.json`.
 pub(crate) const LATEST_INDEX_ALIAS: &str = "latest";
+
+/// Hard ceiling on the number of CDX index pages we will fetch for one domain,
+/// mirroring the Wayback guard. At the index server's default block size this
+/// covers far more captures than any real domain has.
+const CC_MAX_PAGES: usize = 10_000;
 
 /// Validate that a Common Crawl index identifier matches the expected
 /// `CC-MAIN-YYYY-WW` shape before we splice it into a URL path. This guards
@@ -52,6 +59,14 @@ pub struct CommonCrawlProvider {
 #[derive(Deserialize)]
 struct CCRecord {
     url: String,
+}
+
+/// Response shape of a `&showNumPages=true` probe — the index server reports
+/// how many block-paginated pages a query spans. Extra fields (pageSize,
+/// blocks) are ignored.
+#[derive(Deserialize)]
+struct CCPageInfo {
+    pages: usize,
 }
 
 #[derive(Deserialize)]
@@ -154,6 +169,18 @@ impl CommonCrawlProvider {
 
         Ok(cached.clone())
     }
+
+    /// Build the index query without pagination params. `output=json` streams
+    /// one JSON record per line; `&page=N` / `&showNumPages=true` are appended
+    /// per request.
+    fn query_base(&self, index: &str, domain: &str) -> String {
+        let base_url = self.index_base_url();
+        if self.include_subdomains {
+            format!("{base_url}/{index}-index?url=*.{domain}/*&output=json")
+        } else {
+            format!("{base_url}/{index}-index?url={domain}/*&output=json")
+        }
+    }
 }
 
 impl Provider for CommonCrawlProvider {
@@ -165,32 +192,82 @@ impl Provider for CommonCrawlProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let index = self.effective_index().await?;
-            let base_url = self.index_base_url();
-
-            let url_pattern = if self.include_subdomains {
-                format!(
-                    "{}/{}-index?url=*.{}/*&output=json",
-                    base_url, index, domain
-                )
-            } else {
-                format!("{}/{}-index?url={}/*&output=json", base_url, index, domain)
-            };
-
+            let query_base = self.query_base(&index, domain);
             let client = self.client_config().build_client()?;
-            let text = get_with_retry(&client, &url_pattern, self.retries).await?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
-            if text.trim().is_empty() {
-                return Ok(Vec::new());
+            if let Some(r) = &reporter {
+                r.detail("fetching…");
             }
 
-            let mut urls = Vec::new();
+            // The Common Crawl index server block-paginates: a single request
+            // returns only the first block (historically ~15k records). We must
+            // ask how many pages the query spans via `&showNumPages=true` and
+            // then walk every page, or large domains are silently truncated to
+            // their first block.
+            if let Some(rl) = &limiter {
+                rl.acquire().await;
+            }
+            let count_url = format!("{query_base}&showNumPages=true");
+            let pages = match get_with_retry(&client, &count_url, self.retries).await {
+                Ok(body) => serde_json::from_str::<CCPageInfo>(body.trim())
+                    .map(|info| info.pages)
+                    // A 200 that isn't a page-count document: fall back to a
+                    // single page rather than giving up.
+                    .unwrap_or(1),
+                // The index returns 404 for a domain with no captures. Don't
+                // hard-fail the probe; fall through to a single page=0 fetch so
+                // genuine "no data" stays an empty/`Err` result exactly as the
+                // single-request implementation produced.
+                Err(_) => 1,
+            };
 
-            // Common Crawl returns one JSON object per line
-            for line in text.lines() {
-                if let Ok(record) = serde_json::from_str::<CCRecord>(line) {
-                    urls.push(record.url);
+            if pages == 0 {
+                return Ok(Vec::new());
+            }
+            let pages = pages.min(CC_MAX_PAGES);
+
+            let mut urls = Vec::new();
+            for page in 0..pages {
+                if let Some(rl) = &limiter {
+                    rl.acquire().await;
+                }
+                let page_url = format!("{query_base}&page={page}");
+                match get_with_retry(&client, &page_url, self.retries).await {
+                    Ok(text) => {
+                        // Common Crawl returns one JSON object per line.
+                        for line in text.lines() {
+                            if let Ok(record) = serde_json::from_str::<CCRecord>(line) {
+                                urls.push(record.url);
+                            }
+                        }
+                        if let Some(r) = &reporter {
+                            r.detail(format!("{} URLs…", urls.len()));
+                        }
+                    }
+                    Err(e) => {
+                        // Nothing collected yet (e.g. a not-found domain whose
+                        // first page 404s) is a hard failure, matching the old
+                        // single-request behaviour. A mid-pagination failure
+                        // keeps what we have and flags the result as partial.
+                        if urls.is_empty() {
+                            return Err(e);
+                        }
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -523,6 +600,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_fetch_urls_paginates_all_pages() {
+        let mut server = mockito::Server::new_async().await;
+
+        // The server reports the query spans two pages.
+        let probe = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showNumPages".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"pages": 2, "pageSize": 5, "blocks": 9}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let page0 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/a\"}")
+            .expect(1)
+            .create_async()
+            .await;
+        let page1 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/b\"}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::new();
+        provider.base_url = server.url();
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ]
+        );
+        probe.assert();
+        page0.assert();
+        page1.assert();
+    }
+
+    #[tokio::test]
     async fn test_latest_alias_resolves_via_collinfo() {
         let mut server = mockito::Server::new_async().await;
 
@@ -540,6 +666,9 @@ mod tests {
             .create_async()
             .await;
 
+        // Each fetch now issues a showNumPages probe plus the page fetch, so two
+        // fetch_urls calls hit the index endpoint four times. The probe body
+        // isn't a page-count document, so the provider falls back to one page.
         let index_mock = server
             .mock("GET", "/CC-MAIN-2099-01-index")
             .match_query(mockito::Matcher::AllOf(vec![
@@ -548,7 +677,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_body("{\"url\": \"https://example.com/a\"}")
-            .expect(2)
+            .expect(4)
             .create_async()
             .await;
 

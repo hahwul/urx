@@ -624,13 +624,14 @@ fn apply_url_filters(
 
             // When validation discards most (or all) of what providers returned,
             // a quiet, much-smaller result looks like a broken provider. Surface
-            // a single hint (even without -v; --silent still suppresses it). The
-            // most common cause is www.<domain> captures under a bare apex query.
+            // a single hint (even without -v; --silent still suppresses it). With
+            // www. already kept as the apex, the usual remaining cause is other
+            // subdomains under a bare apex query.
             let drops_most = before > 0 && (sorted_urls.is_empty() || removed * 2 > before);
             if drops_most && !args.silent && !args.subs {
                 eprintln!(
                     "[urx] strict host validation removed {removed}/{before} URLs; \
-                     pass --subs to keep subdomains (incl. www.) or --no-strict to keep all hosts"
+                     pass --subs to keep subdomains or --no-strict to keep all hosts"
                 );
             }
 

@@ -6,6 +6,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 #[derive(Clone)]
 pub struct UrlscanProvider {
@@ -48,6 +49,27 @@ struct ArchivedPage {
     url: String,
     #[serde(default)]
     status: String,
+}
+
+/// Hard ceiling on urlscan result pages walked for one domain (100 results
+/// each), so a huge or misbehaving result set can't spin indefinitely.
+const URLSCAN_MAX_PAGES: usize = 100;
+
+/// Turn a result's `sort` array into the `search_after` cursor urlscan expects:
+/// the array values rendered as a comma-separated string. Returns `None` when
+/// the result carries no sort key (so we can't page further).
+fn sort_to_search_after(sort: &[serde_json::Value]) -> Option<String> {
+    if sort.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = sort
+        .iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .collect();
+    Some(parts.join(","))
 }
 
 impl UrlscanProvider {
@@ -95,6 +117,73 @@ impl UrlscanProvider {
             proxy_auth: self.proxy_auth.clone(),
         }
     }
+
+    /// Fetch and parse a single search page with retry/back-off. Returns the
+    /// parsed response or the last error after exhausting retries.
+    async fn fetch_page(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        limiter: Option<&RateLimiter>,
+    ) -> Result<UrlscanResponse> {
+        let mut last_error = None;
+        let mut attempt = 0;
+
+        while attempt <= self.retries {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+            }
+
+            // Rotate the key per attempt so a rate-limited key is retried with a
+            // different one when several are configured.
+            let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+            let mut req = client.get(url);
+            if !api_key.is_empty() {
+                req = req.header("API-Key", &api_key);
+            }
+
+            if let Some(rl) = limiter {
+                rl.acquire().await;
+            }
+            match req.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if !status.is_success() {
+                        if status.as_u16() == 429 {
+                            if let Some(d) =
+                                crate::network::client::retry_after_delay(response.headers())
+                            {
+                                tokio::time::sleep(d).await;
+                            }
+                        }
+                        attempt += 1;
+                        last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
+                        continue;
+                    }
+                    match response.json::<UrlscanResponse>().await {
+                        Ok(parsed) => return Ok(parsed),
+                        Err(e) => {
+                            attempt += 1;
+                            last_error =
+                                Some(anyhow::anyhow!("Failed to parse Urlscan response: {}", e));
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    attempt += 1;
+                    last_error = Some(e.into());
+                    continue;
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Failed after {} attempts: {}",
+            self.retries + 1,
+            last_error.unwrap_or_else(|| anyhow::anyhow!("unknown error"))
+        ))
+    }
 }
 
 impl Provider for UrlscanProvider {
@@ -112,95 +201,83 @@ impl Provider for UrlscanProvider {
                 return Ok(Vec::new());
             }
 
-            // Get the next API key in rotation
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
-
             // Use the url crate for encoding the domain
             let encoded_domain =
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
 
-            // Construct the URL - use base_url in test mode
+            // Construct the base query - use base_url in test mode
             #[cfg(test)]
-            let url = format!(
+            let base_query = format!(
                 "{}/api/v1/search/?q=domain:{}&size=100",
                 self.base_url, encoded_domain
             );
 
             #[cfg(not(test))]
-            let url =
+            let base_query =
                 format!("https://urlscan.io/api/v1/search/?q=domain:{encoded_domain}&size=100");
 
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
-            // Implement retry logic
-            let mut last_error = None;
-            let mut attempt = 0;
+            // urlscan returns at most 100 results per request and signals more
+            // via `has_more`; the next page is requested by passing the last
+            // result's `sort` values as `search_after`. The previous code never
+            // paginated, silently capping every domain at 100 URLs.
+            let mut all_urls = Vec::new();
+            let mut search_after: Option<String> = None;
+            let mut pages = 0;
 
-            while attempt <= self.retries {
-                if attempt > 0 {
-                    // Wait before retrying, with increasing backoff
-                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
-                        .await;
+            loop {
+                pages += 1;
+                if pages > URLSCAN_MAX_PAGES {
+                    break;
                 }
 
-                // Create a new request with API key header
-                let mut req = client.get(&url);
-                if !api_key.is_empty() {
-                    req = req.header("API-Key", &api_key);
-                }
+                let url = match &search_after {
+                    Some(cursor) => format!("{base_query}&search_after={cursor}"),
+                    None => base_query.clone(),
+                };
 
-                match req.send().await {
-                    Ok(response) => {
-                        // Check if response is successful
-                        if !response.status().is_success() {
-                            attempt += 1;
-                            last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
-                            continue;
-                        }
-
-                        // Parse response
-                        match response.json::<UrlscanResponse>().await {
-                            Ok(urlscan_response) => {
-                                let mut urls = Vec::new();
-                                for result in urlscan_response.results {
-                                    urls.push(result.page.url);
-                                }
-                                return Ok(urls);
-                            }
-                            Err(e) => {
-                                attempt += 1;
-                                last_error = Some(anyhow::anyhow!(
-                                    "Failed to parse Urlscan response: {}",
-                                    e
-                                ));
-                                continue;
-                            }
-                        }
-                    }
+                let response = match self.fetch_page(&client, &url, limiter.as_ref()).await {
+                    Ok(resp) => resp,
                     Err(e) => {
-                        attempt += 1;
-                        last_error = Some(e.into());
-                        continue;
+                        // A failure on the very first page is fatal; a later
+                        // failure keeps the pages already collected.
+                        if all_urls.is_empty() {
+                            return Err(e);
+                        }
+                        break;
                     }
+                };
+
+                if response.results.is_empty() {
+                    break;
+                }
+
+                // Capture the cursor before consuming the results.
+                let next_cursor = response
+                    .results
+                    .last()
+                    .and_then(|r| sort_to_search_after(&r.sort));
+
+                let more = response.has_more;
+                for result in response.results {
+                    all_urls.push(result.page.url);
+                }
+
+                if !more {
+                    break;
+                }
+
+                match next_cursor {
+                    Some(cursor) => search_after = Some(cursor),
+                    // No usable cursor — can't page further without risking an
+                    // infinite loop re-requesting page one.
+                    None => break,
                 }
             }
 
-            // If we got here, all attempts failed
-            if let Some(e) = last_error {
-                Err(anyhow::anyhow!(
-                    "Failed after {} attempts: {}",
-                    self.retries + 1,
-                    e
-                ))
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed after {} attempts",
-                    self.retries + 1
-                ))
-            }
+            Ok(all_urls)
         })
     }
 
@@ -448,6 +525,85 @@ mod tests {
         assert!(result.is_ok(), "Expected success with empty API key");
         let urls = result.unwrap();
         assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
+    }
+
+    #[tokio::test]
+    async fn test_retry_rotates_to_next_key() {
+        let mut server = mockito::Server::new_async().await;
+        // The first key is rate-limited...
+        let k1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Any)
+            .match_header("API-Key", "key1")
+            .with_status(429)
+            .expect(1)
+            .create_async()
+            .await;
+        // ...so the retry must use the second key, which succeeds.
+        let k2 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Any)
+            .match_header("API-Key", "key2")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":200,"has_more":false,"results":[{"page":{"domain":"example.com","url":"https://example.com/ok","status":"200"}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new_with_keys(vec!["key1".into(), "key2".into()]);
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["https://example.com/ok".to_string()]);
+        k1.assert();
+        k2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_paginates_with_search_after() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Page one signals more results and carries a sort cursor.
+        let page1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("size=100$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":200,"has_more":true,"results":[{"page":{"domain":"example.com","url":"https://example.com/p1","status":"200"},"sort":[1700000000000,"abc"]}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        // Page two is requested via search_after=<cursor> and ends the walk.
+        let page2 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("search_after=1700000000000".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":200,"has_more":false,"results":[{"page":{"domain":"example.com","url":"https://example.com/p2","status":"200"},"sort":[1700000000001,"def"]}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new("k".to_string());
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/p1".to_string(),
+                "https://example.com/p2".to_string(),
+            ]
+        );
+        page1.assert();
+        page2.assert();
     }
 
     #[tokio::test]

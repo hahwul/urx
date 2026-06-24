@@ -111,7 +111,13 @@ impl Provider for RobotsProvider {
                         format!("http://{domain}/robots.txt")
                     };
 
-                    let http_resp = client.get(&http_url).send().await?;
+                    // robots.txt discovery is best-effort: a transport failure
+                    // on the HTTP fallback means "no robots.txt", not a fatal
+                    // error that should sink the whole provider.
+                    let http_resp = match client.get(&http_url).send().await {
+                        Ok(resp) => resp,
+                        Err(_) => return Ok(urls),
+                    };
                     if !http_resp.status().is_success() {
                         return Ok(urls);
                     }
@@ -124,17 +130,36 @@ impl Provider for RobotsProvider {
 
             for line in text.lines() {
                 let line = line.trim();
-                if line.starts_with("Disallow:") {
-                    if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                // RFC 9309: field names are case-insensitive and may carry
+                // surrounding whitespace (e.g. `Disallow :`). Split on the first
+                // colon so `Sitemap: https://…` keeps its `https://` value.
+                let Some((field, value)) = line.split_once(':') else {
+                    continue;
+                };
+                // Take the first whitespace-delimited token of the value: paths
+                // and URLs never contain spaces, so this drops any trailing
+                // inline `# comment` and stray whitespace in one step.
+                let value = value.split_whitespace().next().unwrap_or("");
+                match field.trim().to_ascii_lowercase().as_str() {
+                    "disallow" if !value.is_empty() && value != "/" => {
+                        // Disallow entries can be match patterns, not literal
+                        // paths: skip glob (`*`) patterns and strip a trailing
+                        // `$` end-anchor so we don't emit unfetchable junk URLs.
+                        if value.contains('*') {
+                            continue;
+                        }
+                        let path = value.strip_suffix('$').unwrap_or(value);
                         if !path.is_empty() && path != "/" {
-                            let url = format!("{protocol}://{domain}{path}");
-                            urls.push(url);
+                            urls.push(format!("{protocol}://{domain}{path}"));
                         }
                     }
-                } else if line.starts_with("Sitemap:") {
-                    if let Some(link) = line.strip_prefix("Sitemap:").map(|s| s.trim()) {
-                        urls.push(link.to_string());
+                    "sitemap" if !value.is_empty() => {
+                        urls.push(value.to_string());
                     }
+                    _ => {}
                 }
             }
 
@@ -298,6 +323,60 @@ Sitemap: https://example.com/sitemap.xml
         assert!(urls.contains(&"https://example.com/private/".to_string()));
         assert!(urls.contains(&"https://example.com/admin".to_string()));
         assert!(urls.contains(&"https://example.com/sitemap.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_robots_directives_case_insensitive() {
+        let mut server = mockito::Server::new_async().await;
+        // Mixed/lower-case fields and a space before the colon — all RFC 9309
+        // legal and all previously ignored by the case-sensitive parser.
+        let robots = "user-agent: *\n\
+                      disallow: /lower/\n\
+                      DISALLOW: /upper\n\
+                      Sitemap : https://example.com/sm.xml\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert!(urls.contains(&"https://example.com/lower/".to_string()));
+        assert!(urls.contains(&"https://example.com/upper".to_string()));
+        assert!(urls.contains(&"https://example.com/sm.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_robots_skips_patterns_and_strips_comments() {
+        let mut server = mockito::Server::new_async().await;
+        let robots = "User-agent: *\n\
+                      Disallow: /admin/*.php\n\
+                      Disallow: /secret$\n\
+                      Disallow: /good/\n\
+                      Sitemap: https://example.com/sm.xml # main sitemap\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        // Glob pattern is skipped entirely.
+        assert!(!urls.iter().any(|u| u.contains('*')), "{urls:?}");
+        // Trailing `$` anchor is stripped.
+        assert!(urls.contains(&"https://example.com/secret".to_string()));
+        assert!(urls.contains(&"https://example.com/good/".to_string()));
+        // Inline comment is removed from the Sitemap value.
+        assert!(urls.contains(&"https://example.com/sm.xml".to_string()));
+        assert!(!urls.iter().any(|u| u.contains('#')), "{urls:?}");
     }
 
     #[tokio::test]

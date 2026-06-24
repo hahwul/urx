@@ -7,6 +7,8 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
 
 /// Maximum search-result pages we fetch per domain. GitHub Code Search caps
 /// at 1000 results total (10 × 100), and each page costs against a tight
@@ -138,16 +140,21 @@ impl Provider for GitHubProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
             }
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
 
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             #[cfg(not(test))]
             let base = "https://api.github.com";
@@ -161,6 +168,9 @@ impl Provider for GitHubProvider {
 
             let mut urls: HashSet<String> = HashSet::new();
             let mut last_error: Option<anyhow::Error> = None;
+            // Set when a page exhausts its retries, so results collected so far
+            // are reported as a truncated/partial crawl rather than a clean run.
+            let mut truncated = false;
 
             'pages: for page in 1..=MAX_PAGES {
                 let url =
@@ -173,6 +183,13 @@ impl Provider for GitHubProvider {
                             .await;
                     }
 
+                    // Rotate the token per attempt so a rate-limited/secondary-
+                    // limited token is retried with a different one when several
+                    // are configured.
+                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                    if let Some(rl) = &limiter {
+                        rl.acquire().await;
+                    }
                     let resp = client
                         .get(&url)
                         .header("Authorization", format!("Bearer {api_key}"))
@@ -191,9 +208,19 @@ impl Provider for GitHubProvider {
                                 if status.as_u16() == 422 {
                                     break 'pages;
                                 }
+                                // Honor Retry-After on primary (429) and
+                                // secondary (403) rate limits before retrying.
+                                if matches!(status.as_u16(), 429 | 403) {
+                                    if let Some(d) = crate::network::client::retry_after_delay(
+                                        response.headers(),
+                                    ) {
+                                        tokio::time::sleep(d).await;
+                                    }
+                                }
                                 last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                                 attempt += 1;
                                 if attempt > self.retries {
+                                    truncated = true;
                                     break 'pages;
                                 }
                                 continue;
@@ -224,6 +251,7 @@ impl Provider for GitHubProvider {
                                     ));
                                     attempt += 1;
                                     if attempt > self.retries {
+                                        truncated = true;
                                         break 'pages;
                                     }
                                     continue;
@@ -234,6 +262,7 @@ impl Provider for GitHubProvider {
                             last_error = Some(e.into());
                             attempt += 1;
                             if attempt > self.retries {
+                                truncated = true;
                                 break 'pages;
                             }
                         }
@@ -244,6 +273,13 @@ impl Provider for GitHubProvider {
             if urls.is_empty() {
                 if let Some(e) = last_error {
                     return Err(e);
+                }
+            } else if truncated {
+                // We collected some URLs but a later page exhausted its retries,
+                // so this is a partial result — flag it instead of presenting a
+                // truncated crawl as a clean success.
+                if let Some(r) = &reporter {
+                    r.mark_partial();
                 }
             }
 
@@ -352,6 +388,49 @@ mod tests {
         let p = GitHubProvider::new_with_keys(vec![]);
         let urls = p.fetch_urls("example.com").await.unwrap();
         assert!(urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_partial_result_is_flagged_when_a_page_fails() {
+        let mut server = mockito::Server::new_async().await;
+        let body = serde_json::json!({
+            "items": [ { "text_matches": [ { "fragment": "https://example.com/login" } ] } ]
+        })
+        .to_string();
+        // Page 1 yields a URL...
+        let _p1 = server
+            .mock("GET", "/search/code")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .expect(1)
+            .create_async()
+            .await;
+        // ...but page 2 fails and exhausts retries, so the result is partial.
+        let _p2 = server
+            .mock("GET", "/search/code")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "2".into()))
+            .with_status(500)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = GitHubProvider::new_with_keys(vec!["t".into()]);
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+
+        let reporter =
+            ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ".to_string());
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        // The page-1 URL is kept...
+        assert_eq!(urls, vec!["https://example.com/login".to_string()]);
+        // ...and the lost page is surfaced as partial, not a clean success.
+        assert!(reporter.is_partial());
     }
 
     #[tokio::test]

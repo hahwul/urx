@@ -6,6 +6,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 #[derive(Clone)]
 pub struct VirusTotalProvider {
@@ -98,30 +99,12 @@ impl Provider for VirusTotalProvider {
                 return Ok(Vec::new());
             }
 
-            // Get the next API key in rotation
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
-
             // Use the url crate for encoding the domain
             let encoded_domain =
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
 
-            // Construct the URL - use base_url in test mode
-            #[cfg(test)]
-            let url = format!(
-                "{}/vtapi/v2/domain/report?apikey={}&domain={}",
-                self.base_url, api_key, encoded_domain
-            );
-
-            #[cfg(not(test))]
-            let url = format!(
-                "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
-                api_key, encoded_domain
-            );
-
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             // Implement retry logic
             let mut last_error = None;
@@ -134,12 +117,43 @@ impl Provider for VirusTotalProvider {
                         .await;
                 }
 
+                // Rotate to the next key each attempt: if a key is rate-limited
+                // or invalid, the retry uses a different one when several are
+                // configured (with a single key this is a no-op).
+                let api_key = self
+                    .api_key_rotator
+                    .next_key()
+                    .expect("Key rotator should have keys since has_keys() returned true");
+
+                #[cfg(test)]
+                let url = format!(
+                    "{}/vtapi/v2/domain/report?apikey={}&domain={}",
+                    self.base_url, api_key, encoded_domain
+                );
+                #[cfg(not(test))]
+                let url = format!(
+                    "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
+                    api_key, encoded_domain
+                );
+
+                if let Some(rl) = &limiter {
+                    rl.acquire().await;
+                }
                 match client.get(&url).send().await {
                     Ok(response) => {
                         // Check if response is successful
-                        if !response.status().is_success() {
+                        let status = response.status();
+                        if !status.is_success() {
+                            // On a throttle, wait as long as the server asked.
+                            if status.as_u16() == 429 {
+                                if let Some(d) =
+                                    crate::network::client::retry_after_delay(response.headers())
+                                {
+                                    tokio::time::sleep(d).await;
+                                }
+                            }
                             attempt += 1;
-                            last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
+                            last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                             continue;
                         }
 
@@ -164,7 +178,11 @@ impl Provider for VirusTotalProvider {
                     }
                     Err(e) => {
                         attempt += 1;
-                        last_error = Some(e.into());
+                        // The VirusTotal key rides in the query string, and a
+                        // reqwest transport error renders the full request URL
+                        // in its Display output. Strip the URL so the key never
+                        // reaches stderr / logs via the surfaced error.
+                        last_error = Some(e.without_url().into());
                         continue;
                     }
                 }
@@ -300,6 +318,28 @@ mod tests {
         assert!(!provider.api_key_rotator.has_keys());
         assert_eq!(provider.api_key_rotator.key_count(), 0);
         assert_eq!(provider.api_key_rotator.current_key(), None);
+    }
+
+    #[tokio::test]
+    async fn test_transport_error_does_not_leak_api_key() {
+        // The VirusTotal key is passed in the request URL's query string, so a
+        // transport-layer failure (which reqwest renders with the full URL)
+        // must not surface it through the returned error.
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["SUPERSECRETKEY".to_string()]);
+        // Port 1 reliably refuses the connection; keep the run fast.
+        provider.with_base_url("http://127.0.0.1:1".to_string());
+        provider.with_retries(0);
+        provider.with_timeout(5);
+
+        let err = provider
+            .fetch_urls("example.com")
+            .await
+            .expect_err("connection to port 1 should fail");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("SUPERSECRETKEY"),
+            "API key leaked in error message: {msg}"
+        );
     }
 
     #[test]

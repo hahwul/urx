@@ -28,7 +28,7 @@ pub struct Args {
     /// merged with positional DOMAINS and stdin. Blank lines and `#` comments
     /// are ignored.
     #[clap(help_heading = "Input Options")]
-    #[clap(long = "domain-list", alias = "dL", visible_alias = "--dL", action = clap::ArgAction::Append, value_parser)]
+    #[clap(long = "domain-list", visible_alias = "dL", action = clap::ArgAction::Append, value_parser)]
     pub domain_list: Vec<PathBuf>,
 
     #[clap(help_heading = "Output Options")]
@@ -41,12 +41,7 @@ pub struct Args {
     /// stdout. The directory is created if missing. The extension matches
     /// --format (`json`, `csv`, or `txt` for plain).
     #[clap(help_heading = "Output Options")]
-    #[clap(
-        long = "output-dir",
-        alias = "oD",
-        visible_alias = "--oD",
-        value_parser
-    )]
+    #[clap(long = "output-dir", visible_alias = "oD", value_parser)]
     pub output_dir: Option<PathBuf>,
 
     /// Output format (e.g., "plain", "json", "csv")
@@ -301,17 +296,17 @@ pub struct Args {
 
     /// Check HTTP status code of collected URLs
     #[clap(help_heading = "Testing Options")]
-    #[clap(long, alias = "cs", visible_alias = "--cs")]
+    #[clap(long, visible_alias = "cs")]
     pub check_status: bool,
 
     /// Include URLs with specific HTTP status codes or patterns (e.g., --is=200,30x)
     #[clap(help_heading = "Testing Options")]
-    #[clap(long, alias = "is", visible_alias = "--is")]
+    #[clap(long, visible_alias = "is")]
     pub include_status: Vec<String>,
 
     /// Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx)
     #[clap(help_heading = "Testing Options")]
-    #[clap(long, alias = "es", visible_alias = "--es")]
+    #[clap(long, visible_alias = "es")]
     pub exclude_status: Vec<String>,
 
     /// Extract additional links from collected URLs (requires HTTP requests)
