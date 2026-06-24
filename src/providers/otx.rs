@@ -7,6 +7,7 @@ use std::pin::Pin;
 
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 // Helper function to deserialize null as default value for i32
 fn deserialize_null_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
@@ -167,6 +168,7 @@ impl Provider for OTXProvider {
             let mut all_urls = Vec::new();
             let mut page = 0;
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             loop {
                 let url = self.format_url(domain, page);
@@ -176,6 +178,9 @@ impl Provider for OTXProvider {
                 let mut result = None;
 
                 for attempt in 0..=self.retries {
+                    if let Some(rl) = &limiter {
+                        rl.acquire().await;
+                    }
                     match client.get(&url).send().await {
                         Ok(response) => {
                             if response.status().is_success() {

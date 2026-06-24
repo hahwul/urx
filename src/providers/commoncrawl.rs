@@ -7,6 +7,7 @@ use tokio::sync::OnceCell;
 
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
 /// Sentinel value that asks the provider to resolve the most recent Common
@@ -203,6 +204,7 @@ impl Provider for CommonCrawlProvider {
             let index = self.effective_index().await?;
             let query_base = self.query_base(&index, domain);
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -213,6 +215,9 @@ impl Provider for CommonCrawlProvider {
             // ask how many pages the query spans via `&showNumPages=true` and
             // then walk every page, or large domains are silently truncated to
             // their first block.
+            if let Some(rl) = &limiter {
+                rl.acquire().await;
+            }
             let count_url = format!("{query_base}&showNumPages=true");
             let pages = match get_with_retry(&client, &count_url, self.retries).await {
                 Ok(body) => serde_json::from_str::<CCPageInfo>(body.trim())
@@ -234,6 +239,9 @@ impl Provider for CommonCrawlProvider {
 
             let mut urls = Vec::new();
             for page in 0..pages {
+                if let Some(rl) = &limiter {
+                    rl.acquire().await;
+                }
                 let page_url = format!("{query_base}&page={page}");
                 match get_with_retry(&client, &page_url, self.retries).await {
                     Ok(text) => {

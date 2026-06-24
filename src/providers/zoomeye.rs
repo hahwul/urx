@@ -7,6 +7,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 #[derive(Clone)]
 pub struct ZoomEyeProvider {
@@ -148,6 +149,7 @@ impl Provider for ZoomEyeProvider {
             let api_url = "https://api.zoomeye.ai/v2/search".to_string();
 
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             let mut all_urls: Vec<String> = Vec::new();
             let mut page: u32 = 1;
@@ -177,6 +179,9 @@ impl Provider for ZoomEyeProvider {
                         .header("API-KEY", &api_key)
                         .json(&request_body);
 
+                    if let Some(rl) = &limiter {
+                        rl.acquire().await;
+                    }
                     match req.send().await {
                         Ok(response) => {
                             if !response.status().is_success() {

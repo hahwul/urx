@@ -7,6 +7,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 /// Maximum search-result pages we fetch per domain. GitHub Code Search caps
 /// at 1000 results total (10 × 100), and each page costs against a tight
@@ -148,6 +149,7 @@ impl Provider for GitHubProvider {
                 .expect("Key rotator should have keys since has_keys() returned true");
 
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             #[cfg(not(test))]
             let base = "https://api.github.com";
@@ -173,6 +175,9 @@ impl Provider for GitHubProvider {
                             .await;
                     }
 
+                    if let Some(rl) = &limiter {
+                        rl.acquire().await;
+                    }
                     let resp = client
                         .get(&url)
                         .header("Authorization", format!("Bearer {api_key}"))

@@ -6,6 +6,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 #[derive(Clone)]
 pub struct UrlscanProvider {
@@ -124,6 +125,7 @@ impl UrlscanProvider {
         client: &reqwest::Client,
         url: &str,
         api_key: &str,
+        limiter: Option<&RateLimiter>,
     ) -> Result<UrlscanResponse> {
         let mut last_error = None;
         let mut attempt = 0;
@@ -138,6 +140,9 @@ impl UrlscanProvider {
                 req = req.header("API-Key", api_key);
             }
 
+            if let Some(rl) = limiter {
+                rl.acquire().await;
+            }
             match req.send().await {
                 Ok(response) => {
                     if !response.status().is_success() {
@@ -208,6 +213,7 @@ impl Provider for UrlscanProvider {
                 format!("https://urlscan.io/api/v1/search/?q=domain:{encoded_domain}&size=100");
 
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             // urlscan returns at most 100 results per request and signals more
             // via `has_more`; the next page is requested by passing the last
@@ -228,7 +234,10 @@ impl Provider for UrlscanProvider {
                     None => base_query.clone(),
                 };
 
-                let response = match self.fetch_page(&client, &url, &api_key).await {
+                let response = match self
+                    .fetch_page(&client, &url, &api_key, limiter.as_ref())
+                    .await
+                {
                     Ok(resp) => resp,
                     Err(e) => {
                         // A failure on the very first page is fatal; a later

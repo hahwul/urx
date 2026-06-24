@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
 /// How many rows to ask the CDX server for per request. A bounded `limit` is
@@ -264,6 +265,7 @@ impl Provider for WaybackMachineProvider {
         Box::pin(async move {
             let client = self.client_config().build_client()?;
             let query_base = self.query_base(domain);
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -289,6 +291,9 @@ impl Provider for WaybackMachineProvider {
                     url.push_str(&encode_resume_key(key));
                 }
 
+                if let Some(rl) = &limiter {
+                    rl.acquire().await;
+                }
                 let text = match get_with_retry(&client, &url, self.retries).await {
                     Ok(text) => text,
                     Err(e) => {
@@ -622,6 +627,49 @@ mod tests {
         );
         page1.assert();
         page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_paces_page_requests() {
+        use std::time::{Duration, Instant};
+        let mut server = mockito::Server::new_async().await;
+        // Page one hands back a resume key so a second request is made.
+        let _page1 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showResumeKey".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/a\n\nKEY2\n")
+            .expect(1)
+            .create_async()
+            .await;
+        let _page2 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/b\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+        // 5 req/s => a 200ms minimum gap before the second page request.
+        provider.with_rate_limit(Some(5.0));
+
+        let start = Instant::now();
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(
+            start.elapsed() >= Duration::from_millis(150),
+            "rate limit was not applied; elapsed {:?}",
+            start.elapsed()
+        );
     }
 
     #[tokio::test]

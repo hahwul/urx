@@ -6,6 +6,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 
 #[derive(Clone)]
 pub struct VirusTotalProvider {
@@ -122,6 +123,7 @@ impl Provider for VirusTotalProvider {
             );
 
             let client = self.client_config().build_client()?;
+            let limiter = RateLimiter::from_rate(self.rate_limit);
 
             // Implement retry logic
             let mut last_error = None;
@@ -134,6 +136,9 @@ impl Provider for VirusTotalProvider {
                         .await;
                 }
 
+                if let Some(rl) = &limiter {
+                    rl.acquire().await;
+                }
                 match client.get(&url).send().await {
                     Ok(response) => {
                         // Check if response is successful
