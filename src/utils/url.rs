@@ -90,25 +90,20 @@ impl UrlTransformer {
                     }
                 }
 
-                // Normalize query parameters - sort them alphabetically
-                if url.query().is_some() {
-                    let mut params: Vec<(String, String)> = url
-                        .query_pairs()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect();
-
-                    // Sort parameters by key
-                    params.sort_by(|a, b| a.0.cmp(&b.0));
-
-                    // Clear existing query and set sorted query
+                // Normalize query parameters by sorting them. We sort the *raw*
+                // `key=value` tokens without decoding, so this stays a lossless
+                // reordering: a bare `?foo` is not rewritten to `?foo=`, and a
+                // literal '+' is not turned into '%20' (query_pairs() decodes
+                // both, which silently mutates the URL the archive recorded).
+                let sorted_query: Option<String> = url.query().map(|query| {
+                    let mut pairs: Vec<&str> = query.split('&').filter(|s| !s.is_empty()).collect();
+                    pairs.sort_unstable();
+                    pairs.join("&")
+                });
+                if let Some(query) = sorted_query {
                     url.set_query(None);
-                    if !params.is_empty() {
-                        let query_string = params
-                            .into_iter()
-                            .map(|(k, v)| format!("{k}={v}"))
-                            .collect::<Vec<_>>()
-                            .join("&");
-                        url.set_query(Some(&query_string));
+                    if !query.is_empty() {
+                        url.set_query(Some(&query));
                     }
                 }
 
@@ -384,6 +379,33 @@ mod tests {
         assert!(result_url.contains("param1=value1"));
         assert!(result_url.contains("param2=value2"));
         assert!(result_url.contains("param3=value3"));
+    }
+
+    #[test]
+    fn test_url_transformer_normalize_preserves_bare_param_and_plus() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_normalize_url(true);
+
+        let urls = vec![
+            "https://example.com/a?foo".to_string(), // bare param, no '='
+            "https://example.com/b?q=a+b".to_string(), // literal '+'
+            "https://example.com/c?b=2&a=1".to_string(), // still gets sorted
+        ];
+
+        let out = transformer.transform(urls);
+        // Bare param keeps no '='; '+' is not rewritten to '%20'; order sorted.
+        assert!(
+            out.contains(&"https://example.com/a?foo".to_string()),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(&"https://example.com/b?q=a+b".to_string()),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(&"https://example.com/c?a=1&b=2".to_string()),
+            "{out:?}"
+        );
     }
 
     #[test]
