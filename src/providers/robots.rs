@@ -139,10 +139,22 @@ impl Provider for RobotsProvider {
                 let Some((field, value)) = line.split_once(':') else {
                     continue;
                 };
-                let value = value.trim();
+                // Take the first whitespace-delimited token of the value: paths
+                // and URLs never contain spaces, so this drops any trailing
+                // inline `# comment` and stray whitespace in one step.
+                let value = value.split_whitespace().next().unwrap_or("");
                 match field.trim().to_ascii_lowercase().as_str() {
                     "disallow" if !value.is_empty() && value != "/" => {
-                        urls.push(format!("{protocol}://{domain}{value}"));
+                        // Disallow entries can be match patterns, not literal
+                        // paths: skip glob (`*`) patterns and strip a trailing
+                        // `$` end-anchor so we don't emit unfetchable junk URLs.
+                        if value.contains('*') {
+                            continue;
+                        }
+                        let path = value.strip_suffix('$').unwrap_or(value);
+                        if !path.is_empty() && path != "/" {
+                            urls.push(format!("{protocol}://{domain}{path}"));
+                        }
                     }
                     "sitemap" if !value.is_empty() => {
                         urls.push(value.to_string());
@@ -336,6 +348,35 @@ Sitemap: https://example.com/sitemap.xml
         assert!(urls.contains(&"https://example.com/lower/".to_string()));
         assert!(urls.contains(&"https://example.com/upper".to_string()));
         assert!(urls.contains(&"https://example.com/sm.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_robots_skips_patterns_and_strips_comments() {
+        let mut server = mockito::Server::new_async().await;
+        let robots = "User-agent: *\n\
+                      Disallow: /admin/*.php\n\
+                      Disallow: /secret$\n\
+                      Disallow: /good/\n\
+                      Sitemap: https://example.com/sm.xml # main sitemap\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        // Glob pattern is skipped entirely.
+        assert!(!urls.iter().any(|u| u.contains('*')), "{urls:?}");
+        // Trailing `$` anchor is stripped.
+        assert!(urls.contains(&"https://example.com/secret".to_string()));
+        assert!(urls.contains(&"https://example.com/good/".to_string()));
+        // Inline comment is removed from the Sitemap value.
+        assert!(urls.contains(&"https://example.com/sm.xml".to_string()));
+        assert!(!urls.iter().any(|u| u.contains('#')), "{urls:?}");
     }
 
     #[tokio::test]
