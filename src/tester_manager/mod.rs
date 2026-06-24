@@ -1,5 +1,6 @@
-use futures::future::join_all;
-use tokio::task;
+use futures::stream::{self, StreamExt};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::cli::Args;
 use crate::network::{NetworkScope, NetworkSettings};
@@ -43,107 +44,103 @@ pub async fn process_urls_with_testers(
     let test_bar = progress_manager.create_test_bar(transformed_urls.len());
     test_bar.set_message("Preparing URL testing...");
 
-    // Process URLs with testers
-    let mut new_urls = Vec::new();
+    // Process URLs with testers.
+    //
+    // Concurrency is bounded by --parallel. The previous implementation spawned
+    // one task per 10-URL chunk and launched them all at once, so a run over
+    // tens of thousands of URLs could open thousands of simultaneous
+    // connections — exhausting file descriptors and hammering the target. We
+    // instead stream URL chunks through `buffer_unordered`, keeping at most
+    // `parallel` chunks in flight at a time, and advance the progress bar as
+    // each URL actually completes (not when its task is merely scheduled).
+    let parallel = args.parallel.unwrap_or(5).max(1) as usize;
+    let total = transformed_urls.len() as u64;
+    let completed = Arc::new(AtomicU64::new(0));
 
-    // Create tasks for parallel processing
-    let mut tasks = Vec::new();
-    let url_chunks: Vec<_> = transformed_urls.chunks(10).collect();
-    let chunk_count = url_chunks.len();
+    let verbose = args.verbose;
+    let check_status = should_check_status;
+    let extract_links = args.extract_links;
+    let silent = args.silent;
 
-    for (chunk_idx, url_chunk) in url_chunks.into_iter().enumerate() {
-        let url_vec = url_chunk.to_vec();
-        let testers_clone: Vec<_> = testers.iter().map(|t| t.clone_box()).collect();
-        let verbose = args.verbose;
-        let check_status = should_check_status;
-        let extract_links = args.extract_links;
-        let silent = args.silent;
+    let url_chunks: Vec<Vec<String>> = transformed_urls
+        .chunks(10)
+        .map(|chunk| chunk.to_vec())
+        .collect();
 
-        let task = task::spawn(async move {
-            let mut result_urls = Vec::new();
+    let chunk_results: Vec<Vec<output::UrlData>> =
+        stream::iter(url_chunks.into_iter().map(|url_vec| {
+            let testers_clone: Vec<_> = testers.iter().map(|t| t.clone_box()).collect();
+            let test_bar = test_bar.clone();
+            let completed = Arc::clone(&completed);
 
-            for url in url_vec {
-                let mut status_result = None;
-                let mut links_result = None;
+            async move {
+                let mut result_urls = Vec::new();
 
-                // Process URL with each tester
-                for (i, tester) in testers_clone.iter().enumerate() {
-                    match tester.test_url(&url).await {
-                        Ok(results) => {
-                            if i == 0 && check_status {
-                                // Status checker results (first tester if check_status is enabled)
-                                status_result = Some(results);
-                            } else if extract_links {
-                                // Link extractor results
-                                links_result = Some(results);
+                for url in url_vec {
+                    let mut status_result = None;
+                    let mut links_result = None;
+
+                    // Process URL with each tester
+                    for (i, tester) in testers_clone.iter().enumerate() {
+                        match tester.test_url(&url).await {
+                            Ok(results) => {
+                                if i == 0 && check_status {
+                                    // Status checker results (first tester if check_status is enabled)
+                                    status_result = Some(results);
+                                } else if extract_links {
+                                    // Link extractor results
+                                    links_result = Some(results);
+                                }
                             }
-                        }
-                        Err(e) => {
-                            if verbose && !silent {
-                                eprintln!("Error testing URL {url}: {e}");
+                            Err(e) => {
+                                if verbose && !silent {
+                                    eprintln!("Error testing URL {url}: {e}");
+                                }
                             }
                         }
                     }
-                }
 
-                // Create UrlData for this URL
-                if let Some(status_urls) = status_result {
-                    for status_url in status_urls {
-                        // Parse the status URL (format: "{url} - {status}")
-                        result_urls.push(output::UrlData::from_string(status_url));
-                    }
-                } else {
-                    // If no status but URL should be included anyway
-                    if check_status {
-                        let url_data = output::UrlData::with_status(
-                            url.clone(),
-                            "Status check failed".to_string(),
-                        );
-                        result_urls.push(url_data);
+                    // Create UrlData for this URL
+                    if let Some(status_urls) = status_result {
+                        for status_url in status_urls {
+                            // Parse the status URL (format: "{url} - {status}")
+                            result_urls.push(output::UrlData::from_string(status_url));
+                        }
                     } else {
-                        let url_data = output::UrlData::new(url.clone());
-                        result_urls.push(url_data);
+                        // If no status but URL should be included anyway
+                        if check_status {
+                            let url_data = output::UrlData::with_status(
+                                url.clone(),
+                                "Status check failed".to_string(),
+                            );
+                            result_urls.push(url_data);
+                        } else {
+                            let url_data = output::UrlData::new(url.clone());
+                            result_urls.push(url_data);
+                        }
                     }
-                }
 
-                // If we have extracted links, add them to the result
-                if let Some(link_urls) = links_result {
-                    for link_url in link_urls {
-                        result_urls.push(output::UrlData::new(link_url));
+                    // If we have extracted links, add them to the result
+                    if let Some(link_urls) = links_result {
+                        for link_url in link_urls {
+                            result_urls.push(output::UrlData::new(link_url));
+                        }
                     }
+
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    test_bar.set_position(done.min(total));
                 }
+
+                result_urls
             }
+        }))
+        .buffer_unordered(parallel)
+        .collect()
+        .await;
 
-            (result_urls, chunk_idx)
-        });
-
-        tasks.push(task);
-
-        // Update progress bar
-        test_bar.set_position((chunk_idx as u64 * 10).min(transformed_urls.len() as u64));
-        test_bar.set_message(format!(
-            "Processing chunk {}/{}",
-            chunk_idx + 1,
-            chunk_count
-        ));
-    }
-
-    // Collect results
-    let results = join_all(tasks).await;
-
-    for result in results {
-        match result {
-            Ok((urls, _)) => {
-                for url in urls {
-                    new_urls.push(url);
-                }
-            }
-            Err(e) => {
-                if !args.silent {
-                    eprintln!("Task error: {e}");
-                }
-            }
-        }
+    let mut new_urls = Vec::new();
+    for urls in chunk_results {
+        new_urls.extend(urls);
     }
 
     // Sort URLs by their URL field
