@@ -24,6 +24,15 @@ pub struct ZoomEyeProvider {
     base_url: String,
 }
 
+/// ZoomEye v2 returns HTTP 200 for business-logic errors too; only this `code`
+/// means the query succeeded. Anything else (bad/expired key, quota, malformed
+/// query) must be surfaced rather than read as "zero results".
+const ZOOMEYE_SUCCESS_CODE: i32 = 60000;
+
+/// Hard ceiling on pages walked for one domain, so a stale or inflated `total`
+/// from the server can't drive an unbounded request loop.
+const ZOOMEYE_MAX_PAGES: u32 = 1_000;
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ZoomEyeResponse {
     #[serde(default)]
@@ -179,6 +188,16 @@ impl Provider for ZoomEyeProvider {
 
                             match response.json::<ZoomEyeResponse>().await {
                                 Ok(zoomeye_response) => {
+                                    // A 200 with a non-success code is an API
+                                    // error (rejected key, quota, bad query) —
+                                    // don't mistake it for an empty result set.
+                                    if zoomeye_response.code != ZOOMEYE_SUCCESS_CODE {
+                                        last_error = Some(anyhow::anyhow!(
+                                            "ZoomEye API error: code {}",
+                                            zoomeye_response.code
+                                        ));
+                                        break;
+                                    }
                                     total = zoomeye_response.total;
                                     for entry in zoomeye_response.data {
                                         if !entry.url.is_empty() {
@@ -214,11 +233,15 @@ impl Provider for ZoomEyeProvider {
                     ));
                 }
 
+                // A page that returned no rows means the data is exhausted even
+                // if `total` claims otherwise — stop rather than loop on a stale
+                // count.
+                let page_was_empty = page_urls.is_empty();
                 all_urls.extend(page_urls);
 
                 // Check if there are more pages
                 let fetched_so_far = (page as u64) * (pagesize as u64);
-                if fetched_so_far >= total {
+                if page_was_empty || fetched_so_far >= total || page >= ZOOMEYE_MAX_PAGES {
                     break;
                 }
 
@@ -487,6 +510,30 @@ mod tests {
         assert!(result.is_ok(), "Expected success with empty API key");
         let urls = result.unwrap();
         assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_surfaces_business_error_code() {
+        // HTTP 200 but a non-success `code` (e.g. expired key / quota) must be
+        // an error, not a silent empty result.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/v2/search")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"code": 60500, "message": "auth failed", "data": []}"#)
+            .create_async()
+            .await;
+
+        let mut provider = ZoomEyeProvider::new("expired-key".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+
+        let err = provider
+            .fetch_urls("example.com")
+            .await
+            .expect_err("non-success code should be an error");
+        assert!(err.to_string().contains("60500"), "got: {err}");
     }
 
     #[tokio::test]
