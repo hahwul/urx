@@ -111,7 +111,13 @@ impl Provider for RobotsProvider {
                         format!("http://{domain}/robots.txt")
                     };
 
-                    let http_resp = client.get(&http_url).send().await?;
+                    // robots.txt discovery is best-effort: a transport failure
+                    // on the HTTP fallback means "no robots.txt", not a fatal
+                    // error that should sink the whole provider.
+                    let http_resp = match client.get(&http_url).send().await {
+                        Ok(resp) => resp,
+                        Err(_) => return Ok(urls),
+                    };
                     if !http_resp.status().is_success() {
                         return Ok(urls);
                     }
@@ -124,17 +130,24 @@ impl Provider for RobotsProvider {
 
             for line in text.lines() {
                 let line = line.trim();
-                if line.starts_with("Disallow:") {
-                    if let Some(path) = line.strip_prefix("Disallow:").map(|s| s.trim()) {
-                        if !path.is_empty() && path != "/" {
-                            let url = format!("{protocol}://{domain}{path}");
-                            urls.push(url);
-                        }
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                // RFC 9309: field names are case-insensitive and may carry
+                // surrounding whitespace (e.g. `Disallow :`). Split on the first
+                // colon so `Sitemap: https://…` keeps its `https://` value.
+                let Some((field, value)) = line.split_once(':') else {
+                    continue;
+                };
+                let value = value.trim();
+                match field.trim().to_ascii_lowercase().as_str() {
+                    "disallow" if !value.is_empty() && value != "/" => {
+                        urls.push(format!("{protocol}://{domain}{value}"));
                     }
-                } else if line.starts_with("Sitemap:") {
-                    if let Some(link) = line.strip_prefix("Sitemap:").map(|s| s.trim()) {
-                        urls.push(link.to_string());
+                    "sitemap" if !value.is_empty() => {
+                        urls.push(value.to_string());
                     }
+                    _ => {}
                 }
             }
 
@@ -298,6 +311,31 @@ Sitemap: https://example.com/sitemap.xml
         assert!(urls.contains(&"https://example.com/private/".to_string()));
         assert!(urls.contains(&"https://example.com/admin".to_string()));
         assert!(urls.contains(&"https://example.com/sitemap.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_robots_directives_case_insensitive() {
+        let mut server = mockito::Server::new_async().await;
+        // Mixed/lower-case fields and a space before the colon — all RFC 9309
+        // legal and all previously ignored by the case-sensitive parser.
+        let robots = "user-agent: *\n\
+                      disallow: /lower/\n\
+                      DISALLOW: /upper\n\
+                      Sitemap : https://example.com/sm.xml\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert!(urls.contains(&"https://example.com/lower/".to_string()));
+        assert!(urls.contains(&"https://example.com/upper".to_string()));
+        assert!(urls.contains(&"https://example.com/sm.xml".to_string()));
     }
 
     #[tokio::test]
