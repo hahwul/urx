@@ -196,6 +196,15 @@ impl Provider for GitHubProvider {
                                 if status.as_u16() == 422 {
                                     break 'pages;
                                 }
+                                // Honor Retry-After on primary (429) and
+                                // secondary (403) rate limits before retrying.
+                                if matches!(status.as_u16(), 429 | 403) {
+                                    if let Some(d) = crate::network::client::retry_after_delay(
+                                        response.headers(),
+                                    ) {
+                                        tokio::time::sleep(d).await;
+                                    }
+                                }
                                 last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                                 attempt += 1;
                                 if attempt > self.retries {

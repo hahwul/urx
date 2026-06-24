@@ -147,9 +147,17 @@ impl UrlscanProvider {
             }
             match req.send().await {
                 Ok(response) => {
-                    if !response.status().is_success() {
+                    let status = response.status();
+                    if !status.is_success() {
+                        if status.as_u16() == 429 {
+                            if let Some(d) =
+                                crate::network::client::retry_after_delay(response.headers())
+                            {
+                                tokio::time::sleep(d).await;
+                            }
+                        }
                         attempt += 1;
-                        last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
+                        last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                         continue;
                     }
                     match response.json::<UrlscanResponse>().await {

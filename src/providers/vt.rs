@@ -142,9 +142,18 @@ impl Provider for VirusTotalProvider {
                 match client.get(&url).send().await {
                     Ok(response) => {
                         // Check if response is successful
-                        if !response.status().is_success() {
+                        let status = response.status();
+                        if !status.is_success() {
+                            // On a throttle, wait as long as the server asked.
+                            if status.as_u16() == 429 {
+                                if let Some(d) =
+                                    crate::network::client::retry_after_delay(response.headers())
+                                {
+                                    tokio::time::sleep(d).await;
+                                }
+                            }
                             attempt += 1;
-                            last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
+                            last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                             continue;
                         }
 

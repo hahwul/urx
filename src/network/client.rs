@@ -74,6 +74,18 @@ impl HttpClientConfig {
     }
 }
 
+/// Parse a `Retry-After` response header into a sleep duration so a throttled
+/// request waits as long as the server asked before retrying. Only the
+/// delta-seconds form (the common API case, e.g. `Retry-After: 30`) is honored;
+/// the HTTP-date form returns `None` and the caller falls back to its normal
+/// back-off. The value is capped so a hostile or absurd header can't stall a run.
+pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    const MAX_RETRY_AFTER_SECS: u64 = 60;
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
+}
+
 /// Execute an HTTP GET request with retry and exponential back-off.
 ///
 /// `max_retries` is the number of **additional** attempts after the first
@@ -133,6 +145,36 @@ pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_retry_after_delay_parses_seconds() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_retry_after_delay_caps_large_values() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("100000"));
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn test_retry_after_delay_ignores_http_date_and_missing() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let empty = HeaderMap::new();
+        assert_eq!(retry_after_delay(&empty), None);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT"),
+        );
+        assert_eq!(retry_after_delay(&headers), None);
+    }
 
     #[test]
     fn test_default_config() {
