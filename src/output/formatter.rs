@@ -121,18 +121,13 @@ impl CsvFormatter {
 
 impl Formatter for CsvFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        let escaped_url = csv_escape(&url_data.url);
-        let status_field = url_data
-            .status
-            .as_deref()
-            .map(csv_escape)
-            .unwrap_or_default();
-        if url_data.sources.is_empty() {
-            format!("{escaped_url},{status_field}\n")
-        } else {
-            let sources_field = csv_escape(&url_data.sources.join("|"));
-            format!("{escaped_url},{status_field},{sources_field}\n")
-        }
+        // Standalone row: include only the columns this entry actually has,
+        // so a single formatted row is self-consistent (no dangling commas).
+        csv_row(
+            url_data,
+            url_data.status.is_some(),
+            !url_data.sources.is_empty(),
+        )
     }
 
     fn clone_box(&self) -> Box<dyn Formatter> {
@@ -140,10 +135,52 @@ impl Formatter for CsvFormatter {
     }
 }
 
+/// Build the CSV header line for the given column layout. The `url` column is
+/// always present; `status` / `sources` are included only when the run carries
+/// that data, and the row formatter mirrors exactly the same layout so every
+/// line has an identical column count.
+pub(crate) fn csv_header(has_status: bool, has_sources: bool) -> String {
+    let mut cols = vec!["url"];
+    if has_status {
+        cols.push("status");
+    }
+    if has_sources {
+        cols.push("sources");
+    }
+    let mut line = cols.join(",");
+    line.push('\n');
+    line
+}
+
+/// Format one CSV data row for the given column layout. Must agree with
+/// [`csv_header`] on which columns are emitted so header and body stay aligned.
+pub(crate) fn csv_row(url_data: &UrlData, has_status: bool, has_sources: bool) -> String {
+    let mut fields = vec![csv_escape(&url_data.url)];
+    if has_status {
+        fields.push(
+            url_data
+                .status
+                .as_deref()
+                .map(csv_escape)
+                .unwrap_or_default(),
+        );
+    }
+    if has_sources {
+        fields.push(if url_data.sources.is_empty() {
+            String::new()
+        } else {
+            csv_escape(&url_data.sources.join("|"))
+        });
+    }
+    let mut line = fields.join(",");
+    line.push('\n');
+    line
+}
+
 /// Escape a field value for CSV output per RFC 4180.
 /// If the value contains a comma, double-quote, or newline, wrap it in
 /// double-quotes and escape any internal double-quotes by doubling them.
-fn csv_escape(value: &str) -> String {
+pub(crate) fn csv_escape(value: &str) -> String {
     if value.contains(',') || value.contains('"') || value.contains('\n') {
         let escaped = value.replace('"', "\"\"");
         format!("\"{escaped}\"")
@@ -315,9 +352,9 @@ mod tests {
     fn test_csv_formatter() {
         let formatter = CsvFormatter::new();
 
-        // Test URL without status
+        // Test URL without status: a lone url is a single column, no dangling comma
         let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(formatter.format(&url_data, false), "https://example.com,\n");
+        assert_eq!(formatter.format(&url_data, false), "https://example.com\n");
 
         // Test URL with status
         let url_data_status =
@@ -352,7 +389,7 @@ mod tests {
         let url_data = UrlData::new("https://example.com/path?a=1,2&b=3".to_string());
         assert_eq!(
             formatter.format(&url_data, false),
-            "\"https://example.com/path?a=1,2&b=3\",\n"
+            "\"https://example.com/path?a=1,2&b=3\"\n"
         );
     }
 

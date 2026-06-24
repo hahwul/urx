@@ -110,7 +110,7 @@ mod tests {
     fn test_create_outputter_csv() {
         let outputter = create_outputter("csv");
         let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(outputter.format(&url_data, false), "https://example.com,\n");
+        assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
     }
 
     #[test]
@@ -139,7 +139,7 @@ mod tests {
         let csv_outputter = create_outputter("CSV");
         assert_eq!(
             csv_outputter.format(&url_data, false),
-            "https://example.com,\n"
+            "https://example.com\n"
         );
     }
 
