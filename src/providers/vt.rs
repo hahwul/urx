@@ -164,7 +164,11 @@ impl Provider for VirusTotalProvider {
                     }
                     Err(e) => {
                         attempt += 1;
-                        last_error = Some(e.into());
+                        // The VirusTotal key rides in the query string, and a
+                        // reqwest transport error renders the full request URL
+                        // in its Display output. Strip the URL so the key never
+                        // reaches stderr / logs via the surfaced error.
+                        last_error = Some(e.without_url().into());
                         continue;
                     }
                 }
@@ -300,6 +304,28 @@ mod tests {
         assert!(!provider.api_key_rotator.has_keys());
         assert_eq!(provider.api_key_rotator.key_count(), 0);
         assert_eq!(provider.api_key_rotator.current_key(), None);
+    }
+
+    #[tokio::test]
+    async fn test_transport_error_does_not_leak_api_key() {
+        // The VirusTotal key is passed in the request URL's query string, so a
+        // transport-layer failure (which reqwest renders with the full URL)
+        // must not surface it through the returned error.
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["SUPERSECRETKEY".to_string()]);
+        // Port 1 reliably refuses the connection; keep the run fast.
+        provider.with_base_url("http://127.0.0.1:1".to_string());
+        provider.with_retries(0);
+        provider.with_timeout(5);
+
+        let err = provider
+            .fetch_urls("example.com")
+            .await
+            .expect_err("connection to port 1 should fail");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("SUPERSECRETKEY"),
+            "API key leaked in error message: {msg}"
+        );
     }
 
     #[test]
