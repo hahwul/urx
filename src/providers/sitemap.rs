@@ -19,6 +19,30 @@ const MAX_SITEMAP_DEPTH: usize = 10;
 /// adversarial) sitemap tree can't grow memory without bound.
 const MAX_SITEMAP_URLS: usize = 1_000_000;
 
+/// Cap on the raw bytes read from a single sitemap document. Without it, a
+/// hostile or misconfigured endpoint could stream gigabytes into memory before
+/// any URL parsing happens (the per-URL cap only bounds the *parsed* output).
+const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
+
+/// Read a response body but stop after `max` bytes, so an unbounded (or
+/// deliberately huge) document can't exhaust memory. Reads incrementally via
+/// `chunk()` rather than buffering the whole body up front.
+async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result<String> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let remaining = max.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        if chunk.len() > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 #[derive(Clone)]
 pub struct SitemapProvider {
     timeout: Duration,
@@ -83,7 +107,19 @@ impl SitemapProvider {
             return Ok(Vec::new());
         }
 
-        let content = resp.text().await?;
+        // Only a genuine text sitemap should fall back to line-based parsing.
+        // Decide that from the URL suffix / Content-Type *before* consuming the
+        // body, so an XML endpoint that returns an HTML error page isn't mined
+        // for stray `http` lines.
+        let is_text_sitemap = sitemap_url.to_ascii_lowercase().ends_with(".txt")
+            || resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.to_ascii_lowercase().contains("text/plain"))
+                .unwrap_or(false);
+
+        let content = read_body_capped(resp, MAX_SITEMAP_BYTES).await?;
         let mut urls = Vec::new();
 
         match Document::parse(&content) {
@@ -131,14 +167,18 @@ impl SitemapProvider {
                 }
             }
             Err(_) => {
-                // If XML parsing fails, try to handle it as a text file (some sitemaps are just lists of URLs)
-                for line in content.lines() {
-                    if urls.len() >= MAX_SITEMAP_URLS {
-                        break;
-                    }
-                    let line = line.trim();
-                    if line.starts_with("http") {
-                        urls.push(line.to_string());
+                // XML parse failed. Only treat it as a plain-text URL list when
+                // the source actually is text (a .txt sitemap or text/plain);
+                // otherwise this was an HTML/error page and yields no URLs.
+                if is_text_sitemap {
+                    for line in content.lines() {
+                        if urls.len() >= MAX_SITEMAP_URLS {
+                            break;
+                        }
+                        let line = line.trim();
+                        if line.starts_with("http") {
+                            urls.push(line.to_string());
+                        }
                     }
                 }
             }
@@ -498,6 +538,31 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"https://example.com/page2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_xml_html_error_page_not_mined() {
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+
+        // A non-XML HTML error page served where a .xml sitemap was expected.
+        // The unescaped '&' makes XML parsing fail; the http line must NOT be
+        // harvested, because the source is not a text sitemap.
+        let html = "<html>\n<p>error & oops</p>\nhttp://attacker.example/inject\n</html>";
+        let _m = server
+            .mock("GET", "/sitemap.xml")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(html)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        let urls = provider.fetch_urls(&host).await.unwrap();
+        assert!(
+            !urls.iter().any(|u| u.contains("attacker.example")),
+            "HTML error page was mined for URLs: {urls:?}"
+        );
     }
 
     #[tokio::test]
