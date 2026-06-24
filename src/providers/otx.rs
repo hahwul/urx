@@ -61,6 +61,12 @@ struct OTXUrlEntry {
 
 const OTX_RESULTS_LIMIT: u32 = 200;
 
+/// Hard ceiling on OTX pages walked for one domain. OTX paginates `has_next`,
+/// but a stuck cursor or a server that keeps reporting `has_next: true` would
+/// otherwise loop forever issuing requests. At `OTX_RESULTS_LIMIT` rows/page
+/// this still covers far more URLs than any domain has in OTX.
+const OTX_MAX_PAGES: u32 = 1_000;
+
 impl OTXProvider {
     /// Creates a new OTXProvider with default settings
     pub fn new() -> Self {
@@ -266,10 +272,28 @@ impl Provider for OTXProvider {
                 }
 
                 if let Some(otx_result) = result {
-                    all_urls.extend(otx_result.url_list.into_iter().map(|entry| entry.url));
+                    let has_next = otx_result.has_next;
+                    let page_len = otx_result.url_list.len();
 
-                    // Check for next page
-                    if !otx_result.has_next {
+                    // Keep only entries with a usable URL — OTX occasionally
+                    // returns rows with an empty `url`, which would otherwise be
+                    // emitted as blank lines.
+                    all_urls.extend(
+                        otx_result
+                            .url_list
+                            .into_iter()
+                            .map(|entry| entry.url)
+                            .filter(|url| !url.is_empty()),
+                    );
+
+                    // Stop when this page returned nothing (there is no more
+                    // data, even if the server still claims `has_next`), or when
+                    // the API reports no further pages. A full page with
+                    // `has_next` absent (some responses omit it) is treated as
+                    // "maybe more", so a single trailing empty fetch confirms the
+                    // end rather than truncating at page one.
+                    let page_full = page_len as u32 >= OTX_RESULTS_LIMIT;
+                    if page_len == 0 || (!has_next && !page_full) {
                         break;
                     }
                 } else {
@@ -280,6 +304,9 @@ impl Provider for OTXProvider {
                 }
 
                 page += 1;
+                if page >= OTX_MAX_PAGES {
+                    break;
+                }
             }
 
             Ok(all_urls)
@@ -624,6 +651,55 @@ mod tests {
         let urls = result.unwrap();
 
         assert!(urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_terminates_on_empty_page_despite_has_next() {
+        // A misbehaving API that keeps claiming has_next:true but returns no
+        // rows must not loop forever — an empty page ends the walk.
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        let _m1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{ "has_next": true, "url_list": [] }"#)
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+
+        let result = provider.fetch_urls("example.com").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_skips_empty_url_entries() {
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        let _m1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{ "has_next": false, "url_list": [ { "url": "" }, { "url": "http://example.com/real" } ] }"#,
+            )
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["http://example.com/real".to_string()]);
     }
 
     #[tokio::test]
