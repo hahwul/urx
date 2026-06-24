@@ -99,28 +99,9 @@ impl Provider for VirusTotalProvider {
                 return Ok(Vec::new());
             }
 
-            // Get the next API key in rotation
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
-
             // Use the url crate for encoding the domain
             let encoded_domain =
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
-
-            // Construct the URL - use base_url in test mode
-            #[cfg(test)]
-            let url = format!(
-                "{}/vtapi/v2/domain/report?apikey={}&domain={}",
-                self.base_url, api_key, encoded_domain
-            );
-
-            #[cfg(not(test))]
-            let url = format!(
-                "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
-                api_key, encoded_domain
-            );
 
             let client = self.client_config().build_client()?;
             let limiter = RateLimiter::from_rate(self.rate_limit);
@@ -135,6 +116,25 @@ impl Provider for VirusTotalProvider {
                     tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
                         .await;
                 }
+
+                // Rotate to the next key each attempt: if a key is rate-limited
+                // or invalid, the retry uses a different one when several are
+                // configured (with a single key this is a no-op).
+                let api_key = self
+                    .api_key_rotator
+                    .next_key()
+                    .expect("Key rotator should have keys since has_keys() returned true");
+
+                #[cfg(test)]
+                let url = format!(
+                    "{}/vtapi/v2/domain/report?apikey={}&domain={}",
+                    self.base_url, api_key, encoded_domain
+                );
+                #[cfg(not(test))]
+                let url = format!(
+                    "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
+                    api_key, encoded_domain
+                );
 
                 if let Some(rl) = &limiter {
                     rl.acquire().await;

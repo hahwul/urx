@@ -143,10 +143,6 @@ impl Provider for GitHubProvider {
             if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
             }
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
 
             let client = self.client_config().build_client()?;
             let limiter = RateLimiter::from_rate(self.rate_limit);
@@ -175,6 +171,10 @@ impl Provider for GitHubProvider {
                             .await;
                     }
 
+                    // Rotate the token per attempt so a rate-limited/secondary-
+                    // limited token is retried with a different one when several
+                    // are configured.
+                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
                     if let Some(rl) = &limiter {
                         rl.acquire().await;
                     }

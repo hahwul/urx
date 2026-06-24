@@ -124,7 +124,6 @@ impl UrlscanProvider {
         &self,
         client: &reqwest::Client,
         url: &str,
-        api_key: &str,
         limiter: Option<&RateLimiter>,
     ) -> Result<UrlscanResponse> {
         let mut last_error = None;
@@ -135,9 +134,12 @@ impl UrlscanProvider {
                 tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
             }
 
+            // Rotate the key per attempt so a rate-limited key is retried with a
+            // different one when several are configured.
+            let api_key = self.api_key_rotator.next_key().unwrap_or_default();
             let mut req = client.get(url);
             if !api_key.is_empty() {
-                req = req.header("API-Key", api_key);
+                req = req.header("API-Key", &api_key);
             }
 
             if let Some(rl) = limiter {
@@ -191,12 +193,6 @@ impl Provider for UrlscanProvider {
                 return Ok(Vec::new());
             }
 
-            // Get the next API key in rotation
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
-
             // Use the url crate for encoding the domain
             let encoded_domain =
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
@@ -234,10 +230,7 @@ impl Provider for UrlscanProvider {
                     None => base_query.clone(),
                 };
 
-                let response = match self
-                    .fetch_page(&client, &url, &api_key, limiter.as_ref())
-                    .await
-                {
+                let response = match self.fetch_page(&client, &url, limiter.as_ref()).await {
                     Ok(resp) => resp,
                     Err(e) => {
                         // A failure on the very first page is fatal; a later
@@ -524,6 +517,41 @@ mod tests {
         assert!(result.is_ok(), "Expected success with empty API key");
         let urls = result.unwrap();
         assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
+    }
+
+    #[tokio::test]
+    async fn test_retry_rotates_to_next_key() {
+        let mut server = mockito::Server::new_async().await;
+        // The first key is rate-limited...
+        let k1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Any)
+            .match_header("API-Key", "key1")
+            .with_status(429)
+            .expect(1)
+            .create_async()
+            .await;
+        // ...so the retry must use the second key, which succeeds.
+        let k2 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Any)
+            .match_header("API-Key", "key2")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":200,"has_more":false,"results":[{"page":{"domain":"example.com","url":"https://example.com/ok","status":"200"}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new_with_keys(vec!["key1".into(), "key2".into()]);
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["https://example.com/ok".to_string()]);
+        k1.assert();
+        k2.assert();
     }
 
     #[tokio::test]

@@ -134,11 +134,6 @@ impl Provider for ZoomEyeProvider {
                 return Ok(Vec::new());
             }
 
-            let api_key = self
-                .api_key_rotator
-                .next_key()
-                .expect("Key rotator should have keys since has_keys() returned true");
-
             let dork = self.build_dork(domain);
             let qbase64 = STANDARD.encode(dork.as_bytes());
 
@@ -174,6 +169,9 @@ impl Provider for ZoomEyeProvider {
                             .await;
                     }
 
+                    // Rotate the key per attempt so a rate-limited/quota-hit key
+                    // is retried with a different one when several are configured.
+                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
                     let req = client
                         .post(&api_url)
                         .header("API-KEY", &api_key)
