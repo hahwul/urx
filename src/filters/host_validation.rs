@@ -40,10 +40,20 @@ impl HostValidator {
                     return true;
                 }
 
-                // If subdomains are allowed, check if the host is a subdomain of any of our domains
                 if self.include_subdomains {
+                    // If subdomains are allowed, accept any subdomain of a target.
                     for domain in &self.domains {
                         if host_stripped.ends_with(&format!(".{domain}")) {
+                            return true;
+                        }
+                    }
+                } else {
+                    // Even in strict (apex-only) mode, treat the conventional
+                    // `www.` host as the apex itself: a site served entirely on
+                    // www.<domain> must not return zero results for a bare
+                    // `<domain>` query. Other subdomains still require --subs.
+                    for domain in &self.domains {
+                        if host_stripped == format!("www.{domain}") {
                             return true;
                         }
                     }
@@ -89,6 +99,21 @@ mod tests {
 
         // Subdomains should not be valid with default settings
         assert!(!validator.is_valid_host("https://sub.example.com/path"));
+    }
+
+    #[test]
+    fn test_www_treated_as_apex_in_strict_mode() {
+        let domains = vec!["example.com".to_string()];
+        let validator = HostValidator::new(&domains, false); // strict, no --subs
+
+        // www counts as the apex...
+        assert!(validator.is_valid_host("https://www.example.com/path"));
+        assert!(validator.is_valid_host("https://example.com/path"));
+        // ...but other subdomains still require --subs.
+        assert!(!validator.is_valid_host("https://blog.example.com/path"));
+        assert!(!validator.is_valid_host("https://api.example.com/path"));
+        // a www-of-www is a sub-subdomain, not the apex.
+        assert!(!validator.is_valid_host("https://www.www.example.com/path"));
     }
 
     #[test]
