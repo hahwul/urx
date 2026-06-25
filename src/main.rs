@@ -954,6 +954,9 @@ async fn main() -> Result<()> {
         cli_supplied_zoomeye || env_supplied_zoomeye,
     );
 
+    // Honor --no-color / NO_COLOR before any styled output is produced.
+    configure_colors(&args);
+
     // Create common network settings and progress manager once
     let network_settings = NetworkSettings::from_args(&args);
     let progress_check = args.no_progress || args.silent;
@@ -962,6 +965,10 @@ async fn main() -> Result<()> {
     // Check if file input is provided
     let urls_from_file = read_urls_from_files(&args)?;
 
+    // The run header is a transient line in the live region. Held here so it
+    // outlives the provider branch where it's created and is cleared together
+    // with the bars when the scan finishes.
+    let mut _header_line = None;
     let run_result = if let Some(urls) = urls_from_file {
         // URLs read from file(s) - skip provider processing. Mark every URL
         // as coming from "file" so downstream `--show-sources` is consistent.
@@ -986,9 +993,14 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
-
         // Initialize providers based on command-line flags and API keys
         let (providers, provider_names) = initialize_providers(&args, &network_settings)?;
+
+        // Header at the top of the live region — transient, cleared with the
+        // bars when the scan finishes so only the URL list remains.
+        _header_line = Some(
+            progress_manager.create_header_line(render_header(domains.len(), provider_names.len())),
+        );
 
         // Initialize cache manager if caching is enabled
         let cache_manager = create_cache_manager(&args).await?;
@@ -1098,6 +1110,11 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Progress is transient: tear down the live region (header + all bars) now
+    // that scanning is done, so the only thing left on screen is the result —
+    // the URL list printed below.
+    progress_manager.clear();
+
     match outputter.output(&final_urls, args.output.clone(), args.silent) {
         Ok(_) => {
             if args.verbose && !args.silent {
@@ -1175,6 +1192,50 @@ fn write_per_domain_output(
     Ok(())
 }
 
+/// Force-disable colour when `--no-color` or the `NO_COLOR` env var is set, for
+/// both the progress UI (`console`, used by indicatif) and the URL output
+/// (`colored`). With neither set, both keep their own TTY auto-detection.
+/// `NO_COLOR` disables on mere presence (any value, including empty), matching
+/// how `console` itself detects it (`env::var("NO_COLOR").is_ok()`), so both
+/// surfaces stay consistent.
+fn configure_colors(args: &Args) {
+    let no_color = args.no_color || std::env::var_os("NO_COLOR").is_some();
+    if no_color {
+        colored::control::set_override(false);
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
+    }
+}
+
+/// Build the standalone run header drawn above the live progress region: a bold
+/// teal `urx` wordmark riding the bars' 2-space gutter, the scan context in the
+/// section-label tone, then a dimmed teal rule trailing out to a fixed width. No
+/// box corners — it reads as a rule, never an unclosed frame (the header is
+/// transient and cleared when the scan ends). Padding is measured from the plain
+/// text so colour codes never enter the width math; `colored` strips the hues
+/// automatically when colour is off.
+fn render_header(n_domains: usize, n_providers: usize) -> String {
+    use colored::Colorize;
+    const RAIL_W: usize = 58;
+    let dword = if n_domains == 1 { "domain" } else { "domains" };
+    let pword = if n_providers == 1 {
+        "provider"
+    } else {
+        "providers"
+    };
+    let rest = format!(" · scanning {n_domains} {dword} · {n_providers} {pword} ");
+    // Visible cells before the rule (plain): "  "(2) + "urx"(3) + rest.
+    let used = 2 + 3 + rest.chars().count();
+    let pad = RAIL_W.saturating_sub(used).max(3);
+    format!(
+        "{}{}{}{}",
+        "  ",
+        "urx".truecolor(0x5a, 0xd1, 0xcd).bold(),
+        rest.truecolor(0xa7, 0xb6, 0xc2),
+        "─".repeat(pad).truecolor(0x5a, 0xd1, 0xcd).dimmed(),
+    )
+}
+
 /// Render the per-provider summary table to stderr (so it doesn't pollute
 /// stdout when callers pipe URL results into other tools).
 fn print_provider_stats(stats: &[runner::ProviderStats]) {
@@ -1184,12 +1245,12 @@ fn print_provider_stats(stats: &[runner::ProviderStats]) {
     eprintln!();
     eprintln!("Provider stats:");
     eprintln!(
-        "  {:<18}  {:>8}  {:>7}  {:>10}",
-        "provider", "urls", "errors", "elapsed"
+        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+        "provider", "urls", "partial", "errors", "elapsed"
     );
     eprintln!(
-        "  {:<18}  {:>8}  {:>7}  {:>10}",
-        "------------------", "--------", "-------", "----------"
+        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+        "------------------", "--------", "--------", "-------", "----------"
     );
     for s in stats {
         let elapsed_ms = s.elapsed.as_millis();
@@ -1199,8 +1260,8 @@ fn print_provider_stats(stats: &[runner::ProviderStats]) {
             format!("{}ms", elapsed_ms)
         };
         eprintln!(
-            "  {:<18}  {:>8}  {:>7}  {:>10}",
-            s.name, s.url_count, s.error_count, elapsed_label
+            "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+            s.name, s.url_count, s.partial_count, s.error_count, elapsed_label
         );
     }
 }
@@ -1211,6 +1272,27 @@ mod tests {
     use anyhow::Result;
     use std::collections::HashSet;
     use std::env;
+
+    // Strip any ANSI so frame-geometry asserts hold regardless of the ambient
+    // colour state (cargo runs tests in parallel and `colored`/`console` use
+    // process-global colour toggles).
+    fn plain(s: &str) -> String {
+        console::strip_ansi_codes(s).to_string()
+    }
+
+    #[test]
+    fn test_render_header_line() {
+        let p = plain(&render_header(3, 5));
+        // Standalone rule header: 2-space gutter, bold `urx` wordmark, scan
+        // context, then a trailing rule out to a fixed 58 columns. No box.
+        assert!(p.starts_with("  urx · scanning 3 domains · 5 providers "));
+        assert!(p.ends_with('─'));
+        assert!(!p.starts_with('╭') && !p.ends_with('╮'));
+        assert_eq!(p.chars().count(), 58);
+        // Singular forms.
+        let one = plain(&render_header(1, 1));
+        assert!(one.contains("scanning 1 domain · 1 provider "));
+    }
 
     use std::future::Future;
     use std::pin::Pin;
@@ -1672,6 +1754,7 @@ mod tests {
             verbose: false,
             silent: true,      // Silent to avoid console output during tests
             no_progress: true, // No progress bars during tests
+            no_color: false,
             preset: vec![],
             extensions: vec![],
             exclude_extensions: vec![],
@@ -1937,6 +2020,7 @@ mod tests {
             verbose: false,
             silent: true,
             no_progress: true,
+            no_color: false,
             preset: vec![],
             extensions: vec![],
             exclude_extensions: vec![],
@@ -2059,6 +2143,7 @@ mod tests {
             verbose: false,
             silent: true,
             no_progress: true,
+            no_color: false,
             preset: vec![],
             extensions: vec![],
             exclude_extensions: vec![],

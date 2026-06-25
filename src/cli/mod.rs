@@ -160,6 +160,12 @@ pub struct Args {
     #[clap(long)]
     pub no_progress: bool,
 
+    /// Disable ANSI color in the progress UI and output (the NO_COLOR env var is
+    /// also honored automatically).
+    #[clap(help_heading = "Display Options")]
+    #[clap(long)]
+    pub no_color: bool,
+
     /// Annotate each output URL with the providers that returned it.
     /// For JSON/CSV this adds a `sources` field/column; for plain text it
     /// appends `[provider1,provider2]` after the URL.

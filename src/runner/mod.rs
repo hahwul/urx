@@ -188,6 +188,8 @@ pub struct ProviderStats {
     pub url_count: usize,
     /// Number of domain fetches that failed.
     pub error_count: usize,
+    /// Number of domain fetches that returned incomplete (partial) results.
+    pub partial_count: usize,
     /// Total wall-clock time spent in fetch_urls across domains.
     pub elapsed: std::time::Duration,
 }
@@ -291,9 +293,8 @@ pub async fn process_domains(
 
         // Spawn a task for this provider
         let provider_future = task::spawn(async move {
-            // Track the current domain index for this provider, plus running
-            // totals used to freeze the line on an honest end-of-run summary.
-            let mut current_domain_idx = 0;
+            // Running totals used to freeze the line on an honest end-of-run
+            // summary.
             let mut provider_url_total = 0usize;
             let mut provider_err_total = 0usize;
             let mut provider_partial_total = 0usize;
@@ -304,18 +305,19 @@ pub async fn process_domains(
                 let domain = {
                     let mut queue = lock_ignore_poison(&queue);
                     match queue.pop_front() {
-                        Some(domain) => {
-                            current_domain_idx += 1;
-                            domain
-                        }
+                        Some(domain) => domain,
                         None => break, // No more domains to process for this provider
                     }
                 };
 
                 // Re-arm the spinner and reset the per-domain elapsed timer so
                 // the line reads as "this fetch", not "since the run started".
-                let prefix = format!("({current_domain_idx}/{total_domains}) {domain} · ");
+                // The status gutter is the live spinner, so the prefix is just
+                // the bare (padded) provider name — the finished branches below
+                // swap in a "glyph + name" prefix that lands in the same column.
+                let prefix = format!("{domain} · ");
                 provider_bar.set_style(provider_running_style());
+                provider_bar.set_prefix(format!("{provider_name:<16}"));
                 provider_bar.reset_elapsed();
                 provider_bar.set_message(format!("{prefix}fetching…"));
                 if !no_progress && !silent {
@@ -352,8 +354,9 @@ pub async fn process_domains(
                         if partial {
                             provider_partial_total += 1;
                             provider_bar.set_style(provider_partial_style());
+                            provider_bar.set_prefix(format!("◐ {provider_name:<16}"));
                             provider_bar.set_message(format!(
-                                "✓ {domain} · {} URLs (partial)",
+                                "{domain} · {} URLs (partial)",
                                 fmt_count(url_count)
                             ));
                             if verbose && !silent {
@@ -363,8 +366,9 @@ pub async fn process_domains(
                             }
                         } else {
                             provider_bar.set_style(provider_success_style());
+                            provider_bar.set_prefix(format!("✓ {provider_name:<16}"));
                             provider_bar
-                                .set_message(format!("✓ {domain} · {} URLs", fmt_count(url_count)));
+                                .set_message(format!("{domain} · {} URLs", fmt_count(url_count)));
                         }
                         provider_bar.tick();
 
@@ -383,6 +387,9 @@ pub async fn process_domains(
                         {
                             let mut s = lock_ignore_poison(&stats_clone);
                             s[original_idx].url_count += url_count;
+                            if partial {
+                                s[original_idx].partial_count += 1;
+                            }
                             s[original_idx].elapsed += fetch_elapsed;
                         }
 
@@ -399,7 +406,8 @@ pub async fn process_domains(
                         provider_err_total += 1;
 
                         provider_bar.set_style(provider_error_style());
-                        provider_bar.set_message(format!("✗ {domain} · {}", short_error(&e)));
+                        provider_bar.set_prefix(format!("✗ {provider_name:<16}"));
+                        provider_bar.set_message(format!("{domain} · {}", short_error(&e)));
                         provider_bar.tick();
 
                         {
@@ -421,17 +429,24 @@ pub async fn process_domains(
             // what actually happened across all of its domains.
             if provider_url_total == 0 && provider_err_total > 0 {
                 provider_bar.set_style(provider_error_style());
+                provider_bar.set_prefix(format!("✗ {provider_name:<16}"));
                 provider_bar
-                    .finish_with_message(format!("✗ all {provider_err_total} fetch(es) failed"));
+                    .finish_with_message(format!("all {provider_err_total} fetch(es) failed"));
             } else {
-                // A partial anywhere keeps the line yellow so the run doesn't
+                // A partial anywhere keeps the line amber so the run doesn't
                 // read as a clean, complete success at a glance.
+                let glyph = if provider_partial_total > 0 {
+                    "◐"
+                } else {
+                    "✓"
+                };
                 provider_bar.set_style(if provider_partial_total > 0 {
                     provider_partial_style()
                 } else {
                     provider_success_style()
                 });
-                let mut summary = format!("✓ {} URLs", fmt_count(provider_url_total));
+                provider_bar.set_prefix(format!("{glyph} {provider_name:<16}"));
+                let mut summary = format!("{} URLs", fmt_count(provider_url_total));
                 if provider_partial_total > 0 {
                     summary.push_str(&format!(" · {provider_partial_total} partial"));
                 }
@@ -449,38 +464,100 @@ pub async fn process_domains(
         provider_futures.push(provider_future);
     }
 
-    // Wait for all provider tasks to finish, honouring --max-time when set.
-    // We grab abort handles up front so a timeout can cancel in-flight tasks
-    // while we keep whatever URLs they've already pushed into the shared map.
+    // Wait for all provider tasks to finish, honouring both --max-time and a
+    // Ctrl-C interrupt. Abort handles are grabbed up front so either trigger can
+    // cancel in-flight tasks while we keep whatever URLs they have already
+    // pushed into the shared map — an interrupted run still produces output and
+    // a summary instead of dying with nothing.
     let abort_handles: Vec<_> = provider_futures.iter().map(|h| h.abort_handle()).collect();
     let join_future = join_all(provider_futures);
     let deadline = (args.max_time > 0).then(|| std::time::Duration::from_secs(args.max_time));
 
-    let finished_within_deadline = if let Some(d) = deadline {
-        match tokio::time::timeout(d, join_future).await {
-            Ok(_) => true,
-            Err(_) => {
-                for h in abort_handles {
-                    h.abort();
-                }
-                if !args.silent {
-                    eprintln!(
-                        "[urx] --max-time {}s elapsed; aborting in-flight provider fetches and returning partial results",
-                        d.as_secs()
-                    );
-                }
-                false
+    enum RunEnd {
+        Completed,
+        TimedOut,
+        Interrupted,
+    }
+
+    let run_end = {
+        tokio::pin!(join_future);
+        // A deadline that simply never fires when --max-time isn't set.
+        let timeout = async {
+            match deadline {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
             }
+        };
+        tokio::pin!(timeout);
+        tokio::select! {
+            _ = &mut join_future => RunEnd::Completed,
+            _ = &mut timeout => RunEnd::TimedOut,
+            // First Ctrl-C becomes a graceful stop. If signal registration
+            // fails we fall back to never firing, so the run isn't spuriously
+            // marked interrupted.
+            _ = async {
+                if tokio::signal::ctrl_c().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            } => RunEnd::Interrupted,
         }
-    } else {
-        join_future.await;
-        true
     };
 
-    if finished_within_deadline {
-        overall_bar.finish_with_message("All domains processed");
-    } else {
-        overall_bar.finish_with_message("Stopped by --max-time deadline");
+    match &run_end {
+        RunEnd::Completed => {}
+        RunEnd::TimedOut => {
+            for h in &abort_handles {
+                h.abort();
+            }
+            if !args.silent {
+                progress_manager.note(format!(
+                    "[urx] --max-time {}s elapsed; aborting in-flight provider fetches and returning partial results",
+                    deadline.map(|d| d.as_secs()).unwrap_or(0)
+                ));
+            }
+        }
+        RunEnd::Interrupted => {
+            for h in &abort_handles {
+                h.abort();
+            }
+            if !args.silent {
+                progress_manager.note(
+                    "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
+                );
+            }
+            // The rest of the pipeline (output, optional testing) can still take
+            // a while, so a second Ctrl-C force-quits.
+            tokio::spawn(async {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    std::process::exit(130);
+                }
+            });
+        }
+    }
+
+    // A timeout/interrupt leaves the provider(s) that were mid-fetch on a
+    // spinning "fetching…" line; freeze them so the final display is honest.
+    if !matches!(run_end, RunEnd::Completed) {
+        let label = if matches!(run_end, RunEnd::TimedOut) {
+            "timed out"
+        } else {
+            "interrupted"
+        };
+        for (i, bar) in provider_bars.iter().enumerate() {
+            if !bar.is_finished() {
+                bar.set_style(provider_partial_style());
+                if let Some(name) = provider_names.get(i) {
+                    bar.set_prefix(format!("◐ {name:<16}"));
+                }
+                bar.finish_with_message(label.to_string());
+            }
+        }
+    }
+
+    match run_end {
+        RunEnd::Completed => overall_bar.finish_with_message("All domains processed"),
+        RunEnd::TimedOut => overall_bar.finish_with_message("Stopped by --max-time deadline"),
+        RunEnd::Interrupted => overall_bar.finish_with_message("Interrupted by Ctrl-C"),
     }
 
     // Reclaim the shared state. If tasks were aborted the inner Arc may still

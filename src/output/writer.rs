@@ -31,8 +31,11 @@ impl Outputter for PlainOutputter {
                 // Writing to a file: suppress ANSI colour. The `colored` crate
                 // decides on color globally from stdout's TTY status, so without
                 // this a run in an interactive terminal would bake escape codes
-                // into the file. Restore auto-detection afterward so a later
-                // stdout write (e.g. --output-dir alongside stdout) stays colored.
+                // into the file. Capture the current effective decision and
+                // restore *that* afterward (not blanket auto-detection), so a
+                // later stdout write keeps its colour — and a forced --no-color /
+                // NO_COLOR run stays colourless instead of being re-enabled.
+                let prev_colorize = colored::control::SHOULD_COLORIZE.should_colorize();
                 colored::control::set_override(false);
                 let mut file = File::create(&path).context("Failed to create output file")?;
 
@@ -44,7 +47,7 @@ impl Outputter for PlainOutputter {
                     }
                     Ok(())
                 })();
-                colored::control::unset_override();
+                colored::control::set_override(prev_colorize);
                 result
             }
             None => {
