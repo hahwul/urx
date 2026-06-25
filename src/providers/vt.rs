@@ -33,21 +33,25 @@ pub struct VirusTotalProvider {
 }
 
 /// A page of the v3 `/domains/{domain}/urls` response. `data` holds the URL
-/// objects; `links.next` is a complete URL for the following page (absent on
-/// the last page). `Default` lets a 404 ("no such domain") resolve to an empty
-/// page rather than an error.
+/// objects; `meta.cursor` is the opaque token for the next page (absent on the
+/// last page). We deliberately page via this token rather than the sibling
+/// `links.next` absolute URL: `links.next` is server-controlled, and following
+/// it would send the `x-apikey` header to whatever host it names — a credential
+/// leak under a malicious/MITM'd response. Rebuilding the request from the
+/// trusted base URL + cursor removes that trust entirely. `Default` lets a 404
+/// ("no such domain") resolve to an empty page rather than an error.
 #[derive(Debug, Deserialize, Default)]
 struct VtUrlsResponse {
     #[serde(default)]
     data: Vec<VtUrlObject>,
     #[serde(default)]
-    links: VtLinks,
+    meta: VtMeta,
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct VtLinks {
+struct VtMeta {
     #[serde(default)]
-    next: Option<String>,
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,22 +109,36 @@ impl VirusTotalProvider {
         }
     }
 
-    /// First-page URL for a domain's v3 `urls` relationship.
-    fn first_page_url(&self, domain: &str) -> String {
+    /// Build a page URL for a domain's v3 `urls` relationship from the *trusted*
+    /// base, optionally carrying an opaque pagination `cursor`. Always built
+    /// from our own base host (never a server-supplied URL), so the API key is
+    /// only ever sent to VirusTotal.
+    fn page_url(&self, domain: &str, cursor: Option<&str>) -> String {
         let encoded = url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
-        #[cfg(test)]
-        {
-            format!(
-                "{}/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}",
-                self.base_url
-            )
+        let mut url = {
+            #[cfg(test)]
+            {
+                format!(
+                    "{}/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}",
+                    self.base_url
+                )
+            }
+            #[cfg(not(test))]
+            {
+                format!(
+                    "https://www.virustotal.com/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}"
+                )
+            }
+        };
+        if let Some(cursor) = cursor {
+            // The cursor is opaque base64-ish; percent-encode so reserved bytes
+            // survive being spliced into the query string.
+            let encoded_cursor: String =
+                url::form_urlencoded::byte_serialize(cursor.as_bytes()).collect();
+            url.push_str("&cursor=");
+            url.push_str(&encoded_cursor);
         }
-        #[cfg(not(test))]
-        {
-            format!(
-                "https://www.virustotal.com/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}"
-            )
-        }
+        url
     }
 
     /// Fetch and parse a single page with retry/back-off and key rotation.
@@ -232,27 +250,34 @@ impl Provider for VirusTotalProvider {
             }
 
             // Walk the v3 cursor: each page returns up to VT_PAGE_LIMIT URL
-            // objects plus a `links.next` pointing at the following page. The
-            // deprecated v2 `domain/report` returned a single server-capped,
-            // non-paginated slice that silently truncated large domains.
-            let mut next_url = Some(self.first_page_url(domain));
+            // objects plus a `meta.cursor` token for the next page. We rebuild
+            // each request from the trusted base + cursor (never the server's
+            // `links.next` URL). The deprecated v2 `domain/report` returned a
+            // single server-capped, non-paginated slice that silently truncated
+            // large domains.
             let mut urls = Vec::new();
+            let mut cursor: Option<String> = None;
             let mut pages = 0usize;
 
-            while let Some(url) = next_url.take() {
+            loop {
                 pages += 1;
                 if pages > VT_MAX_PAGES {
                     break;
                 }
+                // "First request" tracked explicitly: a clean (HTTP 200) but
+                // empty leading page can still carry a cursor, so emptiness is
+                // not a reliable proxy for "first page".
+                let first_page = pages == 1;
+                let url = self.page_url(domain, cursor.as_deref());
 
                 let page = match self.fetch_page(&client, &url, limiter).await {
                     Ok(page) => page,
                     Err(e) => {
-                        // A failure on the first page (nothing collected) is
-                        // fatal; a later failure keeps what we have and flags
-                        // the result partial rather than presenting a truncated
-                        // crawl as a clean success.
-                        if urls.is_empty() {
+                        // A failure on the very first request is fatal; any
+                        // later failure keeps what we have and flags the result
+                        // partial rather than presenting a truncated crawl as a
+                        // clean success.
+                        if first_page {
                             return Err(e);
                         }
                         if let Some(r) = &reporter {
@@ -269,7 +294,10 @@ impl Provider for VirusTotalProvider {
                     r.detail(format!("{} URLs…", urls.len()));
                 }
 
-                next_url = page.links.next;
+                match page.meta.cursor {
+                    Some(c) if !c.is_empty() => cursor = Some(c),
+                    _ => break,
+                }
             }
 
             urls.sort();
@@ -479,7 +507,8 @@ mod tests {
 
     #[test]
     fn test_vt_response_deserialize() {
-        // v3 shape: data[].attributes.url, with a links.next cursor.
+        // v3 shape: data[].attributes.url plus a meta.cursor token. The
+        // server-controlled `links` block is present but intentionally ignored.
         let json = r#"{
             "data": [
                 {"type": "url", "id": "a", "attributes": {"url": "https://example.com/page1"}},
@@ -493,21 +522,21 @@ mod tests {
         assert_eq!(response.data.len(), 2);
         assert_eq!(response.data[0].attributes.url, "https://example.com/page1");
         assert_eq!(response.data[1].attributes.url, "https://example.com/page2");
-        assert_eq!(response.links.next.as_deref(), Some("https://x/next"));
+        assert_eq!(response.meta.cursor.as_deref(), Some("CURSOR"));
     }
 
     #[test]
     fn test_vt_response_empty_deserialize() {
-        // No data and no `next` (last/empty page) must parse cleanly.
-        let json = r#"{"data": [], "links": {"self": "https://x/self"}}"#;
+        // No data and no cursor (last/empty page) must parse cleanly.
+        let json = r#"{"data": [], "meta": {}}"#;
         let response: VtUrlsResponse = serde_json::from_str(json).unwrap();
         assert!(response.data.is_empty());
-        assert!(response.links.next.is_none());
+        assert!(response.meta.cursor.is_none());
 
         // A bare object also parses (all fields default).
         let response: VtUrlsResponse = serde_json::from_str("{}").unwrap();
         assert!(response.data.is_empty());
-        assert!(response.links.next.is_none());
+        assert!(response.meta.cursor.is_none());
     }
 
     #[tokio::test]
@@ -542,7 +571,7 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
 
         // v3: domain in the path, key in the x-apikey header, urls under
-        // data[].attributes.url. A single page (no links.next) ends the walk.
+        // data[].attributes.url. A single page (no meta.cursor) ends the walk.
         let m = server
             .mock("GET", "/api/v3/domains/example.com/urls")
             .match_header("x-apikey", "test_api_key")
@@ -555,7 +584,7 @@ mod tests {
                         {"attributes": {"url": "https://example.com/page1"}},
                         {"attributes": {"url": "https://example.com/page2"}}
                     ],
-                    "links": {"self": "x"}
+                    "meta": {}
                 }"#,
             )
             .expect(1)
@@ -577,25 +606,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fetch_urls_paginates_via_links_next() {
+    async fn test_fetch_urls_paginates_via_cursor_ignoring_server_next_url() {
         let mut server = mockito::Server::new_async().await;
 
-        // Page one hands back a complete `links.next` URL pointing at page two.
-        let next = format!(
-            "{}/api/v3/domains/example.com/urls?limit=40&cursor=PAGE2",
-            server.url()
-        );
+        // Page one hands back a meta.cursor token AND a hostile `links.next`
+        // pointing at an unrelated host. The provider must page by rebuilding
+        // the request from its trusted base + cursor and must NEVER follow
+        // links.next (which would leak the x-apikey header off-host). Page two
+        // is served from THIS server keyed by cursor=PAGE2, so the fact that it
+        // is reached proves links.next was ignored.
         let page1 = server
             .mock("GET", "/api/v3/domains/example.com/urls")
             .match_query(mockito::Matcher::Exact("limit=40".into()))
             .with_status(200)
-            .with_body(format!(
-                r#"{{"data": [{{"attributes": {{"url": "https://example.com/a"}}}}], "links": {{"next": "{next}"}}}}"#
-            ))
+            .with_body(
+                r#"{
+                    "data": [{"attributes": {"url": "https://example.com/a"}}],
+                    "meta": {"cursor": "PAGE2"},
+                    "links": {"next": "http://127.0.0.1:1/evil?leak=key"}
+                }"#,
+            )
             .expect(1)
             .create_async()
             .await;
-        // Page two is keyed by the cursor and carries no `next`, so the walk ends.
+        // Page two is keyed by the cursor and carries no cursor, so the walk ends.
         let page2 = server
             .mock("GET", "/api/v3/domains/example.com/urls")
             .match_query(mockito::Matcher::UrlEncoded(
@@ -604,7 +638,7 @@ mod tests {
             ))
             .with_status(200)
             .with_body(
-                r#"{"data": [{"attributes": {"url": "https://example.com/b"}}], "links": {}}"#,
+                r#"{"data": [{"attributes": {"url": "https://example.com/b"}}], "meta": {}}"#,
             )
             .expect(1)
             .create_async()
@@ -629,17 +663,13 @@ mod tests {
     async fn test_fetch_urls_keeps_partial_on_midpage_failure() {
         let mut server = mockito::Server::new_async().await;
 
-        let next = format!(
-            "{}/api/v3/domains/example.com/urls?limit=40&cursor=PAGE2",
-            server.url()
-        );
         let _page1 = server
             .mock("GET", "/api/v3/domains/example.com/urls")
             .match_query(mockito::Matcher::Exact("limit=40".into()))
             .with_status(200)
-            .with_body(format!(
-                r#"{{"data": [{{"attributes": {{"url": "https://example.com/a"}}}}], "links": {{"next": "{next}"}}}}"#
-            ))
+            .with_body(
+                r#"{"data": [{"attributes": {"url": "https://example.com/a"}}], "meta": {"cursor": "PAGE2"}}"#,
+            )
             .create_async()
             .await;
         // The follow-up page fails: keep page one and flag the result partial.
@@ -663,6 +693,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(urls, vec!["https://example.com/a".to_string()]);
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_empty_first_page_then_failure_is_partial_not_error() {
+        // A clean (HTTP 200) but EMPTY first page can still carry a cursor. A
+        // later-page failure must yield a partial (Ok) result, not a hard error
+        // — the first request succeeded. Guards against using urls.is_empty() as
+        // a "first page" proxy.
+        let mut server = mockito::Server::new_async().await;
+
+        let _page1 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::Exact("limit=40".into()))
+            .with_status(200)
+            .with_body(r#"{"data": [], "meta": {"cursor": "PAGE2"}}"#)
+            .create_async()
+            .await;
+        let _page2 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "cursor".into(),
+                "PAGE2".into(),
+            ))
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
+        let result = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await;
+        assert!(
+            result.is_ok(),
+            "empty-but-200 first page + later failure must be partial, not error"
+        );
+        assert!(result.unwrap().is_empty());
         assert!(reporter.is_partial());
     }
 
