@@ -39,7 +39,10 @@ impl UrlTeamFileReader {
     /// without generating gigabytes of input.
     #[cfg(test)]
     fn with_caps(max_urls: usize, max_bytes: u64) -> Self {
-        Self { max_urls, max_bytes }
+        Self {
+            max_urls,
+            max_bytes,
+        }
     }
 
     /// Determine if file is gzip compressed based on magic bytes
@@ -254,8 +257,7 @@ mod tests {
         // decompression bomb. The decompressed-byte cap must bound it.
         let temp_file = NamedTempFile::new()?;
         {
-            let mut encoder =
-                GzEncoder::new(File::create(temp_file.path())?, Compression::best());
+            let mut encoder = GzEncoder::new(File::create(temp_file.path())?, Compression::best());
             for i in 0..100_000 {
                 writeln!(encoder, "https://example.com/bomb/{i}")?;
             }
