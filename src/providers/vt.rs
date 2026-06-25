@@ -18,8 +18,7 @@ pub struct VirusTotalProvider {
     retries: u32,
     random_agent: bool,
     insecure: bool,
-    parallel: u32,
-    rate_limit: Option<f32>,
+    rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
 }
@@ -60,7 +59,6 @@ impl VirusTotalProvider {
             retries: 3,
             random_agent: false,
             insecure: false,
-            parallel: 1,
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://www.virustotal.com".to_string(),
@@ -104,7 +102,7 @@ impl Provider for VirusTotalProvider {
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
 
             let client = self.client_config().build_client()?;
-            let limiter = RateLimiter::from_rate(self.rate_limit);
+            let limiter = self.rate_limit.as_ref();
 
             // Implement retry logic
             let mut last_error = None;
@@ -232,12 +230,8 @@ impl Provider for VirusTotalProvider {
         self.insecure = enabled;
     }
 
-    fn with_parallel(&mut self, parallel: u32) {
-        self.parallel = parallel;
-    }
-
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = rate_limit;
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
     }
 }
 
@@ -259,8 +253,7 @@ mod tests {
         assert_eq!(provider.retries, 3);
         assert!(!provider.random_agent);
         assert!(!provider.insecure);
-        assert_eq!(provider.parallel, 1);
-        assert_eq!(provider.rate_limit, None);
+        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
@@ -395,17 +388,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parallel() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_parallel(10);
-        assert_eq!(provider.parallel, 10);
-    }
-
-    #[test]
     fn test_with_rate_limit() {
         let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
         provider.with_rate_limit(Some(2.5));
-        assert_eq!(provider.rate_limit, Some(2.5));
+        assert!(provider.rate_limit.is_some());
     }
 
     #[test]

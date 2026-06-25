@@ -275,7 +275,9 @@ pub struct Args {
     #[clap(long, default_value = "2")]
     pub retries: u32,
 
-    /// Maximum number of parallel requests per provider and maximum concurrent domain processing
+    /// Maximum domains fetched concurrently per provider (and concurrent URL
+    /// tests). A provider's --rate-limit is shared across these, so the
+    /// configured rate is still honored.
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "5", value_parser = validate_positive_parallel)]
     pub parallel: Option<u32>,

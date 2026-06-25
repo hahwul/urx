@@ -1,6 +1,8 @@
 use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use indicatif::ProgressBar;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
@@ -26,6 +28,24 @@ fn fmt_count(n: usize) -> String {
         out.push(*b as char);
     }
     out
+}
+
+/// Update a provider line that is fetching several domains concurrently with an
+/// aggregate "done/total · URLs" counter — one line can't show every in-flight
+/// domain, so we summarise. Ticks so the spinner keeps moving between
+/// completions.
+fn tick_aggregate(
+    bar: &ProgressBar,
+    done: usize,
+    total: usize,
+    urls: usize,
+    no_progress: bool,
+    silent: bool,
+) {
+    bar.set_message(format!("{done}/{total} domains · {} URLs", fmt_count(urls)));
+    if !no_progress && !silent {
+        bar.tick();
+    }
 }
 
 /// Render an error as a single short line for a progress label, truncating on
@@ -108,7 +128,6 @@ pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings:
     provider.with_retries(settings.retries);
     provider.with_random_agent(settings.random_agent);
     provider.with_insecure(settings.insecure);
-    provider.with_parallel(settings.parallel);
 
     if let Some(proxy) = &settings.proxy {
         provider.with_proxy(Some(proxy.clone()));
@@ -240,11 +259,6 @@ pub async fn process_domains(
     // Create provider bars - one bar per provider
     let provider_bars = progress_manager.create_provider_bars(provider_names);
 
-    // Create a queue for each provider
-    let provider_queues: Vec<Arc<Mutex<VecDeque<String>>>> = (0..providers.len())
-        .map(|_| Arc::new(Mutex::new(VecDeque::from(domains.clone()))))
-        .collect();
-
     // Create a tracking set for each domain to know when it's fully processed
     let domain_completion = Arc::new(Mutex::new(
         domains
@@ -273,15 +287,20 @@ pub async fn process_domains(
     let silent = args.silent;
     let no_progress = args.no_progress;
 
-    for (p_idx, (provider_clone, provider_name, original_idx)) in
-        provider_data.into_iter().enumerate()
-    {
-        let all_urls_clone = Arc::clone(&all_urls);
-        let stats_clone = Arc::clone(&stats);
-        let queue = Arc::clone(&provider_queues[p_idx]);
-        let provider_bar = provider_bars[original_idx].clone();
+    // --parallel bounds how many of a provider's domains are fetched at once.
+    // The shared per-provider rate limiter (stored in the provider and cloned
+    // per domain) keeps --rate-limit honest across these concurrent fetches.
+    let parallel = args.parallel.unwrap_or(5).max(1) as usize;
 
-        let completion_ctx = DomainCompletionCtx {
+    for (provider_clone, provider_name, original_idx) in provider_data.into_iter() {
+        let all_urls = Arc::clone(&all_urls);
+        let stats = Arc::clone(&stats);
+        let provider_bar = provider_bars[original_idx].clone();
+        let domains = domains.clone();
+
+        // Shared so each concurrent domain future can mark domain completion
+        // against the run-wide progress without contending on a &mut.
+        let completion_ctx = Arc::new(DomainCompletionCtx {
             total_providers,
             total_domains,
             domain_completion: Arc::clone(&domain_completion),
@@ -289,144 +308,216 @@ pub async fn process_domains(
             overall_bar: overall_bar.clone(),
             verbose,
             silent,
-        };
+        });
+
+        // With one domain in flight the single provider line can show rich
+        // per-domain detail (live page counts). With several concurrent, that
+        // line can't represent them all, so fall back to an aggregate counter.
+        let effective_parallel = parallel.min(domains.len().max(1));
+        let rich = effective_parallel <= 1;
 
         // Spawn a task for this provider
         let provider_future = task::spawn(async move {
-            // Running totals used to freeze the line on an honest end-of-run
-            // summary.
-            let mut provider_url_total = 0usize;
-            let mut provider_err_total = 0usize;
-            let mut provider_partial_total = 0usize;
+            let provider = Arc::new(provider_clone);
+            // Running totals are atomics so the concurrent domain futures below
+            // can update them; read back for an honest end-of-run summary.
+            let url_total = Arc::new(AtomicUsize::new(0));
+            let err_total = Arc::new(AtomicUsize::new(0));
+            let partial_total = Arc::new(AtomicUsize::new(0));
+            let done = Arc::new(AtomicUsize::new(0));
+            let total = domains.len();
 
-            // Process all domains assigned to this provider
-            loop {
-                // Get the next domain from this provider's queue
-                let domain = {
-                    let mut queue = lock_ignore_poison(&queue);
-                    match queue.pop_front() {
-                        Some(domain) => domain,
-                        None => break, // No more domains to process for this provider
-                    }
-                };
+            // Handles retained for the summary after the stream consumes the
+            // per-domain clones.
+            let summary_bar = provider_bar.clone();
+            let summary_name = provider_name.clone();
+            let summary_urls = Arc::clone(&url_total);
+            let summary_errs = Arc::clone(&err_total);
+            let summary_partials = Arc::clone(&partial_total);
 
-                // Re-arm the spinner and reset the per-domain elapsed timer so
-                // the line reads as "this fetch", not "since the run started".
-                // The status gutter is the live spinner, so the prefix is just
-                // the bare (padded) provider name — the finished branches below
-                // swap in a "glyph + name" prefix that lands in the same column.
-                let prefix = format!("{domain} · ");
-                provider_bar.set_style(provider_running_style());
-                provider_bar.set_prefix(format!("{provider_name:<16}"));
-                provider_bar.reset_elapsed();
-                provider_bar.set_message(format!("{prefix}fetching…"));
-                if !no_progress && !silent {
-                    provider_bar.tick();
-                }
-
-                // A paginating provider (Wayback) uses this handle to surface
-                // real page-by-page progress and to flag incomplete results.
-                // Built whenever output is allowed — including under
-                // --no-progress, so the partial-result signal still reaches the
-                // warning path; only --silent suppresses it.
-                let reporter = if !silent {
-                    Some(ProgressReporter::new(provider_bar.clone(), prefix))
-                } else {
-                    None
-                };
-
-                // Fetch URLs for this domain using this provider.
-                let fetch_start = std::time::Instant::now();
-                let fetch_result = provider_clone
-                    .fetch_urls_with_progress(&domain, reporter.clone())
-                    .await;
-                let fetch_elapsed = fetch_start.elapsed();
-                match fetch_result {
-                    Ok(urls) => {
-                        let url_count = urls.len();
-                        provider_url_total += url_count;
-
-                        // The provider may have returned a *partial* result
-                        // (e.g. a page failed mid-pagination). Surface that as a
-                        // distinct, warned state rather than a clean success, so
-                        // a truncated crawl is never mistaken for a complete one.
-                        let partial = reporter.as_ref().is_some_and(|r| r.is_partial());
-                        if partial {
-                            provider_partial_total += 1;
-                            provider_bar.set_style(provider_partial_style());
-                            provider_bar.set_prefix(format!("◐ {provider_name:<16}"));
-                            provider_bar.set_message(format!(
-                                "{domain} · {} URLs (partial)",
-                                fmt_count(url_count)
-                            ));
-                            if verbose && !silent {
-                                eprintln!(
-                                    "Warning: partial results for {domain} from {provider_name}: a request failed mid-fetch; returning {url_count} URL(s) collected so far"
-                                );
-                            }
-                        } else {
-                            provider_bar.set_style(provider_success_style());
-                            provider_bar.set_prefix(format!("✓ {provider_name:<16}"));
-                            provider_bar
-                                .set_message(format!("{domain} · {} URLs", fmt_count(url_count)));
-                        }
-                        provider_bar.tick();
-
-                        // Add URLs to the shared map (URL -> set of providers).
-                        {
-                            let mut url_map = lock_ignore_poison(&all_urls_clone);
-                            for url in urls {
-                                url_map
-                                    .entry(url)
-                                    .or_default()
-                                    .insert(provider_name.clone());
-                            }
-                        }
-
-                        // Update per-provider stats.
-                        {
-                            let mut s = lock_ignore_poison(&stats_clone);
-                            s[original_idx].url_count += url_count;
-                            if partial {
-                                s[original_idx].partial_count += 1;
-                            }
-                            s[original_idx].elapsed += fetch_elapsed;
-                        }
-
-                        completion_ctx.track(&domain);
-
-                        if verbose && !silent {
-                            println!(
-                                "  - {}: Found {} URLs for {}",
-                                provider_name, url_count, domain
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        provider_err_total += 1;
-
-                        provider_bar.set_style(provider_error_style());
-                        provider_bar.set_prefix(format!("✗ {provider_name:<16}"));
-                        provider_bar.set_message(format!("{domain} · {}", short_error(&e)));
-                        provider_bar.tick();
-
-                        {
-                            let mut s = lock_ignore_poison(&stats_clone);
-                            s[original_idx].error_count += 1;
-                            s[original_idx].elapsed += fetch_elapsed;
-                        }
-
-                        completion_ctx.track(&domain);
-
-                        if verbose && !silent {
-                            eprintln!("Error fetching URLs for {domain} from {provider_name}: {e}");
-                        }
-                    }
-                }
+            // Prime the line. In aggregate mode the elapsed timer measures the
+            // whole provider run; rich mode resets it per domain below.
+            provider_bar.set_style(provider_running_style());
+            provider_bar.set_prefix(format!("{provider_name:<16}"));
+            provider_bar.reset_elapsed();
+            if !rich {
+                provider_bar.set_message(format!("0/{total} domains"));
             }
+            if !no_progress && !silent {
+                provider_bar.tick();
+            }
+
+            stream::iter(domains)
+                .map(move |domain| {
+                    let provider = Arc::clone(&provider);
+                    let provider_bar = provider_bar.clone();
+                    let provider_name = provider_name.clone();
+                    let all_urls = Arc::clone(&all_urls);
+                    let stats = Arc::clone(&stats);
+                    let completion_ctx = Arc::clone(&completion_ctx);
+                    let url_total = Arc::clone(&url_total);
+                    let err_total = Arc::clone(&err_total);
+                    let partial_total = Arc::clone(&partial_total);
+                    let done = Arc::clone(&done);
+
+                    async move {
+                        let prefix = format!("{domain} · ");
+
+                        // Rich mode: the reporter drives the visible line with
+                        // live page-by-page detail and re-arms the spinner.
+                        // Aggregate mode: it only carries the partial-result
+                        // flag (a hidden bar) so concurrent domains don't fight
+                        // over the single line; --silent suppresses it entirely.
+                        let reporter = if silent {
+                            None
+                        } else if rich {
+                            provider_bar.set_style(provider_running_style());
+                            provider_bar.set_prefix(format!("{provider_name:<16}"));
+                            provider_bar.reset_elapsed();
+                            provider_bar.set_message(format!("{prefix}fetching…"));
+                            if !no_progress {
+                                provider_bar.tick();
+                            }
+                            Some(ProgressReporter::new(provider_bar.clone(), prefix.clone()))
+                        } else {
+                            Some(ProgressReporter::new(ProgressBar::hidden(), prefix.clone()))
+                        };
+
+                        // Fetch URLs for this domain using this provider.
+                        let fetch_start = std::time::Instant::now();
+                        let fetch_result = provider
+                            .fetch_urls_with_progress(&domain, reporter.clone())
+                            .await;
+                        let fetch_elapsed = fetch_start.elapsed();
+                        match fetch_result {
+                            Ok(urls) => {
+                                let url_count = urls.len();
+                                url_total.fetch_add(url_count, Ordering::Relaxed);
+
+                                // A *partial* result (e.g. a page failed
+                                // mid-pagination) is surfaced as a distinct,
+                                // warned state so a truncated crawl is never
+                                // mistaken for a clean success.
+                                let partial =
+                                    reporter.as_ref().is_some_and(|r| r.is_partial());
+                                if partial {
+                                    partial_total.fetch_add(1, Ordering::Relaxed);
+                                }
+
+                                // Add URLs to the shared map (URL -> providers).
+                                {
+                                    let mut url_map = lock_ignore_poison(&all_urls);
+                                    for url in urls {
+                                        url_map
+                                            .entry(url)
+                                            .or_default()
+                                            .insert(provider_name.clone());
+                                    }
+                                }
+
+                                // Update per-provider stats.
+                                {
+                                    let mut s = lock_ignore_poison(&stats);
+                                    s[original_idx].url_count += url_count;
+                                    if partial {
+                                        s[original_idx].partial_count += 1;
+                                    }
+                                    s[original_idx].elapsed += fetch_elapsed;
+                                }
+
+                                let done_n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                                if rich {
+                                    if partial {
+                                        provider_bar.set_style(provider_partial_style());
+                                        provider_bar
+                                            .set_prefix(format!("◐ {provider_name:<16}"));
+                                        provider_bar.set_message(format!(
+                                            "{domain} · {} URLs (partial)",
+                                            fmt_count(url_count)
+                                        ));
+                                    } else {
+                                        provider_bar.set_style(provider_success_style());
+                                        provider_bar
+                                            .set_prefix(format!("✓ {provider_name:<16}"));
+                                        provider_bar.set_message(format!(
+                                            "{domain} · {} URLs",
+                                            fmt_count(url_count)
+                                        ));
+                                    }
+                                    provider_bar.tick();
+                                    if partial && verbose && !silent {
+                                        eprintln!(
+                                            "Warning: partial results for {domain} from {provider_name}: a request failed mid-fetch; returning {url_count} URL(s) collected so far"
+                                        );
+                                    }
+                                } else {
+                                    tick_aggregate(
+                                        &provider_bar,
+                                        done_n,
+                                        total,
+                                        url_total.load(Ordering::Relaxed),
+                                        no_progress,
+                                        silent,
+                                    );
+                                }
+
+                                completion_ctx.track(&domain);
+
+                                if verbose && !silent {
+                                    println!(
+                                        "  - {provider_name}: Found {url_count} URLs for {domain}"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                err_total.fetch_add(1, Ordering::Relaxed);
+
+                                {
+                                    let mut s = lock_ignore_poison(&stats);
+                                    s[original_idx].error_count += 1;
+                                    s[original_idx].elapsed += fetch_elapsed;
+                                }
+
+                                let done_n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                                if rich {
+                                    provider_bar.set_style(provider_error_style());
+                                    provider_bar.set_prefix(format!("✗ {provider_name:<16}"));
+                                    provider_bar
+                                        .set_message(format!("{domain} · {}", short_error(&e)));
+                                    provider_bar.tick();
+                                } else {
+                                    tick_aggregate(
+                                        &provider_bar,
+                                        done_n,
+                                        total,
+                                        url_total.load(Ordering::Relaxed),
+                                        no_progress,
+                                        silent,
+                                    );
+                                }
+
+                                completion_ctx.track(&domain);
+
+                                if verbose && !silent {
+                                    eprintln!(
+                                        "Error fetching URLs for {domain} from {provider_name}: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                })
+                .buffer_unordered(effective_parallel)
+                .collect::<Vec<()>>()
+                .await;
 
             // Freeze this provider's line on a one-line summary that reflects
             // what actually happened across all of its domains.
+            let provider_bar = summary_bar;
+            let provider_name = summary_name;
+            let provider_url_total = summary_urls.load(Ordering::Relaxed);
+            let provider_err_total = summary_errs.load(Ordering::Relaxed);
+            let provider_partial_total = summary_partials.load(Ordering::Relaxed);
             if provider_url_total == 0 && provider_err_total > 0 {
                 provider_bar.set_style(provider_error_style());
                 provider_bar.set_prefix(format!("✗ {provider_name:<16}"));

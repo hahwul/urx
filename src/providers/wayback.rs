@@ -145,8 +145,7 @@ pub struct WaybackMachineProvider {
     retries: u32,
     random_agent: bool,
     insecure: bool,
-    parallel: u32,
-    rate_limit: Option<f32>,
+    rate_limit: Option<RateLimiter>,
     /// CDX `from=` timestamp (already normalised to 14 digits).
     from: Option<String>,
     /// CDX `to=` timestamp (already normalised to 14 digits).
@@ -166,7 +165,6 @@ impl WaybackMachineProvider {
             retries: 3,
             random_agent: false,
             insecure: false,
-            parallel: 5,
             rate_limit: None,
             from: None,
             to: None,
@@ -265,7 +263,7 @@ impl Provider for WaybackMachineProvider {
         Box::pin(async move {
             let client = self.client_config().build_client()?;
             let query_base = self.query_base(domain);
-            let limiter = RateLimiter::from_rate(self.rate_limit);
+            let limiter = self.rate_limit.as_ref();
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -369,12 +367,8 @@ impl Provider for WaybackMachineProvider {
         self.insecure = enabled;
     }
 
-    fn with_parallel(&mut self, parallel: u32) {
-        self.parallel = parallel;
-    }
-
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = rate_limit;
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
     }
 }
 
@@ -393,8 +387,7 @@ mod tests {
         assert_eq!(provider.retries, 3);
         assert!(!provider.random_agent);
         assert!(!provider.insecure);
-        assert_eq!(provider.parallel, 5);
-        assert_eq!(provider.rate_limit, None);
+        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
@@ -450,17 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parallel() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_parallel(10);
-        assert_eq!(provider.parallel, 10);
-    }
-
-    #[test]
     fn test_with_rate_limit() {
         let mut provider = WaybackMachineProvider::new();
         provider.with_rate_limit(Some(2.5));
-        assert_eq!(provider.rate_limit, Some(2.5));
+        assert!(provider.rate_limit.is_some());
     }
 
     #[test]

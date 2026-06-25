@@ -50,8 +50,7 @@ pub struct CommonCrawlProvider {
     retries: u32,
     random_agent: bool,
     insecure: bool,
-    parallel: u32,
-    rate_limit: Option<f32>,
+    rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
 }
@@ -87,7 +86,6 @@ impl CommonCrawlProvider {
             retries: 3,
             random_agent: true,
             insecure: false,
-            parallel: 1,
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://index.commoncrawl.org".to_string(),
@@ -110,7 +108,6 @@ impl CommonCrawlProvider {
             retries: 3,
             random_agent: true,
             insecure: false,
-            parallel: 1,
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://index.commoncrawl.org".to_string(),
@@ -204,7 +201,7 @@ impl Provider for CommonCrawlProvider {
             let index = self.effective_index().await?;
             let query_base = self.query_base(&index, domain);
             let client = self.client_config().build_client()?;
-            let limiter = RateLimiter::from_rate(self.rate_limit);
+            let limiter = self.rate_limit.as_ref();
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -309,12 +306,8 @@ impl Provider for CommonCrawlProvider {
         self.insecure = enabled;
     }
 
-    fn with_parallel(&mut self, parallel: u32) {
-        self.parallel = parallel;
-    }
-
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = rate_limit;
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
     }
 }
 
@@ -366,7 +359,6 @@ impl Provider for MockCommonCrawlProvider {
     fn with_retries(&mut self, _count: u32) {}
     fn with_random_agent(&mut self, _enabled: bool) {}
     fn with_insecure(&mut self, _enabled: bool) {}
-    fn with_parallel(&mut self, _parallel: u32) {}
     fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
 }
 
@@ -385,8 +377,7 @@ mod tests {
         assert_eq!(provider.retries, 3);
         assert!(provider.random_agent);
         assert!(!provider.insecure);
-        assert_eq!(provider.parallel, 1);
-        assert_eq!(provider.rate_limit, None);
+        assert!(provider.rate_limit.is_none());
         assert_eq!(provider.base_url, "https://index.commoncrawl.org");
     }
 
@@ -451,17 +442,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parallel() {
-        let mut provider = CommonCrawlProvider::new();
-        provider.with_parallel(10);
-        assert_eq!(provider.parallel, 10);
-    }
-
-    #[test]
     fn test_with_rate_limit() {
         let mut provider = CommonCrawlProvider::new();
         provider.with_rate_limit(Some(2.5));
-        assert_eq!(provider.rate_limit, Some(2.5));
+        assert!(provider.rate_limit.is_some());
     }
 
     #[test]

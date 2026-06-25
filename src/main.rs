@@ -1660,7 +1660,6 @@ mod tests {
         fn with_retries(&mut self, _count: u32) {}
         fn with_random_agent(&mut self, _enabled: bool) {}
         fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_parallel(&mut self, _parallel: u32) {}
         fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
     }
 
@@ -1833,6 +1832,85 @@ mod tests {
         assert_eq!(result.stats[0].name, "MockProvider");
         assert_eq!(result.stats[0].url_count, 2);
         assert_eq!(result.stats[0].error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_processes_provider_domains_concurrently() {
+        // One provider, five domains, each fetch sleeps 200ms. With --parallel 5
+        // the provider's domains must be fetched concurrently — finishing in
+        // ~200ms rather than the ~1s a sequential per-provider drain would take.
+        // This guards the #270 fix from regressing back to single-flight.
+        let provider =
+            MockProvider::new(vec!["https://example.com/a".to_string()], false).with_delay_ms(200);
+        let calls = provider.calls.clone();
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+        let domains: Vec<String> = ["a.com", "b.com", "c.com", "d.com", "e.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut args = build_test_args();
+        args.parallel = Some(5);
+        let progress_manager = ProgressManager::new(true);
+
+        let start = std::time::Instant::now();
+        let _ = process_domains(
+            domains.clone(),
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        // All five domains were fetched...
+        assert_eq!(calls.lock().unwrap().len(), 5);
+        // ...and concurrently: well under the ~1s a sequential drain would need.
+        assert!(
+            elapsed < std::time::Duration::from_millis(800),
+            "expected concurrent per-provider fetches (~200ms), took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parallel_one_processes_sequentially() {
+        // With --parallel 1 the same five 200ms fetches must run one at a time,
+        // taking ~1s. This pins the sequential (rich-UI) path so the
+        // concurrency knob is honored in both directions.
+        let provider =
+            MockProvider::new(vec!["https://example.com/a".to_string()], false).with_delay_ms(200);
+        let calls = provider.calls.clone();
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+        let domains: Vec<String> = ["a.com", "b.com", "c.com", "d.com", "e.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut args = build_test_args();
+        args.parallel = Some(1);
+        let progress_manager = ProgressManager::new(true);
+
+        let start = std::time::Instant::now();
+        let _ = process_domains(
+            domains,
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(calls.lock().unwrap().len(), 5);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "expected sequential fetches (~1s) with --parallel 1, took {elapsed:?}"
+        );
     }
 
     #[tokio::test]

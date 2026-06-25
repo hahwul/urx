@@ -84,6 +84,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_clones_share_pacing() {
+        // The runner clones a provider (and thus its limiter) once per
+        // concurrent domain. Those clones MUST share one schedule, or
+        // concurrent fetches would each pace independently and blow past
+        // --rate-limit. 20 req/s => a 50ms gap the clone is forced to observe.
+        let a = RateLimiter::new(20.0).unwrap();
+        let b = a.clone();
+        let start = Instant::now();
+        a.acquire().await; // first: no wait
+        b.acquire().await; // clone sees a's timestamp => must wait ~50ms
+        assert!(
+            start.elapsed() >= Duration::from_millis(40),
+            "clones must share pacing; elapsed {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
     async fn test_first_acquire_does_not_block() {
         let limiter = RateLimiter::new(1.0).unwrap(); // 1s interval
         let start = Instant::now();

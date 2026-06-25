@@ -26,8 +26,7 @@ pub struct GitHubProvider {
     retries: u32,
     random_agent: bool,
     insecure: bool,
-    parallel: u32,
-    rate_limit: Option<f32>,
+    rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
 }
@@ -71,7 +70,6 @@ impl GitHubProvider {
             retries: 3,
             random_agent: false,
             insecure: false,
-            parallel: 1,
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://api.github.com".to_string(),
@@ -154,7 +152,7 @@ impl Provider for GitHubProvider {
             }
 
             let client = self.client_config().build_client()?;
-            let limiter = RateLimiter::from_rate(self.rate_limit);
+            let limiter = self.rate_limit.as_ref();
 
             #[cfg(not(test))]
             let base = "https://api.github.com";
@@ -310,11 +308,8 @@ impl Provider for GitHubProvider {
     fn with_insecure(&mut self, enabled: bool) {
         self.insecure = enabled;
     }
-    fn with_parallel(&mut self, parallel: u32) {
-        self.parallel = parallel;
-    }
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = rate_limit;
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
     }
 }
 
