@@ -357,7 +357,7 @@ impl Config {
         // Treat the default singleton list as "not user-supplied" so the file
         // value wins. Config file still accepts a single string; we split it
         // on commas so users can configure multi-index there too.
-        let cc_default = vec!["CC-MAIN-2026-17".to_string()];
+        let cc_default = vec!["latest".to_string()];
         if args.cc_index == cc_default {
             if let Some(cc_index) = &self.provider.cc_index {
                 let split: Vec<String> = cc_index

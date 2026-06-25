@@ -36,7 +36,7 @@ Provider Options:
   --all-providers                        Enable every supported provider (API-keyed ones only if a key is available)
   --list-providers                       List every supported provider then exit
   --subs                                 Include subdomains when searching
-  --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: CC-MAIN-2026-17]
+  --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: latest]
   --wayback-from <DATE>                  Restrict Wayback results to >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
   --wayback-to <DATE>                    Restrict Wayback results to <= DATE (same format as --wayback-from)
   --vt-api-key <VT_API_KEY>             API key for VirusTotal

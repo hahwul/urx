@@ -117,7 +117,7 @@ Provider Options:
       --subs
           Include subdomains when searching
       --cc-index <CC_INDEX>
-          Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` resolves the newest via collinfo.json. [default: CC-MAIN-2026-17]
+          Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` (the default) resolves the newest via collinfo.json. [default: latest]
       --wayback-from <DATE>
           Restrict Wayback Machine results to snapshots at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
       --wayback-to <DATE>
