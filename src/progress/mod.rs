@@ -2,15 +2,30 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Dense braille spinner frames. Cycling these at ~80ms reads as the smooth,
-/// continuous motion modern CLIs/agents use — a clear upgrade over a 10-frame
-/// dot spinner that visibly stutters.
-pub const SPINNER_FRAMES: &[&str] = &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"];
+/// Braille-dot spinner frames — the calm, ubiquitous "modern CLI" spinner.
+/// Cycled at ~80ms it reads as smooth, light motion that pairs with the thin
+/// rails below without competing with them for weight.
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Eighth-block gradient for determinate bars. The first char is "full", the
-/// last is "empty", and the ones in between render sub-cell fractions, so the
-/// leading edge of the bar slides smoothly instead of jumping a whole cell.
-const BAR_FILL: &str = "█▉▊▋▌▍▎▏ ";
+/// Thin "rail" fill for determinate bars: full `━`, a heavy `╸` leading head,
+/// and a light `─` track. The first char is "full", the last is "empty", and
+/// the middle ones render the leading edge — so a half cell shows the `╸` head
+/// rather than a hard jump. Reads as a slim accent line, not a heavy block.
+const BAR_FILL: &str = "━━╸─";
+
+// Modern Rail palette (truecolor hex, applied directly inside the indicatif
+// templates below). `console`/`colored` strip these automatically when stdout
+// isn't a TTY or NO_COLOR is set, so every state stays legible in monochrome.
+//
+//   #5ad1cd  accent      — rail fill, header/footer frame, Domains & Filtering
+//   #56b6f6  running     — spinner glyph; Testing bar fill
+//   #7ee787  success ✓
+//   #e3b341  partial ◐
+//   #f47067  error   ✗
+//   #c29bf5  transform   — Transform bar fill
+//   #3b424d  track       — unfilled portion of every rail
+//   #8b949e  dim         — elapsed timers, secondary message text
+//   #a7b6c2  label       — the `◇ <phase>` section labels
 
 /// Steady-tick interval for spinners (ms). Fast enough to feel alive, slow
 /// enough not to flicker or burn CPU.
@@ -19,36 +34,50 @@ const SPINNER_TICK_MS: u64 = 80;
 /// Steady-tick interval for determinate bars (ms).
 const BAR_TICK_MS: u64 = 80;
 
-/// Style for a provider line while a fetch is in flight: animated spinner,
-/// bold provider name, free-form status message, and a dimmed elapsed timer.
+/// Style for a provider line while a fetch is in flight: the spinner is the
+/// gutter glyph (col 3), the bold provider name follows, a dimmed elapsed timer
+/// in a fixed column, then the free-form status message. Elapsed sits *before*
+/// the message (not after) so the elastic `{wide_msg}` absorbs slack at the line
+/// end — keeping the timer column aligned across rows instead of flung to the
+/// right edge on a wide terminal. The finished styles below drop `{spinner}` and
+/// bake a status glyph into the prefix so it lands in the *same* column — the
+/// row never shifts left when a fetch completes.
 pub fn provider_running_style() -> ProgressStyle {
     ProgressStyle::with_template(
-        "  {spinner:.cyan.bold} {prefix:.bold} {wide_msg} {elapsed:>5.dim}",
+        "  {spinner:.#56b6f6.bold} {prefix:.bold} {elapsed:>5.#8b949e}  {wide_msg}",
     )
     .expect("static provider running template is valid")
     .tick_strings(SPINNER_FRAMES)
 }
 
-/// Terminal style for a provider line after a successful fetch. The message is
-/// expected to lead with a ✓ glyph; the whole line is tinted green.
+/// Terminal style for a provider line after a successful fetch. The prefix is
+/// expected to lead with a ✓ glyph (set by the runner); the name is tinted green
+/// and the message is dimmed.
 pub fn provider_success_style() -> ProgressStyle {
-    ProgressStyle::with_template("  {prefix:.green.bold} {wide_msg:.green}")
-        .expect("static provider success template is valid")
+    ProgressStyle::with_template(
+        "  {prefix:.#7ee787.bold} {elapsed:>5.#8b949e}  {wide_msg:.#8b949e}",
+    )
+    .expect("static provider success template is valid")
 }
 
-/// Terminal style for a provider line after a failed fetch. The message is
-/// expected to lead with a ✗ glyph; the whole line is tinted red.
+/// Terminal style for a provider line after a failed fetch. The prefix is
+/// expected to lead with a ✗ glyph; the line is tinted red.
 pub fn provider_error_style() -> ProgressStyle {
-    ProgressStyle::with_template("  {prefix:.red.bold} {wide_msg:.red}")
-        .expect("static provider error template is valid")
+    ProgressStyle::with_template(
+        "  {prefix:.#f47067.bold} {elapsed:>5.#8b949e}  {wide_msg:.#f47067}",
+    )
+    .expect("static provider error template is valid")
 }
 
 /// Terminal style for a provider line that succeeded but returned *incomplete*
-/// results (e.g. a paginating fetch lost a page mid-cursor). Tinted yellow so a
-/// partial result is visually distinct from a clean ✓ and from a hard ✗.
+/// results (e.g. a paginating fetch lost a page mid-cursor). The prefix leads
+/// with a ◐ glyph and the line is tinted amber so a partial result is visually
+/// distinct from a clean ✓ and from a hard ✗.
 pub fn provider_partial_style() -> ProgressStyle {
-    ProgressStyle::with_template("  {prefix:.yellow.bold} {wide_msg:.yellow}")
-        .expect("static provider partial template is valid")
+    ProgressStyle::with_template(
+        "  {prefix:.#e3b341.bold} {elapsed:>5.#8b949e}  {wide_msg:.#e3b341}",
+    )
+    .expect("static provider partial template is valid")
 }
 
 /// A small, cloneable handle that providers use to surface fine-grained
@@ -123,14 +152,16 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "  {prefix:.bold.cyan} {bar:28.cyan/blue} {pos:>3}/{len:<3} {wide_msg:.dim}",
+            "  {prefix:.#a7b6c2} {bar:26.#5ad1cd/#3b424d}  {pos:>3}/{len:<3}  {wide_msg:.#8b949e}",
         )
         .unwrap()
         .progress_chars(BAR_FILL);
 
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
-        bar.set_prefix("Domains");
+        // "◇ <label>" — the ◇ sits in the same gutter column as the provider
+        // status glyphs; the 12-wide label keeps every rail starting at one column.
+        bar.set_prefix(format!("◇ {:<12}", "Domains"));
         bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
 
         bar
@@ -155,7 +186,11 @@ impl ProgressManager {
             .iter()
             .map(|name| {
                 let bar = self.multi_progress.add(ProgressBar::new_spinner());
-                bar.set_prefix(format!("{name:<15}"));
+                // 16-wide name field. The running style renders this after the
+                // spinner+space; the finished styles render "glyph + space + name"
+                // (18 cols) in the same slot, so the name column stays put across
+                // states. The runner resets this prefix each domain.
+                bar.set_prefix(format!("{name:<16}"));
                 bar.set_style(style.clone());
                 bar.enable_steady_tick(std::time::Duration::from_millis(SPINNER_TICK_MS));
                 bar.set_message("queued…");
@@ -180,14 +215,14 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "  {prefix:.bold.yellow} {bar:28.yellow/blue} {wide_msg:.dim}",
+            "  {prefix:.#a7b6c2} {bar:26.#5ad1cd/#3b424d}  {wide_msg:.#8b949e}",
         )
         .unwrap()
         .progress_chars(BAR_FILL);
 
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
-        bar.set_prefix("Filtering");
+        bar.set_prefix(format!("◇ {:<12}", "Filtering"));
         bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
 
         bar
@@ -202,14 +237,14 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "  {prefix:.bold.magenta} {bar:28.magenta/blue} {wide_msg:.dim}",
+            "  {prefix:.#a7b6c2} {bar:26.#c29bf5/#3b424d}  {wide_msg:.#8b949e}",
         )
         .unwrap()
         .progress_chars(BAR_FILL);
 
         let bar = self.multi_progress.add(ProgressBar::new(100));
         bar.set_style(style);
-        bar.set_prefix("Transforming");
+        bar.set_prefix(format!("◇ {:<12}", "Transform"));
         bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
 
         bar
@@ -224,17 +259,66 @@ impl ProgressManager {
         }
 
         let style = ProgressStyle::with_template(
-            "  {prefix:.bold.blue} {bar:28.blue/blue} {pos:>5}/{len:<5} {wide_msg:.dim}",
+            "  {prefix:.#a7b6c2} {bar:26.#56b6f6/#3b424d}  {pos:>5}/{len:<5}  {wide_msg:.#8b949e}",
         )
         .unwrap()
         .progress_chars(BAR_FILL);
 
         let bar = self.multi_progress.add(ProgressBar::new(total as u64));
         bar.set_style(style);
-        bar.set_prefix("Testing");
+        bar.set_prefix(format!("◇ {:<12}", "Testing"));
         bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
 
         bar
+    }
+
+    /// Add the run header as a static (non-animated) line at the top of the
+    /// live region. It is a *managed* line rather than a plain print, so it is
+    /// erased together with the bars when [`clear`] runs — the whole progress
+    /// block is transient and leaves only the result (the URL list) behind.
+    ///
+    /// [`clear`]: ProgressManager::clear
+    pub fn create_header_line(&self, text: impl Into<String>) -> ProgressBar {
+        if self.no_progress {
+            return ProgressBar::hidden();
+        }
+        let bar = self.multi_progress.add(ProgressBar::new_spinner());
+        bar.set_style(
+            ProgressStyle::with_template("{msg}").expect("static header template is valid"),
+        );
+        // Finish immediately: the header is static, and a *finished* bar is a
+        // no-op on drop. An unfinished bar redraws itself when dropped, which in
+        // a MultiProgress repaints the whole region at the (post-output) cursor
+        // — printing the bars again below the URL list. The finished line still
+        // shows until `clear()` removes it.
+        bar.finish_with_message(text.into());
+        bar
+    }
+
+    /// Tear down the entire live region (header + every bar) once the run's
+    /// progress is finished. Progress is meant to be visible only *while*
+    /// scanning; clearing here keeps the final terminal output to just the URL
+    /// list. A no-op when progress is disabled.
+    pub fn clear(&self) {
+        if self.no_progress {
+            return;
+        }
+        let _ = self.multi_progress.clear();
+    }
+
+    /// Print an out-of-band notice (e.g. a timeout / Ctrl-C message) above the
+    /// live region. While bars are active this MUST go through `MultiProgress`
+    /// so the region's line tracking stays correct — a raw `eprintln` desyncs it
+    /// and makes a later [`clear`] miss lines. With progress disabled there is
+    /// no region, so a plain stderr write is fine.
+    ///
+    /// [`clear`]: ProgressManager::clear
+    pub fn note(&self, msg: impl AsRef<str>) {
+        if self.no_progress {
+            eprintln!("{}", msg.as_ref());
+        } else {
+            let _ = self.multi_progress.println(msg.as_ref());
+        }
     }
 }
 

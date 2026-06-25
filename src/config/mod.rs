@@ -712,6 +712,7 @@ mod tests {
             verbose: false,
             silent: false,
             no_progress: false,
+            no_color: false,
             preset: vec![],
             extensions: vec![],
             exclude_extensions: vec![],
