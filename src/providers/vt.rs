@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -7,6 +7,15 @@ use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
+
+/// Page size for the v3 `urls` relationship. VirusTotal caps this relationship
+/// endpoint at 40 per page; larger values are silently clamped server-side.
+const VT_PAGE_LIMIT: usize = 40;
+
+/// Hard ceiling on pages followed for one domain, mirroring the other
+/// paginating providers so a misbehaving `links.next` can't loop forever.
+const VT_MAX_PAGES: usize = 10_000;
 
 #[derive(Clone)]
 pub struct VirusTotalProvider {
@@ -23,17 +32,32 @@ pub struct VirusTotalProvider {
     base_url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct VTUrl {
-    url: String,
-    // We could add scan_date parsing if needed in the future
-    // scan_date: String,
+/// A page of the v3 `/domains/{domain}/urls` response. `data` holds the URL
+/// objects; `links.next` is a complete URL for the following page (absent on
+/// the last page). `Default` lets a 404 ("no such domain") resolve to an empty
+/// page rather than an error.
+#[derive(Debug, Deserialize, Default)]
+struct VtUrlsResponse {
+    #[serde(default)]
+    data: Vec<VtUrlObject>,
+    #[serde(default)]
+    links: VtLinks,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct VTResponse {
+#[derive(Debug, Deserialize, Default)]
+struct VtLinks {
     #[serde(default)]
-    detected_urls: Vec<VTUrl>,
+    next: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VtUrlObject {
+    attributes: VtUrlAttributes,
+}
+
+#[derive(Debug, Deserialize)]
+struct VtUrlAttributes {
+    url: String,
 }
 
 impl VirusTotalProvider {
@@ -80,6 +104,101 @@ impl VirusTotalProvider {
             proxy_auth: self.proxy_auth.clone(),
         }
     }
+
+    /// First-page URL for a domain's v3 `urls` relationship.
+    fn first_page_url(&self, domain: &str) -> String {
+        let encoded = url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
+        #[cfg(test)]
+        {
+            format!(
+                "{}/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}",
+                self.base_url
+            )
+        }
+        #[cfg(not(test))]
+        {
+            format!(
+                "https://www.virustotal.com/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}"
+            )
+        }
+    }
+
+    /// Fetch and parse a single page with retry/back-off and key rotation.
+    ///
+    /// A 404 (the domain has no VT object) resolves to an empty page rather
+    /// than an error, matching the "no data" semantics of the other providers.
+    async fn fetch_page(
+        &self,
+        client: &reqwest::Client,
+        url: &str,
+        limiter: Option<&RateLimiter>,
+    ) -> Result<VtUrlsResponse> {
+        let mut last_error = None;
+        let mut attempt = 0;
+
+        while attempt <= self.retries {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+            }
+
+            // Rotate the key per attempt so a throttled/invalid key is retried
+            // with a different one when several are configured. v3 carries the
+            // key in the `x-apikey` header (v2 used an `apikey` query param).
+            let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+            let mut req = client.get(url);
+            if !api_key.is_empty() {
+                req = req.header("x-apikey", &api_key);
+            }
+
+            if let Some(rl) = limiter {
+                rl.acquire().await;
+            }
+            match req.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    // 404 => no VT object for this domain; not an error.
+                    if status.as_u16() == 404 {
+                        return Ok(VtUrlsResponse::default());
+                    }
+                    if !status.is_success() {
+                        // On a throttle, wait as long as the server asked.
+                        if status.as_u16() == 429 {
+                            if let Some(d) =
+                                crate::network::client::retry_after_delay(response.headers())
+                            {
+                                tokio::time::sleep(d).await;
+                            }
+                        }
+                        attempt += 1;
+                        last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
+                        continue;
+                    }
+                    match response.json::<VtUrlsResponse>().await {
+                        Ok(parsed) => return Ok(parsed),
+                        Err(e) => {
+                            attempt += 1;
+                            last_error =
+                                Some(anyhow::anyhow!("Failed to parse VirusTotal response: {e}"));
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    attempt += 1;
+                    // Defensive hygiene: keep the request URL out of surfaced
+                    // transport errors (the key is a header, not in the URL).
+                    last_error = Some(e.without_url().into());
+                    continue;
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Failed after {} attempts: {}",
+            self.retries + 1,
+            last_error.unwrap_or_else(|| anyhow::anyhow!("unknown error"))
+        ))
+    }
 }
 
 impl Provider for VirusTotalProvider {
@@ -91,114 +210,71 @@ impl Provider for VirusTotalProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            // Skip if no API keys are provided
+            // Skip if no API keys are provided.
             if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
             }
 
-            // Use the url crate for encoding the domain
-            let encoded_domain =
-                url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
-
             let client = self.client_config().build_client()?;
             let limiter = self.rate_limit.as_ref();
 
-            // Implement retry logic
-            let mut last_error = None;
-            let mut attempt = 0;
+            if let Some(r) = &reporter {
+                r.detail("fetching…");
+            }
 
-            while attempt <= self.retries {
-                if attempt > 0 {
-                    // Wait before retrying, with increasing backoff
-                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
-                        .await;
+            // Walk the v3 cursor: each page returns up to VT_PAGE_LIMIT URL
+            // objects plus a `links.next` pointing at the following page. The
+            // deprecated v2 `domain/report` returned a single server-capped,
+            // non-paginated slice that silently truncated large domains.
+            let mut next_url = Some(self.first_page_url(domain));
+            let mut urls = Vec::new();
+            let mut pages = 0usize;
+
+            while let Some(url) = next_url.take() {
+                pages += 1;
+                if pages > VT_MAX_PAGES {
+                    break;
                 }
 
-                // Rotate to the next key each attempt: if a key is rate-limited
-                // or invalid, the retry uses a different one when several are
-                // configured (with a single key this is a no-op).
-                let api_key = self
-                    .api_key_rotator
-                    .next_key()
-                    .expect("Key rotator should have keys since has_keys() returned true");
-
-                #[cfg(test)]
-                let url = format!(
-                    "{}/vtapi/v2/domain/report?apikey={}&domain={}",
-                    self.base_url, api_key, encoded_domain
-                );
-                #[cfg(not(test))]
-                let url = format!(
-                    "https://www.virustotal.com/vtapi/v2/domain/report?apikey={}&domain={}",
-                    api_key, encoded_domain
-                );
-
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                match client.get(&url).send().await {
-                    Ok(response) => {
-                        // Check if response is successful
-                        let status = response.status();
-                        if !status.is_success() {
-                            // On a throttle, wait as long as the server asked.
-                            if status.as_u16() == 429 {
-                                if let Some(d) =
-                                    crate::network::client::retry_after_delay(response.headers())
-                                {
-                                    tokio::time::sleep(d).await;
-                                }
-                            }
-                            attempt += 1;
-                            last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                            continue;
-                        }
-
-                        // Parse response
-                        match response.json::<VTResponse>().await {
-                            Ok(vt_response) => {
-                                let mut urls = Vec::new();
-                                for vt_url in vt_response.detected_urls {
-                                    urls.push(vt_url.url);
-                                }
-                                return Ok(urls);
-                            }
-                            Err(e) => {
-                                attempt += 1;
-                                last_error = Some(anyhow::anyhow!(
-                                    "Failed to parse VirusTotal response: {}",
-                                    e
-                                ));
-                                continue;
-                            }
-                        }
-                    }
+                let page = match self.fetch_page(&client, &url, limiter).await {
+                    Ok(page) => page,
                     Err(e) => {
-                        attempt += 1;
-                        // The VirusTotal key rides in the query string, and a
-                        // reqwest transport error renders the full request URL
-                        // in its Display output. Strip the URL so the key never
-                        // reaches stderr / logs via the surfaced error.
-                        last_error = Some(e.without_url().into());
-                        continue;
+                        // A failure on the first page (nothing collected) is
+                        // fatal; a later failure keeps what we have and flags
+                        // the result partial rather than presenting a truncated
+                        // crawl as a clean success.
+                        if urls.is_empty() {
+                            return Err(e);
+                        }
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
+                        break;
                     }
+                };
+
+                for obj in page.data {
+                    urls.push(obj.attributes.url);
                 }
+                if let Some(r) = &reporter {
+                    r.detail(format!("{} URLs…", urls.len()));
+                }
+
+                next_url = page.links.next;
             }
 
-            // If we got here, all attempts failed
-            if let Some(e) = last_error {
-                Err(anyhow::anyhow!(
-                    "Failed after {} attempts: {}",
-                    self.retries + 1,
-                    e
-                ))
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed after {} attempts",
-                    self.retries + 1
-                ))
-            }
+            urls.sort();
+            urls.dedup();
+            Ok(urls)
         })
     }
 
@@ -315,9 +391,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_error_does_not_leak_api_key() {
-        // The VirusTotal key is passed in the request URL's query string, so a
-        // transport-layer failure (which reqwest renders with the full URL)
-        // must not surface it through the returned error.
+        // The v3 key travels in the `x-apikey` header, but a transport-layer
+        // failure (which reqwest renders with the full URL) must still not
+        // surface it — and we strip the URL from the error for good measure.
         let mut provider = VirusTotalProvider::new_with_keys(vec!["SUPERSECRETKEY".to_string()]);
         // Port 1 reliably refuses the connection; keep the run fast.
         provider.with_base_url("http://127.0.0.1:1".to_string());
@@ -403,25 +479,35 @@ mod tests {
 
     #[test]
     fn test_vt_response_deserialize() {
+        // v3 shape: data[].attributes.url, with a links.next cursor.
         let json = r#"{
-            "detected_urls": [
-                {"url": "https://example.com/page1"},
-                {"url": "https://example.com/page2"}
-            ]
+            "data": [
+                {"type": "url", "id": "a", "attributes": {"url": "https://example.com/page1"}},
+                {"type": "url", "id": "b", "attributes": {"url": "https://example.com/page2"}}
+            ],
+            "links": {"self": "https://x/self", "next": "https://x/next"},
+            "meta": {"cursor": "CURSOR"}
         }"#;
 
-        let response: VTResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.detected_urls.len(), 2);
-        assert_eq!(response.detected_urls[0].url, "https://example.com/page1");
-        assert_eq!(response.detected_urls[1].url, "https://example.com/page2");
+        let response: VtUrlsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.data.len(), 2);
+        assert_eq!(response.data[0].attributes.url, "https://example.com/page1");
+        assert_eq!(response.data[1].attributes.url, "https://example.com/page2");
+        assert_eq!(response.links.next.as_deref(), Some("https://x/next"));
     }
 
     #[test]
     fn test_vt_response_empty_deserialize() {
-        let json = r#"{}"#;
+        // No data and no `next` (last/empty page) must parse cleanly.
+        let json = r#"{"data": [], "links": {"self": "https://x/self"}}"#;
+        let response: VtUrlsResponse = serde_json::from_str(json).unwrap();
+        assert!(response.data.is_empty());
+        assert!(response.links.next.is_none());
 
-        let response: VTResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.detected_urls.len(), 0);
+        // A bare object also parses (all fields default).
+        let response: VtUrlsResponse = serde_json::from_str("{}").unwrap();
+        assert!(response.data.is_empty());
+        assert!(response.links.next.is_none());
     }
 
     #[tokio::test]
@@ -453,39 +539,151 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_urls_with_mock() {
-        // Create a mock server - use new_async to avoid nested runtime issues
-        let mut mock_server = mockito::Server::new_async().await;
+        let mut server = mockito::Server::new_async().await;
 
-        // Create a mock response
-        let mock_response = r#"{
-            "detected_urls": [
-                {"url": "https://example.com/page1"},
-                {"url": "https://example.com/page2"}
-            ]
-        }"#;
-
-        // Setup the mock
-        let _m = mock_server
-            .mock("GET", "/vtapi/v2/domain/report")
-            .match_query(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("apikey".into(), "test_api_key".into()),
-                mockito::Matcher::UrlEncoded("domain".into(), "example.com".into()),
-            ]))
+        // v3: domain in the path, key in the x-apikey header, urls under
+        // data[].attributes.url. A single page (no links.next) ends the walk.
+        let m = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_header("x-apikey", "test_api_key")
+            .match_query(mockito::Matcher::UrlEncoded("limit".into(), "40".into()))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(mock_response)
-            .create();
+            .with_body(
+                r#"{
+                    "data": [
+                        {"attributes": {"url": "https://example.com/page1"}},
+                        {"attributes": {"url": "https://example.com/page2"}}
+                    ],
+                    "links": {"self": "x"}
+                }"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
 
-        // Create the provider using mock server URL
         let mut provider = VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
+        provider.with_base_url(server.url());
 
-        let result = provider.fetch_urls("example.com").await;
-        assert!(result.is_ok(), "Expected success with mock API");
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/page1".to_string(),
+                "https://example.com/page2".to_string(),
+            ]
+        );
+        m.assert();
+    }
 
-        let urls = result.unwrap();
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0], "https://example.com/page1");
-        assert_eq!(urls[1], "https://example.com/page2");
+    #[tokio::test]
+    async fn test_fetch_urls_paginates_via_links_next() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Page one hands back a complete `links.next` URL pointing at page two.
+        let next = format!(
+            "{}/api/v3/domains/example.com/urls?limit=40&cursor=PAGE2",
+            server.url()
+        );
+        let page1 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::Exact("limit=40".into()))
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"data": [{{"attributes": {{"url": "https://example.com/a"}}}}], "links": {{"next": "{next}"}}}}"#
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+        // Page two is keyed by the cursor and carries no `next`, so the walk ends.
+        let page2 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "cursor".into(),
+                "PAGE2".into(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data": [{"attributes": {"url": "https://example.com/b"}}], "links": {}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ]
+        );
+        page1.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_keeps_partial_on_midpage_failure() {
+        let mut server = mockito::Server::new_async().await;
+
+        let next = format!(
+            "{}/api/v3/domains/example.com/urls?limit=40&cursor=PAGE2",
+            server.url()
+        );
+        let _page1 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::Exact("limit=40".into()))
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"data": [{{"attributes": {{"url": "https://example.com/a"}}}}], "links": {{"next": "{next}"}}}}"#
+            ))
+            .create_async()
+            .await;
+        // The follow-up page fails: keep page one and flag the result partial.
+        let _page2 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "cursor".into(),
+                "PAGE2".into(),
+            ))
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0); // fail fast, no back-off sleeps
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+        assert_eq!(urls, vec!["https://example.com/a".to_string()]);
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_404_returns_empty() {
+        // A domain with no VT object answers 404; treat it as "no data", not an
+        // error, matching the other providers.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::Any)
+            .with_status(404)
+            .with_body(r#"{"error": {"code": "NotFoundError"}}"#)
+            .create_async()
+            .await;
+
+        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert!(urls.is_empty());
     }
 }
