@@ -76,7 +76,7 @@ Network Options:
   --random-agent                 Use a random User-Agent
   --timeout <TIMEOUT>            Request timeout in seconds [default: 120]
   --retries <RETRIES>            Retries for failed requests [default: 2]
-  --parallel <PARALLEL>          Max parallel requests per provider [default: 5]
+  --parallel <PARALLEL>          Max domains fetched concurrently per provider (rate-limit shared) [default: 5]
   --rate-limit <RATE_LIMIT>      Requests per second
   --rate-limit-by <PAIRS>        Per-provider rate overrides (e.g. `vt=1,wayback=10`); falls back to --rate-limit for unlisted providers
   --max-time <SECONDS>           Global ceiling on provider enumeration time in seconds; in-flight fetches are aborted at deadline (0 = unlimited) [default: 0]

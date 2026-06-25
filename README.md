@@ -172,7 +172,7 @@ Network Options:
       --random-agent                   Use a random User-Agent for HTTP requests
       --timeout <TIMEOUT>              Request timeout in seconds [default: 120]
       --retries <RETRIES>              Number of retries for failed requests [default: 2]
-      --parallel <PARALLEL>            Maximum number of parallel requests per provider and maximum concurrent domain processing [default: 5]
+      --parallel <PARALLEL>            Maximum domains fetched concurrently per provider (and concurrent URL tests); a provider's --rate-limit is shared across them [default: 5]
       --rate-limit <RATE_LIMIT>        Rate limit (requests per second)
       --rate-limit-by <PAIRS>          Per-provider rate overrides (e.g. `vt=1,wayback=10`); falls back to --rate-limit for unlisted providers
       --max-time <MAX_TIME>            Global ceiling on provider enumeration time in seconds (0 = unlimited) [default: 0]
