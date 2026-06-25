@@ -1195,8 +1195,11 @@ fn write_per_domain_output(
 /// Force-disable colour when `--no-color` or the `NO_COLOR` env var is set, for
 /// both the progress UI (`console`, used by indicatif) and the URL output
 /// (`colored`). With neither set, both keep their own TTY auto-detection.
+/// `NO_COLOR` disables on mere presence (any value, including empty), matching
+/// how `console` itself detects it (`env::var("NO_COLOR").is_ok()`), so both
+/// surfaces stay consistent.
 fn configure_colors(args: &Args) {
-    let no_color = args.no_color || std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let no_color = args.no_color || std::env::var_os("NO_COLOR").is_some();
     if no_color {
         colored::control::set_override(false);
         console::set_colors_enabled(false);
@@ -1242,12 +1245,12 @@ fn print_provider_stats(stats: &[runner::ProviderStats]) {
     eprintln!();
     eprintln!("Provider stats:");
     eprintln!(
-        "  {:<18}  {:>8}  {:>7}  {:>10}",
-        "provider", "urls", "errors", "elapsed"
+        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+        "provider", "urls", "partial", "errors", "elapsed"
     );
     eprintln!(
-        "  {:<18}  {:>8}  {:>7}  {:>10}",
-        "------------------", "--------", "-------", "----------"
+        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+        "------------------", "--------", "--------", "-------", "----------"
     );
     for s in stats {
         let elapsed_ms = s.elapsed.as_millis();
@@ -1257,8 +1260,8 @@ fn print_provider_stats(stats: &[runner::ProviderStats]) {
             format!("{}ms", elapsed_ms)
         };
         eprintln!(
-            "  {:<18}  {:>8}  {:>7}  {:>10}",
-            s.name, s.url_count, s.error_count, elapsed_label
+            "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+            s.name, s.url_count, s.partial_count, s.error_count, elapsed_label
         );
     }
 }
