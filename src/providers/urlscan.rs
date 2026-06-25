@@ -18,8 +18,7 @@ pub struct UrlscanProvider {
     retries: u32,
     random_agent: bool,
     insecure: bool,
-    parallel: u32,
-    rate_limit: Option<f32>,
+    rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
 }
@@ -95,7 +94,6 @@ impl UrlscanProvider {
             retries: 3,
             random_agent: false,
             insecure: false,
-            parallel: 1,
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://urlscan.io".to_string(),
@@ -217,7 +215,7 @@ impl Provider for UrlscanProvider {
                 format!("https://urlscan.io/api/v1/search/?q=domain:{encoded_domain}&size=100");
 
             let client = self.client_config().build_client()?;
-            let limiter = RateLimiter::from_rate(self.rate_limit);
+            let limiter = self.rate_limit.as_ref();
 
             // urlscan returns at most 100 results per request and signals more
             // via `has_more`; the next page is requested by passing the last
@@ -238,7 +236,7 @@ impl Provider for UrlscanProvider {
                     None => base_query.clone(),
                 };
 
-                let response = match self.fetch_page(&client, &url, limiter.as_ref()).await {
+                let response = match self.fetch_page(&client, &url, limiter).await {
                     Ok(resp) => resp,
                     Err(e) => {
                         // A failure on the very first page is fatal; a later
@@ -309,12 +307,8 @@ impl Provider for UrlscanProvider {
         self.insecure = enabled;
     }
 
-    fn with_parallel(&mut self, parallel: u32) {
-        self.parallel = parallel;
-    }
-
     fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = rate_limit;
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
     }
 }
 
@@ -336,8 +330,7 @@ mod tests {
         assert_eq!(provider.retries, 3);
         assert!(!provider.random_agent);
         assert!(!provider.insecure);
-        assert_eq!(provider.parallel, 1);
-        assert_eq!(provider.rate_limit, None);
+        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
@@ -450,17 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_parallel() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_parallel(10);
-        assert_eq!(provider.parallel, 10);
-    }
-
-    #[test]
     fn test_with_rate_limit() {
         let provider = &mut UrlscanProvider::new("test_api_key".to_string());
         provider.with_rate_limit(Some(2.5));
-        assert_eq!(provider.rate_limit, Some(2.5));
+        assert!(provider.rate_limit.is_some());
     }
 
     #[test]

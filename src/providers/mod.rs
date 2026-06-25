@@ -73,9 +73,6 @@ pub trait Provider: Send + Sync {
     /// Enable or disable SSL certificate verification (for self-signed certificates)
     fn with_insecure(&mut self, enabled: bool);
 
-    /// Set the number of parallel requests
-    fn with_parallel(&mut self, count: u32);
-
     /// Set rate limiting to avoid being blocked by providers
     fn with_rate_limit(&mut self, requests_per_second: Option<f32>);
 }

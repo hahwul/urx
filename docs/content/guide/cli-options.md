@@ -36,7 +36,7 @@ Provider Options:
   --all-providers                        Enable every supported provider (API-keyed ones only if a key is available)
   --list-providers                       List every supported provider then exit
   --subs                                 Include subdomains when searching
-  --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: CC-MAIN-2026-17]
+  --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: latest]
   --wayback-from <DATE>                  Restrict Wayback results to >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
   --wayback-to <DATE>                    Restrict Wayback results to <= DATE (same format as --wayback-from)
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
@@ -76,7 +76,7 @@ Network Options:
   --random-agent                 Use a random User-Agent
   --timeout <TIMEOUT>            Request timeout in seconds [default: 120]
   --retries <RETRIES>            Retries for failed requests [default: 2]
-  --parallel <PARALLEL>          Max parallel requests per provider [default: 5]
+  --parallel <PARALLEL>          Max domains fetched concurrently per provider (rate-limit shared) [default: 5]
   --rate-limit <RATE_LIMIT>      Requests per second
   --rate-limit-by <PAIRS>        Per-provider rate overrides (e.g. `vt=1,wayback=10`); falls back to --rate-limit for unlisted providers
   --max-time <SECONDS>           Global ceiling on provider enumeration time in seconds; in-flight fetches are aborted at deadline (0 = unlimited) [default: 0]

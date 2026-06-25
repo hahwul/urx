@@ -186,7 +186,6 @@ impl Provider for RobotsProvider {
     fn with_insecure(&mut self, enabled: bool) {
         self.insecure = enabled;
     }
-    fn with_parallel(&mut self, _count: u32) {}
     fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
 }
 
