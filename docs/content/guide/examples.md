@@ -108,8 +108,11 @@ urx example.com --min-length 50 --max-length 200
 # Only Wayback Machine and OTX
 urx example.com --providers wayback,otx
 
+# Keyless archives only (no API keys needed) — incl. Arquivo.pt and anonymous URLScan
+urx example.com --providers wayback,cc,otx,arquivo,urlscan
+
 # All available providers (with API keys)
-urx example.com --providers wayback,cc,otx,vt,urlscan,zoomeye
+urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye
 ```
 
 ### With API Keys

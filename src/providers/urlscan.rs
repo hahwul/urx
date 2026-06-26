@@ -194,10 +194,11 @@ impl Provider for UrlscanProvider {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            // Skip if no API keys are provided
-            if !self.api_key_rotator.has_keys() {
-                return Ok(Vec::new());
-            }
+            // urlscan.io's public search allows unauthenticated queries
+            // (rate-limited to ~30 req/min per IP), so we always query. When no
+            // API key is configured the request simply omits the API-Key header
+            // (see `fetch_page`); a key only raises the limits and enables
+            // rotation.
 
             // Use the url crate for encoding the domain
             let encoded_domain =
@@ -504,13 +505,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fetch_urls_with_empty_api_key() {
-        let provider = UrlscanProvider::new("".to_string());
-        let result = provider.fetch_urls("example.com").await;
+    async fn test_fetch_urls_keyless_queries_without_api_key_header() {
+        // With no API key, urlscan still queries the public search endpoint —
+        // it must just omit the API-Key header rather than returning nothing.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Any)
+            .match_header("API-Key", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":200,"has_more":false,"results":[{"page":{"domain":"example.com","url":"https://example.com/anon","status":"200"}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
 
-        assert!(result.is_ok(), "Expected success with empty API key");
-        let urls = result.unwrap();
-        assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
+        let mut provider = UrlscanProvider::new("".to_string());
+        provider.with_base_url(server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["https://example.com/anon".to_string()]);
+        mock.assert();
     }
 
     #[tokio::test]

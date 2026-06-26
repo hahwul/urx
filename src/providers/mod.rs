@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 mod api_key_rotation;
+mod arquivo;
 mod commoncrawl;
 mod github;
 mod otx;
@@ -13,6 +14,7 @@ mod vt;
 pub mod wayback;
 mod zoomeye;
 pub use api_key_rotation::ApiKeyRotator;
+pub use arquivo::ArquivoProvider;
 pub use commoncrawl::CommonCrawlProvider;
 pub use github::GitHubProvider;
 pub use otx::OTXProvider;

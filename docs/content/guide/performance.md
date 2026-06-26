@@ -155,7 +155,7 @@ urx example.com \
 ### Comprehensive Discovery
 ```bash
 urx example.com \
-  --providers wayback,cc,otx,vt,urlscan,zoomeye \
+  --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye \
   --subs \
   --parallel 15 \
   --timeout 120 \

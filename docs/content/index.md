@@ -38,7 +38,7 @@ https://dev.example.com/api/graphql.php
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
     </div>
     <h3>Multi-Source Collection</h3>
-    <p>Fetch URLs from Wayback Machine, Common Crawl, OTX, VirusTotal, URLScan, and ZoomEye in parallel.</p>
+    <p>Fetch URLs from Wayback Machine, Common Crawl, OTX, Arquivo.pt, VirusTotal, URLScan, and ZoomEye in parallel.</p>
   </div>
   <div class="feature-card">
     <div class="feature-icon">

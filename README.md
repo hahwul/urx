@@ -18,7 +18,8 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 
 ## Features
 
-* Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX)
+* Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX, Arquivo.pt)
+* Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
 * Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
 * URL normalization and deduplication: Sort query parameters, remove trailing slashes, and merge semantically identical URLs
@@ -107,7 +108,7 @@ Output Options:
 
 Provider Options:
       --providers <PROVIDERS>
-          Providers to use (comma-separated, e.g., "wayback,cc,otx,vt,urlscan") [default: wayback,cc,otx]
+          Providers to use (comma-separated, e.g., "wayback,cc,otx,arquivo,vt,urlscan") [default: wayback,cc,otx]
       --exclude-providers <EXCLUDE_PROVIDERS>
           Providers to exclude (comma-separated). Wins on conflict with --providers / --all-providers.
       --all-providers
@@ -125,7 +126,7 @@ Provider Options:
       --vt-api-key <VT_API_KEY>
           API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>
-          API key for Urlscan (can be used multiple times for rotation, can also use URX_URLSCAN_API_KEY environment variable with comma-separated keys)
+          Optional API key for Urlscan; the provider also works anonymously (rate-limited ~30 req/min per IP). Can be used multiple times for rotation, or via URX_URLSCAN_API_KEY (comma-separated keys)
       --github-api-key <GITHUB_API_KEY>
           Personal access token for the GitHub Code Search provider (also reads URX_GITHUB_API_KEY, comma-separated for rotation)
 
@@ -214,6 +215,12 @@ urx example.com -p no-images
 
 # Use specific providers
 urx example.com --providers wayback,otx
+
+# Add the keyless Arquivo.pt (Portuguese web archive) provider
+urx example.com --providers wayback,cc,otx,arquivo
+
+# URLScan works without a key (anonymous, rate-limited); a key just raises limits
+urx example.com --providers urlscan
 
 # Using VirusTotal and URLScan providers
 # 1. Explicitly add to providers (with API keys via command line)
