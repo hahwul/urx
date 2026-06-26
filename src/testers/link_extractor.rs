@@ -1,8 +1,10 @@
 use anyhow::Result;
-
+use reqwest::Client;
 use scraper::{Html, Selector};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 use url::Url;
 
 use super::Tester;
@@ -17,6 +19,15 @@ pub struct LinkExtractor {
     retries: u32,
     random_agent: bool,
     insecure: bool,
+    /// One HTTP client, built lazily on first use and reused for every tested
+    /// URL. `reqwest::Client` pools connections internally, so building it once
+    /// (rather than per URL) lets TLS handshakes and keep-alive connections be
+    /// reused across the many URLs an `--extract-links` run can touch. Shared
+    /// across `clone_box` clones via `Arc<OnceCell>` so all concurrent workers
+    /// share a single connection pool. The cell is populated only after the
+    /// `with_*` setters have applied network settings, so it always reflects
+    /// the final configuration.
+    client: Arc<OnceCell<Client>>,
 }
 
 impl LinkExtractor {
@@ -29,6 +40,7 @@ impl LinkExtractor {
             retries: 3,
             random_agent: false,
             insecure: false,
+            client: Arc::new(OnceCell::new()),
         }
     }
 
@@ -40,6 +52,15 @@ impl LinkExtractor {
             proxy: self.proxy.clone(),
             proxy_auth: self.proxy_auth.clone(),
         }
+    }
+
+    /// Return the shared HTTP client, building it on the first call and reusing
+    /// it thereafter. If a build fails the cell stays empty, so a later call
+    /// retries rather than caching the error.
+    async fn client(&self) -> Result<&Client> {
+        self.client
+            .get_or_try_init(|| async { self.client_config().build_client() })
+            .await
     }
 
     /// Extracts links from HTML content, resolving them against a base URL
@@ -76,7 +97,7 @@ impl Tester for LinkExtractor {
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            let client = self.client_config().build_client()?;
+            let client = self.client().await?;
 
             // Perform the request with retries
             let mut last_error = None;
@@ -262,5 +283,57 @@ mod tests {
         let html = "<a>No href</a>";
         let links = LinkExtractor::extract_links(&base_url, html);
         assert!(links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_client_is_built_once_and_reused() {
+        let extractor = LinkExtractor::new();
+        // Lazy: nothing is built until the first request needs it.
+        assert!(extractor.client.get().is_none());
+
+        let first = extractor.client().await.unwrap() as *const reqwest::Client;
+        let second = extractor.client().await.unwrap() as *const reqwest::Client;
+
+        // Both calls hand back the exact same cached client instead of building
+        // a fresh one per URL — that shared client is what enables connection
+        // pooling across the many URLs an --extract-links run touches.
+        assert_eq!(first, second);
+        assert!(extractor.client.get().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reused_client_extracts_from_multiple_urls() {
+        let mut server = mockito::Server::new_async().await;
+        let p1 = server
+            .mock("GET", "/p1")
+            .with_status(200)
+            .with_body(r#"<a href="https://example.com/one">x</a>"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let p2 = server
+            .mock("GET", "/p2")
+            .with_status(200)
+            .with_body(r#"<a href="https://example.com/two">y</a>"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let extractor = LinkExtractor::new();
+        let first = extractor
+            .test_url(&format!("{}/p1", server.url()))
+            .await
+            .unwrap();
+        let second = extractor
+            .test_url(&format!("{}/p2", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(first, vec!["https://example.com/one".to_string()]);
+        assert_eq!(second, vec!["https://example.com/two".to_string()]);
+        // A single client was built and shared across both requests.
+        assert!(extractor.client.get().is_some());
+        p1.assert();
+        p2.assert();
     }
 }
