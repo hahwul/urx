@@ -1,7 +1,9 @@
 use anyhow::Result;
-
+use reqwest::Client;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 use super::Tester;
 use crate::network::client::HttpClientConfig;
@@ -17,6 +19,15 @@ pub struct StatusChecker {
     insecure: bool,
     include_status: Option<Vec<String>>,
     exclude_status: Option<Vec<String>>,
+    /// One HTTP client, built lazily on first use and reused for every tested
+    /// URL. `reqwest::Client` pools connections internally, so building it once
+    /// (rather than per URL) lets TLS handshakes and keep-alive connections be
+    /// reused across the tens of thousands of URLs a `--check-status` run can
+    /// touch. Shared across `clone_box` clones via `Arc<OnceCell>` so all
+    /// concurrent workers share a single connection pool. The cell is populated
+    /// only after the `with_*` setters have applied network settings, so it
+    /// always reflects the final configuration.
+    client: Arc<OnceCell<Client>>,
 }
 
 impl StatusChecker {
@@ -31,6 +42,7 @@ impl StatusChecker {
             insecure: false,
             include_status: None,
             exclude_status: None,
+            client: Arc::new(OnceCell::new()),
         }
     }
 
@@ -52,6 +64,15 @@ impl StatusChecker {
             proxy: self.proxy.clone(),
             proxy_auth: self.proxy_auth.clone(),
         }
+    }
+
+    /// Return the shared HTTP client, building it on the first call and reusing
+    /// it thereafter. If a build fails the cell stays empty, so a later call
+    /// retries rather than caching the error.
+    async fn client(&self) -> Result<&Client> {
+        self.client
+            .get_or_try_init(|| async { self.client_config().build_client() })
+            .await
     }
 
     /// Checks if a status code matches a pattern
@@ -131,7 +152,7 @@ impl Tester for StatusChecker {
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
-            let client = self.client_config().build_client()?;
+            let client = self.client().await?;
 
             // Perform the request with retries
             let mut last_error = None;
@@ -303,5 +324,72 @@ mod tests {
         checker.with_exclude_status(Some(vec!["2xx".to_string()]));
         assert!(checker.should_include_status(200));
         assert!(!checker.should_include_status(201));
+    }
+
+    #[tokio::test]
+    async fn test_client_is_built_once_and_reused() {
+        let checker = StatusChecker::new();
+        // Lazy: nothing is built until the first request needs it.
+        assert!(checker.client.get().is_none());
+
+        let first = checker.client().await.unwrap() as *const reqwest::Client;
+        let second = checker.client().await.unwrap() as *const reqwest::Client;
+
+        // Both calls hand back the exact same cached client instead of building
+        // a fresh one per URL — that shared client is what enables connection
+        // pooling across the many URLs a --check-status run touches.
+        assert_eq!(first, second);
+        assert!(checker.client.get().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_clones_share_one_client() {
+        // The tester manager calls clone_box() once per concurrent worker chunk;
+        // clone_box is `Box::new(self.clone())`, so the derived clone here
+        // exercises the same path. All clones share the Arc<OnceCell>, so a
+        // client built by one is visible to every other — that shared client is
+        // what gives the whole run a single connection pool.
+        let checker = StatusChecker::new();
+        let original = checker.client().await.unwrap() as *const reqwest::Client;
+
+        let cloned = checker.clone();
+        // The clone sees the already-built client without building its own.
+        assert!(cloned.client.get().is_some());
+        let cloned_client = cloned.client().await.unwrap() as *const reqwest::Client;
+        assert_eq!(original, cloned_client);
+    }
+
+    #[tokio::test]
+    async fn test_reused_client_checks_multiple_urls() {
+        let mut server = mockito::Server::new_async().await;
+        let ok = server
+            .mock("GET", "/ok")
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let missing = server
+            .mock("GET", "/missing")
+            .with_status(404)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let checker = StatusChecker::new();
+        let ok_result = checker
+            .test_url(&format!("{}/ok", server.url()))
+            .await
+            .unwrap();
+        let missing_result = checker
+            .test_url(&format!("{}/missing", server.url()))
+            .await
+            .unwrap();
+
+        assert!(ok_result[0].contains("200"));
+        assert!(missing_result[0].contains("404"));
+        // A single client was built and shared across both requests.
+        assert!(checker.client.get().is_some());
+        ok.assert();
+        missing.assert();
     }
 }
