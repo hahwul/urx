@@ -117,17 +117,15 @@ impl ArquivoProvider {
     /// that sorts after it. Collapsing adjacent duplicate urlkeys yields ~one row
     /// per unique URL per page, so a non-final page always carries new URLs.
     fn query_base(&self, domain: &str) -> String {
-        if self.include_subdomains {
-            format!(
-                "{}/wayback/cdx?url=*.{domain}/*&output=json&collapse=urlkey",
-                self.base_url()
-            )
+        let host = if self.include_subdomains {
+            format!("*.{domain}")
         } else {
-            format!(
-                "{}/wayback/cdx?url={domain}/*&output=json&collapse=urlkey",
-                self.base_url()
-            )
-        }
+            domain.to_string()
+        };
+        format!(
+            "{}/wayback/cdx?url={host}/*&output=json&collapse=urlkey",
+            self.base_url()
+        )
     }
 }
 
@@ -161,10 +159,10 @@ impl Provider for ArquivoProvider {
             // span multiple ZipNum blocks; a domain that fits in a single block
             // ignores `page` and returns the full set on every request. So we
             // stop as soon as a page adds no new URLs (rather than waiting for an
-            // empty page, which never comes for small domains). `seen` both
-            // dedups across pages and drives that no-progress stop condition.
+            // empty page, which never comes for small domains). `seen` is the
+            // single source of truth: it dedups across pages and its growth
+            // drives the no-progress stop condition.
             let mut seen: HashSet<String> = HashSet::new();
-            let mut urls: Vec<String> = Vec::new();
             let mut page = 0usize;
 
             loop {
@@ -183,7 +181,7 @@ impl Provider for ArquivoProvider {
                         // Best effort: a mid-walk failure shouldn't discard the
                         // pages we already pulled. Only a failure on the very
                         // first request (nothing collected) is fatal.
-                        if urls.is_empty() {
+                        if seen.is_empty() {
                             return Err(e);
                         }
                         // We're returning a truncated result. Flag it so the
@@ -196,29 +194,24 @@ impl Provider for ArquivoProvider {
                     }
                 };
 
-                let mut new_in_page = 0usize;
-                for u in parse_records(&text) {
-                    if seen.insert(u.clone()) {
-                        urls.push(u);
-                        new_in_page += 1;
-                    }
-                }
+                let before = seen.len();
+                seen.extend(parse_records(&text));
 
                 if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", urls.len()));
+                    r.detail(format!("{} URLs…", seen.len()));
                 }
 
                 // No new URLs ⇒ either this was the last page, or the server is
                 // ignoring `page` and re-serving the same rows. Either way, stop.
-                if new_in_page == 0 {
+                if seen.len() == before {
                     break;
                 }
 
                 page += 1;
             }
 
+            let mut urls: Vec<String> = seen.into_iter().collect();
             urls.sort();
-            urls.dedup();
 
             Ok(urls)
         })
