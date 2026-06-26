@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 use crate::providers::Provider;
 
 /// Max nesting depth for sitemap-index → sitemap recursion. A hostile or
@@ -51,6 +52,7 @@ pub struct SitemapProvider {
     proxy: Option<String>,
     proxy_auth: Option<String>,
     insecure: bool,
+    rate_limit: Option<RateLimiter>,
 }
 
 impl SitemapProvider {
@@ -62,6 +64,7 @@ impl SitemapProvider {
             proxy: None,
             proxy_auth: None,
             insecure: false,
+            rate_limit: None,
         }
     }
 
@@ -93,6 +96,7 @@ impl SitemapProvider {
         sitemap_url: &str,
         depth: usize,
         visited: &mut HashSet<String>,
+        limiter: Option<&RateLimiter>,
     ) -> Result<Vec<String>> {
         if depth > MAX_SITEMAP_DEPTH {
             return Ok(Vec::new());
@@ -102,6 +106,11 @@ impl SitemapProvider {
             return Ok(Vec::new());
         }
 
+        // Pace nested-sitemap fetches: a sitemap index can chain to many child
+        // sitemaps, so honor --rate-limit before each request.
+        if let Some(rl) = limiter {
+            rl.acquire().await;
+        }
         let resp = client.get(sitemap_url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
@@ -144,6 +153,7 @@ impl SitemapProvider {
                                     nested_sitemap_url,
                                     depth + 1,
                                     visited,
+                                    limiter,
                                 ))
                                 .await?;
                                 urls.extend(nested_urls);
@@ -200,6 +210,7 @@ impl Provider for SitemapProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
+            let limiter = self.rate_limit.as_ref();
             let mut urls = Vec::new();
             // Shared across all candidate locations so a sitemap reachable from
             // more than one entry point is fetched at most once.
@@ -216,13 +227,19 @@ impl Provider for SitemapProvider {
             ];
 
             for sitemap_url in sitemap_urls {
+                // Pace the candidate-location probes too: this loop fires up to
+                // six back-to-back requests at the target.
+                if let Some(rl) = &limiter {
+                    rl.acquire().await;
+                }
                 let resp = client.get(&sitemap_url).send().await;
 
                 if let Ok(resp) = resp {
                     if resp.status().is_success() {
                         // Found a valid sitemap, parse it
                         let sitemap_urls =
-                            Self::parse_sitemap(&client, &sitemap_url, 0, &mut visited).await?;
+                            Self::parse_sitemap(&client, &sitemap_url, 0, &mut visited, limiter)
+                                .await?;
                         urls.extend(sitemap_urls);
                     }
                 }
@@ -251,7 +268,9 @@ impl Provider for SitemapProvider {
     fn with_insecure(&mut self, enabled: bool) {
         self.insecure = enabled;
     }
-    fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +287,41 @@ mod tests {
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
         assert!(!provider.insecure);
+        assert!(provider.rate_limit.is_none());
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let mut provider = SitemapProvider::new();
+        provider.with_rate_limit(Some(2.5));
+        assert!(provider.rate_limit.is_some());
+        // A non-positive rate means "no limiting".
+        provider.with_rate_limit(Some(0.0));
+        assert!(provider.rate_limit.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_paces_probe_requests() {
+        // fetch_urls fires up to six back-to-back candidate-location probes;
+        // --rate-limit must pace them. Before this provider honored the limiter
+        // `with_rate_limit` was a no-op and the probes raced out instantly.
+        let server = Server::new_async().await;
+        let host = server.host_with_port();
+
+        let mut provider = SitemapProvider::new();
+        provider.with_rate_limit(Some(20.0)); // 50ms minimum interval
+
+        let start = std::time::Instant::now();
+        // No mocks: every probe 404s/fails fast, but each acquire() still paces.
+        let _ = provider.fetch_urls(&host).await;
+
+        // Six probes => five enforced ~50ms gaps (~250ms). A no-op limiter would
+        // finish in a few ms; allow generous scheduler slack below that signal.
+        assert!(
+            start.elapsed() >= Duration::from_millis(150),
+            "rate limit did not pace the sitemap probe requests: {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

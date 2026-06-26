@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::network::client::HttpClientConfig;
+use crate::network::RateLimiter;
 use crate::providers::Provider;
 
 #[derive(Clone)]
@@ -16,6 +17,7 @@ pub struct RobotsProvider {
     proxy: Option<String>,
     proxy_auth: Option<String>,
     insecure: bool,
+    rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
     #[cfg(test)]
@@ -31,6 +33,7 @@ impl RobotsProvider {
             proxy: None,
             proxy_auth: None,
             insecure: false,
+            rate_limit: None,
             #[cfg(test)]
             base_url: String::new(),
             #[cfg(test)]
@@ -79,6 +82,7 @@ impl Provider for RobotsProvider {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
+            let limiter = self.rate_limit.as_ref();
 
             #[cfg(not(test))]
             let https_url = format!("https://{domain}/robots.txt");
@@ -93,6 +97,9 @@ impl Provider for RobotsProvider {
             let mut urls = Vec::new();
 
             // Try HTTPS first
+            if let Some(rl) = &limiter {
+                rl.acquire().await;
+            }
             let https_resp = client.get(&https_url).send().await;
             // Track which protocol was successful
             let (is_https, text) = match https_resp {
@@ -114,6 +121,9 @@ impl Provider for RobotsProvider {
                     // robots.txt discovery is best-effort: a transport failure
                     // on the HTTP fallback means "no robots.txt", not a fatal
                     // error that should sink the whole provider.
+                    if let Some(rl) = &limiter {
+                        rl.acquire().await;
+                    }
                     let http_resp = match client.get(&http_url).send().await {
                         Ok(resp) => resp,
                         Err(_) => return Ok(urls),
@@ -186,7 +196,9 @@ impl Provider for RobotsProvider {
     fn with_insecure(&mut self, enabled: bool) {
         self.insecure = enabled;
     }
-    fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
+        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    }
 }
 
 #[cfg(test)]
@@ -202,8 +214,19 @@ mod tests {
         assert_eq!(provider.proxy, None);
         assert_eq!(provider.proxy_auth, None);
         assert!(!provider.insecure);
+        assert!(provider.rate_limit.is_none());
         assert_eq!(provider.base_url, String::new());
         assert_eq!(provider.base_url_http, String::new());
+    }
+
+    #[test]
+    fn test_with_rate_limit() {
+        let mut provider = RobotsProvider::new();
+        provider.with_rate_limit(Some(2.5));
+        assert!(provider.rate_limit.is_some());
+        // A non-positive rate means "no limiting".
+        provider.with_rate_limit(Some(0.0));
+        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
