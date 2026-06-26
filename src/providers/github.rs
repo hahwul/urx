@@ -10,10 +10,12 @@ use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
-/// Maximum search-result pages we fetch per domain. GitHub Code Search caps
-/// at 1000 results total (10 × 100), and each page costs against a tight
-/// rate limit, so we stop early by default.
-const MAX_PAGES: u32 = 3;
+/// Maximum search-result pages we fetch per domain. GitHub Code Search caps at
+/// 1000 results total (10 × 100), so 10 pages covers everything the API will
+/// return; a smaller cap silently truncated large domains. The page loop still
+/// stops as soon as a page comes back empty, so domains with fewer results
+/// never pay for the extra pages — and `--rate-limit` paces the requests.
+const MAX_PAGES: u32 = 10;
 const PER_PAGE: u32 = 100;
 
 #[derive(Clone)]
