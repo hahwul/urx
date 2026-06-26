@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `arquivo` provider for [Arquivo.pt](https://arquivo.pt), the Portuguese web archive. Keyless; queries its Wayback-compatible CDX index (`output=json`) and walks `page=` cursors, stopping once a page adds no new URLs. Opt in with `--providers arquivo` or `--all-providers`
+- URLScan now works without an API key: the `urlscan` provider queries the public search endpoint anonymously (rate-limited to ~30 req/min per IP) and is no longer disabled when no key is configured. A key remains optional and only raises limits / enables rotation
 - Fix Wayback Machine timeouts on large domains: switch CDX to plain-text response with `collapse=urlkey` server-side dedup, raise default timeout to 60s, and filter non-URL response bodies
 - Bump default Common Crawl index to `CC-MAIN-2026-17`, and add `--cc-index latest` to auto-resolve the newest index via `collinfo.json` (cached per run, validated against `CC-MAIN-YYYY-WW` shape)
 - Track provider attribution per URL and surface it via `--show-sources` (JSON adds a `sources` field, CSV adds a `sources` column, plain text appends `[provider1,provider2]`)

@@ -59,7 +59,7 @@ pub struct Args {
     #[clap(long)]
     pub normalize_url: bool,
 
-    /// Providers to use (comma-separated, e.g., "wayback,cc,otx,vt,urlscan")
+    /// Providers to use (comma-separated, e.g., "wayback,cc,otx,arquivo,vt,urlscan")
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
     pub providers: Vec<String>,
@@ -115,7 +115,7 @@ pub struct Args {
     pub vt_api_key: Vec<String>,
 
     #[clap(help_heading = "Provider Options")]
-    /// API key for Urlscan (can be used multiple times for rotation, can also use URX_URLSCAN_API_KEY environment variable with comma-separated keys)
+    /// Optional API key for Urlscan. The provider also works anonymously (rate-limited to ~30 req/min per IP); a key only raises those limits. Can be used multiple times for rotation, or via URX_URLSCAN_API_KEY (comma-separated)
     #[clap(long, action = clap::ArgAction::Append)]
     pub urlscan_api_key: Vec<String>,
 

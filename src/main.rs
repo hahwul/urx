@@ -24,8 +24,8 @@ use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
 use providers::{
-    CommonCrawlProvider, GitHubProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider,
-    UrlscanProvider, VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
+    ArquivoProvider, CommonCrawlProvider, GitHubProvider, OTXProvider, Provider, RobotsProvider,
+    SitemapProvider, UrlscanProvider, VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
 };
 use readers::read_urls_from_file;
 use runner::{add_provider, process_domains, ProviderRunResult};
@@ -72,6 +72,12 @@ fn provider_catalog() -> &'static [ProviderInfo] {
             summary: "AlienVault Open Threat Exchange passive DNS / URLs",
         },
         ProviderInfo {
+            id: "arquivo",
+            display_name: "Arquivo.pt",
+            requires_key: false,
+            summary: "Arquivo.pt Portuguese web archive CDX index",
+        },
+        ProviderInfo {
             id: "vt",
             display_name: "VirusTotal",
             requires_key: true,
@@ -80,8 +86,8 @@ fn provider_catalog() -> &'static [ProviderInfo] {
         ProviderInfo {
             id: "urlscan",
             display_name: "Urlscan",
-            requires_key: true,
-            summary: "Urlscan.io search (URX_URLSCAN_API_KEY)",
+            requires_key: false,
+            summary: "Urlscan.io search (anonymous; URX_URLSCAN_API_KEY raises rate limits)",
         },
         ProviderInfo {
             id: "zoomeye",
@@ -282,7 +288,6 @@ fn effective_provider_ids(args: &Args) -> Vec<String> {
                 }
                 match p.id {
                     "vt" => !vt_api_keys.is_empty(),
-                    "urlscan" => !urlscan_api_keys.is_empty(),
                     "zoomeye" => !zoomeye_api_keys.is_empty(),
                     "github" => !github_api_keys.is_empty(),
                     _ => false,
@@ -443,6 +448,18 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         );
     }
 
+    if providers_list.iter().any(|p| p == "arquivo") {
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            "arquivo",
+            "Arquivo.pt".to_string(),
+            ArquivoProvider::new,
+        );
+    }
+
     if providers_list.iter().any(|p| p == "vt") {
         if !vt_api_keys.is_empty() {
             add_provider(
@@ -460,19 +477,19 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     }
 
     if providers_list.iter().any(|p| p == "urlscan") {
-        if !urlscan_api_keys.is_empty() {
-            add_provider(
-                args,
-                network_settings,
-                &mut providers,
-                &mut provider_names,
-                "urlscan",
-                "Urlscan".to_string(),
-                || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
-            );
-        } else if !args.silent && !suppress_key_errors {
-            eprintln!("Error: The Urlscan provider (urlscan) requires an API key. Please use --urlscan-api-key or set the URX_URLSCAN_API_KEY environment variable.");
-        }
+        // urlscan.io's public search works without a key (rate-limited to
+        // ~30 req/min per IP); a key only raises those limits and enables
+        // rotation. So always instantiate — keys are passed through when
+        // present, but their absence no longer disables the provider.
+        add_provider(
+            args,
+            network_settings,
+            &mut providers,
+            &mut provider_names,
+            "urlscan",
+            "Urlscan".to_string(),
+            || UrlscanProvider::new_with_keys(urlscan_api_keys.clone()),
+        );
     }
 
     if providers_list.iter().any(|p| p == "zoomeye") {
@@ -509,7 +526,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
 
     if providers.is_empty() {
         if !args.silent {
-            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, vt, urlscan, zoomeye)");
+            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, arquivo, vt, urlscan, zoomeye)");
         }
         return Err(anyhow::anyhow!("No valid providers specified"));
     }
@@ -1412,6 +1429,77 @@ mod tests {
             Err(err) => assert!(err
                 .to_string()
                 .contains("Unknown provider id(s) in --rate-limit-by")),
+        }
+    }
+
+    #[test]
+    fn test_initialize_providers_enables_urlscan_without_api_key() {
+        // urlscan is keyless: requesting it with no API key must still
+        // instantiate the provider (regression guard for the removed key gate).
+        let _env_lock = env_mutex().lock().unwrap();
+        let old = env::var("URX_URLSCAN_API_KEY").ok();
+        env::remove_var("URX_URLSCAN_API_KEY");
+
+        let mut args = build_test_args();
+        args.providers = vec!["urlscan".to_string()];
+
+        let result = initialize_providers(&args, &NetworkSettings::default());
+
+        match old {
+            Some(val) => env::set_var("URX_URLSCAN_API_KEY", val),
+            None => env::remove_var("URX_URLSCAN_API_KEY"),
+        }
+
+        let (providers, names) = result.expect("urlscan should initialize without an API key");
+        assert!(
+            !providers.is_empty(),
+            "urlscan must be instantiated even without a key"
+        );
+        assert!(names.iter().any(|n| n == "Urlscan"));
+    }
+
+    #[test]
+    fn test_effective_provider_ids_all_providers_keyless() {
+        // --all-providers with no keys must enable every keyless provider
+        // (including the new arquivo and the now-keyless urlscan) while keeping
+        // the keyed providers disabled.
+        let _env_lock = env_mutex().lock().unwrap();
+        let keyed = [
+            "URX_VT_API_KEY",
+            "URX_URLSCAN_API_KEY",
+            "URX_ZOOMEYE_API_KEY",
+            "URX_GITHUB_API_KEY",
+        ];
+        let saved: Vec<(&str, Option<String>)> =
+            keyed.iter().map(|k| (*k, env::var(k).ok())).collect();
+        for (k, _) in &saved {
+            env::remove_var(k);
+        }
+
+        let mut args = build_test_args();
+        args.all_providers = true;
+        args.providers = vec![]; // ignored when --all-providers is set
+
+        let ids = effective_provider_ids(&args);
+
+        for (k, v) in saved {
+            match v {
+                Some(val) => env::set_var(k, val),
+                None => env::remove_var(k),
+            }
+        }
+
+        for id in ["wayback", "cc", "otx", "arquivo", "urlscan"] {
+            assert!(
+                ids.iter().any(|p| p == id),
+                "--all-providers (keyless) must enable {id}; got {ids:?}"
+            );
+        }
+        for id in ["vt", "zoomeye", "github"] {
+            assert!(
+                !ids.iter().any(|p| p == id),
+                "keyed provider {id} must not activate without a key; got {ids:?}"
+            );
         }
     }
 

@@ -37,11 +37,11 @@ normalize_url = false
 
 # ─── Providers ───────────────────────────────────────────
 [provider]
-providers = ["wayback", "cc", "otx"]
+providers = ["wayback", "cc", "otx"] # also available keyless: "arquivo", "urlscan" (anonymous)
 subs = false                          # Include subdomains
 cc_index = "CC-MAIN-2026-17"         # Common Crawl index (or "latest" to auto-resolve via collinfo.json)
 vt_api_key = ""                       # VirusTotal API key
-urlscan_api_key = ""                  # URLScan API key
+urlscan_api_key = ""                  # URLScan API key (optional; urlscan also works anonymously)
 zoomeye_api_key = ""                  # ZoomEye API key
 exclude_robots = false                # Skip robots.txt discovery
 exclude_sitemap = false               # Skip sitemap.xml discovery

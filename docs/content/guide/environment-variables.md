@@ -24,7 +24,9 @@ urx example.com --providers vt
 ```
 
 #### URX_URLSCAN_API_KEY
-URLScan API key for accessing the URLScan provider.
+Optional URLScan API key. The `urlscan` provider works anonymously without a
+key (rate-limited to ~30 requests/min per IP); set a key only to raise those
+limits and enable key rotation.
 
 ```bash
 export URX_URLSCAN_API_KEY=your_api_key_here
@@ -56,7 +58,7 @@ urx example.com --providers zoomeye
 | Variable | Provider | Description |
 |----------|----------|-------------|
 | `URX_VT_API_KEY` | VirusTotal | VirusTotal API key |
-| `URX_URLSCAN_API_KEY` | URLScan | URLScan API key |
+| `URX_URLSCAN_API_KEY` | URLScan | Optional URLScan API key (the provider also works anonymously) |
 | `URX_ZOOMEYE_API_KEY` | ZoomEye | ZoomEye API key |
 
 ### Usage Notes

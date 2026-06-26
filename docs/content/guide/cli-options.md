@@ -40,7 +40,7 @@ Provider Options:
   --wayback-from <DATE>                  Restrict Wayback results to >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
   --wayback-to <DATE>                    Restrict Wayback results to <= DATE (same format as --wayback-from)
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
-  --urlscan-api-key <URLSCAN_API_KEY>   API key for Urlscan
+  --urlscan-api-key <URLSCAN_API_KEY>   Optional API key for Urlscan (also works anonymously)
   --zoomeye-api-key <ZOOMEYE_API_KEY>   API key for ZoomEye
   --github-api-key <GITHUB_API_KEY>     Personal access token for GitHub Code Search (URX_GITHUB_API_KEY)
 
@@ -103,11 +103,12 @@ Cache Options:
 | Wayback Machine | `wayback` | No | - |
 | Common Crawl | `cc` | No | - |
 | OTX (AlienVault) | `otx` | No | - |
+| Arquivo.pt | `arquivo` | No | - |
 | VirusTotal | `vt` | Yes | `URX_VT_API_KEY` |
-| URLScan | `urlscan` | Yes | `URX_URLSCAN_API_KEY` |
+| URLScan | `urlscan` | No (optional) | `URX_URLSCAN_API_KEY` |
 | ZoomEye | `zoomeye` | Yes | `URX_ZOOMEYE_API_KEY` |
 
-Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided.
+Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation.
 
 ## Filter Presets
 
