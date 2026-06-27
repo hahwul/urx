@@ -18,14 +18,7 @@ pub struct UrlFilter {
 impl UrlFilter {
     /// Create a new URL filter
     pub fn new() -> Self {
-        UrlFilter {
-            extensions: Vec::new(),
-            exclude_extensions: Vec::new(),
-            patterns: Vec::new(),
-            exclude_patterns: Vec::new(),
-            min_length: None,
-            max_length: None,
-        }
+        Self::default()
     }
 
     /// Apply filter presets to this URL filter
