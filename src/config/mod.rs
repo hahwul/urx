@@ -249,17 +249,13 @@ impl Config {
                 let config_path = config_dir.join("config.toml");
 
                 // Create directory if it doesn't exist
-                if !config_dir.exists() {
-                    if let Err(_) = fs::create_dir_all(&config_dir) {
-                        return None;
-                    }
+                if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
+                    return None;
                 }
 
                 // Create empty config file if it doesn't exist
-                if !config_path.exists() {
-                    if let Err(_) = fs::write(&config_path, "") {
-                        return None;
-                    }
+                if !config_path.exists() && fs::write(&config_path, "").is_err() {
+                    return None;
                 }
 
                 return Some(config_path);
@@ -585,6 +581,7 @@ impl Config {
     }
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 /// Helper function to get the home directory
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from).or({

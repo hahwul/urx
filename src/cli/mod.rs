@@ -180,7 +180,7 @@ pub struct Args {
     #[clap(long)]
     pub stats: bool,
 
-    /// Filter Presets (e.g., "no-resources,no-images,only-js,only-style")
+    /// Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
     pub preset: Vec<String>,
