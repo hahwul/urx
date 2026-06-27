@@ -23,6 +23,6 @@
                 system "cargo build --release"
                 bin.install "target/release/urx"
               test: system "#{bin}/urx", "-V"
-              update_readme_table: true
+              update_readme_table: false
               skip_commit: false
               debug: false
