@@ -1,7 +1,3 @@
-/// Shared network configuration settings for HTTP requests
-///
-/// This struct centralizes common HTTP request settings used throughout
-/// the application to avoid code duplication between providers and testers.
 /// Network scope specifying which components should use the network settings
 #[derive(Clone, Debug, PartialEq, Default)]
 pub enum NetworkScope {
@@ -14,6 +10,10 @@ pub enum NetworkScope {
     Testers,
 }
 
+/// Shared network configuration settings for HTTP requests
+///
+/// This struct centralizes common HTTP request settings used throughout
+/// the application to avoid code duplication between providers and testers.
 #[derive(Clone, Debug)]
 pub struct NetworkSettings {
     /// Proxy server URL (e.g., "<http://proxy.example.com:8080>")

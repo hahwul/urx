@@ -86,7 +86,7 @@ pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duratio
     Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
 }
 
-/// Execute an HTTP GET request with retry and exponential back-off.
+/// Execute an HTTP GET request with retry and linear back-off.
 ///
 /// `max_retries` is the number of **additional** attempts after the first
 /// failure (i.e. total attempts = 1 + max_retries).
@@ -102,7 +102,7 @@ pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Res
 
     while attempt <= max_retries {
         if attempt > 0 {
-            // Exponential back-off: 500ms, 1000ms, 1500ms, …
+            // Linear back-off: 500ms, 1000ms, 1500ms, …
             tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
         }
 
