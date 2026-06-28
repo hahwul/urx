@@ -14,12 +14,16 @@ pub enum FilterPreset {
     NoDocuments,
     /// Excludes video files (mp4, mkv, avi, etc.)
     NoVideos,
+    /// Excludes audio files (mp3, wav, flac, etc.)
+    NoAudio,
     /// Only includes font files
     OnlyFonts,
     /// Only includes document files
     OnlyDocuments,
     /// Only includes video files
     OnlyVideos,
+    /// Only includes audio files
+    OnlyAudio,
     /// Only includes image files
     OnlyImages,
 }
@@ -71,11 +75,13 @@ impl FilterPreset {
             "no-font" | "no-fonts" => Some(FilterPreset::NoFonts),
             "no-document" | "no-documents" => Some(FilterPreset::NoDocuments),
             "no-video" | "no-videos" => Some(FilterPreset::NoVideos),
+            "no-audio" | "no-audios" => Some(FilterPreset::NoAudio),
             "only-js" => Some(FilterPreset::OnlyJs),
             "only-style" | "only-styles" => Some(FilterPreset::OnlyStyle),
             "only-fonts" => Some(FilterPreset::OnlyFonts),
             "only-documents" => Some(FilterPreset::OnlyDocuments),
             "only-videos" => Some(FilterPreset::OnlyVideos),
+            "only-audio" | "only-audios" => Some(FilterPreset::OnlyAudio),
             "only-images" => Some(FilterPreset::OnlyImages),
             _ => None,
         }
@@ -101,12 +107,14 @@ impl FilterPreset {
                 DOCUMENT_EXTENSIONS.iter().map(|&s| s.to_string()).collect()
             }
             FilterPreset::NoVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::NoAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyJs | FilterPreset::OnlyStyle => vec![],
             FilterPreset::OnlyFonts => FONT_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyDocuments => {
                 DOCUMENT_EXTENSIONS.iter().map(|&s| s.to_string()).collect()
             }
             FilterPreset::OnlyVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::OnlyAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyImages => IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
         }
     }
@@ -262,6 +270,7 @@ mod tests {
         for preset in [
             FilterPreset::NoResources,
             FilterPreset::NoImages,
+            FilterPreset::NoAudio,
             FilterPreset::OnlyJs,
             FilterPreset::OnlyStyle,
         ] {
@@ -322,6 +331,23 @@ mod tests {
     }
 
     #[test]
+    fn test_no_audio_preset() {
+        let preset = FilterPreset::NoAudio;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // Should exclude all audio extensions
+        assert!(exclude_extensions.contains(&"mp3".to_string()));
+        assert!(exclude_extensions.contains(&"wav".to_string()));
+        assert!(exclude_extensions.contains(&"flac".to_string()));
+        assert!(exclude_extensions.contains(&"aac".to_string()));
+        assert!(exclude_extensions.contains(&"ogg".to_string()));
+        assert!(exclude_extensions.contains(&"m4a".to_string()));
+
+        // Should not include any extensions
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
     fn test_only_fonts_preset() {
         let preset = FilterPreset::OnlyFonts;
         let exclude_extensions = preset.get_exclude_extensions();
@@ -361,6 +387,21 @@ mod tests {
         assert!(exclude_extensions.contains(&"avi".to_string()));
 
         // get_extensions should be empty for OnlyVideos
+        assert!(preset.get_extensions().is_empty());
+    }
+
+    #[test]
+    fn test_only_audio_preset() {
+        let preset = FilterPreset::OnlyAudio;
+        let exclude_extensions = preset.get_exclude_extensions();
+
+        // OnlyAudio uses exclude_extensions to store audio types
+        assert!(exclude_extensions.contains(&"mp3".to_string()));
+        assert!(exclude_extensions.contains(&"wav".to_string()));
+        assert!(exclude_extensions.contains(&"flac".to_string()));
+        assert!(exclude_extensions.contains(&"aac".to_string()));
+
+        // get_extensions should be empty for OnlyAudio
         assert!(preset.get_extensions().is_empty());
     }
 
@@ -405,6 +446,18 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_preset_from_str_no_audio() {
+        assert!(matches!(
+            FilterPreset::from_str("no-audio"),
+            Some(FilterPreset::NoAudio)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("no-audios"),
+            Some(FilterPreset::NoAudio)
+        ));
+    }
+
+    #[test]
     fn test_filter_preset_from_str_only_fonts() {
         assert!(matches!(
             FilterPreset::from_str("only-fonts"),
@@ -425,6 +478,18 @@ mod tests {
         assert!(matches!(
             FilterPreset::from_str("only-videos"),
             Some(FilterPreset::OnlyVideos)
+        ));
+    }
+
+    #[test]
+    fn test_filter_preset_from_str_only_audio() {
+        assert!(matches!(
+            FilterPreset::from_str("only-audio"),
+            Some(FilterPreset::OnlyAudio)
+        ));
+        assert!(matches!(
+            FilterPreset::from_str("only-audios"),
+            Some(FilterPreset::OnlyAudio)
         ));
     }
 

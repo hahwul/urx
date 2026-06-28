@@ -143,7 +143,7 @@ Display Options:
 
 Filter Options:
   -p, --preset <PRESET>
-          Filter Presets (e.g., "no-resources,no-images,only-js,only-style")
+          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
   -e, --extensions <EXTENSIONS>
           Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
       --exclude-extensions <EXCLUDE_EXTENSIONS>

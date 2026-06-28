@@ -56,7 +56,7 @@ Display Options:
       --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
-  -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,only-js,only-style")
+  -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
   -e, --extensions <EXTENSIONS>              Filter by extensions (e.g., "js,php,aspx")
       --exclude-extensions <EXTENSIONS>      Exclude extensions (e.g., "html,txt")
       --patterns <PATTERNS>                  Include URLs containing patterns
@@ -116,5 +116,7 @@ Default providers: `wayback,cc,otx`. Providers requiring API keys are automatica
 |--------|-------------|
 | `no-resources` | Exclude resource files (images, CSS, fonts, etc.) |
 | `no-images` | Exclude image files |
+| `no-audio` | Exclude audio files |
 | `only-js` | Only JavaScript files |
 | `only-style` | Only stylesheet files |
+| `only-audio` | Only audio files |
