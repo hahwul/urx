@@ -1,23 +1,46 @@
-    <div class="docs-footer">
-      <p>Powered by <a href="https://github.com/hahwul/hwaro">Hwaro</a> | <a href="https://www.hahwul.com">hahwul.com</a></p>
-    </div>
-  </main>
-</div>
+      <div class="docs-footer">
+        <p>Built with <a href="https://github.com/hahwul/hwaro">Hwaro</a> · Maintained by <a href="https://www.hahwul.com">hahwul</a> · <a href="https://github.com/hahwul/urx">Source on GitHub</a></p>
+      </div>
+    </main>
+  </div>
 {{ highlight_js }}
 {{ auto_includes_js }}
 <script>
-(function() {
-  var path = window.location.pathname.replace(/\/$/, '') + '/';
-  var links = document.querySelectorAll('.sidebar-links a');
-  links.forEach(function(link) {
-    var href = link.getAttribute('href');
-    if (href) {
-      var linkPath = href.replace(/\/$/, '') + '/';
-      if (linkPath === path) {
-        link.classList.add('active');
-      }
-    }
+(function () {
+  // active sidebar link
+  var path = window.location.pathname.replace(/\/$/, "") + "/";
+  document.querySelectorAll(".sidebar-links a").forEach(function (link) {
+    var href = link.getAttribute("href");
+    if (href && href.replace(/\/$/, "") + "/" === path) link.classList.add("active");
   });
+
+  // theme toggle
+  function currentTheme() {
+    var explicit = document.documentElement.getAttribute("data-theme");
+    if (explicit) return explicit;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var next = currentTheme() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("urx-theme", next); } catch (e) {}
+    });
+  });
+
+  // scroll reveal
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var els = document.querySelectorAll(".reveal");
+  if (reduce || !("IntersectionObserver" in window)) {
+    els.forEach(function (el) { el.classList.add("is-visible"); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
+    els.forEach(function (el) { io.observe(el); });
+  }
 })();
 </script>
 </body>

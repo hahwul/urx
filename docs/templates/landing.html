@@ -1,0 +1,124 @@
+{% include "header.html" %}
+<link rel="stylesheet" href="{{ base_url }}/css/landing.css">
+<div class="landing">
+  <header class="top-nav">
+    <div class="nav-left">
+      <a href="{{ base_url }}/" class="brand">
+        <img src="{{ base_url }}/images/urx.png" alt="" class="brand-rocket">
+        <span class="brand-word">urx</span>
+      </a>
+      <nav class="nav-links">
+        <a href="{{ base_url }}/getting-started/">Docs</a>
+        <a href="#providers">Providers</a>
+        <a href="#features">Features</a>
+        <a href="{{ base_url }}/guide/">Guide</a>
+      </nav>
+    </div>
+    <div class="nav-right">
+      <button class="icon-btn theme-toggle" data-theme-toggle aria-label="Toggle theme">
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <a href="https://github.com/hahwul/urx" class="icon-btn" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+      </a>
+      <a href="{{ base_url }}/getting-started/installation/" class="nav-cta">Get started</a>
+    </div>
+  </header>
+
+  <span class="nav-sentinel" aria-hidden="true"></span>
+  {{ content }}
+
+  <footer class="l-footer">
+    <div class="wrap">
+      <div class="l-footer-grid">
+        <div>
+          <a href="{{ base_url }}/" class="f-brand">
+            <img src="{{ base_url }}/images/urx.png" alt="">
+            <span>urx</span>
+          </a>
+          <p class="f-tag">Extract URLs from OSINT archives for security research. Fast, keyless by default, built in Rust.</p>
+        </div>
+        <div>
+          <h4>Docs</h4>
+          <ul>
+            <li><a href="{{ base_url }}/getting-started/installation/">Installation</a></li>
+            <li><a href="{{ base_url }}/getting-started/quick-start/">Quick Start</a></li>
+            <li><a href="{{ base_url }}/guide/cli-options/">CLI Options</a></li>
+            <li><a href="{{ base_url }}/guide/examples/">Examples</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Guide</h4>
+          <ul>
+            <li><a href="{{ base_url }}/guide/configuration/">Configuration</a></li>
+            <li><a href="{{ base_url }}/guide/caching/">Caching</a></li>
+            <li><a href="{{ base_url }}/guide/integration/">Integration</a></li>
+            <li><a href="{{ base_url }}/guide/performance/">Performance</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Project</h4>
+          <ul>
+            <li><a href="https://github.com/hahwul/urx" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://crates.io/crates/urx" target="_blank" rel="noopener">crates.io</a></li>
+            <li><a href="{{ base_url }}/about/contributing/">Contributing</a></li>
+            <li><a href="https://www.hahwul.com" target="_blank" rel="noopener">hahwul.com</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="l-footer-base">
+        <span>&copy; 2025 urx · MIT License</span>
+        <span>Built with <a href="https://github.com/hahwul/hwaro">Hwaro</a></span>
+      </div>
+    </div>
+  </footer>
+</div>
+{{ highlight_js }}
+{{ auto_includes_js }}
+<script>
+(function () {
+  // theme toggle
+  function currentTheme() {
+    var explicit = document.documentElement.getAttribute("data-theme");
+    if (explicit) return explicit;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var next = currentTheme() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("urx-theme", next); } catch (e) {}
+    });
+  });
+
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var supportsIO = "IntersectionObserver" in window;
+
+  // scroll reveal
+  var els = document.querySelectorAll(".reveal");
+  if (reduce || !supportsIO) {
+    els.forEach(function (el) { el.classList.add("is-visible"); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
+    els.forEach(function (el) { io.observe(el); });
+  }
+
+  // nav background on scroll (sentinel-based, no scroll listener)
+  var nav = document.querySelector(".landing .top-nav");
+  var sentinel = document.querySelector(".nav-sentinel");
+  if (nav && sentinel && supportsIO) {
+    new IntersectionObserver(function (entries) {
+      nav.classList.toggle("scrolled", !entries[0].isIntersecting);
+    }, { threshold: 0 }).observe(sentinel);
+  } else if (nav) {
+    nav.classList.add("scrolled");
+  }
+})();
+</script>
+</body>
+</html>
