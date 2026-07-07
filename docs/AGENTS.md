@@ -133,16 +133,20 @@ Templates use Jinja2 syntax. Key variables:
 
 ### Template Files
 
-- **page.html** / **section.html** — Both include the full sidebar navigation and header
-- **header.html** — `<head>` section with meta tags, favicon, CSS
-- **footer.html** — Footer text, active-link highlighting JS, closing tags
+- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. Loads the extra `static/css/landing.css` and holds the landing footer plus motion JS.
+- **page.html** / **section.html** — Docs templates. Both pull in the shared nav and sidebar partials.
+- **_docsnav.html** — Shared top navigation (brand, links, theme toggle, GitHub, mobile menu button).
+- **_sidebar.html** — Shared docs sidebar. Edit this ONE file to change sidebar links.
+- **header.html** — `<head>`: meta, fonts (Space Grotesk / Inter / JetBrains Mono), no-flash theme script, CSS.
+- **footer.html** — Docs footer plus JS for active-link highlighting, the theme toggle, and scroll-reveal.
 
 ## Styling
 
-- Single CSS file: `static/css/style.css`
-- CSS variables for theming (light/dark)
-- Dark mode via `@media (prefers-color-scheme: dark)`
-- Responsive: sidebar hidden on mobile with toggle button
+- `static/css/style.css` — shared tokens, theme system, top nav, docs shell, prose, code, footer.
+- `static/css/landing.css` — landing-only sections (hero, terminal, providers, bento, pipeline, install).
+- Light/dark via CSS variables. Default follows `@media (prefers-color-scheme: dark)`; a header toggle overrides it and persists to `localStorage` (`urx-theme`), read by a no-flash inline script in `header.html`.
+- One accent color: ignition orange (`--ignition: #ff5b29`). Code blocks stay dark in both themes by design (embedded-terminal look).
+- Responsive: sidebar hidden on mobile with a toggle button.
 
 ## Notes for AI Agents
 
@@ -151,5 +155,5 @@ Templates use Jinja2 syntax. Key variables:
 3. **Check `config.toml`** for site-wide settings.
 4. **Template Syntax:** Standard Jinja2 syntax.
 5. **Keep URLs relative** using `{{ base_url }}` in templates, or absolute paths (`/getting-started/`) in markdown.
-6. **Sidebar navigation** is duplicated in both `page.html` and `section.html` — update both when adding/removing pages.
+6. **Sidebar navigation** lives in the shared `_sidebar.html` partial — update that one file when adding/removing pages.
 7. **ZoomEye** is the most recently added provider — ensure it's included in provider lists and examples.
