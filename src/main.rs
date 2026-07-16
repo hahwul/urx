@@ -526,7 +526,12 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
 
     if providers.is_empty() {
         if !args.silent {
-            eprintln!("Error: No valid providers specified. Please use --providers with valid provider names (wayback, cc, otx, arquivo, vt, urlscan, zoomeye)");
+            let mut valid_providers: Vec<&str> = valid_provider_ids().into_iter().collect();
+            valid_providers.sort_unstable();
+            eprintln!(
+                "Error: No valid providers specified. Please use --providers with valid provider names ({})",
+                valid_providers.join(", ")
+            );
         }
         return Err(anyhow::anyhow!("No valid providers specified"));
     }
