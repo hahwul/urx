@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
+use super::filters::{ArchiveFilters, CdxDialect};
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
@@ -54,6 +55,8 @@ pub struct ArquivoProvider {
     random_agent: bool,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
+    /// Server-side CDX predicates (date range, status code, MIME type).
+    filters: ArchiveFilters,
     #[cfg(test)]
     base_url: String,
 }
@@ -70,9 +73,18 @@ impl ArquivoProvider {
             random_agent: false,
             insecure: false,
             rate_limit: None,
+            filters: ArchiveFilters::default(),
             #[cfg(test)]
             base_url: "https://arquivo.pt".to_string(),
         }
+    }
+
+    /// Apply server-side CDX predicates (date range, status code, MIME type).
+    /// Arquivo.pt serves a pywb-flavoured CDX API, so it shares Common Crawl's
+    /// `status`/`mime` field names rather than the classic CDX ones.
+    pub fn with_filters(&mut self, filters: ArchiveFilters) -> &mut Self {
+        self.filters = filters;
+        self
     }
 
     #[cfg(test)]
@@ -122,10 +134,12 @@ impl ArquivoProvider {
         } else {
             domain.to_string()
         };
-        format!(
+        let mut url = format!(
             "{}/wayback/cdx?url={host}/*&output=json&collapse=urlkey",
             self.base_url()
-        )
+        );
+        url.push_str(&self.filters.query_params(CdxDialect::Pywb));
+        url
     }
 }
 
@@ -666,5 +680,31 @@ mod tests {
             "rate limit was not applied; elapsed {:?}",
             start.elapsed()
         );
+    }
+
+    #[test]
+    fn test_query_base_uses_pywb_filter_fields() {
+        // Arquivo.pt shares Common Crawl's exact-match pywb dialect. An
+        // anchored regex here was observed to hang the server rather than
+        // return an empty page, so the value must reach it verbatim.
+        let mut provider = ArquivoProvider::new();
+        provider.with_base_url("https://arquivo.pt".to_string());
+        provider.with_filters(ArchiveFilters::from_cli_lists(
+            None,
+            None,
+            &["200".to_string()],
+            &["404".to_string(), "500".to_string()],
+            &[],
+            &[],
+        ));
+
+        let q = provider.query_base("example.com");
+        assert!(q.contains("&filter=status:200"), "{q}");
+        // Exclusions are AND-ed by the server, which is the wanted semantics,
+        // so each one travels as its own parameter.
+        assert!(q.contains("&filter=!status:404"), "{q}");
+        assert!(q.contains("&filter=!status:500"), "{q}");
+        assert!(q.contains("collapse=urlkey"), "{q}");
+        assert!(!q.contains("statuscode"), "{q}");
     }
 }

@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 
+use super::filters::{ArchiveFilters, CdxDialect};
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
@@ -67,75 +68,6 @@ fn encode_resume_key(key: &str) -> String {
     url::form_urlencoded::byte_serialize(key.as_bytes()).collect()
 }
 
-/// Normalise a user-supplied date into a 14-digit Wayback CDX timestamp
-/// (`YYYYMMDDhhmmss`). Accepts `YYYY`, `YYYYMM`, `YYYYMMDD` and the full
-/// 14-digit form. When `end_of_range` is true the missing tail is padded
-/// toward the end of the range (`31 23:59:59`) rather than the start
-/// (`01 00:00:00`) — pass `false` for `--wayback-from`, `true` for
-/// `--wayback-to`. Returns `None` for malformed input so the CLI can warn.
-pub fn normalize_cdx_timestamp(input: &str, end_of_range: bool) -> Option<String> {
-    let digits: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
-    if !matches!(digits.len(), 4 | 6 | 8 | 14) {
-        return None;
-    }
-
-    let year: u32 = digits.get(0..4)?.parse().ok()?;
-    if !(1996..=9999).contains(&year) {
-        // CDX coverage only starts in 1996; reject anything earlier.
-        return None;
-    }
-
-    // Pad each segment toward the appropriate end of the range.
-    let month = match digits.get(4..6) {
-        Some(s) => {
-            let m: u32 = s.parse().ok()?;
-            if !(1..=12).contains(&m) {
-                return None;
-            }
-            format!("{m:02}")
-        }
-        None => {
-            if end_of_range {
-                "12".to_string()
-            } else {
-                "01".to_string()
-            }
-        }
-    };
-    let day = match digits.get(6..8) {
-        Some(s) => {
-            let d: u32 = s.parse().ok()?;
-            if !(1..=31).contains(&d) {
-                return None;
-            }
-            format!("{d:02}")
-        }
-        None => {
-            if end_of_range {
-                // 28 is the only day every month has — CDX accepts impossible
-                // dates so 31 also works, but 28 avoids false widening at
-                // month-only granularity. Wait: we WANT widening for `to`.
-                // Use 31; CDX clamps gracefully.
-                "31".to_string()
-            } else {
-                "01".to_string()
-            }
-        }
-    };
-    let tail = match digits.get(8..14) {
-        Some(s) => s.to_string(),
-        None => {
-            if end_of_range {
-                "235959".to_string()
-            } else {
-                "000000".to_string()
-            }
-        }
-    };
-
-    Some(format!("{year:04}{month}{day}{tail}"))
-}
-
 #[derive(Clone)]
 pub struct WaybackMachineProvider {
     include_subdomains: bool,
@@ -146,10 +78,8 @@ pub struct WaybackMachineProvider {
     random_agent: bool,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
-    /// CDX `from=` timestamp (already normalised to 14 digits).
-    from: Option<String>,
-    /// CDX `to=` timestamp (already normalised to 14 digits).
-    to: Option<String>,
+    /// Server-side CDX predicates (date range, status code, MIME type).
+    filters: ArchiveFilters,
     #[cfg(test)]
     base_url: String,
 }
@@ -166,24 +96,17 @@ impl WaybackMachineProvider {
             random_agent: false,
             insecure: false,
             rate_limit: None,
-            from: None,
-            to: None,
+            filters: ArchiveFilters::default(),
             #[cfg(test)]
             base_url: "https://web.archive.org".to_string(),
         }
     }
 
-    /// Restrict crawled snapshots to those at or after `ts` (14-digit CDX
-    /// timestamp, see `normalize_cdx_timestamp`). Pass `None` to clear.
-    pub fn with_from(&mut self, ts: Option<String>) -> &mut Self {
-        self.from = ts;
-        self
-    }
-
-    /// Restrict crawled snapshots to those at or before `ts`. Pass `None` to
-    /// clear. Pair with `with_from` for a closed window.
-    pub fn with_to(&mut self, ts: Option<String>) -> &mut Self {
-        self.to = ts;
+    /// Apply server-side CDX predicates (date range, status code, MIME type).
+    /// These are evaluated by the archive, so filtered-out captures never
+    /// travel over the network at all.
+    pub fn with_filters(&mut self, filters: ArchiveFilters) -> &mut Self {
+        self.filters = filters;
         self
     }
 
@@ -231,14 +154,7 @@ impl WaybackMachineProvider {
                 self.base_url()
             )
         };
-        if let Some(ts) = &self.from {
-            url.push_str("&from=");
-            url.push_str(ts);
-        }
-        if let Some(ts) = &self.to {
-            url.push_str("&to=");
-            url.push_str(ts);
-        }
+        url.push_str(&self.filters.query_params(CdxDialect::Classic));
         url
     }
 }
@@ -856,61 +772,6 @@ mod tests {
         assert_eq!(urls, vec!["http://example.com/real".to_string()]);
     }
 
-    #[test]
-    fn test_normalize_cdx_timestamp_year_only() {
-        assert_eq!(
-            normalize_cdx_timestamp("2020", false).as_deref(),
-            Some("20200101000000")
-        );
-        assert_eq!(
-            normalize_cdx_timestamp("2020", true).as_deref(),
-            Some("20201231235959")
-        );
-    }
-
-    #[test]
-    fn test_normalize_cdx_timestamp_year_month() {
-        assert_eq!(
-            normalize_cdx_timestamp("202003", false).as_deref(),
-            Some("20200301000000")
-        );
-        assert_eq!(
-            normalize_cdx_timestamp("202003", true).as_deref(),
-            Some("20200331235959")
-        );
-    }
-
-    #[test]
-    fn test_normalize_cdx_timestamp_day_and_full() {
-        assert_eq!(
-            normalize_cdx_timestamp("20200315", false).as_deref(),
-            Some("20200315000000")
-        );
-        assert_eq!(
-            normalize_cdx_timestamp("20200315123045", false).as_deref(),
-            Some("20200315123045")
-        );
-        // Hyphens and slashes are stripped before length check.
-        assert_eq!(
-            normalize_cdx_timestamp("2020-03-15", false).as_deref(),
-            Some("20200315000000")
-        );
-    }
-
-    #[test]
-    fn test_normalize_cdx_timestamp_rejects_invalid() {
-        // Length not in {4, 6, 8, 14}.
-        assert!(normalize_cdx_timestamp("20203", false).is_none());
-        // Out-of-range month.
-        assert!(normalize_cdx_timestamp("202013", false).is_none());
-        // Out-of-range day.
-        assert!(normalize_cdx_timestamp("20200300", false).is_none());
-        // Pre-1996 year.
-        assert!(normalize_cdx_timestamp("1995", false).is_none());
-        // Empty / non-digit garbage.
-        assert!(normalize_cdx_timestamp("oops", false).is_none());
-    }
-
     #[tokio::test]
     async fn test_fetch_urls_passes_date_range() {
         use mockito;
@@ -935,11 +796,59 @@ mod tests {
 
         let mut provider = WaybackMachineProvider::new();
         provider.with_base_url(server.url());
-        provider.with_from(Some("20200101000000".to_string()));
-        provider.with_to(Some("20201231235959".to_string()));
+        provider.with_filters(ArchiveFilters {
+            from: Some("20200101000000".to_string()),
+            to: Some("20201231235959".to_string()),
+            ..Default::default()
+        });
 
         let urls = provider.fetch_urls("example.com").await.unwrap();
         assert_eq!(urls, vec!["http://example.com/page".to_string()]);
         mock.assert();
+    }
+
+    #[test]
+    fn test_query_base_uses_classic_cdx_filter_fields() {
+        // web.archive.org names these fields `statuscode`/`mimetype`. Sending
+        // pywb's `status`/`mime` here returns no error — just nothing — so the
+        // exact wire format is worth pinning down.
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url("https://web.archive.org".to_string());
+        provider.with_filters(ArchiveFilters::from_cli_lists(
+            None,
+            None,
+            &["200".to_string()],
+            &[],
+            &[],
+            &["text/html".to_string()],
+        ));
+
+        let q = provider.query_base("example.com");
+        assert!(q.contains("&filter=statuscode:200"), "{q}");
+        assert!(q.contains("&filter=!mimetype:text%2Fhtml"), "{q}");
+        assert!(!q.contains("filter=status:"), "{q}");
+    }
+
+    #[test]
+    fn test_query_base_keeps_filters_alongside_pagination_params() {
+        // The live CDX server was verified to honour `filter=` together with
+        // `fl=original` and `collapse=urlkey`; keep all three in the query.
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url("https://web.archive.org".to_string());
+        provider.with_filters(ArchiveFilters::from_cli_lists(
+            Some("20200101000000".to_string()),
+            None,
+            &[],
+            &["404".to_string(), "500".to_string()],
+            &[],
+            &[],
+        ));
+
+        let q = provider.query_base("example.com");
+        assert!(q.contains("fl=original"), "{q}");
+        assert!(q.contains("collapse=urlkey"), "{q}");
+        assert!(q.contains("&from=20200101000000"), "{q}");
+        // Multiple exclusions fold into one negated alternation on this dialect.
+        assert!(q.contains("&filter=!statuscode:%28404%7C500%29"), "{q}");
     }
 }

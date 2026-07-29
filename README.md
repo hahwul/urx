@@ -22,8 +22,10 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
 * Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
+* Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
 * URL normalization and deduplication: Sort query parameters, remove trailing slashes, and merge semantically identical URLs
-* Support for multiple output formats: plain text, JSON, CSV
+* Support for multiple output formats: plain text, JSON, JSON Lines, CSV
+* Streaming output (`--stream`): URLs are written as each provider reports them, so a pipeline starts working immediately instead of waiting for the slowest archive
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
 * Output results to the console or a file, or stream via stdin for pipeline integration
 * URL Testing:
@@ -102,7 +104,8 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per domain into this directory (extension matches --format). Coexists with --output / stdout.
-  -f, --format <FORMAT>          Output format (e.g., "plain", "json", "csv") [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv" [default: plain]
+      --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
 
@@ -119,10 +122,18 @@ Provider Options:
           Include subdomains when searching
       --cc-index <CC_INDEX>
           Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` (the default) resolves the newest via collinfo.json. [default: latest]
-      --wayback-from <DATE>
-          Restrict Wayback Machine results to snapshots at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
-      --wayback-to <DATE>
-          Restrict Wayback Machine results to snapshots at or before DATE (same format as --wayback-from)
+      --from <DATE>
+          Restrict every CDX-backed provider (wayback, cc, arquivo) to captures at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss). Alias: --wayback-from
+      --to <DATE>
+          Restrict every CDX-backed provider to captures at or before DATE (same format as --from). Alias: --wayback-to
+      --archive-status <CODE>
+          Keep only captures the archive recorded with this HTTP status code (e.g. "200"). Applied by the CDX index itself, so unlike --include-status it costs no extra requests. A multi-value list works on wayback only — see "Archive-side Filtering" below
+      --archive-exclude-status <CODES>
+          Drop captures the archive recorded with these HTTP status codes (comma-separated, e.g. "404,500"). Multi-value works on every CDX provider
+      --archive-mime <TYPE>
+          Keep only captures with this recorded MIME type (e.g. "application/json"). Catches endpoints with no file extension, which -e/--extensions cannot
+      --archive-exclude-mime <TYPES>
+          Drop captures with these recorded MIME types (comma-separated, e.g. "text/html,image/png")
       --vt-api-key <VT_API_KEY>
           API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>
@@ -271,8 +282,21 @@ urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insec
 # Advanced filtering
 urx example.com -e js,php --patterns admin,login --exclude-patterns logout,static --min-length 20
 
-# HTTP Status code based filtering
+# HTTP Status code based filtering (live requests: urx re-fetches each URL)
 urx example.com --include-status 200,30x,405 --exclude-status 20x
+
+# Archive-side filtering (free: the CDX index already knows these)
+# Skip everything the archive recorded as a 404 — no extra requests
+urx example.com --archive-exclude-status 404
+
+# Only captures the archive served as JSON — finds extensionless API endpoints
+urx example.com --archive-mime application/json
+
+# Drop HTML to leave assets and endpoints behind
+urx example.com --archive-exclude-mime text/html
+
+# Restrict the crawl window across wayback, cc, and arquivo alike
+urx example.com --from 2023 --to 2024
 
 # Disable host validation
 urx example.com --strict false
@@ -287,6 +311,54 @@ urx example.com --normalize-url --merge-endpoint
 # URL normalization with file input
 urx --files urls.txt --normalize-url
 ```
+
+### Streaming Output
+
+By default urx collects everything, then filters, sorts, and prints once. On a
+large target that means no output at all until the slowest archive finishes.
+`--stream` writes each URL the moment the provider reporting it comes back:
+
+```bash
+# Matches start appearing immediately instead of after the slowest provider
+urx big-target.com --stream | grep admin
+
+# Line-delimited JSON stays valid while it is still being written
+urx big-target.com --stream -f jsonl | jq -r 'select(.url | test("/api/")) | .url'
+```
+
+Streamed URLs pass exactly the same filters as a batch run and are still
+deduplicated. Two things differ:
+
+* **Order.** Results arrive in provider-completion order, so the output is
+  unsorted. Pipe through `sort` if you need ordering.
+* **Scope.** Options that need the complete result set are rejected up front
+  (with a message naming each one): `--merge-endpoint`, `--check-status` /
+  `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
+  `--show-sources`, `--output-dir`, and `--files`. Caching is bypassed, and
+  `--format json` is refused in favour of `jsonl` because a JSON array has to
+  know which entry is last.
+
+Because the batch result map is never populated in this mode, a streamed run
+also holds far less in memory — only the dedup set of URLs already written.
+
+### Archive-side Filtering
+
+`--archive-status`, `--archive-mime`, `--from`, and `--to` are evaluated by the
+archive's CDX index rather than by urx. Two consequences are worth knowing:
+
+* They apply only to CDX-backed providers — `wayback`, `cc`, and `arquivo`.
+  Other providers ignore them; urx warns when none of the three is enabled.
+* The archives do not share one filter dialect. Wayback Machine treats values as
+  **regular expressions**, so `--archive-status "30."` matches any 3xx. Common
+  Crawl and Arquivo.pt match **exactly**, and their index ANDs repeated filters
+  together — so a multi-value positive list like `--archive-status 200,301` is
+  unsatisfiable there. urx skips that filter for those two providers (with a
+  warning) instead of sending a query that would come back empty. Multi-value
+  *exclusions* mean "not this and not that" and work everywhere.
+
+Use `--archive-status` when you want what the archive recorded at crawl time and
+`--check-status` / `--include-status` when you want the target's status *now*;
+the latter re-requests every URL.
 
 ### Caching and Incremental Scanning
 

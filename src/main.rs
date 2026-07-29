@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use std::sync::Arc;
 
 mod cache;
 mod cli;
@@ -351,6 +352,89 @@ fn cc_provider_label(index: &str) -> String {
 }
 
 /// Initialize all providers based on args and API keys
+/// Providers that speak a CDX API and can therefore honour `--from/--to` and
+/// the `--archive-*` predicates. Everything else silently ignores them, so we
+/// warn when the user asked for filters no selected provider can apply.
+const CDX_PROVIDERS: [&str; 3] = ["wayback", "cc", "arquivo"];
+
+/// Translate the `--from/--to/--archive-*` flags into [`ArchiveFilters`],
+/// warning once about any date we could not parse rather than failing the run.
+fn build_archive_filters(args: &Args) -> providers::ArchiveFilters {
+    let parse_date = |raw: &str, flag: &str, end_of_range: bool| {
+        let parsed = providers::normalize_cdx_timestamp(raw, end_of_range);
+        if parsed.is_none() && !args.silent {
+            eprintln!(
+                "Ignoring {flag}={raw:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss"
+            );
+        }
+        parsed
+    };
+
+    providers::ArchiveFilters::from_cli_lists(
+        args.from
+            .as_deref()
+            .and_then(|s| parse_date(s, "--from", false)),
+        args.to.as_deref().and_then(|s| parse_date(s, "--to", true)),
+        &args.archive_status,
+        &args.archive_exclude_status,
+        &args.archive_mime,
+        &args.archive_exclude_mime,
+    )
+}
+
+/// Providers whose index server is pywb-derived, and therefore cannot express
+/// a multi-value positive filter (see [`providers::ArchiveFilters`]).
+const PYWB_PROVIDERS: [&str; 2] = ["cc", "arquivo"];
+
+/// Warn about `--from/--to/--archive-*` flags that will not take effect, rather
+/// than letting them be silently inert.
+fn warn_about_inert_archive_filters(
+    args: &Args,
+    providers_list: &[String],
+    filters: &providers::ArchiveFilters,
+) {
+    if filters.is_empty() || args.silent {
+        return;
+    }
+
+    if !providers_list
+        .iter()
+        .any(|p| CDX_PROVIDERS.contains(&p.as_str()))
+    {
+        eprintln!(
+            "Warning: --from/--to/--archive-* apply only to CDX-backed providers ({}); none are enabled, so they will have no effect.",
+            CDX_PROVIDERS.join(", ")
+        );
+        return;
+    }
+
+    // Common Crawl and Arquivo.pt match filter values exactly and AND repeated
+    // filters together, so "200 or 301" is unsatisfiable there. urx drops such
+    // a filter for those providers instead of sending a query that would come
+    // back empty and read as "the archive has nothing".
+    let affected: Vec<&String> = providers_list
+        .iter()
+        .filter(|p| PYWB_PROVIDERS.contains(&p.as_str()))
+        .collect();
+    if affected.is_empty() {
+        return;
+    }
+    let unsupported = filters.unsupported_positives(providers::CdxDialect::Pywb);
+    if unsupported.is_empty() {
+        return;
+    }
+    eprintln!(
+        "Warning: {} accept only a single value for {} (their index matches exactly, with no OR); \
+         that filter is skipped for them and applied on wayback only.",
+        affected
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(" and "),
+        unsupported.join(" / ")
+    );
+}
+
 fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
@@ -371,26 +455,13 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     // so suppress the per-provider "needs API key" messages in that mode.
     let suppress_key_errors = args.all_providers;
 
+    // Predicates the archives evaluate for us. Built once so a malformed date
+    // warns a single time rather than once per provider per domain.
+    let archive_filters = build_archive_filters(args);
+    warn_about_inert_archive_filters(args, &providers_list, &archive_filters);
+
     if providers_list.iter().any(|p| p == "wayback") {
-        // Normalise --wayback-from/--wayback-to up front so a malformed value
-        // produces a single warning instead of one per domain. CDX wants
-        // YYYYMMDDhhmmss.
-        let wayback_from = args.wayback_from.as_deref().and_then(|s| {
-            let parsed = providers::wayback::normalize_cdx_timestamp(s, false);
-            if parsed.is_none() && !args.silent {
-                eprintln!("Ignoring --wayback-from={s:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss");
-            }
-            parsed
-        });
-        let wayback_to = args.wayback_to.as_deref().and_then(|s| {
-            let parsed = providers::wayback::normalize_cdx_timestamp(s, true);
-            if parsed.is_none() && !args.silent {
-                eprintln!("Ignoring --wayback-to={s:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss");
-            }
-            parsed
-        });
-        let wb_from = wayback_from.clone();
-        let wb_to = wayback_to.clone();
+        let filters = archive_filters.clone();
         add_provider(
             args,
             network_settings,
@@ -400,7 +471,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             "Wayback Machine".to_string(),
             move || {
                 let mut p = WaybackMachineProvider::new();
-                p.with_from(wb_from).with_to(wb_to);
+                p.with_filters(filters.clone());
                 p
             },
         );
@@ -412,6 +483,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         for index in &args.cc_index {
             let index = index.clone();
             let label = cc_provider_label(&index);
+            let filters = archive_filters.clone();
             add_provider(
                 args,
                 network_settings,
@@ -419,7 +491,11 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 &mut provider_names,
                 "cc",
                 label,
-                || CommonCrawlProvider::with_index(index.clone()),
+                || {
+                    let mut p = CommonCrawlProvider::with_index(index.clone());
+                    p.with_filters(filters.clone());
+                    p
+                },
             );
         }
     }
@@ -461,6 +537,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     }
 
     if providers_list.iter().any(|p| p == "arquivo") {
+        let filters = archive_filters.clone();
         add_provider(
             args,
             network_settings,
@@ -468,7 +545,11 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             &mut provider_names,
             "arquivo",
             "Arquivo.pt".to_string(),
-            ArquivoProvider::new,
+            move || {
+                let mut p = ArquivoProvider::new();
+                p.with_filters(filters.clone());
+                p
+            },
         );
     }
 
@@ -689,6 +770,148 @@ fn apply_url_filters(
     Ok(sorted_urls)
 }
 
+/// Build the filter/transformer pair used by both the batch and streaming
+/// paths, so a streamed run applies exactly the rules a batch run would.
+fn build_url_filter(args: &Args) -> UrlFilter {
+    let mut url_filter = UrlFilter::new();
+    if !args.preset.is_empty() {
+        url_filter.apply_presets(&args.preset);
+    }
+    url_filter
+        .with_extensions(args.extensions.clone())
+        .with_exclude_extensions(args.exclude_extensions.clone())
+        .with_patterns(args.patterns.clone())
+        .with_exclude_patterns(args.exclude_patterns.clone())
+        .with_min_length(args.min_length)
+        .with_max_length(args.max_length);
+    url_filter
+}
+
+/// Options that need the complete result set and therefore cannot be combined
+/// with `--stream`. Returned as (flag, why) so the error can say more than "not
+/// supported".
+fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
+    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+
+    if args.merge_endpoint {
+        out.push((
+            "--merge-endpoint",
+            "it folds URLs sharing a path into one, which needs every URL first",
+        ));
+    }
+    if args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty() {
+        out.push((
+            "--check-status / --include-status / --exclude-status",
+            "they re-request each URL after collection finishes",
+        ));
+    }
+    if args.extract_links {
+        out.push((
+            "--extract-links",
+            "it fetches collected URLs after collection finishes",
+        ));
+    }
+    if args.incremental {
+        out.push((
+            "--incremental",
+            "it diffs this run against the previous one, which needs the full set",
+        ));
+    }
+    if args.show_sources {
+        out.push((
+            "--show-sources",
+            "a URL is printed on first sighting, before later providers can report it too",
+        ));
+    }
+    if args.output_dir.is_some() {
+        out.push((
+            "--output-dir",
+            "it groups URLs by domain once the scan has finished",
+        ));
+    }
+    if !args.files.is_empty() {
+        out.push((
+            "--files",
+            "file input is read up front, so there is nothing to stream",
+        ));
+    }
+    out
+}
+
+/// Construct the streaming sink when `--stream` is set, after rejecting the
+/// option combinations it cannot honour.
+fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>> {
+    if !args.stream {
+        return Ok(None);
+    }
+
+    let conflicts = streaming_conflicts(args);
+    if !conflicts.is_empty() {
+        let detail = conflicts
+            .iter()
+            .map(|(flag, why)| format!("  {flag}: {why}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!("--stream cannot be combined with:\n{detail}");
+    }
+
+    if !output::format_supports_streaming(&args.format) {
+        anyhow::bail!(
+            "--stream cannot produce --format {}: it wraps every entry in one array, so the writer must know which entry is last. Use --format jsonl for line-delimited JSON.",
+            args.format
+        );
+    }
+
+    // Host validation mirrors the batch path: only meaningful when strict mode
+    // is on and the targets came from the command line rather than a file.
+    let host_validator = if args.strict_enabled() {
+        let mut domains: Vec<String> = args.domains.clone();
+        for path in &args.domain_list {
+            domains.extend(read_domains_from_file(path)?);
+        }
+        let domains: Vec<String> = domains
+            .iter()
+            .filter_map(|d| cli::normalize_domain(d))
+            .collect();
+        if domains.is_empty() {
+            None
+        } else {
+            Some(HostValidator::new(&domains, args.subs))
+        }
+    } else {
+        None
+    };
+
+    let mut transformer = UrlTransformer::new();
+    transformer
+        .with_normalize_url(args.normalize_url)
+        .with_show_only_host(args.show_only_host)
+        .with_show_only_path(args.show_only_path)
+        .with_show_only_param(args.show_only_param);
+
+    let writer: Box<dyn std::io::Write + Send> = match &args.output {
+        Some(path) => Box::new(
+            std::fs::File::create(path)
+                .with_context(|| format!("Failed to create output file: {}", path.display()))?,
+        ),
+        None => Box::new(std::io::stdout()),
+    };
+
+    // Colour would be baked into a redirected stream, and streamed rows carry
+    // no status to colourise anyway.
+    if args.output.is_some() {
+        colored::control::set_override(false);
+    }
+
+    Ok(Some(Arc::new(output::StreamSink::new(
+        build_url_filter(args),
+        transformer,
+        host_validator,
+        &args.format,
+        writer,
+    )?)))
+}
+
 /// Apply URL transformations
 fn apply_url_transformations(
     args: &Args,
@@ -827,9 +1050,15 @@ async fn process_domains_with_cache(
 
     // If caching is disabled, use normal processing
     if cache_manager.is_none() {
-        return Ok(
-            process_domains(domains, args, progress_manager, providers, provider_names).await,
-        );
+        return Ok(process_domains(
+            domains,
+            args,
+            progress_manager,
+            providers,
+            provider_names,
+            None,
+        )
+        .await);
     }
 
     let cache = cache_manager.unwrap();
@@ -884,6 +1113,7 @@ async fn process_domains_with_cache(
             progress_manager,
             providers,
             provider_names,
+            None,
         )
         .await;
 
@@ -999,6 +1229,11 @@ async fn main() -> Result<()> {
     // Check if file input is provided
     let urls_from_file = read_urls_from_files(&args)?;
 
+    // Streaming output, when requested. Built before the scan so a rejected
+    // combination fails immediately rather than after minutes of fetching.
+    let stream_sink = build_stream_sink(&args)?;
+    let mut streamed = false;
+
     // The run header is a transient line in the live region. Held here so it
     // outlives the provider branch where it's created and is cleared together
     // with the bars when the scan finishes.
@@ -1036,20 +1271,50 @@ async fn main() -> Result<()> {
             progress_manager.create_header_line(render_header(domains.len(), provider_names.len())),
         );
 
-        // Initialize cache manager if caching is enabled
-        let cache_manager = create_cache_manager(&args).await?;
+        if let Some(sink) = &stream_sink {
+            // Streaming writes as it goes and bypasses the cache entirely (the
+            // cache both reads whole domains and writes whole result sets).
+            let run = process_domains(
+                domains.clone(),
+                &args,
+                &progress_manager,
+                &providers,
+                &provider_names,
+                Some(Arc::clone(sink)),
+            )
+            .await;
+            streamed = true;
+            run
+        } else {
+            // Initialize cache manager if caching is enabled
+            let cache_manager = create_cache_manager(&args).await?;
 
-        // Process each domain with caching support
-        process_domains_with_cache(
-            domains.clone(),
-            &args,
-            &progress_manager,
-            &providers,
-            &provider_names,
-            cache_manager.as_ref(),
-        )
-        .await?
+            // Process each domain with caching support
+            process_domains_with_cache(
+                domains.clone(),
+                &args,
+                &progress_manager,
+                &providers,
+                &provider_names,
+                cache_manager.as_ref(),
+            )
+            .await?
+        }
     };
+
+    if streamed {
+        // Everything has already been written by the sink; printing the
+        // (deliberately empty) batch result again would duplicate nothing but
+        // would still emit a stray JSON array / CSV header.
+        progress_manager.clear();
+        if let Some(sink) = &stream_sink {
+            verbose_print(&args, format!("Streamed {} URLs", sink.emitted()));
+        }
+        if args.stats {
+            print_provider_stats(&run_result.stats);
+        }
+        return Ok(());
+    }
 
     // URL-only view for filters (they don't care about sources).
     let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
@@ -1187,6 +1452,7 @@ async fn main() -> Result<()> {
 fn output_dir_extension(format: &str) -> &'static str {
     match format.to_lowercase().as_str() {
         "json" => "json",
+        "jsonl" => "jsonl",
         "csv" => "csv",
         _ => "txt",
     }
@@ -1312,6 +1578,158 @@ mod tests {
     // process-global colour toggles).
     fn plain(s: &str) -> String {
         console::strip_ansi_codes(s).to_string()
+    }
+
+    #[test]
+    fn test_streaming_rejects_options_needing_the_full_result_set() {
+        use clap::Parser;
+        // Each of these is rejected for a concrete reason, and the reason is
+        // shown to the user — so assert on the flag list, not just on failure.
+        let cases = [
+            (vec!["--merge-endpoint"], "--merge-endpoint"),
+            (vec!["--check-status"], "--check-status"),
+            (vec!["--extract-links"], "--extract-links"),
+            (vec!["--incremental"], "--incremental"),
+            (vec!["--show-sources"], "--show-sources"),
+        ];
+
+        for (flags, expected) in cases {
+            let mut argv = vec!["urx", "--stream"];
+            argv.extend(flags.iter().copied());
+            argv.push("example.com");
+            let args = Args::parse_from(argv);
+
+            let conflicts = streaming_conflicts(&args);
+            assert!(
+                conflicts.iter().any(|(flag, _)| flag.contains(expected)),
+                "{expected} should conflict with --stream, got {conflicts:?}"
+            );
+            let err = match build_stream_sink(&args) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{expected} should have been rejected"),
+            };
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_streaming_allows_per_url_options() {
+        use clap::Parser;
+        // --normalize-url and the show-only views are per-URL, so they stream
+        // fine; only cross-URL work is off limits.
+        let args = Args::parse_from([
+            "urx",
+            "--stream",
+            "--normalize-url",
+            "--show-only-path",
+            "-e",
+            "js",
+            "example.com",
+        ]);
+        assert!(streaming_conflicts(&args).is_empty());
+        assert!(build_stream_sink(&args).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_streaming_rejects_json_and_points_at_jsonl() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "--stream", "-f", "json", "example.com"]);
+        let err = match build_stream_sink(&args) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("--format json should have been rejected"),
+        };
+        assert!(err.contains("jsonl"), "should suggest jsonl, got {err}");
+
+        for format in ["plain", "jsonl", "csv"] {
+            let args = Args::parse_from(["urx", "--stream", "-f", format, "example.com"]);
+            assert!(build_stream_sink(&args).is_ok(), "{format} should stream");
+        }
+    }
+
+    #[test]
+    fn test_no_stream_flag_builds_no_sink() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(build_stream_sink(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_build_archive_filters_maps_every_flag() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "urx",
+            "--from",
+            "2020",
+            "--to",
+            "2021",
+            "--archive-status",
+            "200",
+            "--archive-exclude-status",
+            "404,500",
+            "--archive-mime",
+            "application/json",
+            "--archive-exclude-mime",
+            "text/html",
+            "example.com",
+        ]);
+        let f = build_archive_filters(&args);
+
+        // Partial dates pad toward opposite ends of the range.
+        assert_eq!(f.from.as_deref(), Some("20200101000000"));
+        assert_eq!(f.to.as_deref(), Some("20211231235959"));
+        assert_eq!(f.status, vec!["200"]);
+        assert_eq!(f.exclude_status, vec!["404", "500"]);
+        assert_eq!(f.mime, vec!["application/json"]);
+        assert_eq!(f.exclude_mime, vec!["text/html"]);
+    }
+
+    #[test]
+    fn test_build_archive_filters_ignores_unparseable_date() {
+        use clap::Parser;
+        // A bad date warns and is dropped rather than aborting the whole run.
+        let args = Args::parse_from(["urx", "--silent", "--from", "not-a-date", "example.com"]);
+        let f = build_archive_filters(&args);
+        assert!(f.from.is_none());
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn test_archive_filters_reach_both_cdx_dialects() {
+        use clap::Parser;
+        // Ties the CLI flags to the wire format each archive actually accepts,
+        // which was verified against the live servers: web.archive.org wants
+        // `statuscode`/`mimetype`, Common Crawl and Arquivo.pt want
+        // `status`/`mime`.
+        let args = Args::parse_from([
+            "urx",
+            "--archive-status",
+            "200",
+            "--archive-exclude-mime",
+            "text/html",
+            "example.com",
+        ]);
+        let f = build_archive_filters(&args);
+
+        let classic = f.query_params(providers::CdxDialect::Classic);
+        assert!(classic.contains("&filter=statuscode:200"), "{classic}");
+        assert!(
+            classic.contains("&filter=!mimetype:text%2Fhtml"),
+            "{classic}"
+        );
+
+        let pywb = f.query_params(providers::CdxDialect::Pywb);
+        assert!(pywb.contains("&filter=status:200"), "{pywb}");
+        assert!(pywb.contains("&filter=!mime:text%2Fhtml"), "{pywb}");
+    }
+
+    #[test]
+    fn test_legacy_wayback_date_flags_still_feed_archive_filters() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "--wayback-from", "2020", "example.com"]);
+        assert_eq!(
+            build_archive_filters(&args).from.as_deref(),
+            Some("20200101000000")
+        );
     }
 
     #[test]
@@ -1859,6 +2277,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec!["mock".to_string()],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],
@@ -1914,8 +2333,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         };
 
@@ -1928,6 +2351,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
 
@@ -1977,6 +2401,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -2017,6 +2442,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -2026,6 +2452,148 @@ mod tests {
             elapsed >= std::time::Duration::from_millis(900),
             "expected sequential fetches (~1s) with --parallel 1, took {elapsed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_stream_emits_before_slow_provider_finishes() {
+        // The whole point of --stream: a fast provider's URLs must reach the
+        // consumer while a slow one is still fetching, instead of everyone
+        // waiting for the slowest.
+        use std::io::Write;
+
+        #[derive(Clone, Default)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let fast = MockProvider::new(vec!["https://example.com/fast".to_string()], false);
+        let slow = MockProvider::new(vec!["https://example.com/slow".to_string()], false)
+            .with_delay_ms(2_000);
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(fast), Box::new(slow)];
+        let provider_names = vec!["Fast".to_string(), "Slow".to_string()];
+
+        let buf = SharedBuf::default();
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::new(),
+                None,
+                "plain",
+                Box::new(buf.clone()),
+            )
+            .unwrap(),
+        );
+
+        let args = build_test_args();
+        let progress_manager = ProgressManager::new(true);
+
+        let run = tokio::spawn({
+            let sink = Arc::clone(&sink);
+            let providers: Vec<Box<dyn Provider>> =
+                providers.iter().map(|p| p.clone_box()).collect();
+            let provider_names = provider_names.clone();
+            async move {
+                let pm = ProgressManager::new(true);
+                process_domains(
+                    vec!["example.com".to_string()],
+                    &args,
+                    &pm,
+                    &providers,
+                    &provider_names,
+                    Some(sink),
+                )
+                .await
+            }
+        });
+
+        // Half a second in — long before the slow provider's 2s delay elapses —
+        // the fast provider's URL must already be written.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let mid_run = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            mid_run.contains("https://example.com/fast"),
+            "fast provider's URL should be streamed while the slow one is still running, got {mid_run:?}"
+        );
+        assert!(
+            !mid_run.contains("https://example.com/slow"),
+            "slow provider should not have reported yet, got {mid_run:?}"
+        );
+
+        run.await.unwrap();
+        let final_out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            final_out.contains("https://example.com/slow"),
+            "{final_out}"
+        );
+        assert_eq!(sink.emitted(), 2);
+        let _ = progress_manager;
+    }
+
+    #[tokio::test]
+    async fn test_stream_mode_skips_the_batch_url_map() {
+        // Streaming runs must not also accumulate every URL in memory — that
+        // map exists only to feed the batch output path.
+        use std::io::Write;
+
+        struct Sink;
+        impl Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let provider = MockProvider::new(
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ],
+            false,
+        );
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["Mock".to_string()];
+
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::new(),
+                None,
+                "plain",
+                Box::new(Sink),
+            )
+            .unwrap(),
+        );
+
+        let args = build_test_args();
+        let progress_manager = ProgressManager::new(true);
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+            Some(Arc::clone(&sink)),
+        )
+        .await;
+
+        assert!(
+            result.urls.is_empty(),
+            "batch map should stay empty when streaming, got {:?}",
+            result.urls
+        );
+        assert_eq!(sink.emitted(), 2);
+        // Stats are still tallied so --stats keeps working.
+        assert_eq!(result.stats[0].url_count, 2);
     }
 
     #[tokio::test]
@@ -2048,6 +2616,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
         let elapsed = started.elapsed();
@@ -2083,6 +2652,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
 
@@ -2204,6 +2774,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec!["mock".to_string()],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],
@@ -2259,8 +2830,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         }
     }
@@ -2327,6 +2902,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec![],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],
@@ -2382,8 +2958,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         };
 

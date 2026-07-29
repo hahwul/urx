@@ -120,6 +120,55 @@ impl Outputter for JsonOutputter {
     }
 }
 
+/// Writes one JSON object per line, with no array wrapper. Every line stands
+/// alone, so the file remains parseable while it is still being written.
+#[derive(Debug, Clone)]
+pub struct JsonLinesOutputter {
+    formatter: Box<dyn Formatter>,
+}
+
+impl JsonLinesOutputter {
+    pub fn new() -> Self {
+        JsonLinesOutputter {
+            formatter: Box::new(super::JsonLinesFormatter::new()),
+        }
+    }
+}
+
+impl Default for JsonLinesOutputter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Outputter for JsonLinesOutputter {
+    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
+        self.formatter.format(url_data, is_last)
+    }
+
+    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+        match output_path {
+            Some(path) => {
+                let mut file = File::create(&path).context("Failed to create output file")?;
+                for url_data in urls {
+                    file.write_all(self.format(url_data, false).as_bytes())
+                        .context("Failed to write to output file")?;
+                }
+                Ok(())
+            }
+            None => {
+                if silent {
+                    return Ok(());
+                };
+                for url_data in urls {
+                    print!("{}", self.format(url_data, false));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CsvOutputter {
     formatter: Box<dyn Formatter>,
@@ -375,6 +424,64 @@ mod tests {
 
         assert_eq!(content, "");
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_jsonl_outputter_format_is_position_independent() {
+        // Unlike JsonOutputter, no entry depends on being last — that is what
+        // lets the same formatter serve the streaming path.
+        let outputter = JsonLinesOutputter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(
+            outputter.format(&url_data, false),
+            "{\"url\":\"https://example.com\"}\n"
+        );
+        assert_eq!(
+            outputter.format(&url_data, true),
+            outputter.format(&url_data, false)
+        );
+    }
+
+    #[test]
+    fn test_jsonl_outputter_file_output() -> Result<()> {
+        let outputter = JsonLinesOutputter::new();
+        let urls = vec![
+            UrlData::new("https://example.com/page1".to_string()),
+            UrlData::with_status(
+                "https://example.com/page2".to_string(),
+                "200 OK".to_string(),
+            ),
+        ];
+
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
+
+        let mut content = String::new();
+        let mut file = File::open(&temp_path)?;
+        file.read_to_string(&mut content)?;
+
+        // No array wrapper and no separating commas: every line parses alone.
+        assert_eq!(
+            content,
+            "{\"url\":\"https://example.com/page1\"}\n\
+             {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n"
+        );
+        for line in content.lines() {
+            let _: serde_json::Value = serde_json::from_str(line).unwrap();
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_jsonl_outputter_silent_writes_nothing() -> Result<()> {
+        let outputter = JsonLinesOutputter::new();
+        let urls = vec![UrlData::new("https://example.com".to_string())];
+        // Silent + stdout must be a no-op rather than an error.
+        outputter.output(&urls, None, true)?;
         Ok(())
     }
 }

@@ -2,9 +2,11 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 mod formatter;
+mod stream;
 mod writer;
 
 pub use formatter::*;
+pub use stream::{format_supports_streaming, StreamSink};
 pub use writer::*;
 
 /// A structure to hold URL data with optional status information
@@ -80,12 +82,14 @@ pub trait Outputter: Send + Sync {
 /// Create an appropriate outputter based on the specified format
 ///
 /// Supported formats:
-/// - "json": JSON format with URL and optional status
+/// - "json": a single JSON array of entries
+/// - "jsonl": JSON Lines — one independent JSON object per line
 /// - "csv": CSV format with URL and optional status
 /// - any other value: Plain text format with one URL per line
 pub fn create_outputter(format: &str) -> Box<dyn Outputter> {
     match format.to_lowercase().as_str() {
         "json" => Box::new(JsonOutputter::new()),
+        "jsonl" => Box::new(JsonLinesOutputter::new()),
         "csv" => Box::new(CsvOutputter::new()),
         _ => Box::new(PlainOutputter::new()),
     }
