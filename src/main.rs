@@ -1581,6 +1581,79 @@ mod tests {
     }
 
     #[test]
+    fn test_streaming_rejects_options_needing_the_full_result_set() {
+        use clap::Parser;
+        // Each of these is rejected for a concrete reason, and the reason is
+        // shown to the user — so assert on the flag list, not just on failure.
+        let cases = [
+            (vec!["--merge-endpoint"], "--merge-endpoint"),
+            (vec!["--check-status"], "--check-status"),
+            (vec!["--extract-links"], "--extract-links"),
+            (vec!["--incremental"], "--incremental"),
+            (vec!["--show-sources"], "--show-sources"),
+        ];
+
+        for (flags, expected) in cases {
+            let mut argv = vec!["urx", "--stream"];
+            argv.extend(flags.iter().copied());
+            argv.push("example.com");
+            let args = Args::parse_from(argv);
+
+            let conflicts = streaming_conflicts(&args);
+            assert!(
+                conflicts.iter().any(|(flag, _)| flag.contains(expected)),
+                "{expected} should conflict with --stream, got {conflicts:?}"
+            );
+            let err = match build_stream_sink(&args) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{expected} should have been rejected"),
+            };
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_streaming_allows_per_url_options() {
+        use clap::Parser;
+        // --normalize-url and the show-only views are per-URL, so they stream
+        // fine; only cross-URL work is off limits.
+        let args = Args::parse_from([
+            "urx",
+            "--stream",
+            "--normalize-url",
+            "--show-only-path",
+            "-e",
+            "js",
+            "example.com",
+        ]);
+        assert!(streaming_conflicts(&args).is_empty());
+        assert!(build_stream_sink(&args).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_streaming_rejects_json_and_points_at_jsonl() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "--stream", "-f", "json", "example.com"]);
+        let err = match build_stream_sink(&args) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("--format json should have been rejected"),
+        };
+        assert!(err.contains("jsonl"), "should suggest jsonl, got {err}");
+
+        for format in ["plain", "jsonl", "csv"] {
+            let args = Args::parse_from(["urx", "--stream", "-f", format, "example.com"]);
+            assert!(build_stream_sink(&args).is_ok(), "{format} should stream");
+        }
+    }
+
+    #[test]
+    fn test_no_stream_flag_builds_no_sink() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(build_stream_sink(&args).unwrap().is_none());
+    }
+
+    #[test]
     fn test_build_archive_filters_maps_every_flag() {
         use clap::Parser;
         let args = Args::parse_from([

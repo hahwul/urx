@@ -426,4 +426,62 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_jsonl_outputter_format_is_position_independent() {
+        // Unlike JsonOutputter, no entry depends on being last — that is what
+        // lets the same formatter serve the streaming path.
+        let outputter = JsonLinesOutputter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(
+            outputter.format(&url_data, false),
+            "{\"url\":\"https://example.com\"}\n"
+        );
+        assert_eq!(
+            outputter.format(&url_data, true),
+            outputter.format(&url_data, false)
+        );
+    }
+
+    #[test]
+    fn test_jsonl_outputter_file_output() -> Result<()> {
+        let outputter = JsonLinesOutputter::new();
+        let urls = vec![
+            UrlData::new("https://example.com/page1".to_string()),
+            UrlData::with_status(
+                "https://example.com/page2".to_string(),
+                "200 OK".to_string(),
+            ),
+        ];
+
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
+
+        let mut content = String::new();
+        let mut file = File::open(&temp_path)?;
+        file.read_to_string(&mut content)?;
+
+        // No array wrapper and no separating commas: every line parses alone.
+        assert_eq!(
+            content,
+            "{\"url\":\"https://example.com/page1\"}\n\
+             {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n"
+        );
+        for line in content.lines() {
+            let _: serde_json::Value = serde_json::from_str(line).unwrap();
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_jsonl_outputter_silent_writes_nothing() -> Result<()> {
+        let outputter = JsonLinesOutputter::new();
+        let urls = vec![UrlData::new("https://example.com".to_string())];
+        // Silent + stdout must be a no-op rather than an error.
+        outputter.output(&urls, None, true)?;
+        Ok(())
+    }
 }
