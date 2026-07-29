@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
+use super::filters::{ArchiveFilters, CdxDialect};
 use super::Provider;
 use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
@@ -51,6 +52,8 @@ pub struct CommonCrawlProvider {
     random_agent: bool,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
+    /// Server-side CDX predicates (date range, status code, MIME type).
+    filters: ArchiveFilters,
     #[cfg(test)]
     base_url: String,
 }
@@ -87,6 +90,7 @@ impl CommonCrawlProvider {
             random_agent: true,
             insecure: false,
             rate_limit: None,
+            filters: ArchiveFilters::default(),
             #[cfg(test)]
             base_url: "https://index.commoncrawl.org".to_string(),
         }
@@ -109,9 +113,18 @@ impl CommonCrawlProvider {
             random_agent: true,
             insecure: false,
             rate_limit: None,
+            filters: ArchiveFilters::default(),
             #[cfg(test)]
             base_url: "https://index.commoncrawl.org".to_string(),
         }
+    }
+
+    /// Apply server-side CDX predicates (date range, status code, MIME type).
+    /// The Common Crawl index server runs pywb, so it names these fields
+    /// `status`/`mime` rather than the classic CDX `statuscode`/`mimetype`.
+    pub fn with_filters(&mut self, filters: ArchiveFilters) -> &mut Self {
+        self.filters = filters;
+        self
     }
 
     /// Build an `HttpClientConfig` from the current provider settings.
@@ -172,11 +185,13 @@ impl CommonCrawlProvider {
     /// per request.
     fn query_base(&self, index: &str, domain: &str) -> String {
         let base_url = self.index_base_url();
-        if self.include_subdomains {
+        let mut url = if self.include_subdomains {
             format!("{base_url}/{index}-index?url=*.{domain}/*&output=json")
         } else {
             format!("{base_url}/{index}-index?url={domain}/*&output=json")
-        }
+        };
+        url.push_str(&self.filters.query_params(CdxDialect::Pywb));
+        url
     }
 }
 
@@ -755,5 +770,45 @@ mod tests {
         assert!(!is_valid_cc_index_id("CC-MAIN-202X-17"));
         assert!(!is_valid_cc_index_id("../../etc/passwd"));
         assert!(!is_valid_cc_index_id(""));
+    }
+
+    #[test]
+    fn test_query_base_uses_pywb_filter_fields() {
+        // The CC index server matches filter values EXACTLY — a regex such as
+        // `20.` or `(200|301)` returns nothing there — and names the fields
+        // `status`/`mime` rather than the classic `statuscode`/`mimetype`.
+        let mut provider = CommonCrawlProvider::with_index("CC-MAIN-2026-17".to_string());
+        provider.with_filters(ArchiveFilters::from_cli_lists(
+            None,
+            None,
+            &["200".to_string()],
+            &[],
+            &[],
+            &["text/html".to_string()],
+        ));
+
+        let q = provider.query_base("CC-MAIN-2026-17", "example.com");
+        assert!(q.contains("&filter=status:200"), "{q}");
+        assert!(q.contains("&filter=!mime:text%2Fhtml"), "{q}");
+        assert!(!q.contains("statuscode"), "{q}");
+        assert!(!q.contains("mimetype"), "{q}");
+    }
+
+    #[test]
+    fn test_query_base_drops_unsatisfiable_positive_list() {
+        // "200 or 301" cannot be expressed against an exact-match index, so the
+        // filter is omitted rather than sent as an AND that matches nothing.
+        let mut provider = CommonCrawlProvider::with_index("CC-MAIN-2026-17".to_string());
+        provider.with_filters(ArchiveFilters::from_cli_lists(
+            None,
+            None,
+            &["200".to_string(), "301".to_string()],
+            &[],
+            &[],
+            &[],
+        ));
+
+        let q = provider.query_base("CC-MAIN-2026-17", "example.com");
+        assert!(!q.contains("filter="), "{q}");
     }
 }

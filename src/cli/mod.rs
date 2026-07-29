@@ -95,19 +95,50 @@ pub struct Args {
     #[clap(long, default_value = "latest", value_delimiter = ',')]
     pub cc_index: Vec<String>,
 
-    /// Restrict Wayback Machine results to snapshots at or after this date.
-    /// Accepts YYYY, YYYYMM, YYYYMMDD, or the full 14-digit CDX timestamp.
-    /// Partial dates pad toward the start of the range.
+    /// Restrict results to captures at or after this date, on every CDX-backed
+    /// provider (wayback, cc, arquivo). Accepts YYYY, YYYYMM, YYYYMMDD, or the
+    /// full 14-digit CDX timestamp; partial dates pad toward the start of the
+    /// range.
     #[clap(help_heading = "Provider Options")]
-    #[clap(long)]
-    pub wayback_from: Option<String>,
+    #[clap(long, alias = "wayback-from")]
+    pub from: Option<String>,
 
-    /// Restrict Wayback Machine results to snapshots at or before this date.
-    /// Same format as --wayback-from; partial dates pad toward the end of
-    /// the range.
+    /// Restrict results to captures at or before this date, on every CDX-backed
+    /// provider. Same format as --from; partial dates pad toward the end of the
+    /// range.
     #[clap(help_heading = "Provider Options")]
-    #[clap(long)]
-    pub wayback_to: Option<String>,
+    #[clap(long, alias = "wayback-to")]
+    pub to: Option<String>,
+
+    /// Keep only captures the archive recorded with this HTTP status code
+    /// (e.g. "200"). Applied by the CDX index itself, so unlike
+    /// --include-status it costs no extra requests. CDX-backed providers only
+    /// (wayback, cc, arquivo). Wayback treats the value as a regex ("30." =
+    /// any 3xx); cc and arquivo match exactly and cannot take a multi-value
+    /// list here — urx warns and skips it for them.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long, value_delimiter = ',')]
+    pub archive_status: Vec<String>,
+
+    /// Drop captures the archive recorded with these HTTP status codes
+    /// (comma-separated, e.g. "404,500"). Unlike --archive-status, a
+    /// multi-value list works on every CDX provider. See --archive-status.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long, value_delimiter = ',')]
+    pub archive_exclude_status: Vec<String>,
+
+    /// Keep only captures with this recorded MIME type (e.g.
+    /// "application/json"). Catches endpoints that carry no file extension,
+    /// which -e/--extensions cannot. Same dialect caveats as --archive-status.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long, value_delimiter = ',')]
+    pub archive_mime: Vec<String>,
+
+    /// Drop captures with these recorded MIME types (comma-separated, e.g.
+    /// "text/html,image/png"). A multi-value list works on every CDX provider.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long, value_delimiter = ',')]
+    pub archive_exclude_mime: Vec<String>,
 
     #[clap(help_heading = "Provider Options")]
     /// API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
@@ -814,7 +845,16 @@ mod tests {
     }
 
     #[test]
-    fn test_wayback_date_flags_parsed() {
+    fn test_date_flags_parsed() {
+        let args = Args::parse_from(["urx", "--from", "2020", "--to", "2023-06-30", "example.com"]);
+        assert_eq!(args.from.as_deref(), Some("2020"));
+        assert_eq!(args.to.as_deref(), Some("2023-06-30"));
+    }
+
+    #[test]
+    fn test_legacy_wayback_date_aliases_still_parse() {
+        // --from/--to replaced these once the date range stopped being
+        // Wayback-only; existing command lines must keep working.
         let args = Args::parse_from([
             "urx",
             "--wayback-from",
@@ -823,8 +863,28 @@ mod tests {
             "2023-06-30",
             "example.com",
         ]);
-        assert_eq!(args.wayback_from.as_deref(), Some("2020"));
-        assert_eq!(args.wayback_to.as_deref(), Some("2023-06-30"));
+        assert_eq!(args.from.as_deref(), Some("2020"));
+        assert_eq!(args.to.as_deref(), Some("2023-06-30"));
+    }
+
+    #[test]
+    fn test_archive_filter_flags_parsed() {
+        let args = Args::parse_from([
+            "urx",
+            "--archive-status",
+            "200,301",
+            "--archive-exclude-status",
+            "404",
+            "--archive-mime",
+            "application/json",
+            "--archive-exclude-mime",
+            "text/html,image/png",
+            "example.com",
+        ]);
+        assert_eq!(args.archive_status, vec!["200", "301"]);
+        assert_eq!(args.archive_exclude_status, vec!["404"]);
+        assert_eq!(args.archive_mime, vec!["application/json"]);
+        assert_eq!(args.archive_exclude_mime, vec!["text/html", "image/png"]);
     }
 
     #[test]

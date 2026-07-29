@@ -37,8 +37,12 @@ Provider Options:
   --list-providers                       List every supported provider then exit
   --subs                                 Include subdomains when searching
   --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: latest]
-  --wayback-from <DATE>                  Restrict Wayback results to >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
-  --wayback-to <DATE>                    Restrict Wayback results to <= DATE (same format as --wayback-from)
+  --from <DATE>                          Restrict CDX providers to captures >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
+  --to <DATE>                            Restrict CDX providers to captures <= DATE (same format as --from)
+  --archive-status <CODES>               Keep only captures the archive recorded with these status codes
+  --archive-exclude-status <CODES>       Drop captures the archive recorded with these status codes
+  --archive-mime <TYPES>                 Keep only captures with these recorded MIME types
+  --archive-exclude-mime <TYPES>         Drop captures with these recorded MIME types
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
   --urlscan-api-key <URLSCAN_API_KEY>   Optional API key for Urlscan (also works anonymously)
   --zoomeye-api-key <ZOOMEYE_API_KEY>   API key for ZoomEye

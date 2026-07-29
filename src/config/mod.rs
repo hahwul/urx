@@ -40,6 +40,12 @@ pub struct ProviderConfig {
     pub providers: Option<Vec<String>>,
     pub subs: Option<bool>,
     pub cc_index: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub archive_status: Option<Vec<String>>,
+    pub archive_exclude_status: Option<Vec<String>>,
+    pub archive_mime: Option<Vec<String>>,
+    pub archive_exclude_mime: Option<Vec<String>>,
     pub vt_api_key: Option<String>,
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
@@ -364,6 +370,40 @@ impl Config {
                 if !split.is_empty() {
                     args.cc_index = split;
                 }
+            }
+        }
+
+        // Archive-side CDX predicates. Each applies only when the CLI left the
+        // slot untouched, matching how every other provider option resolves.
+        if args.from.is_none() && self.provider.from.is_some() {
+            args.from = self.provider.from.clone();
+        }
+
+        if args.to.is_none() && self.provider.to.is_some() {
+            args.to = self.provider.to.clone();
+        }
+
+        if args.archive_status.is_empty() {
+            if let Some(v) = &self.provider.archive_status {
+                args.archive_status = v.clone();
+            }
+        }
+
+        if args.archive_exclude_status.is_empty() {
+            if let Some(v) = &self.provider.archive_exclude_status {
+                args.archive_exclude_status = v.clone();
+            }
+        }
+
+        if args.archive_mime.is_empty() {
+            if let Some(v) = &self.provider.archive_mime {
+                args.archive_mime = v.clone();
+            }
+        }
+
+        if args.archive_exclude_mime.is_empty() {
+            if let Some(v) = &self.provider.archive_exclude_mime {
+                args.archive_exclude_mime = v.clone();
             }
         }
 
@@ -755,8 +795,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         };
         assert_eq!(args.output, None);
@@ -892,5 +936,54 @@ mod tests {
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
         cfg.apply_to_args(&mut args, false, false, false);
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
+    }
+
+    #[test]
+    fn test_archive_filters_load_from_config_file() {
+        let content = r#"
+            [provider]
+            from = "2020"
+            to = "2021"
+            archive_status = ["200"]
+            archive_exclude_status = ["404", "500"]
+            archive_mime = ["application/json"]
+            archive_exclude_mime = ["text/html"]
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args);
+
+        assert_eq!(args.from.as_deref(), Some("2020"));
+        assert_eq!(args.to.as_deref(), Some("2021"));
+        assert_eq!(args.archive_status, vec!["200"]);
+        assert_eq!(args.archive_exclude_status, vec!["404", "500"]);
+        assert_eq!(args.archive_mime, vec!["application/json"]);
+        assert_eq!(args.archive_exclude_mime, vec!["text/html"]);
+    }
+
+    #[test]
+    fn test_cli_archive_filters_beat_config_file() {
+        let content = r#"
+            [provider]
+            from = "2020"
+            archive_status = ["200"]
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+
+        let mut args = Args::parse_from([
+            "urx",
+            "--from",
+            "2015",
+            "--archive-status",
+            "404",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args);
+
+        assert_eq!(args.from.as_deref(), Some("2015"));
+        assert_eq!(args.archive_status, vec!["404"]);
     }
 }

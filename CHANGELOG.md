@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Archive-side filtering pushed into the CDX query: `--archive-status`,
+  `--archive-exclude-status`, `--archive-mime`, `--archive-exclude-mime`.
+  The index already records these, so filtered-out captures never cross the
+  network — unlike `--include-status`, which re-requests every URL
+- Date range generalised from Wayback-only to every CDX provider (wayback, cc,
+  arquivo): `--from` / `--to`, with `--wayback-from` / `--wayback-to` kept as
+  aliases
+- All six flags are also settable under `[provider]` in the config file
+- SOCKS5 proxy support (`--proxy socks5://...`); previously only HTTP proxies
+  built successfully
+- Enable gzip/brotli response compression, cutting bandwidth on the plain-text
+  CDX responses that dominate a large scan
+
 ## 0.10.0
 
 - New providers: `arquivo` (Arquivo.pt, keyless) and `github` (GitHub Code Search, via `--github-api-key`)

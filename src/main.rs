@@ -351,6 +351,89 @@ fn cc_provider_label(index: &str) -> String {
 }
 
 /// Initialize all providers based on args and API keys
+/// Providers that speak a CDX API and can therefore honour `--from/--to` and
+/// the `--archive-*` predicates. Everything else silently ignores them, so we
+/// warn when the user asked for filters no selected provider can apply.
+const CDX_PROVIDERS: [&str; 3] = ["wayback", "cc", "arquivo"];
+
+/// Translate the `--from/--to/--archive-*` flags into [`ArchiveFilters`],
+/// warning once about any date we could not parse rather than failing the run.
+fn build_archive_filters(args: &Args) -> providers::ArchiveFilters {
+    let parse_date = |raw: &str, flag: &str, end_of_range: bool| {
+        let parsed = providers::normalize_cdx_timestamp(raw, end_of_range);
+        if parsed.is_none() && !args.silent {
+            eprintln!(
+                "Ignoring {flag}={raw:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss"
+            );
+        }
+        parsed
+    };
+
+    providers::ArchiveFilters::from_cli_lists(
+        args.from
+            .as_deref()
+            .and_then(|s| parse_date(s, "--from", false)),
+        args.to.as_deref().and_then(|s| parse_date(s, "--to", true)),
+        &args.archive_status,
+        &args.archive_exclude_status,
+        &args.archive_mime,
+        &args.archive_exclude_mime,
+    )
+}
+
+/// Providers whose index server is pywb-derived, and therefore cannot express
+/// a multi-value positive filter (see [`providers::ArchiveFilters`]).
+const PYWB_PROVIDERS: [&str; 2] = ["cc", "arquivo"];
+
+/// Warn about `--from/--to/--archive-*` flags that will not take effect, rather
+/// than letting them be silently inert.
+fn warn_about_inert_archive_filters(
+    args: &Args,
+    providers_list: &[String],
+    filters: &providers::ArchiveFilters,
+) {
+    if filters.is_empty() || args.silent {
+        return;
+    }
+
+    if !providers_list
+        .iter()
+        .any(|p| CDX_PROVIDERS.contains(&p.as_str()))
+    {
+        eprintln!(
+            "Warning: --from/--to/--archive-* apply only to CDX-backed providers ({}); none are enabled, so they will have no effect.",
+            CDX_PROVIDERS.join(", ")
+        );
+        return;
+    }
+
+    // Common Crawl and Arquivo.pt match filter values exactly and AND repeated
+    // filters together, so "200 or 301" is unsatisfiable there. urx drops such
+    // a filter for those providers instead of sending a query that would come
+    // back empty and read as "the archive has nothing".
+    let affected: Vec<&String> = providers_list
+        .iter()
+        .filter(|p| PYWB_PROVIDERS.contains(&p.as_str()))
+        .collect();
+    if affected.is_empty() {
+        return;
+    }
+    let unsupported = filters.unsupported_positives(providers::CdxDialect::Pywb);
+    if unsupported.is_empty() {
+        return;
+    }
+    eprintln!(
+        "Warning: {} accept only a single value for {} (their index matches exactly, with no OR); \
+         that filter is skipped for them and applied on wayback only.",
+        affected
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(" and "),
+        unsupported.join(" / ")
+    );
+}
+
 fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut provider_names: Vec<String> = Vec::new();
@@ -371,26 +454,13 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     // so suppress the per-provider "needs API key" messages in that mode.
     let suppress_key_errors = args.all_providers;
 
+    // Predicates the archives evaluate for us. Built once so a malformed date
+    // warns a single time rather than once per provider per domain.
+    let archive_filters = build_archive_filters(args);
+    warn_about_inert_archive_filters(args, &providers_list, &archive_filters);
+
     if providers_list.iter().any(|p| p == "wayback") {
-        // Normalise --wayback-from/--wayback-to up front so a malformed value
-        // produces a single warning instead of one per domain. CDX wants
-        // YYYYMMDDhhmmss.
-        let wayback_from = args.wayback_from.as_deref().and_then(|s| {
-            let parsed = providers::wayback::normalize_cdx_timestamp(s, false);
-            if parsed.is_none() && !args.silent {
-                eprintln!("Ignoring --wayback-from={s:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss");
-            }
-            parsed
-        });
-        let wayback_to = args.wayback_to.as_deref().and_then(|s| {
-            let parsed = providers::wayback::normalize_cdx_timestamp(s, true);
-            if parsed.is_none() && !args.silent {
-                eprintln!("Ignoring --wayback-to={s:?}: expected YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDhhmmss");
-            }
-            parsed
-        });
-        let wb_from = wayback_from.clone();
-        let wb_to = wayback_to.clone();
+        let filters = archive_filters.clone();
         add_provider(
             args,
             network_settings,
@@ -400,7 +470,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             "Wayback Machine".to_string(),
             move || {
                 let mut p = WaybackMachineProvider::new();
-                p.with_from(wb_from).with_to(wb_to);
+                p.with_filters(filters.clone());
                 p
             },
         );
@@ -412,6 +482,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         for index in &args.cc_index {
             let index = index.clone();
             let label = cc_provider_label(&index);
+            let filters = archive_filters.clone();
             add_provider(
                 args,
                 network_settings,
@@ -419,7 +490,11 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
                 &mut provider_names,
                 "cc",
                 label,
-                || CommonCrawlProvider::with_index(index.clone()),
+                || {
+                    let mut p = CommonCrawlProvider::with_index(index.clone());
+                    p.with_filters(filters.clone());
+                    p
+                },
             );
         }
     }
@@ -461,6 +536,7 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     }
 
     if providers_list.iter().any(|p| p == "arquivo") {
+        let filters = archive_filters.clone();
         add_provider(
             args,
             network_settings,
@@ -468,7 +544,11 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
             &mut provider_names,
             "arquivo",
             "Arquivo.pt".to_string(),
-            ArquivoProvider::new,
+            move || {
+                let mut p = ArquivoProvider::new();
+                p.with_filters(filters.clone());
+                p
+            },
         );
     }
 
@@ -1315,6 +1395,85 @@ mod tests {
     }
 
     #[test]
+    fn test_build_archive_filters_maps_every_flag() {
+        use clap::Parser;
+        let args = Args::parse_from([
+            "urx",
+            "--from",
+            "2020",
+            "--to",
+            "2021",
+            "--archive-status",
+            "200",
+            "--archive-exclude-status",
+            "404,500",
+            "--archive-mime",
+            "application/json",
+            "--archive-exclude-mime",
+            "text/html",
+            "example.com",
+        ]);
+        let f = build_archive_filters(&args);
+
+        // Partial dates pad toward opposite ends of the range.
+        assert_eq!(f.from.as_deref(), Some("20200101000000"));
+        assert_eq!(f.to.as_deref(), Some("20211231235959"));
+        assert_eq!(f.status, vec!["200"]);
+        assert_eq!(f.exclude_status, vec!["404", "500"]);
+        assert_eq!(f.mime, vec!["application/json"]);
+        assert_eq!(f.exclude_mime, vec!["text/html"]);
+    }
+
+    #[test]
+    fn test_build_archive_filters_ignores_unparseable_date() {
+        use clap::Parser;
+        // A bad date warns and is dropped rather than aborting the whole run.
+        let args = Args::parse_from(["urx", "--silent", "--from", "not-a-date", "example.com"]);
+        let f = build_archive_filters(&args);
+        assert!(f.from.is_none());
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn test_archive_filters_reach_both_cdx_dialects() {
+        use clap::Parser;
+        // Ties the CLI flags to the wire format each archive actually accepts,
+        // which was verified against the live servers: web.archive.org wants
+        // `statuscode`/`mimetype`, Common Crawl and Arquivo.pt want
+        // `status`/`mime`.
+        let args = Args::parse_from([
+            "urx",
+            "--archive-status",
+            "200",
+            "--archive-exclude-mime",
+            "text/html",
+            "example.com",
+        ]);
+        let f = build_archive_filters(&args);
+
+        let classic = f.query_params(providers::CdxDialect::Classic);
+        assert!(classic.contains("&filter=statuscode:200"), "{classic}");
+        assert!(
+            classic.contains("&filter=!mimetype:text%2Fhtml"),
+            "{classic}"
+        );
+
+        let pywb = f.query_params(providers::CdxDialect::Pywb);
+        assert!(pywb.contains("&filter=status:200"), "{pywb}");
+        assert!(pywb.contains("&filter=!mime:text%2Fhtml"), "{pywb}");
+    }
+
+    #[test]
+    fn test_legacy_wayback_date_flags_still_feed_archive_filters() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "--wayback-from", "2020", "example.com"]);
+        assert_eq!(
+            build_archive_filters(&args).from.as_deref(),
+            Some("20200101000000")
+        );
+    }
+
+    #[test]
     fn test_render_header_line() {
         let p = plain(&render_header(3, 5));
         // Standalone rule header: 2-space gutter, bold `urx` wordmark, scan
@@ -1914,8 +2073,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         };
 
@@ -2259,8 +2422,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         }
     }
@@ -2382,8 +2549,12 @@ mod tests {
             rate_limit_by: vec![],
             provider_config: None,
             output_dir: None,
-            wayback_from: None,
-            wayback_to: None,
+            from: None,
+            to: None,
+            archive_status: vec![],
+            archive_exclude_status: vec![],
+            archive_mime: vec![],
+            archive_exclude_mime: vec![],
             github_api_key: vec![],
         };
 
