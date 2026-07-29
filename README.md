@@ -24,7 +24,8 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
 * URL normalization and deduplication: Sort query parameters, remove trailing slashes, and merge semantically identical URLs
-* Support for multiple output formats: plain text, JSON, CSV
+* Support for multiple output formats: plain text, JSON, JSON Lines, CSV
+* Streaming output (`--stream`): URLs are written as each provider reports them, so a pipeline starts working immediately instead of waiting for the slowest archive
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
 * Output results to the console or a file, or stream via stdin for pipeline integration
 * URL Testing:
@@ -103,7 +104,8 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per domain into this directory (extension matches --format). Coexists with --output / stdout.
-  -f, --format <FORMAT>          Output format (e.g., "plain", "json", "csv") [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv" [default: plain]
+      --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
 
@@ -309,6 +311,35 @@ urx example.com --normalize-url --merge-endpoint
 # URL normalization with file input
 urx --files urls.txt --normalize-url
 ```
+
+### Streaming Output
+
+By default urx collects everything, then filters, sorts, and prints once. On a
+large target that means no output at all until the slowest archive finishes.
+`--stream` writes each URL the moment the provider reporting it comes back:
+
+```bash
+# Matches start appearing immediately instead of after the slowest provider
+urx big-target.com --stream | grep admin
+
+# Line-delimited JSON stays valid while it is still being written
+urx big-target.com --stream -f jsonl | jq -r 'select(.url | test("/api/")) | .url'
+```
+
+Streamed URLs pass exactly the same filters as a batch run and are still
+deduplicated. Two things differ:
+
+* **Order.** Results arrive in provider-completion order, so the output is
+  unsorted. Pipe through `sort` if you need ordering.
+* **Scope.** Options that need the complete result set are rejected up front
+  (with a message naming each one): `--merge-endpoint`, `--check-status` /
+  `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
+  `--show-sources`, `--output-dir`, and `--files`. Caching is bypassed, and
+  `--format json` is refused in favour of `jsonl` because a JSON array has to
+  know which entry is last.
+
+Because the batch result map is never populated in this mode, a streamed run
+also holds far less in memory — only the dedup set of URLs already written.
 
 ### Archive-side Filtering
 

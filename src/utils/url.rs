@@ -77,11 +77,32 @@ impl UrlTransformer {
         transformed_urls
     }
 
-    fn normalize_urls(&self, urls: Vec<String>) -> Vec<String> {
-        let mut normalized_urls = Vec::new();
+    /// Transform a single URL the way [`UrlTransformer::transform`] would,
+    /// minus `merge_endpoint` (which is inherently cross-URL and so has no
+    /// single-URL equivalent). Returns `None` when the URL carries nothing for
+    /// the configured `show_only_*` view — e.g. `--show-only-param` on a URL
+    /// with no query.
+    ///
+    /// Used by streaming output, where each URL must be decided on arrival.
+    pub fn transform_one(&self, url: &str) -> Option<String> {
+        let normalized = if self.normalize_url {
+            self.normalize_one(url)
+        } else {
+            url.to_string()
+        };
 
-        for url_str in urls {
-            if let Ok(mut url) = Url::parse(&url_str) {
+        if self.show_only_host || self.show_only_path || self.show_only_param {
+            self.extract_parts_one(&normalized)
+        } else {
+            Some(normalized)
+        }
+    }
+
+    /// Normalise one URL: drop a trailing slash and sort query parameters.
+    /// Unparseable input is passed through untouched.
+    fn normalize_one(&self, url_str: &str) -> String {
+        match Url::parse(url_str) {
+            Ok(mut url) => {
                 // Normalize the path - remove trailing slash if it's not just "/"
                 let path = url.path().to_string();
                 if path.len() > 1 {
@@ -107,12 +128,15 @@ impl UrlTransformer {
                     }
                 }
 
-                normalized_urls.push(url.to_string());
-            } else {
-                // If URL can't be parsed, keep it as is
-                normalized_urls.push(url_str);
+                url.to_string()
             }
+            // If URL can't be parsed, keep it as is
+            Err(_) => url_str.to_string(),
         }
+    }
+
+    fn normalize_urls(&self, urls: Vec<String>) -> Vec<String> {
+        let mut normalized_urls: Vec<String> = urls.iter().map(|u| self.normalize_one(u)).collect();
 
         // Remove duplicates that might have been created during normalization
         normalized_urls.sort();
@@ -193,32 +217,36 @@ impl UrlTransformer {
         merged_urls
     }
 
-    fn extract_url_parts(&self, urls: Vec<String>) -> Vec<String> {
-        let mut extracted_parts = Vec::new();
-
-        for url_str in urls {
-            if let Ok(url) = Url::parse(&url_str) {
+    /// Reduce one URL to the configured `show_only_*` view. `None` means the
+    /// URL has nothing to show for that view (no host, a bare `/` path, or no
+    /// query) and is therefore dropped.
+    fn extract_parts_one(&self, url_str: &str) -> Option<String> {
+        match Url::parse(url_str) {
+            Ok(url) => {
                 if self.show_only_host {
-                    // Extract and add host
-                    if let Some(host) = url.host_str() {
-                        extracted_parts.push(host.to_string());
-                    }
+                    url.host_str().map(|h| h.to_string())
                 } else if self.show_only_path {
-                    // Extract and add path
                     if url.path() != "/" {
-                        extracted_parts.push(url.path().to_string());
+                        Some(url.path().to_string())
+                    } else {
+                        None
                     }
                 } else if self.show_only_param {
-                    // Extract and add parameters
-                    if let Some(query) = url.query() {
-                        extracted_parts.push(query.to_string());
-                    }
+                    url.query().map(|q| q.to_string())
+                } else {
+                    Some(url_str.to_string())
                 }
-            } else {
-                // If URL can't be parsed, keep it as is
-                extracted_parts.push(url_str);
             }
+            // If URL can't be parsed, keep it as is
+            Err(_) => Some(url_str.to_string()),
         }
+    }
+
+    fn extract_url_parts(&self, urls: Vec<String>) -> Vec<String> {
+        let mut extracted_parts: Vec<String> = urls
+            .iter()
+            .filter_map(|u| self.extract_parts_one(u))
+            .collect();
 
         // Remove duplicates that might have been created during transformation
         extracted_parts.sort();

@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use std::sync::Arc;
 
 mod cache;
 mod cli;
@@ -769,6 +770,148 @@ fn apply_url_filters(
     Ok(sorted_urls)
 }
 
+/// Build the filter/transformer pair used by both the batch and streaming
+/// paths, so a streamed run applies exactly the rules a batch run would.
+fn build_url_filter(args: &Args) -> UrlFilter {
+    let mut url_filter = UrlFilter::new();
+    if !args.preset.is_empty() {
+        url_filter.apply_presets(&args.preset);
+    }
+    url_filter
+        .with_extensions(args.extensions.clone())
+        .with_exclude_extensions(args.exclude_extensions.clone())
+        .with_patterns(args.patterns.clone())
+        .with_exclude_patterns(args.exclude_patterns.clone())
+        .with_min_length(args.min_length)
+        .with_max_length(args.max_length);
+    url_filter
+}
+
+/// Options that need the complete result set and therefore cannot be combined
+/// with `--stream`. Returned as (flag, why) so the error can say more than "not
+/// supported".
+fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
+    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+
+    if args.merge_endpoint {
+        out.push((
+            "--merge-endpoint",
+            "it folds URLs sharing a path into one, which needs every URL first",
+        ));
+    }
+    if args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty() {
+        out.push((
+            "--check-status / --include-status / --exclude-status",
+            "they re-request each URL after collection finishes",
+        ));
+    }
+    if args.extract_links {
+        out.push((
+            "--extract-links",
+            "it fetches collected URLs after collection finishes",
+        ));
+    }
+    if args.incremental {
+        out.push((
+            "--incremental",
+            "it diffs this run against the previous one, which needs the full set",
+        ));
+    }
+    if args.show_sources {
+        out.push((
+            "--show-sources",
+            "a URL is printed on first sighting, before later providers can report it too",
+        ));
+    }
+    if args.output_dir.is_some() {
+        out.push((
+            "--output-dir",
+            "it groups URLs by domain once the scan has finished",
+        ));
+    }
+    if !args.files.is_empty() {
+        out.push((
+            "--files",
+            "file input is read up front, so there is nothing to stream",
+        ));
+    }
+    out
+}
+
+/// Construct the streaming sink when `--stream` is set, after rejecting the
+/// option combinations it cannot honour.
+fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>> {
+    if !args.stream {
+        return Ok(None);
+    }
+
+    let conflicts = streaming_conflicts(args);
+    if !conflicts.is_empty() {
+        let detail = conflicts
+            .iter()
+            .map(|(flag, why)| format!("  {flag}: {why}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!("--stream cannot be combined with:\n{detail}");
+    }
+
+    if !output::format_supports_streaming(&args.format) {
+        anyhow::bail!(
+            "--stream cannot produce --format {}: it wraps every entry in one array, so the writer must know which entry is last. Use --format jsonl for line-delimited JSON.",
+            args.format
+        );
+    }
+
+    // Host validation mirrors the batch path: only meaningful when strict mode
+    // is on and the targets came from the command line rather than a file.
+    let host_validator = if args.strict_enabled() {
+        let mut domains: Vec<String> = args.domains.clone();
+        for path in &args.domain_list {
+            domains.extend(read_domains_from_file(path)?);
+        }
+        let domains: Vec<String> = domains
+            .iter()
+            .filter_map(|d| cli::normalize_domain(d))
+            .collect();
+        if domains.is_empty() {
+            None
+        } else {
+            Some(HostValidator::new(&domains, args.subs))
+        }
+    } else {
+        None
+    };
+
+    let mut transformer = UrlTransformer::new();
+    transformer
+        .with_normalize_url(args.normalize_url)
+        .with_show_only_host(args.show_only_host)
+        .with_show_only_path(args.show_only_path)
+        .with_show_only_param(args.show_only_param);
+
+    let writer: Box<dyn std::io::Write + Send> = match &args.output {
+        Some(path) => Box::new(
+            std::fs::File::create(path)
+                .with_context(|| format!("Failed to create output file: {}", path.display()))?,
+        ),
+        None => Box::new(std::io::stdout()),
+    };
+
+    // Colour would be baked into a redirected stream, and streamed rows carry
+    // no status to colourise anyway.
+    if args.output.is_some() {
+        colored::control::set_override(false);
+    }
+
+    Ok(Some(Arc::new(output::StreamSink::new(
+        build_url_filter(args),
+        transformer,
+        host_validator,
+        &args.format,
+        writer,
+    )?)))
+}
+
 /// Apply URL transformations
 fn apply_url_transformations(
     args: &Args,
@@ -907,9 +1050,15 @@ async fn process_domains_with_cache(
 
     // If caching is disabled, use normal processing
     if cache_manager.is_none() {
-        return Ok(
-            process_domains(domains, args, progress_manager, providers, provider_names).await,
-        );
+        return Ok(process_domains(
+            domains,
+            args,
+            progress_manager,
+            providers,
+            provider_names,
+            None,
+        )
+        .await);
     }
 
     let cache = cache_manager.unwrap();
@@ -964,6 +1113,7 @@ async fn process_domains_with_cache(
             progress_manager,
             providers,
             provider_names,
+            None,
         )
         .await;
 
@@ -1079,6 +1229,11 @@ async fn main() -> Result<()> {
     // Check if file input is provided
     let urls_from_file = read_urls_from_files(&args)?;
 
+    // Streaming output, when requested. Built before the scan so a rejected
+    // combination fails immediately rather than after minutes of fetching.
+    let stream_sink = build_stream_sink(&args)?;
+    let mut streamed = false;
+
     // The run header is a transient line in the live region. Held here so it
     // outlives the provider branch where it's created and is cleared together
     // with the bars when the scan finishes.
@@ -1116,20 +1271,50 @@ async fn main() -> Result<()> {
             progress_manager.create_header_line(render_header(domains.len(), provider_names.len())),
         );
 
-        // Initialize cache manager if caching is enabled
-        let cache_manager = create_cache_manager(&args).await?;
+        if let Some(sink) = &stream_sink {
+            // Streaming writes as it goes and bypasses the cache entirely (the
+            // cache both reads whole domains and writes whole result sets).
+            let run = process_domains(
+                domains.clone(),
+                &args,
+                &progress_manager,
+                &providers,
+                &provider_names,
+                Some(Arc::clone(sink)),
+            )
+            .await;
+            streamed = true;
+            run
+        } else {
+            // Initialize cache manager if caching is enabled
+            let cache_manager = create_cache_manager(&args).await?;
 
-        // Process each domain with caching support
-        process_domains_with_cache(
-            domains.clone(),
-            &args,
-            &progress_manager,
-            &providers,
-            &provider_names,
-            cache_manager.as_ref(),
-        )
-        .await?
+            // Process each domain with caching support
+            process_domains_with_cache(
+                domains.clone(),
+                &args,
+                &progress_manager,
+                &providers,
+                &provider_names,
+                cache_manager.as_ref(),
+            )
+            .await?
+        }
     };
+
+    if streamed {
+        // Everything has already been written by the sink; printing the
+        // (deliberately empty) batch result again would duplicate nothing but
+        // would still emit a stray JSON array / CSV header.
+        progress_manager.clear();
+        if let Some(sink) = &stream_sink {
+            verbose_print(&args, format!("Streamed {} URLs", sink.emitted()));
+        }
+        if args.stats {
+            print_provider_stats(&run_result.stats);
+        }
+        return Ok(());
+    }
 
     // URL-only view for filters (they don't care about sources).
     let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
@@ -1267,6 +1452,7 @@ async fn main() -> Result<()> {
 fn output_dir_extension(format: &str) -> &'static str {
     match format.to_lowercase().as_str() {
         "json" => "json",
+        "jsonl" => "jsonl",
         "csv" => "csv",
         _ => "txt",
     }
@@ -2018,6 +2204,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec!["mock".to_string()],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],
@@ -2091,6 +2278,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
 
@@ -2140,6 +2328,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -2180,6 +2369,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -2189,6 +2379,148 @@ mod tests {
             elapsed >= std::time::Duration::from_millis(900),
             "expected sequential fetches (~1s) with --parallel 1, took {elapsed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_stream_emits_before_slow_provider_finishes() {
+        // The whole point of --stream: a fast provider's URLs must reach the
+        // consumer while a slow one is still fetching, instead of everyone
+        // waiting for the slowest.
+        use std::io::Write;
+
+        #[derive(Clone, Default)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let fast = MockProvider::new(vec!["https://example.com/fast".to_string()], false);
+        let slow = MockProvider::new(vec!["https://example.com/slow".to_string()], false)
+            .with_delay_ms(2_000);
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(fast), Box::new(slow)];
+        let provider_names = vec!["Fast".to_string(), "Slow".to_string()];
+
+        let buf = SharedBuf::default();
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::new(),
+                None,
+                "plain",
+                Box::new(buf.clone()),
+            )
+            .unwrap(),
+        );
+
+        let args = build_test_args();
+        let progress_manager = ProgressManager::new(true);
+
+        let run = tokio::spawn({
+            let sink = Arc::clone(&sink);
+            let providers: Vec<Box<dyn Provider>> =
+                providers.iter().map(|p| p.clone_box()).collect();
+            let provider_names = provider_names.clone();
+            async move {
+                let pm = ProgressManager::new(true);
+                process_domains(
+                    vec!["example.com".to_string()],
+                    &args,
+                    &pm,
+                    &providers,
+                    &provider_names,
+                    Some(sink),
+                )
+                .await
+            }
+        });
+
+        // Half a second in — long before the slow provider's 2s delay elapses —
+        // the fast provider's URL must already be written.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let mid_run = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            mid_run.contains("https://example.com/fast"),
+            "fast provider's URL should be streamed while the slow one is still running, got {mid_run:?}"
+        );
+        assert!(
+            !mid_run.contains("https://example.com/slow"),
+            "slow provider should not have reported yet, got {mid_run:?}"
+        );
+
+        run.await.unwrap();
+        let final_out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            final_out.contains("https://example.com/slow"),
+            "{final_out}"
+        );
+        assert_eq!(sink.emitted(), 2);
+        let _ = progress_manager;
+    }
+
+    #[tokio::test]
+    async fn test_stream_mode_skips_the_batch_url_map() {
+        // Streaming runs must not also accumulate every URL in memory — that
+        // map exists only to feed the batch output path.
+        use std::io::Write;
+
+        struct Sink;
+        impl Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let provider = MockProvider::new(
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ],
+            false,
+        );
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["Mock".to_string()];
+
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::new(),
+                None,
+                "plain",
+                Box::new(Sink),
+            )
+            .unwrap(),
+        );
+
+        let args = build_test_args();
+        let progress_manager = ProgressManager::new(true);
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+            Some(Arc::clone(&sink)),
+        )
+        .await;
+
+        assert!(
+            result.urls.is_empty(),
+            "batch map should stay empty when streaming, got {:?}",
+            result.urls
+        );
+        assert_eq!(sink.emitted(), 2);
+        // Stats are still tallied so --stats keeps working.
+        assert_eq!(result.stats[0].url_count, 2);
     }
 
     #[tokio::test]
@@ -2211,6 +2543,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
         let elapsed = started.elapsed();
@@ -2246,6 +2579,7 @@ mod tests {
             &progress_manager,
             &providers,
             &provider_names,
+            None,
         )
         .await;
 
@@ -2367,6 +2701,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec!["mock".to_string()],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],
@@ -2494,6 +2829,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec![],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],

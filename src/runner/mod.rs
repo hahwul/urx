@@ -8,6 +8,7 @@ use tokio::task;
 
 use crate::cli::Args;
 use crate::network::{NetworkScope, NetworkSettings};
+use crate::output::StreamSink;
 use crate::progress::{
     provider_error_style, provider_partial_style, provider_running_style, provider_success_style,
     ProgressManager, ProgressReporter,
@@ -225,12 +226,17 @@ pub struct ProviderRunResult {
 ///
 /// Returns each discovered URL along with the set of providers that reported
 /// it. Order within each source set is preserved by the caller via sort+dedup.
+/// `stream`, when present, receives each provider's URLs the moment they land
+/// and writes the ones that survive filtering. The shared `all_urls` map is
+/// then only needed for the batch output path, so streaming runs skip filling
+/// it and avoid holding the entire crawl in memory.
 pub async fn process_domains(
     domains: Vec<String>,
     args: &Args,
     progress_manager: &ProgressManager,
     providers: &[Box<dyn Provider>],
     provider_names: &[String],
+    stream: Option<Arc<StreamSink>>,
 ) -> ProviderRunResult {
     // Map URL -> set of provider names that reported it.
     let all_urls: Arc<Mutex<HashMap<String, HashSet<String>>>> =
@@ -294,6 +300,7 @@ pub async fn process_domains(
 
     for (provider_clone, provider_name, original_idx) in provider_data.into_iter() {
         let all_urls = Arc::clone(&all_urls);
+        let stream = stream.clone();
         let stats = Arc::clone(&stats);
         let provider_bar = provider_bars[original_idx].clone();
         let domains = domains.clone();
@@ -349,6 +356,7 @@ pub async fn process_domains(
 
             stream::iter(domains)
                 .map(move |domain| {
+                    let stream = stream.clone();
                     let provider = Arc::clone(&provider);
                     let provider_bar = provider_bar.clone();
                     let provider_name = provider_name.clone();
@@ -404,14 +412,25 @@ pub async fn process_domains(
                                     partial_total.fetch_add(1, Ordering::Relaxed);
                                 }
 
-                                // Add URLs to the shared map (URL -> providers).
-                                {
-                                    let mut url_map = lock_ignore_poison(&all_urls);
-                                    for url in urls {
-                                        url_map
-                                            .entry(url)
-                                            .or_default()
-                                            .insert(provider_name.clone());
+                                // Hand this batch to the streaming sink, or —
+                                // in batch mode — accumulate it (URL -> the
+                                // providers that reported it).
+                                match &stream {
+                                    Some(sink) => {
+                                        if let Err(e) = sink.emit(&urls) {
+                                            if !silent {
+                                                eprintln!("Error writing streamed output: {e}");
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        let mut url_map = lock_ignore_poison(&all_urls);
+                                        for url in urls {
+                                            url_map
+                                                .entry(url)
+                                                .or_default()
+                                                .insert(provider_name.clone());
+                                        }
                                     }
                                 }
 

@@ -108,6 +108,38 @@ impl Formatter for JsonFormatter {
     }
 }
 
+/// JSON Lines formatter: one self-contained JSON object per line.
+///
+/// Unlike [`JsonFormatter`], no entry depends on its position — there is no
+/// enclosing array and no separating comma — so output stays valid when it is
+/// truncated, appended to, or consumed a line at a time (`jq -c`, `head`, or a
+/// streaming run that cannot know which record is last).
+#[derive(Debug, Clone)]
+pub struct JsonLinesFormatter;
+
+impl JsonLinesFormatter {
+    /// Create a new JSON Lines formatter
+    pub fn new() -> Self {
+        JsonLinesFormatter
+    }
+}
+
+impl Formatter for JsonLinesFormatter {
+    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
+        let entry = JsonUrlEntry {
+            url: &url_data.url,
+            status: url_data.status.as_deref(),
+            sources: &url_data.sources,
+        };
+        let json = serde_json::to_string(&entry).unwrap_or_default();
+        format!("{json}\n")
+    }
+
+    fn clone_box(&self) -> Box<dyn Formatter> {
+        Box::new(self.clone())
+    }
+}
+
 /// CSV formatter that outputs URLs in comma-separated format
 #[derive(Debug, Clone)]
 pub struct CsvFormatter;

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Streaming output with `--stream`: URLs are written as each provider reports
+  them rather than once the whole scan finishes, so a pipeline starts producing
+  matches immediately on large targets. Filtering and deduplication are
+  unchanged; output is unsorted, caching is bypassed, and options that need the
+  complete result set are rejected with a message naming each one
+- New `jsonl` output format — one standalone JSON object per line, so the
+  output stays parseable while it is still being written and works with
+  `jq`/`head` line by line
 - Archive-side filtering pushed into the CDX query: `--archive-status`,
   `--archive-exclude-status`, `--archive-mime`, `--archive-exclude-mime`.
   The index already records these, so filtered-out captures never cross the

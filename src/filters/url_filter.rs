@@ -94,118 +94,125 @@ impl UrlFilter {
         self
     }
 
-    /// Apply filters to a set of URLs
-    pub fn apply_filters(&self, urls: &HashSet<String>) -> Vec<String> {
-        let mut result = Vec::new();
-
-        for url in urls {
-            // Skip if URL doesn't match the length criteria
-            if let Some(min) = self.min_length {
-                if url.len() < min {
-                    continue;
-                }
-            }
-
-            if let Some(max) = self.max_length {
-                if url.len() > max {
-                    continue;
-                }
-            }
-
-            // Parse the URL to extract the path for better extension handling
-            let extension = match Url::parse(url) {
-                Ok(parsed_url) => {
-                    // Get the path from the URL
-                    if let Some(path) = parsed_url
-                        .path_segments()
-                        .and_then(|mut segments| segments.next_back())
-                    {
-                        // Extract extension from the last path segment
-                        Path::new(path)
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .map(|s| s.to_lowercase())
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => {
-                    // Fallback for invalid URLs - try to extract extension from the whole string
-                    let parts: Vec<&str> = url.split('/').collect();
-                    if let Some(last) = parts.last() {
-                        let filename_parts: Vec<&str> = last.split('.').collect();
-                        if filename_parts.len() > 1 {
-                            Some(
-                                filename_parts
-                                    .last()
-                                    .unwrap()
-                                    .split('?')
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_lowercase(),
-                            )
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            // Compute url_lower once per URL iteration if needed
-            let mut url_lower = None;
-
-            // Check exclusions first
-            if !self.exclude_extensions.is_empty() {
-                if let Some(ext) = &extension {
-                    if self
-                        .exclude_extensions
-                        .iter()
-                        .any(|excluded_ext| excluded_ext == ext)
-                    {
-                        continue;
-                    }
-                }
-            }
-
-            if !self.exclude_patterns.is_empty() {
-                let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
-                if self
-                    .exclude_patterns
-                    .iter()
-                    .any(|pattern| url_lower_str.contains(pattern))
-                {
-                    continue;
-                }
-            }
-
-            // Then check inclusions
-            let mut include = true;
-
-            if !self.extensions.is_empty() {
-                if let Some(ext) = &extension {
-                    include = self
-                        .extensions
-                        .iter()
-                        .any(|included_ext| included_ext == ext);
-                } else {
-                    include = false; // No extension found but extensions filter is set
-                }
-            }
-
-            if include && !self.patterns.is_empty() {
-                let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
-                include = self
-                    .patterns
-                    .iter()
-                    .any(|pattern| url_lower_str.contains(pattern));
-            }
-
-            if include {
-                result.push(url.clone());
+    /// Whether a single URL survives every configured filter.
+    ///
+    /// This is the whole of the filtering decision, kept per-URL so the batch
+    /// path ([`UrlFilter::apply_filters`]) and the streaming path apply exactly
+    /// the same rules instead of drifting apart.
+    pub fn matches(&self, url: &str) -> bool {
+        // Skip if URL doesn't match the length criteria
+        if let Some(min) = self.min_length {
+            if url.len() < min {
+                return false;
             }
         }
+
+        if let Some(max) = self.max_length {
+            if url.len() > max {
+                return false;
+            }
+        }
+
+        // Parse the URL to extract the path for better extension handling
+        let extension = match Url::parse(url) {
+            Ok(parsed_url) => {
+                // Get the path from the URL
+                if let Some(path) = parsed_url
+                    .path_segments()
+                    .and_then(|mut segments| segments.next_back())
+                {
+                    // Extract extension from the last path segment
+                    Path::new(path)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|s| s.to_lowercase())
+                } else {
+                    None
+                }
+            }
+            Err(_) => {
+                // Fallback for invalid URLs - try to extract extension from the whole string
+                let parts: Vec<&str> = url.split('/').collect();
+                if let Some(last) = parts.last() {
+                    let filename_parts: Vec<&str> = last.split('.').collect();
+                    if filename_parts.len() > 1 {
+                        Some(
+                            filename_parts
+                                .last()
+                                .unwrap()
+                                .split('?')
+                                .next()
+                                .unwrap_or("")
+                                .to_lowercase(),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+
+        // Compute url_lower once per URL if needed
+        let mut url_lower = None;
+
+        // Check exclusions first
+        if !self.exclude_extensions.is_empty() {
+            if let Some(ext) = &extension {
+                if self
+                    .exclude_extensions
+                    .iter()
+                    .any(|excluded_ext| excluded_ext == ext)
+                {
+                    return false;
+                }
+            }
+        }
+
+        if !self.exclude_patterns.is_empty() {
+            let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
+            if self
+                .exclude_patterns
+                .iter()
+                .any(|pattern| url_lower_str.contains(pattern))
+            {
+                return false;
+            }
+        }
+
+        // Then check inclusions
+        let mut include = true;
+
+        if !self.extensions.is_empty() {
+            if let Some(ext) = &extension {
+                include = self
+                    .extensions
+                    .iter()
+                    .any(|included_ext| included_ext == ext);
+            } else {
+                include = false; // No extension found but extensions filter is set
+            }
+        }
+
+        if include && !self.patterns.is_empty() {
+            let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
+            include = self
+                .patterns
+                .iter()
+                .any(|pattern| url_lower_str.contains(pattern));
+        }
+
+        include
+    }
+
+    /// Apply filters to a set of URLs, returning the survivors sorted.
+    pub fn apply_filters(&self, urls: &HashSet<String>) -> Vec<String> {
+        let mut result: Vec<String> = urls
+            .iter()
+            .filter(|url| self.matches(url))
+            .cloned()
+            .collect();
 
         // Sort the results for consistent output
         result.sort();

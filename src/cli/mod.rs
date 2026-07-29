@@ -44,7 +44,8 @@ pub struct Args {
     #[clap(long = "output-dir", visible_alias = "oD", value_parser)]
     pub output_dir: Option<PathBuf>,
 
-    /// Output format (e.g., "plain", "json", "csv")
+    /// Output format: "plain", "json" (one array), "jsonl" (one JSON object
+    /// per line — pipeline-friendly and valid while still being written), "csv"
     #[clap(help_heading = "Output Options")]
     #[clap(short, long, default_value = "plain")]
     pub format: String,
@@ -53,6 +54,15 @@ pub struct Args {
     #[clap(help_heading = "Output Options")]
     #[clap(long)]
     pub merge_endpoint: bool,
+
+    /// Write URLs as each provider reports them instead of once at the end, so
+    /// a pipeline starts working immediately on large targets. Output is
+    /// deduplicated and filtered exactly as usual, but unsorted (results arrive
+    /// in provider-completion order). Caching is bypassed, and options needing
+    /// the complete result set are rejected — see the error message for which.
+    #[clap(help_heading = "Output Options")]
+    #[clap(long)]
+    pub stream: bool,
 
     /// Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
     #[clap(help_heading = "Output Options")]

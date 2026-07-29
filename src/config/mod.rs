@@ -33,6 +33,7 @@ pub struct OutputConfig {
     pub output: Option<String>,
     pub format: Option<String>,
     pub merge_endpoint: Option<bool>,
+    pub stream: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -214,6 +215,7 @@ fn normalize_output_format(format: &str) -> Option<String> {
     match format.trim().to_ascii_lowercase().as_str() {
         "plain" => Some("plain".to_string()),
         "json" => Some("json".to_string()),
+        "jsonl" => Some("jsonl".to_string()),
         "csv" => Some("csv".to_string()),
         _ => None,
     }
@@ -333,7 +335,7 @@ impl Config {
                     args.format = format;
                 } else if !args.silent {
                     eprintln!(
-                        "Ignoring [output].format={format:?} in config: expected plain, json, or csv"
+                        "Ignoring [output].format={format:?} in config: expected plain, json, jsonl, or csv"
                     );
                 }
             }
@@ -341,6 +343,10 @@ impl Config {
 
         if !args.merge_endpoint && self.output.merge_endpoint.unwrap_or(false) {
             args.merge_endpoint = true;
+        }
+
+        if !args.stream && self.output.stream.unwrap_or(false) {
+            args.stream = true;
         }
     }
 
@@ -740,6 +746,7 @@ mod tests {
             format: "plain".to_string(),
             merge_endpoint: false,
             normalize_url: false,
+            stream: false,
             providers: vec!["wayback".to_string(), "cc".to_string(), "otx".to_string()],
             subs: false,
             cc_index: vec!["CC-MAIN-2026-17".to_string()],

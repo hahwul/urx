@@ -6,8 +6,9 @@ domains = ["example.com", "example.org"]
 # Output options
 [output]
 output = "results.txt"
-format = "plain"       # Options: plain, json, csv
+format = "plain"       # Options: plain, json, jsonl, csv
 merge_endpoint = false
+stream = false         # Write URLs as providers report them (see README)
 
 # Provider options
 [provider]

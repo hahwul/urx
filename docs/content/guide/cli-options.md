@@ -26,9 +26,10 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout.
-  -f, --format <FORMAT>          Output format (e.g., "plain", "json", "csv") [default: plain]
-      --merge-endpoint   Merge endpoints with the same path and merge URL parameters
-      --normalize-url    Normalize URLs for better deduplication
+  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv" [default: plain]
+      --stream                   Write URLs as providers report them (unsorted, bypasses cache)
+      --merge-endpoint           Merge endpoints with the same path and merge URL parameters
+      --normalize-url            Normalize URLs for better deduplication
 
 Provider Options:
   --providers <PROVIDERS>                Providers to use (comma-separated) [default: wayback,cc,otx]
