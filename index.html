@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Extract URLs from OSINT archives for security research. A fast, keyless Rust CLI.">
+  <meta name="theme-color" content="#08080a">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>urx - Urx</title>
+  <meta property="og:title" content="urx">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="/">
+  <meta property="og:description" content="Extract URLs from OSINT archives for security research. A fast, keyless Rust CLI.">
+  <meta property="og:image" content="/images/preview.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="urx">
+  <meta name="twitter:description" content="Extract URLs from OSINT archives for security research. A fast, keyless Rust CLI.">
+  <meta name="twitter:image" content="/images/preview.jpg">
+  <meta name="twitter:site" content="@hahwul">
+  <meta name="twitter:creator" content="@hahwul">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("urx-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="">
+<link rel="stylesheet" href="/css/landing.css">
+<div class="landing">
+  <header class="top-nav">
+    <div class="nav-left">
+      <a href="/" class="brand">
+        <img src="/images/urx.png" alt="" class="brand-rocket">
+        <span class="brand-word">urx</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/getting-started/">Docs</a>
+        <a href="#providers">Providers</a>
+        <a href="#features">Features</a>
+        <a href="/guide/">Guide</a>
+      </nav>
+    </div>
+    <div class="nav-right">
+      <button class="icon-btn theme-toggle" data-theme-toggle aria-label="Toggle theme">
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <a href="https://github.com/hahwul/urx" class="icon-btn" target="_blank" rel="noopener" aria-label="GitHub">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+      </a>
+      <a href="/getting-started/installation/" class="nav-cta">Get started</a>
+    </div>
+  </header>
+
+  <span class="nav-sentinel" aria-hidden="true"></span>
+  <section class="hero">
+  <div class="starfield" aria-hidden="true">
+    <div class="stars"></div>
+    <div class="grid-fade"></div>
+  </div>
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <span class="eyebrow">OSINT URL Discovery</span>
+      <h1 id="extract-every-url-a-domain-ever-exposed">Extract every <span class="hot">URL</span> a domain ever exposed.</h1>
+      <p class="hero-sub">A fast Rust CLI that pulls URLs from OSINT archives in parallel, then filters and validates them for recon.</p>
+      <div class="hero-cta">
+        <a href="/getting-started/installation/" class="btn btn-primary">
+          Get started
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a href="https://github.com/hahwul/urx" class="btn btn-ghost" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <div class="hero-meta">
+        <div><span class="n">7</span><span class="l">Sources</span></div>
+        <div><span class="n">5</span><span class="l">Keyless</span></div>
+        <div><span class="n">3</span><span class="l">Output formats</span></div>
+      </div>
+    </div>
+    <div class="rocket-stage" aria-hidden="true">
+      <div class="orbit o2"></div>
+      <div class="orbit o1"></div>
+      <div class="rocket-glow"></div>
+      <span class="thrust"></span>
+      <img src="/images/urx.png" alt="urx rocket" class="hero-rocket">
+    </div>
+  </div>
+</section>
+<section class="section term-section">
+  <div class="wrap reveal">
+    <div class="term">
+      <div class="term-bar">
+        <span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span>
+        <span class="term-title">urx · recon</span>
+      </div>
+      <div class="term-body"><pre><span class="prompt">$</span> urx dalfox.hahwul.com <span class="flag">--providers</span> wayback,otx,vt,urlscan <span class="flag">--check-status</span>
+<p>Domains         <span class="bar">[====================]</span> 1/1 processed
+Wayback Machine <span class="bar">[====================]</span> <span class="done">done</span>
+OTX             <span class="bar">[====================]</span> <span class="done">done</span>
+VirusTotal      <span class="bar">[====================]</span> <span class="done">done</span>
+Urlscan         <span class="bar">[====================]</span> <span class="done">done</span>
+Filtering       <span class="bar">[====================]</span> 2408 URLs
+Testing URLs    <span class="bar">[====================]</span> 2408/2408 complete</p>
+<p>https://dalfox.hahwul.com/                         <span class="tag-ok">[200 OK]</span>
+https://dalfox.hahwul.com/.well-known/security.txt <span class="tag-ok">[200 OK]</span>
+https://dalfox.hahwul.com/docs/getting-started/    <span class="tag-ok">[200 OK]</span>
+https://dalfox.hahwul.com/assets/js/main.min.js    <span class="tag-ok">[200 OK]</span>
+https://dalfox.hahwul.com/allposts.html            <span class="tag-err">[404 Not Found]</span>
+<span class="muted">... found 2408 URLs</span> <span class="cursor"></span></pre></div>
+</div></p>
+  </div>
+</section>
+<section class="section" id="providers">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <h2 class="section-title" id="seven-archives-one-command">Seven archives, one command.</h2>
+      <p class="section-sub">urx queries public web archives and threat-intel feeds at the same time. Five work with no API key at all.</p>
+    </div>
+    <div class="providers reveal">
+      <div class="provider span-2">
+        <span class="p-key keyless">Keyless</span>
+        <span class="p-name">Wayback Machine</span>
+        <span class="p-flag">--providers wayback</span>
+        <span class="p-desc">The Internet Archive's CDX index. Deep historical coverage, on by default.</span>
+      </div>
+      <div class="provider">
+        <span class="p-key keyless">Keyless</span>
+        <span class="p-name">Common Crawl</span>
+        <span class="p-flag">cc</span>
+      </div>
+      <div class="provider">
+        <span class="p-key keyless">Keyless</span>
+        <span class="p-name">OTX</span>
+        <span class="p-flag">otx</span>
+      </div>
+      <div class="provider">
+        <span class="p-key keyless">Keyless</span>
+        <span class="p-name">Arquivo.pt</span>
+        <span class="p-flag">arquivo</span>
+      </div>
+      <div class="provider">
+        <span class="p-key">API key</span>
+        <span class="p-name">VirusTotal</span>
+        <span class="p-flag">vt</span>
+      </div>
+      <div class="provider">
+        <span class="p-key keyless">Anonymous</span>
+        <span class="p-name">URLScan</span>
+        <span class="p-flag">urlscan</span>
+      </div>
+      <div class="provider">
+        <span class="p-key">API key</span>
+        <span class="p-name">ZoomEye</span>
+        <span class="p-flag">zoomeye</span>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="section" id="features">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <h2 class="section-title" id="built-for-the-whole-recon-loop">Built for the whole recon loop.</h2>
+    </div>
+    <div class="bento reveal">
+      <div class="cell feature">
+        <div class="big-num"><span>7</span> sources</div>
+        <h3 id="parallel-collection">Parallel collection</h3>
+        <p>Async requests fan out to every enabled provider at once, then merge and deduplicate into a single URL set. No waiting on one slow archive.</p>
+      </div>
+      <div class="cell">
+        <div class="c-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></div>
+        <h3 id="advanced-filtering">Advanced filtering</h3>
+        <p>Filter by extension, pattern, or presets like <code>no-images</code>. Control URL length and host parts.</p>
+      </div>
+      <div class="cell code-cell">
+        <div class="snip"><span class="prompt">$</span> urx target.com \<br>&nbsp;&nbsp;&nbsp;&nbsp;-e js,php \<br>&nbsp;&nbsp;&nbsp;&nbsp;--patterns api,v1<br><br><span class="muted">https://target.com/api/v1/auth.js<br>https://target.com/api/config.php<br>https://target.com/v1/users.js</span></div>
+      </div>
+      <div class="cell">
+        <div class="c-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5M14 3l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 13h8M8 17h5"/></svg></div>
+        <h3 id="flexible-output">Flexible output</h3>
+        <p>Plain text, JSON, or CSV. Stream to the console, a file, or a pipe.</p>
+      </div>
+      <div class="cell">
+        <div class="c-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 6.5-7 9-4-2.5-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h3 id="url-validation">URL validation</h3>
+        <p>Check HTTP status codes, drop dead links, and extract more URLs from live pages.</p>
+      </div>
+      <div class="cell wide">
+        <div class="c-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></div>
+        <h3 id="caching-incremental-scanning">Caching &amp; incremental scanning</h3>
+        <p>Local SQLite or remote Redis caching skips domains you already scanned. Incremental mode returns only the URLs discovered since last run.</p>
+      </div>
+      <div class="cell">
+        <div class="c-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg></div>
+        <h3 id="built-in-rust">Built in Rust</h3>
+        <p>Async runtime, parallel requests, and a small footprint for maximum throughput.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="section">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <h2 class="section-title" id="from-a-domain-to-a-clean-url-set">From a domain to a clean URL set.</h2>
+      <p class="section-sub">One command runs the full pipeline. Each stage maps to a flag you can tune.</p>
+    </div>
+    <div class="pipeline reveal">
+      <div class="stage">
+        <span class="s-idx">--providers</span>
+        <h3 id="collect">Collect</h3>
+        <p>Query every archive in parallel and merge the results into one stream.</p>
+      </div>
+      <div class="stage">
+        <span class="s-idx">-e · --patterns</span>
+        <h3 id="filter">Filter</h3>
+        <p>Keep only the extensions, patterns, or presets you care about.</p>
+      </div>
+      <div class="stage">
+        <span class="s-idx">--check-status</span>
+        <h3 id="validate">Validate</h3>
+        <p>Probe live URLs, check HTTP status, and pull extra links from responses.</p>
+      </div>
+      <div class="stage">
+        <span class="s-idx">-f json · -o</span>
+        <h3 id="output">Output</h3>
+        <p>Write text, JSON, or CSV to a file, or pipe it straight into your next tool.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="section">
+  <div class="wrap">
+    <div class="launch reveal">
+      <div class="starfield" aria-hidden="true"><div class="stars"></div></div>
+      <div class="launch-inner">
+        <span class="eyebrow" style="justify-content:center">Ready to launch</span>
+        <h2 id="install-urx-and-start-collecting">Install urx and start collecting.</h2>
+        <p>Available on Cargo, Homebrew, and as a container image. No account, no key to get going.</p>
+        <div class="install-cmds">
+          <div class="cmd"><span class="prompt">$</span> cargo install urx <span class="via">Cargo</span></div>
+          <div class="cmd"><span class="prompt">$</span> brew install urx <span class="via">Homebrew</span></div>
+          <div class="cmd"><span class="prompt">$</span> docker pull ghcr.io/hahwul/urx <span class="via">Docker</span></div>
+        </div>
+        <a href="/getting-started/" class="btn btn-primary">Read the docs</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+  <footer class="l-footer">
+    <div class="wrap">
+      <div class="l-footer-grid">
+        <div>
+          <a href="/" class="f-brand">
+            <img src="/images/urx.png" alt="">
+            <span>urx</span>
+          </a>
+          <p class="f-tag">Extract URLs from OSINT archives for security research. Fast, keyless by default, built in Rust.</p>
+        </div>
+        <div>
+          <h4>Docs</h4>
+          <ul>
+            <li><a href="/getting-started/installation/">Installation</a></li>
+            <li><a href="/getting-started/quick-start/">Quick Start</a></li>
+            <li><a href="/guide/cli-options/">CLI Options</a></li>
+            <li><a href="/guide/examples/">Examples</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Guide</h4>
+          <ul>
+            <li><a href="/guide/configuration/">Configuration</a></li>
+            <li><a href="/guide/caching/">Caching</a></li>
+            <li><a href="/guide/integration/">Integration</a></li>
+            <li><a href="/guide/performance/">Performance</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Project</h4>
+          <ul>
+            <li><a href="https://github.com/hahwul/urx" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://crates.io/crates/urx" target="_blank" rel="noopener">crates.io</a></li>
+            <li><a href="/about/contributing/">Contributing</a></li>
+            <li><a href="https://www.hahwul.com" target="_blank" rel="noopener">hahwul.com</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-mark">
+        <a href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul">
+          <span class="hahwul-img" role="img" aria-label="hahwul"></span>
+        </a>
+        <p class="footer-love">Built with Love</p>
+      </div>
+    </div>
+  </footer>
+</div>
+
+
+<script>
+(function () {
+  // theme toggle
+  function currentTheme() {
+    var explicit = document.documentElement.getAttribute("data-theme");
+    if (explicit) return explicit;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var next = currentTheme() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("urx-theme", next); } catch (e) {}
+    });
+  });
+
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var supportsIO = "IntersectionObserver" in window;
+
+  // scroll reveal
+  var els = document.querySelectorAll(".reveal");
+  if (reduce || !supportsIO) {
+    els.forEach(function (el) { el.classList.add("is-visible"); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
+    els.forEach(function (el) { io.observe(el); });
+  }
+
+  // nav background on scroll (sentinel-based, no scroll listener)
+  var nav = document.querySelector(".landing .top-nav");
+  var sentinel = document.querySelector(".nav-sentinel");
+  if (nav && sentinel && supportsIO) {
+    new IntersectionObserver(function (entries) {
+      nav.classList.toggle("scrolled", !entries[0].isIntersecting);
+    }, { threshold: 0 }).observe(sentinel);
+  } else if (nav) {
+    nav.classList.add("scrolled");
+  }
+})();
+</script>
+</body>
+</html>
