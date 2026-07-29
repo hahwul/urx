@@ -339,6 +339,17 @@ fn effective_provider_ids(args: &Args) -> Vec<String> {
     providers_list
 }
 
+/// Display label for one Common Crawl index instance. A raw `CC-MAIN-…` id is
+/// already self-identifying, but aliases like `latest` are not — prefix those
+/// so the progress line and verbose log say which provider they belong to.
+fn cc_provider_label(index: &str) -> String {
+    if index.to_ascii_uppercase().starts_with("CC-") {
+        index.to_string()
+    } else {
+        format!("CC ({index})")
+    }
+}
+
 /// Initialize all providers based on args and API keys
 fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Result<ProviderList> {
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
@@ -400,13 +411,14 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
         // run in parallel and the per-provider stats stay distinct.
         for index in &args.cc_index {
             let index = index.clone();
+            let label = cc_provider_label(&index);
             add_provider(
                 args,
                 network_settings,
                 &mut providers,
                 &mut provider_names,
                 "cc",
-                index.clone(),
+                label,
                 || CommonCrawlProvider::with_index(index.clone()),
             );
         }
@@ -1314,6 +1326,16 @@ mod tests {
         // Singular forms.
         let one = plain(&render_header(1, 1));
         assert!(one.contains("scanning 1 domain · 1 provider "));
+    }
+
+    #[test]
+    fn test_cc_provider_label() {
+        // Aliases carry no provider hint on their own, so they get one.
+        assert_eq!(cc_provider_label("latest"), "CC (latest)");
+        assert_eq!(cc_provider_label("LATEST"), "CC (LATEST)");
+        // A real index id already reads as Common Crawl; don't double up.
+        assert_eq!(cc_provider_label("CC-MAIN-2026-17"), "CC-MAIN-2026-17");
+        assert_eq!(cc_provider_label("cc-main-2023-06"), "cc-main-2023-06");
     }
 
     use std::future::Future;
