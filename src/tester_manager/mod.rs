@@ -205,8 +205,26 @@ pub async fn process_urls_with_testers(
         new_urls.extend(urls);
     }
 
-    // Sort URLs by their URL field
+    // Sort URLs by their URL field, then collapse repeats.
+    //
+    // Every other path into the output is deduplicated — the batch path builds
+    // from a HashSet, the streaming sink keeps a `seen` set — but this one was
+    // not, and it is the one that manufactures duplicates. `--extract-links`
+    // emits every link found on every page, so a nav entry linked from a hundred
+    // pages was printed a hundred times; a discovered link that is also a
+    // primary URL was printed twice, once with a status and once without.
     new_urls.sort_by(|a, b| a.url.cmp(&b.url));
+    new_urls.dedup_by(|dropped, kept| {
+        if dropped.url != kept.url {
+            return false;
+        }
+        // Keep whichever copy carries the status; a checked URL rediscovered by
+        // the extractor must not lose its status code to the bare copy.
+        if kept.status.is_none() {
+            kept.status = dropped.status.take();
+        }
+        true
+    });
 
     test_bar.finish_with_message(format!("Testing complete, found {} URLs", new_urls.len()));
 
@@ -598,6 +616,104 @@ mod tests {
         assert_eq!(tester.retries, 5);
         assert!(tester.random_agent);
         assert!(tester.insecure);
+    }
+
+    #[tokio::test]
+    async fn test_extracted_links_are_deduplicated() {
+        // Regression: every link found on every page was appended verbatim, so a
+        // nav entry present on many pages was printed once per page.
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "--extract-links", "--silent", "example.com"]);
+        let progress = ProgressManager::new(true);
+        let tester = FixedLinkTester(vec![
+            "https://example.com/contact".to_string(),
+            "https://example.com/about".to_string(),
+        ]);
+
+        // Three seed pages, each yielding the same two links.
+        let out = process_urls_with_testers(
+            vec![
+                "https://example.com/p1".to_string(),
+                "https://example.com/p2".to_string(),
+                "https://example.com/p3".to_string(),
+            ],
+            &args,
+            &progress,
+            vec![Box::new(tester)],
+            false,
+            None,
+        )
+        .await;
+
+        let urls: Vec<String> = out.into_iter().map(|d| d.url).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/about".to_string(),
+                "https://example.com/contact".to_string(),
+                "https://example.com/p1".to_string(),
+                "https://example.com/p2".to_string(),
+                "https://example.com/p3".to_string(),
+            ],
+            "{urls:?}"
+        );
+    }
+
+    /// A status checker that always reports 200 for whatever it is given.
+    #[derive(Clone)]
+    struct OkStatusTester;
+
+    impl Tester for OkStatusTester {
+        fn clone_box(&self) -> Box<dyn Tester> {
+            Box::new(self.clone())
+        }
+        fn test_url<'a>(
+            &'a self,
+            url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let url = url.to_string();
+            Box::pin(async move { Ok(vec![format!("{url} - 200 OK")]) })
+        }
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+    }
+
+    #[tokio::test]
+    async fn test_dedup_keeps_the_entry_carrying_the_status() {
+        // A URL that was status-checked and then rediscovered by the extractor
+        // appeared twice — once with its status, once bare. Collapsing the two
+        // must not throw the status away.
+        use clap::Parser;
+        let args = Args::parse_from([
+            "urx",
+            "--check-status",
+            "--extract-links",
+            "--silent",
+            "example.com",
+        ]);
+        let progress = ProgressManager::new(true);
+
+        let out = process_urls_with_testers(
+            vec!["https://example.com/a".to_string()],
+            &args,
+            &progress,
+            vec![
+                Box::new(OkStatusTester),
+                // The page links back to itself.
+                Box::new(FixedLinkTester(vec!["https://example.com/a".to_string()])),
+            ],
+            true,
+            None,
+        )
+        .await;
+
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].url, "https://example.com/a");
+        assert_eq!(out[0].status.as_deref(), Some("200 OK"));
     }
 
     #[test]

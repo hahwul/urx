@@ -279,7 +279,15 @@ fn validate_provider_ids(ids: &[String], flag_name: &str) -> Result<()> {
 }
 
 fn validate_rate_limit_override_ids(args: &Args) -> Result<()> {
-    let override_ids: Vec<String> = args.rate_limit_overrides().into_keys().collect();
+    let (overrides, malformed) = args.parse_rate_limit_overrides();
+    if !malformed.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Malformed entr{} in --rate-limit-by: {}. Expected id=requests-per-second with a positive rate, e.g. wayback=5",
+            if malformed.len() == 1 { "y" } else { "ies" },
+            malformed.join(", ")
+        ));
+    }
+    let override_ids: Vec<String> = overrides.into_keys().collect();
     validate_provider_ids(&override_ids, "--rate-limit-by")
 }
 
@@ -1235,7 +1243,11 @@ async fn process_domains_with_cache(
     }
 
     // Clean up expired cache entries
-    cache.cleanup_expired(args.cache_ttl * 2).await?;
+    // Saturating: `--cache-ttl` is an unvalidated u64, and `* 2` on a large one
+    // overflows (a debug-build panic, a wrap in release).
+    cache
+        .cleanup_expired(args.cache_ttl.saturating_mul(2))
+        .await?;
 
     Ok(final_result)
 }

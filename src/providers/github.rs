@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::Provider;
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -226,7 +226,7 @@ impl Provider for GitHubProvider {
                                 continue;
                             }
 
-                            match response.json::<SearchResponse>().await {
+                            match read_json_capped::<SearchResponse>(response).await {
                                 Ok(parsed) => {
                                     let was_empty = parsed.items.is_empty();
                                     for item in parsed.items {

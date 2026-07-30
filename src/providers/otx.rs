@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::Provider;
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_body_capped, HttpClientConfig, MAX_RESPONSE_BYTES};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -99,43 +99,41 @@ impl OTXProvider {
         }
     }
 
-    /// Formats the OTX API URL based on the domain and page number
+    /// Formats the OTX API URL based on the domain and page number.
     ///
-    /// This handles different endpoints for second-level domains and subdomains,
-    /// and accounts for the include_subdomains setting.
+    /// OTX exposes two indicator endpoints, and the choice between them is what
+    /// `--subs` means here:
+    ///
+    /// * `indicators/domain/<d>` — `d` and everything under it.
+    /// * `indicators/hostname/<h>` — that exact host only.
+    ///
+    /// The query is always sent for the domain **as the user typed it**. It used
+    /// to be truncated to its last two labels when `--subs` was set, on the
+    /// assumption that "the last two labels" is the registrable domain. That is
+    /// only true under single-label suffixes: `shop.example.co.uk` was reduced to
+    /// `co.uk`, so urx asked OTX for every URL under an entire public suffix and
+    /// then threw essentially all of it away in host validation. Even where the
+    /// assumption held it was wasteful — `sub.example.com` fetched all of
+    /// `example.com` to keep one subdomain's worth. Deciding registrability needs
+    /// a public-suffix list; not truncating needs none, and is what `--subs` on a
+    /// given host actually asks for.
     fn format_url(&self, domain: &str, page: u32) -> String {
         // AlienVault OTX API pages start at 1, not 0
         let page_number = page + 1;
 
-        // We should always use domain endpoint for second-level domains like example.com
-        // and hostname endpoint for subdomains like sub.example.com
-        if domain.split('.').count() <= 2 {
-            // This is a second-level domain like example.com
-            format!(
-                "{}/api/v1/indicators/domain/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
-                self.base_url
-            )
-        } else if self.include_subdomains {
-            // This is a subdomain but we want to include all subdomains
-            // Extract the main domain (e.g., "example.com" from "sub.example.com")
-            let parts: Vec<&str> = domain.split('.').collect();
-            let main_domain = if parts.len() >= 2 {
-                parts[parts.len() - 2..].join(".")
-            } else {
-                domain.to_string()
-            };
-
-            format!(
-                "{}/api/v1/indicators/domain/{main_domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
-                self.base_url
-            )
+        // An apex-looking name is queried through the domain endpoint even
+        // without --subs: the hostname endpoint would exclude `www.<domain>`,
+        // which host validation treats as the apex itself.
+        let endpoint = if self.include_subdomains || domain.split('.').count() <= 2 {
+            "domain"
         } else {
-            // This is a subdomain and we don't want to include other subdomains
-            format!(
-                "{}/api/v1/indicators/hostname/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
-                self.base_url
-            )
-        }
+            "hostname"
+        };
+
+        format!(
+            "{}/api/v1/indicators/{endpoint}/{domain}/url_list?limit={OTX_RESULTS_LIMIT}&page={page_number}",
+            self.base_url
+        )
     }
 }
 
@@ -195,7 +193,10 @@ impl Provider for OTXProvider {
                     match client.get(&url).send().await {
                         Ok(response) => {
                             if response.status().is_success() {
-                                match response.text().await {
+                                // Capped: OTX is a third-party host, and an
+                                // unbounded body would be buffered whole before
+                                // serde ever sees it.
+                                match read_body_capped(response, MAX_RESPONSE_BYTES).await {
                                     Ok(text) => {
                                         // Try to parse as OTXResult first
                                         let parse_result = serde_json::from_str::<OTXResult>(&text);
@@ -517,8 +518,43 @@ mod tests {
         assert_eq!(
             url,
             format!(
-                "https://otx.alienvault.com/api/v1/indicators/domain/example.com/url_list?limit={OTX_RESULTS_LIMIT}&page=1"
+                "https://otx.alienvault.com/api/v1/indicators/domain/sub.example.com/url_list?limit={OTX_RESULTS_LIMIT}&page=1"
             )
+        );
+    }
+
+    #[test]
+    fn test_format_url_does_not_truncate_multi_label_suffix() {
+        // Regression: --subs used to keep only the last two labels, so a domain
+        // under a multi-label public suffix was reduced to the suffix itself and
+        // urx asked OTX for every URL in `.co.uk`.
+        let mut provider = OTXProvider::new();
+        provider.with_subdomains(true);
+        assert!(
+            provider
+                .format_url("example.co.uk", 0)
+                .contains("/indicators/domain/example.co.uk/"),
+            "{}",
+            provider.format_url("example.co.uk", 0)
+        );
+        assert!(
+            provider
+                .format_url("shop.example.co.uk", 0)
+                .contains("/indicators/domain/shop.example.co.uk/"),
+            "{}",
+            provider.format_url("shop.example.co.uk", 0)
+        );
+    }
+
+    #[test]
+    fn test_format_url_multi_label_suffix_without_subs_uses_hostname() {
+        let provider = OTXProvider::new();
+        assert!(
+            provider
+                .format_url("example.co.uk", 0)
+                .contains("/indicators/hostname/example.co.uk/"),
+            "{}",
+            provider.format_url("example.co.uk", 0)
         );
     }
 

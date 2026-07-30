@@ -86,6 +86,17 @@ pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duratio
     Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
 }
 
+/// Ceiling on a single response body buffered by [`get_with_retry`].
+///
+/// Every provider that walks a CDX index goes through `get_with_retry`, and each
+/// of those requests is already bounded server-side (a 50k-row Wayback page, one
+/// Common Crawl block, one OTX page of 500 records) — a legitimate body is single
+/// -digit megabytes. This limit exists for the case where the remote does *not*
+/// honour that bound: a hostile, misconfigured, or hijacked index answering with
+/// an endless stream would otherwise be buffered in full, in memory, once per
+/// concurrent domain.
+pub const MAX_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+
 /// Read a response body, stopping after `max` bytes.
 ///
 /// Reads incrementally via `chunk()` rather than buffering the whole body, so an
@@ -106,6 +117,19 @@ pub async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result
         buf.extend_from_slice(&chunk);
     }
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Read a JSON response body and deserialize it, bounded by
+/// [`MAX_RESPONSE_BYTES`].
+///
+/// `reqwest::Response::json` buffers the entire body first, which the keyed API
+/// providers (urlscan, VirusTotal, ZoomEye, GitHub) must not do for a host urx
+/// does not control — the same reason [`get_with_retry`] reads capped.
+pub async fn read_json_capped<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T> {
+    let body = read_body_capped(resp, MAX_RESPONSE_BYTES).await?;
+    Ok(serde_json::from_str(&body)?)
 }
 
 /// Whether an HTTP status is worth another attempt.
@@ -163,9 +187,12 @@ pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Res
                     continue;
                 }
 
-                match response.text().await {
+                // Capped rather than `response.text()`: this helper is the read
+                // path for every archive index urx queries, none of which urx
+                // controls, so an unbounded body must not be buffered in full.
+                match read_body_capped(response, MAX_RESPONSE_BYTES).await {
                     Ok(text) => return Ok(text),
-                    Err(e) => last_error = Some(e.into()),
+                    Err(e) => last_error = Some(e),
                 }
             }
             Err(e) => last_error = Some(e.into()),
@@ -414,6 +441,44 @@ mod tests {
         assert_eq!(get_with_retry(&client, &url, 2).await.unwrap(), "done");
         throttled.assert();
         ok.assert();
+    }
+
+    #[tokio::test]
+    async fn test_read_body_capped_stops_at_limit() {
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_server
+            .mock("GET", "/big")
+            .with_status(200)
+            .with_body("x".repeat(10_000))
+            .create_async()
+            .await;
+
+        let resp = Client::new()
+            .get(format!("{}/big", mock_server.url()))
+            .send()
+            .await
+            .unwrap();
+        let body = read_body_capped(resp, 128).await.unwrap();
+        assert_eq!(body.len(), 128);
+    }
+
+    #[tokio::test]
+    async fn test_get_with_retry_returns_whole_body_under_cap() {
+        // get_with_retry reads through the capped path; a normal-sized body must
+        // still come back byte-for-byte (including non-ASCII, which the chunked
+        // read must not split incorrectly).
+        let mut mock_server = mockito::Server::new_async().await;
+        let payload = format!("{}\nsegunda linha — ção\n", "https://example.com/a");
+        let _m = mock_server
+            .mock("GET", "/body")
+            .with_status(200)
+            .with_body(&payload)
+            .create_async()
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/body", mock_server.url());
+        assert_eq!(get_with_retry(&client, &url, 0).await.unwrap(), payload);
     }
 
     #[tokio::test]

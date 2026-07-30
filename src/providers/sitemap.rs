@@ -25,6 +25,30 @@ const MAX_SITEMAP_URLS: usize = 1_000_000;
 /// any URL parsing happens (the per-URL cap only bounds the *parsed* output).
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
 
+/// Whether a `<loc>` in a sitemap index may be followed from `parent`.
+///
+/// sitemaps.org requires every entry in a sitemap to reside on the same host as
+/// the sitemap itself, and urx never enforced it: a `<sitemapindex>` could point
+/// `<loc>` at any host at all and urx would fetch it and report what it found.
+/// That let the document under audit redirect the provider away from the target
+/// — including at hosts only the machine running urx can reach — and surface
+/// their contents as URLs "discovered" for the domain.
+///
+/// Only the host and any explicit port must match; a sitemap served over HTTPS
+/// listing its children over HTTP (or the reverse) is common enough that scheme
+/// is not compared. `Url::port` reports `None` for a scheme's default port, so
+/// comparing it keeps `https://h` and `https://h:443` equal while still telling
+/// `h` apart from `h:8443`.
+fn same_host_as_parent(parent: &str, child: &str) -> bool {
+    match (url::Url::parse(parent), url::Url::parse(child)) {
+        (Ok(p), Ok(c)) => match (p.host_str(), c.host_str()) {
+            (Some(ph), Some(ch)) => ph.eq_ignore_ascii_case(ch) && p.port() == c.port(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 #[derive(Clone)]
 pub struct SitemapProvider {
     timeout: Duration,
@@ -139,11 +163,17 @@ impl SitemapProvider {
                             sitemap_node.descendants().find(|n| n.has_tag_name("loc"))
                         {
                             if let Some(nested_sitemap_url) = loc_node.text() {
+                                // A child sitemap must live on the same host as
+                                // the index that names it; anything else is the
+                                // document steering us off the target.
+                                if !same_host_as_parent(sitemap_url, nested_sitemap_url.trim()) {
+                                    continue;
+                                }
                                 // Recursively fetch and parse nested sitemaps.
                                 // Box::pin the future to avoid infinitely sized futures.
                                 let nested_urls = Box::pin(Self::parse_sitemap(
                                     client,
-                                    nested_sitemap_url,
+                                    nested_sitemap_url.trim(),
                                     depth + 1,
                                     visited,
                                     limiter,
@@ -231,6 +261,13 @@ impl Provider for SitemapProvider {
                 urls.extend(found);
             }
 
+            // The https and http candidates are distinct sitemap URLs, so
+            // `visited` doesn't stop a site that serves both from contributing
+            // every URL twice. Every other provider sorts and dedupes its
+            // return; this one didn't.
+            urls.sort();
+            urls.dedup();
+
             Ok(urls)
         })
     }
@@ -263,6 +300,87 @@ impl Provider for SitemapProvider {
 mod tests {
     use super::*;
     use mockito::Server;
+
+    #[test]
+    fn test_same_host_as_parent() {
+        let parent = "https://example.com/sitemap.xml";
+        assert!(same_host_as_parent(parent, "https://example.com/a.xml"));
+        // Scheme may differ; the host may not.
+        assert!(same_host_as_parent(parent, "http://example.com/a.xml"));
+        assert!(same_host_as_parent(parent, "https://EXAMPLE.com/a.xml"));
+
+        assert!(!same_host_as_parent(parent, "https://evil.example/a.xml"));
+        assert!(!same_host_as_parent(
+            parent,
+            "https://cdn.example.com/a.xml"
+        ));
+        assert!(!same_host_as_parent(parent, "http://127.0.0.1:8080/a.xml"));
+        assert!(!same_host_as_parent(parent, "not a url"));
+        // A non-default port is a different endpoint.
+        assert!(!same_host_as_parent(
+            parent,
+            "https://example.com:8443/a.xml"
+        ));
+        // ...but the scheme's own default port is the same endpoint.
+        assert!(same_host_as_parent(parent, "https://example.com:443/a.xml"));
+    }
+
+    #[tokio::test]
+    async fn test_sitemap_index_cannot_redirect_the_fetch_to_another_host() {
+        // Regression: a <sitemapindex> could name any host in <loc> and urx
+        // would fetch it, reporting whatever it found as URLs belonging to the
+        // target — including hosts only the machine running urx can reach.
+        let mut elsewhere = Server::new_async().await;
+        let offsite = elsewhere
+            .mock("GET", "/private.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(
+                r#"<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://leaked.example/secret</loc></url>
+</urlset>"#,
+            )
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+        let index_body = format!(
+            r#"<?xml version="1.0"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>{}/private.xml</loc></sitemap>
+  <sitemap><loc>http://{host}/own.xml</loc></sitemap>
+</sitemapindex>"#,
+            elsewhere.url()
+        );
+        let _index = server
+            .mock("GET", "/sitemap.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(index_body)
+            .create_async()
+            .await;
+        let _own = server
+            .mock("GET", "/own.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(
+                r#"<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/kept</loc></url>
+</urlset>"#,
+            )
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        let urls = provider.fetch_urls(&host).await.unwrap();
+
+        assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
+        offsite.assert(); // never requested
+    }
 
     #[test]
     fn test_new_provider() {

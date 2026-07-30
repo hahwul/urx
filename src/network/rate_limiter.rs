@@ -20,15 +20,26 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
+    /// Longest interval a limiter will enforce, and therefore the slowest rate
+    /// that is distinguishable from "one request an hour". `1/rate` for a rate
+    /// small enough overflows a `Duration` outright — `Duration::from_secs_f32`
+    /// *panics* on that, so `--rate-limit 1e-30` took the whole run down.
+    const MAX_INTERVAL: Duration = Duration::from_secs(3600);
+
     /// Build a limiter for `requests_per_sec`. Returns `None` for a
     /// non-positive or non-finite rate, i.e. "no limiting".
     pub fn new(requests_per_sec: f32) -> Option<Self> {
         if requests_per_sec <= 0.0 || !requests_per_sec.is_finite() {
             return None;
         }
+        // `try_from_secs_f32` is the non-panicking form; an absurdly small rate
+        // is clamped to MAX_INTERVAL rather than crashing.
+        let min_interval = Duration::try_from_secs_f32(1.0 / requests_per_sec)
+            .unwrap_or(Self::MAX_INTERVAL)
+            .min(Self::MAX_INTERVAL);
         Some(Self {
             last: Arc::new(Mutex::new(None)),
-            min_interval: Duration::from_secs_f32(1.0 / requests_per_sec),
+            min_interval,
         })
     }
 
@@ -65,6 +76,22 @@ mod tests {
         assert!(RateLimiter::new(f32::INFINITY).is_none());
         assert!(RateLimiter::from_rate(None).is_none());
         assert!(RateLimiter::from_rate(Some(5.0)).is_some());
+    }
+
+    #[test]
+    fn test_tiny_rate_is_clamped_not_a_panic() {
+        // Regression: `--rate-limit 1e-30` makes 1/rate overflow a Duration, and
+        // Duration::from_secs_f32 panics rather than erroring — the whole run
+        // aborted before a single request went out.
+        for rate in [1e-30f32, f32::MIN_POSITIVE, 1e-12] {
+            let limiter = RateLimiter::new(rate).expect("positive rate must yield a limiter");
+            assert_eq!(limiter.min_interval, RateLimiter::MAX_INTERVAL, "{rate}");
+        }
+        // A sane rate is untouched.
+        assert_eq!(
+            RateLimiter::new(2.0).unwrap().min_interval,
+            Duration::from_millis(500)
+        );
     }
 
     #[tokio::test]
