@@ -186,6 +186,17 @@ impl Provider for RobotsProvider {
                         if value.contains('*') {
                             continue;
                         }
+                        // RFC 9309 requires the path to begin with '/', and this
+                        // value is pasted directly after the host. Anything else
+                        // does not produce the URL it looks like it does: a bare
+                        // `admin` yields `https://example.comadmin`, and a value
+                        // starting with `@` is worse — `@evil.example/` turns
+                        // `https://example.com` into userinfo and the URL lands on
+                        // evil.example, letting the file under audit put another
+                        // host's URLs into urx's results.
+                        if !value.starts_with('/') {
+                            continue;
+                        }
                         let path = value.strip_suffix('$').unwrap_or(value);
                         if !path.is_empty() && path != "/" {
                             urls.push(format!("{protocol}://{domain}{path}"));
@@ -197,6 +208,12 @@ impl Provider for RobotsProvider {
                     _ => {}
                 }
             }
+
+            // A robots.txt routinely repeats the same Disallow under several
+            // User-agent groups; every other provider returns a deduplicated
+            // list, so this one should too.
+            urls.sort();
+            urls.dedup();
 
             Ok(urls)
         })
@@ -424,6 +441,65 @@ Sitemap: https://example.com/sitemap.xml
         // Inline comment is removed from the Sitemap value.
         assert!(urls.contains(&"https://example.com/sm.xml".to_string()));
         assert!(!urls.iter().any(|u| u.contains('#')), "{urls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_disallow_values_must_be_absolute_paths() {
+        // Regression: the Disallow value was pasted straight after the host.
+        // A value that isn't a path doesn't produce the URL it looks like:
+        // `admin` yields `https://example.comadmin`, and `@evil.example/` makes
+        // `example.com` the userinfo so the URL lands on evil.example — the
+        // audited file putting another host's URLs into urx's results.
+        let mut server = mockito::Server::new_async().await;
+        let robots = "User-agent: *\n\
+                      Disallow: admin\n\
+                      Disallow: @evil.example/pwned\n\
+                      Disallow: /legit\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert_eq!(
+            urls,
+            vec!["https://example.com/legit".to_string()],
+            "{urls:?}"
+        );
+        // Belt and braces: nothing we emit may resolve to another host.
+        for u in &urls {
+            assert_eq!(
+                url::Url::parse(u).unwrap().host_str(),
+                Some("example.com"),
+                "{u}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_repeated_disallow_entries_are_deduplicated() {
+        // The same path under several User-agent groups is ordinary.
+        let mut server = mockito::Server::new_async().await;
+        let robots = "User-agent: *\n\
+                      Disallow: /admin\n\
+                      User-agent: Googlebot\n\
+                      Disallow: /admin\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["https://example.com/admin".to_string()]);
     }
 
     #[tokio::test]
