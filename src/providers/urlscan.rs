@@ -7,6 +7,7 @@ use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
 
 #[derive(Clone)]
 pub struct UrlscanProvider {
@@ -193,6 +194,14 @@ impl Provider for UrlscanProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             // urlscan.io's public search allows unauthenticated queries
             // (rate-limited to ~30 req/min per IP), so we always query. When no
@@ -217,6 +226,10 @@ impl Provider for UrlscanProvider {
 
             let client = self.client_config().build_client()?;
             let limiter = self.rate_limit.as_ref();
+
+            if let Some(r) = &reporter {
+                r.detail("fetching…");
+            }
 
             // urlscan returns at most 100 results per request and signals more
             // via `has_more`; the next page is requested by passing the last
@@ -245,6 +258,13 @@ impl Provider for UrlscanProvider {
                         if all_urls.is_empty() {
                             return Err(e);
                         }
+                        // ...and flags them as truncated. Without this the run
+                        // reports a clean ✓ over an incomplete crawl, which is
+                        // indistinguishable from "the domain really has this few
+                        // URLs".
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
                         break;
                     }
                 };
@@ -262,6 +282,10 @@ impl Provider for UrlscanProvider {
                 let more = response.has_more;
                 for result in response.results {
                     all_urls.push(result.page.url);
+                }
+
+                if let Some(r) = &reporter {
+                    r.detail(format!("{} URLs…", all_urls.len()));
                 }
 
                 if !more {
@@ -607,6 +631,47 @@ mod tests {
         );
         page1.assert();
         page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_truncated_pagination_is_reported_as_partial() {
+        // Regression: urlscan kept the pages it had when a later page failed, but
+        // only implemented `fetch_urls` — so the trait's default
+        // `fetch_urls_with_progress` dropped the reporter and `mark_partial()`
+        // could never fire. A truncated crawl printed a clean ✓, which looks
+        // exactly like "this domain really has one URL".
+        let mut server = mockito::Server::new_async().await;
+
+        let _page1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("size=100$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":200,"has_more":true,"results":[{"page":{"domain":"example.com","url":"https://example.com/p1","status":"200"},"sort":[1700000000000,"abc"]}]}"#,
+            )
+            .create_async()
+            .await;
+        // The continuation is permanently broken.
+        let _page2 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("search_after=1700000000000".into()))
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new("k".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0); // fail fast, don't sleep through back-off
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .expect("page one must survive the continuation's failure");
+
+        assert_eq!(urls, vec!["https://example.com/p1".to_string()]);
+        assert!(reporter.is_partial());
     }
 
     #[tokio::test]
