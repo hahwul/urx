@@ -169,7 +169,14 @@ impl CacheBackend for SqliteCache {
     }
 
     async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
-        let cutoff_time = Utc::now() - chrono::Duration::seconds(ttl_seconds as i64);
+        // `chrono::Duration::seconds` panics past ~2.9e11 years, and `--cache-ttl`
+        // is a plain u64 straight off the command line — a large one crashed the
+        // run at cleanup time. Saturate instead: a TTL that long means "never
+        // expire", and `checked_sub` then leaves the cutoff at the earliest
+        // representable time so nothing is deleted.
+        let cutoff_time = chrono::Duration::try_seconds(ttl_seconds.min(i64::MAX as u64) as i64)
+            .and_then(|d| Utc::now().checked_sub_signed(d))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC);
         let cutoff_str = cutoff_time.to_rfc3339();
 
         self.with_connection(move |conn| {
@@ -272,6 +279,29 @@ mod tests {
 
         // Entry should be gone
         assert!(!cache.exists(&key).await?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_with_huge_ttl_keeps_entries_and_does_not_panic() -> Result<()> {
+        // Regression: `--cache-ttl` is an unvalidated u64 fed straight to
+        // chrono::Duration::seconds, which panics past its bounds — a large
+        // value aborted the run at cleanup time.
+        let temp_dir = tempdir()?;
+        let cache = SqliteCache::new(temp_dir.path().join("test.db")).await?;
+
+        let filters = CacheFilters::default();
+        let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
+        cache
+            .set(&key, &CacheEntry::new(vec!["https://example.com/x".into()]))
+            .await?;
+
+        // A TTL this long means "never expire"; nothing may be deleted.
+        cache.cleanup_expired(u64::MAX).await?;
+        assert!(cache.exists(&key).await?);
+        cache.cleanup_expired(10_000_000_000_000_000).await?;
+        assert!(cache.exists(&key).await?);
 
         Ok(())
     }

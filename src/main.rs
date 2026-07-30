@@ -1235,7 +1235,11 @@ async fn process_domains_with_cache(
     }
 
     // Clean up expired cache entries
-    cache.cleanup_expired(args.cache_ttl * 2).await?;
+    // Saturating: `--cache-ttl` is an unvalidated u64, and `* 2` on a large one
+    // overflows (a debug-build panic, a wrap in release).
+    cache
+        .cleanup_expired(args.cache_ttl.saturating_mul(2))
+        .await?;
 
     Ok(final_result)
 }
