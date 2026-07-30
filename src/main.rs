@@ -209,10 +209,11 @@ pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> 
 
 /// Seed API-key args from environment variables before config files are applied
 /// so the documented precedence stays `CLI/env > provider-config > main config`.
-fn seed_api_keys_from_env(args: &mut Args) -> (bool, bool, bool) {
+fn seed_api_keys_from_env(args: &mut Args) -> (bool, bool, bool, bool) {
     let vt = parse_env_api_keys("URX_VT_API_KEY");
     let urlscan = parse_env_api_keys("URX_URLSCAN_API_KEY");
     let zoomeye = parse_env_api_keys("URX_ZOOMEYE_API_KEY");
+    let github = parse_env_api_keys("URX_GITHUB_API_KEY");
 
     if args.vt_api_key.is_empty() && !vt.is_empty() {
         args.vt_api_key = vt.clone();
@@ -223,8 +224,16 @@ fn seed_api_keys_from_env(args: &mut Args) -> (bool, bool, bool) {
     if args.zoomeye_api_key.is_empty() && !zoomeye.is_empty() {
         args.zoomeye_api_key = zoomeye.clone();
     }
+    if args.github_api_key.is_empty() && !github.is_empty() {
+        args.github_api_key = github.clone();
+    }
 
-    (!vt.is_empty(), !urlscan.is_empty(), !zoomeye.is_empty())
+    (
+        !vt.is_empty(),
+        !urlscan.is_empty(),
+        !zoomeye.is_empty(),
+        !github.is_empty(),
+    )
 }
 
 /// Helper function to auto-enable providers if API key is present
@@ -1249,7 +1258,8 @@ async fn main() -> Result<()> {
     let cli_supplied_vt = !args.vt_api_key.is_empty();
     let cli_supplied_urlscan = !args.urlscan_api_key.is_empty();
     let cli_supplied_zoomeye = !args.zoomeye_api_key.is_empty();
-    let (env_supplied_vt, env_supplied_urlscan, env_supplied_zoomeye) =
+    let cli_supplied_github = !args.github_api_key.is_empty();
+    let (env_supplied_vt, env_supplied_urlscan, env_supplied_zoomeye, env_supplied_github) =
         seed_api_keys_from_env(&mut args);
 
     let config = Config::load(&args)?;
@@ -1264,6 +1274,7 @@ async fn main() -> Result<()> {
         cli_supplied_vt || env_supplied_vt,
         cli_supplied_urlscan || env_supplied_urlscan,
         cli_supplied_zoomeye || env_supplied_zoomeye,
+        cli_supplied_github || env_supplied_github,
     );
 
     // Honor --no-color / NO_COLOR before any styled output is produced.
@@ -2172,7 +2183,7 @@ mod tests {
         env::set_var("URX_ZOOMEYE_API_KEY", "env-zoomeye");
 
         let mut args = Args::parse_from(["urx", "example.com"]);
-        let (env_vt, env_urlscan, env_zoomeye) = seed_api_keys_from_env(&mut args);
+        let (env_vt, env_urlscan, env_zoomeye, _env_github) = seed_api_keys_from_env(&mut args);
         assert!(env_vt && env_urlscan && env_zoomeye);
 
         let mut config = Config::default();
@@ -2185,8 +2196,9 @@ mod tests {
             vt_api_key: Some("provider-vt".to_string()),
             urlscan_api_key: Some("provider-urlscan".to_string()),
             zoomeye_api_key: Some("provider-zoomeye".to_string()),
+            github_api_key: None,
         };
-        provider_keys.apply_to_args(&mut args, env_vt, env_urlscan, env_zoomeye);
+        provider_keys.apply_to_args(&mut args, env_vt, env_urlscan, env_zoomeye, _env_github);
 
         assert_eq!(args.vt_api_key, vec!["env-vt-1", "env-vt-2"]);
         assert_eq!(args.urlscan_api_key, vec!["env-urlscan"]);
