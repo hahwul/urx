@@ -92,20 +92,60 @@ impl LinkExtractor {
             .await
     }
 
-    /// Extracts links from HTML content, resolving them against a base URL
+    /// Whether an `href` names something a crawler can fetch.
+    ///
+    /// `javascript:`, `mailto:`, `tel:` and `data:` hrefs resolve to perfectly
+    /// valid absolute URLs, so they used to be emitted as discovered links — a
+    /// `mailto:` address reported as a URL urx had found. A bare `#anchor` is
+    /// worse: it resolves to the page urx is already looking at, so every
+    /// in-page anchor came back as a "new" URL that survives host validation.
+    fn is_fetchable_href(href: &str) -> bool {
+        let href = href.trim();
+        if href.is_empty() || href.starts_with('#') {
+            return false;
+        }
+        // A scheme is everything before the first ':' — but only when no '/',
+        // '?' or '#' comes first, otherwise `foo/bar:baz` would read as a scheme.
+        match href.find([':', '/', '?', '#']) {
+            Some(i) if href.as_bytes()[i] == b':' => !matches!(
+                href[..i].to_ascii_lowercase().as_str(),
+                "javascript" | "mailto" | "tel" | "data" | "about" | "blob"
+            ),
+            _ => true,
+        }
+    }
+
+    /// Extracts links from HTML content, resolving them against a base URL.
+    ///
+    /// A `<base href>` in the document overrides `base_url` for relative links —
+    /// that is the entire purpose of the tag, and ignoring it meant every
+    /// relative href on a page that declares one resolved to the wrong absolute
+    /// URL. An unparseable or relative `<base href>` is itself resolved against
+    /// the page URL, as browsers do.
     fn extract_links(base_url: &Url, html_content: &str) -> Vec<String> {
         let document = Html::parse_document(html_content);
         let mut links = Vec::new();
 
-        // Select all <a> tags with href attributes
-        // We unwrap here because "a[href]" is a constant valid selector
+        // Constant, known-valid selectors.
+        let base_selector = Selector::parse("base[href]").unwrap();
         let selector = Selector::parse("a[href]").unwrap();
+
+        // Only the first <base href> in the document has effect.
+        let resolved_base = document
+            .select(&base_selector)
+            .next()
+            .and_then(|el| el.value().attr("href"))
+            .and_then(|href| base_url.join(href).ok())
+            .unwrap_or_else(|| base_url.clone());
 
         // Extract and normalize links
         for element in document.select(&selector) {
             if let Some(href) = element.value().attr("href") {
+                if !Self::is_fetchable_href(href) {
+                    continue;
+                }
                 // Resolve relative URLs to absolute URLs
-                if let Ok(absolute_url) = base_url.join(href) {
+                if let Ok(absolute_url) = resolved_base.join(href.trim()) {
                     links.push(absolute_url.to_string());
                 }
             }
@@ -327,6 +367,77 @@ mod tests {
         let html = "<a>No href</a>";
         let links = LinkExtractor::extract_links(&base_url, html);
         assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_base_href_overrides_the_page_url() {
+        // Regression: <base href> was ignored, so every relative link on a page
+        // that declares one resolved against the page URL and produced an
+        // absolute URL that does not exist on the site.
+        let base_url = Url::parse("https://example.com/deep/page.html").unwrap();
+        let html = r#"
+            <html><head><base href="https://cdn.example.com/app/"></head>
+            <body><a href="a.js">rel</a><a href="/root">root</a></body></html>
+        "#;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert!(
+            links.contains(&"https://cdn.example.com/app/a.js".to_string()),
+            "{links:?}"
+        );
+        assert!(
+            links.contains(&"https://cdn.example.com/root".to_string()),
+            "{links:?}"
+        );
+    }
+
+    #[test]
+    fn test_relative_base_href_is_resolved_against_the_page() {
+        let base_url = Url::parse("https://example.com/a/b/page.html").unwrap();
+        let html = r#"<head><base href="../assets/"></head><a href="x.css">x</a>"#;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert_eq!(
+            links,
+            vec!["https://example.com/a/assets/x.css".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_only_the_first_base_href_applies() {
+        let base_url = Url::parse("https://example.com/p").unwrap();
+        let html = r#"<base href="https://one.example/"><base href="https://two.example/"><a href="z">z</a>"#;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert_eq!(links, vec!["https://one.example/z".to_string()]);
+    }
+
+    #[test]
+    fn test_non_navigational_hrefs_are_not_reported_as_urls() {
+        // These all resolve to valid absolute URLs, so they used to be emitted
+        // as links urx had discovered.
+        let base_url = Url::parse("https://example.com/start").unwrap();
+        let html = r##"
+            <a href="javascript:void(0)">js</a>
+            <a href="mailto:a@example.com">mail</a>
+            <a href="tel:+15551234">tel</a>
+            <a href="data:text/plain,hi">data</a>
+            <a href="#top">anchor</a>
+            <a href="  ">blank</a>
+            <a href="/real">real</a>
+        "##;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert_eq!(links, vec!["https://example.com/real".to_string()]);
+    }
+
+    #[test]
+    fn test_path_containing_a_colon_is_still_followed() {
+        // `is_fetchable_href` must not mistake a colon inside a path segment for
+        // a scheme.
+        let base_url = Url::parse("https://example.com/start").unwrap();
+        let html = r#"<a href="/files/a:b/c.js">x</a><a href="rel:ative/thing">y</a>"#;
+        let links = LinkExtractor::extract_links(&base_url, html);
+        assert!(
+            links.contains(&"https://example.com/files/a:b/c.js".to_string()),
+            "{links:?}"
+        );
     }
 
     #[tokio::test]
