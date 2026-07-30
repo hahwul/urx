@@ -8,6 +8,7 @@ use super::ApiKeyRotator;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
 
 #[derive(Clone)]
 pub struct ZoomEyeProvider {
@@ -127,9 +128,21 @@ impl Provider for ZoomEyeProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
+            }
+
+            if let Some(r) = &reporter {
+                r.detail("fetching…");
             }
 
             let dork = self.build_dork(domain);
@@ -234,11 +247,24 @@ impl Provider for ZoomEyeProvider {
                 }
 
                 if let Some(e) = last_error {
-                    return Err(anyhow::anyhow!(
-                        "Failed after {} attempts: {}",
-                        self.retries + 1,
-                        e
-                    ));
+                    // Best effort: a page that failed after all its retries must
+                    // not discard the pages already collected. Only a failure with
+                    // nothing collected is fatal, matching every other paginating
+                    // provider.
+                    if all_urls.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "Failed after {} attempts: {}",
+                            self.retries + 1,
+                            e
+                        ));
+                    }
+                    // We're returning a truncated result. Flag it so the runner
+                    // marks the line partial and warns instead of presenting an
+                    // incomplete crawl as a clean success.
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
+                    break;
                 }
 
                 // A page that returned no rows means the data is exhausted even
@@ -246,6 +272,10 @@ impl Provider for ZoomEyeProvider {
                 // count.
                 let page_was_empty = page_urls.is_empty();
                 all_urls.extend(page_urls);
+
+                if let Some(r) = &reporter {
+                    r.detail(format!("{} URLs…", all_urls.len()));
+                }
 
                 // Check if there are more pages
                 let fetched_so_far = (page as u64) * (pagesize as u64);
@@ -576,6 +606,73 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page2");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_keeps_earlier_pages_when_a_later_page_fails() {
+        // Regression: a page failing after its retries used to `return Err`,
+        // discarding every page already collected — so one flaky page late in a
+        // large result set reported the whole provider as failed.
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // A full first page (100 rows) with total=200, so the walk continues.
+        let rows: Vec<String> = (0..100)
+            .map(|i| format!(r#"{{"url":"https://example.com/{i}","ip":"1.2.3.4","domain":"example.com","port":443,"title":"t"}}"#))
+            .collect();
+        let _page1 = mock_server
+            .mock("POST", "/v2/search")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"page":1}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{ "code": 60000, "total": 200, "data": [{}] }}"#,
+                rows.join(",")
+            ))
+            .create_async()
+            .await;
+        // ...and page 2 is permanently broken.
+        let _page2 = mock_server
+            .mock("POST", "/v2/search")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"page":2}"#.to_string(),
+            ))
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
+        provider.with_base_url(mock_server.url());
+        provider.with_retries(0); // fail fast, don't sleep through back-off
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .expect("page one must survive a later page's failure");
+
+        assert_eq!(urls.len(), 100);
+        assert!(urls.contains(&"https://example.com/0".to_string()));
+        // The lost page is surfaced as a partial result, not a clean success.
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_errors_when_the_first_page_fails() {
+        // Nothing collected means nothing to salvage — the failure propagates.
+        let mut mock_server = mockito::Server::new_async().await;
+        let _m = mock_server
+            .mock("POST", "/v2/search")
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
+        provider.with_base_url(mock_server.url());
+        provider.with_retries(0);
+
+        assert!(provider.fetch_urls("example.com").await.is_err());
     }
 
     #[tokio::test]

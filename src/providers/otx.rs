@@ -8,6 +8,7 @@ use std::pin::Pin;
 use super::Provider;
 use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
 
 // Helper function to deserialize null as default value for i32
 fn deserialize_null_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
@@ -162,11 +163,23 @@ impl Provider for OTXProvider {
         &'a self,
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        self.fetch_urls_with_progress(domain, None)
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
         Box::pin(async move {
             let mut all_urls = Vec::new();
             let mut page = 0;
             let client = self.client_config().build_client()?;
             let limiter = self.rate_limit.as_ref();
+
+            if let Some(r) = &reporter {
+                r.detail("fetching…");
+            }
 
             loop {
                 let url = self.format_url(domain, page);
@@ -289,6 +302,10 @@ impl Provider for OTXProvider {
                             .filter(|url| !url.is_empty()),
                     );
 
+                    if let Some(r) = &reporter {
+                        r.detail(format!("{} URLs…", all_urls.len()));
+                    }
+
                     // Stop when this page returned nothing (there is no more
                     // data, even if the server still claims `has_next`), or when
                     // the API reports no further pages. A full page with
@@ -300,10 +317,22 @@ impl Provider for OTXProvider {
                         break;
                     }
                 } else {
-                    // If we couldn't get a result after all retries, return the error
-                    return Err(last_error.unwrap_or_else(|| {
-                        anyhow::anyhow!("Failed to fetch OTX data after all retries")
-                    }));
+                    // Best effort: a page that failed after all its retries must
+                    // not discard the pages already collected. Only a failure on
+                    // the very first request — where there is nothing to keep —
+                    // is fatal, matching every other paginating provider.
+                    if all_urls.is_empty() {
+                        return Err(last_error.unwrap_or_else(|| {
+                            anyhow::anyhow!("Failed to fetch OTX data after all retries")
+                        }));
+                    }
+                    // We're returning a truncated result. Flag it so the runner
+                    // marks the line partial and warns, rather than presenting an
+                    // incomplete crawl as a clean success.
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
+                    break;
                 }
 
                 page += 1;
@@ -667,6 +696,77 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_keeps_earlier_pages_when_a_later_page_fails() {
+        // Regression: a page that failed after its retries used to `return Err`,
+        // throwing away every page already collected. A domain with 50 good pages
+        // and one flaky page reported the whole provider as failed and yielded
+        // nothing.
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+
+        // A full page (200 rows) so the walk continues to page 2.
+        let rows: Vec<String> = (0..OTX_RESULTS_LIMIT)
+            .map(|i| format!(r#"{{"url":"http://example.com/{i}"}}"#))
+            .collect();
+        let _page1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{ "has_next": true, "url_list": [{}] }}"#,
+                rows.join(",")
+            ))
+            .create();
+        // ...and page 2 is permanently broken.
+        let _page2 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=2",
+            )
+            .with_status(503)
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+        provider.with_retries(0); // fail fast, don't sleep through back-off
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .expect("page one must survive a later page's failure");
+
+        assert_eq!(urls.len(), OTX_RESULTS_LIMIT as usize);
+        assert!(urls.contains(&"http://example.com/0".to_string()));
+        // The lost page is surfaced as a partial result, not a clean success.
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_errors_when_the_first_page_fails() {
+        // With nothing collected there is nothing to salvage, so the failure
+        // must still propagate.
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+        let _m = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(503)
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+        provider.with_retries(0);
+
+        assert!(provider.fetch_urls("example.com").await.is_err());
     }
 
     #[tokio::test]
