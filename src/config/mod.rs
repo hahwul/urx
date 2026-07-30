@@ -50,6 +50,7 @@ pub struct ProviderConfig {
     pub vt_api_key: Option<String>,
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
+    pub github_api_key: Option<String>,
     pub include_robots: Option<bool>,
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
@@ -64,6 +65,17 @@ pub struct ProviderKeysConfig {
     pub vt_api_key: Option<String>,
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
+    pub github_api_key: Option<String>,
+}
+
+/// Split a comma-separated key list into individual keys, trimming each and
+/// dropping blanks. Shared by both config layers so they agree on what
+/// `"k1, k2"` means.
+fn split_csv(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 impl ProviderKeysConfig {
@@ -140,14 +152,8 @@ impl ProviderKeysConfig {
         cli_supplied_vt: bool,
         cli_supplied_urlscan: bool,
         cli_supplied_zoomeye: bool,
+        cli_supplied_github: bool,
     ) {
-        fn split_csv(s: &str) -> Vec<String> {
-            s.split(',')
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty())
-                .collect()
-        }
-
         if !cli_supplied_vt {
             if let Some(keys) = &self.vt_api_key {
                 args.vt_api_key = split_csv(keys);
@@ -161,6 +167,11 @@ impl ProviderKeysConfig {
         if !cli_supplied_zoomeye {
             if let Some(keys) = &self.zoomeye_api_key {
                 args.zoomeye_api_key = split_csv(keys);
+            }
+        }
+        if !cli_supplied_github {
+            if let Some(keys) = &self.github_api_key {
+                args.github_api_key = split_csv(keys);
             }
         }
     }
@@ -413,21 +424,32 @@ impl Config {
             }
         }
 
+        // API keys rotate when several are given, and every other source
+        // separates them with commas: the env vars do, and so does the
+        // provider-config file. The main config used to push the whole string as
+        // a single key, so `vt_api_key = "k1,k2"` became one key literally named
+        // "k1,k2" — which simply fails to authenticate, with no hint why.
         if args.vt_api_key.is_empty() {
             if let Some(vt_api_key) = &self.provider.vt_api_key {
-                args.vt_api_key.push(vt_api_key.clone());
+                args.vt_api_key = split_csv(vt_api_key);
             }
         }
 
         if args.urlscan_api_key.is_empty() {
             if let Some(urlscan_api_key) = &self.provider.urlscan_api_key {
-                args.urlscan_api_key.push(urlscan_api_key.clone());
+                args.urlscan_api_key = split_csv(urlscan_api_key);
             }
         }
 
         if args.zoomeye_api_key.is_empty() {
             if let Some(zoomeye_api_key) = &self.provider.zoomeye_api_key {
-                args.zoomeye_api_key.push(zoomeye_api_key.clone());
+                args.zoomeye_api_key = split_csv(zoomeye_api_key);
+            }
+        }
+
+        if args.github_api_key.is_empty() {
+            if let Some(github_api_key) = &self.provider.github_api_key {
+                args.github_api_key = split_csv(github_api_key);
             }
         }
 
@@ -601,7 +623,20 @@ impl Config {
 
         if args.cache_type == "sqlite" {
             if let Some(cache_type) = &self.cache.cache_type {
-                args.cache_type = cache_type.clone();
+                // Mirrors how [output].format and [network].network_scope are
+                // handled: name the bad value at the point it was read, rather
+                // than failing later with an error that doesn't mention the
+                // config file at all.
+                match cache_type.trim().to_ascii_lowercase().as_str() {
+                    valid @ ("sqlite" | "redis") => args.cache_type = valid.to_string(),
+                    _ => {
+                        if !args.silent {
+                            eprintln!(
+                                "Ignoring [cache].cache_type={cache_type:?} in config: expected sqlite or redis"
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -905,6 +940,90 @@ mod tests {
     }
 
     #[test]
+    fn test_main_config_api_keys_split_on_commas() {
+        // Regression: the main config pushed the whole string as ONE key, so
+        // `vt_api_key = "k1,k2"` produced a single key literally named "k1,k2"
+        // that simply fails to authenticate. The env vars and the
+        // provider-config file both split on commas; this layer now agrees.
+        let mut config = Config::default();
+        config.provider.vt_api_key = Some("k1, k2 , ,k3".to_string());
+        config.provider.urlscan_api_key = Some("us1,us2".to_string());
+        config.provider.zoomeye_api_key = Some("ze1".to_string());
+        config.provider.github_api_key = Some("gh1,gh2".to_string());
+
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args);
+
+        assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
+        assert_eq!(args.urlscan_api_key, vec!["us1", "us2"]);
+        assert_eq!(args.zoomeye_api_key, vec!["ze1"]);
+        assert_eq!(args.github_api_key, vec!["gh1", "gh2"]);
+    }
+
+    #[test]
+    fn test_main_config_supplies_github_key() {
+        // `--all-providers` documents keyed providers as activating from "flag,
+        // env, or config file", but github had no config field at all — so the
+        // only keyed provider added after that text was written could not be
+        // configured from either config file.
+        let toml_src = r#"
+            [provider]
+            github_api_key = "ghp_one,ghp_two"
+        "#;
+        let cfg: Config = toml::from_str(toml_src).expect("github_api_key must parse");
+        assert_eq!(
+            cfg.provider.github_api_key.as_deref(),
+            Some("ghp_one,ghp_two")
+        );
+
+        let keys: ProviderKeysConfig =
+            toml::from_str(r#"github_api_key = "ghp_three""#).expect("provider-config too");
+        assert_eq!(keys.github_api_key.as_deref(), Some("ghp_three"));
+    }
+
+    #[test]
+    fn test_provider_config_github_key_beats_main_config() {
+        // Same precedence the other three keys follow.
+        let mut config = Config::default();
+        config.provider.github_api_key = Some("from-main".to_string());
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args);
+        assert_eq!(args.github_api_key, vec!["from-main"]);
+
+        let keys = ProviderKeysConfig {
+            vt_api_key: None,
+            urlscan_api_key: None,
+            zoomeye_api_key: None,
+            github_api_key: Some("from-provider-config".to_string()),
+        };
+        keys.apply_to_args(&mut args, false, false, false, false);
+        assert_eq!(args.github_api_key, vec!["from-provider-config"]);
+
+        // ...but a CLI-supplied key still wins.
+        keys.apply_to_args(&mut args, false, false, false, true);
+        assert_eq!(args.github_api_key, vec!["from-provider-config"]);
+    }
+
+    #[test]
+    fn test_invalid_cache_type_in_config_is_reported_not_silently_taken() {
+        // [output].format and [network].network_scope are both validated where
+        // they're read; cache_type was not, so a typo surfaced much later as
+        // "Unknown cache type" with no mention of the config file.
+        let mut config = Config::default();
+        config.cache.cache_type = Some("postgres".to_string());
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
+        config.apply_to_args(&mut args);
+        assert_eq!(args.cache_type, "sqlite", "invalid value must be ignored");
+
+        // A valid value still applies, case-insensitively.
+        let mut config = Config::default();
+        config.cache.cache_type = Some("Redis".to_string());
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
+        config.apply_to_args(&mut args);
+        assert_eq!(args.cache_type, "redis");
+    }
+
+    #[test]
     fn test_provider_keys_load_succeeds_without_explicit_file() -> Result<()> {
         let args = Args::parse_from(["urx", "example.com"]);
         let _cfg = ProviderKeysConfig::load(&args)?;
@@ -917,13 +1036,14 @@ mod tests {
             vt_api_key: Some("from-file".to_string()),
             urlscan_api_key: Some("us-from-file".to_string()),
             zoomeye_api_key: None,
+            github_api_key: None,
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
         // Pretend the user supplied vt via CLI: provider-config should NOT
         // overwrite that.
         args.vt_api_key = vec!["cli-key".to_string()];
 
-        cfg.apply_to_args(&mut args, true, false, false);
+        cfg.apply_to_args(&mut args, true, false, false, false);
 
         assert_eq!(args.vt_api_key, vec!["cli-key".to_string()]);
         // urlscan was empty and not CLI-supplied -> file value applies and
@@ -939,9 +1059,10 @@ mod tests {
             vt_api_key: Some("k1, k2 , ,k3".to_string()),
             urlscan_api_key: None,
             zoomeye_api_key: None,
+            github_api_key: None,
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        cfg.apply_to_args(&mut args, false, false, false);
+        cfg.apply_to_args(&mut args, false, false, false, false);
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
     }
 
