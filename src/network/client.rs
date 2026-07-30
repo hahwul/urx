@@ -86,6 +86,28 @@ pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duratio
     Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
 }
 
+/// Read a response body, stopping after `max` bytes.
+///
+/// Reads incrementally via `chunk()` rather than buffering the whole body, so an
+/// endpoint that streams gigabytes — by accident or on purpose — can't exhaust
+/// memory before any parsing happens. Every caller that fetches a document from
+/// a host urx does not control should go through this.
+pub async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result<String> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let remaining = max.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        if chunk.len() > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Whether an HTTP status is worth another attempt.
 ///
 /// Server errors and explicit throttling are transient. The rest of the 4xx

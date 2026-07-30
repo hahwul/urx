@@ -60,6 +60,84 @@ fn skip_to_newline<R: BufRead>(reader: &mut R) -> std::io::Result<()> {
     }
 }
 
+/// Default cap on URLs collected from one input file.
+///
+/// Every reader needs one: `--files` accepts whatever the user points it at,
+/// and a file that is mostly URL lines grows the result `Vec` in step with its
+/// size. 1M URLs is far more than any real list.
+pub(crate) const MAX_FILE_URLS: usize = 1_000_000;
+
+/// Default cap on bytes consumed from one input file (after decompression).
+///
+/// The URL cap above bounds the *parsed output*; this bounds the *input*, so a
+/// file made of non-URL lines — or a gzip bomb — can't keep the reader running
+/// indefinitely. The URL cap fires first for any real URL-dense file.
+pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Read URL lines from `src`, bounding both the number of URLs collected and the
+/// number of bytes consumed. `extract` turns one line into a URL, or `None` if
+/// the line carries none.
+///
+/// Returns the URLs plus flags for whether the URL cap or the byte cap was hit,
+/// so the caller can tell the user the results were truncated instead of
+/// silently returning a partial list.
+///
+/// The byte bound is enforced with `Read::take`, which caps the stream no matter
+/// how a compressed source expands — that is the decompression-bomb guard. One
+/// byte past the cap is allowed so a file that is *exactly* `max_bytes` long
+/// isn't falsely flagged.
+pub(crate) fn collect_capped<R: Read>(
+    src: R,
+    max_urls: usize,
+    max_bytes: u64,
+    mut extract: impl FnMut(&str) -> Option<String>,
+) -> std::io::Result<(Vec<String>, bool, bool)> {
+    let mut limited = src.take(max_bytes.saturating_add(1));
+    let mut urls = Vec::new();
+    let mut url_capped = false;
+
+    for_each_line_lossy(std::io::BufReader::new(&mut limited), |line| {
+        if urls.len() >= max_urls {
+            // Stop collecting; the `take` bound still drains the rest so we
+            // never read more than `max_bytes (+1)` total.
+            url_capped = true;
+            return;
+        }
+        if let Some(url) = extract(line) {
+            urls.push(url);
+        }
+    })?;
+
+    // `limit()` is the unused remainder of the (max_bytes + 1) allowance; a
+    // remainder of 0 means the source ran past the cap and was truncated.
+    let byte_capped = limited.limit() == 0;
+    Ok((urls, url_capped, byte_capped))
+}
+
+/// Tell the user on stderr when a read stopped early. Truncation is rare and
+/// means the output is incomplete, so it must not pass in silence.
+pub(crate) fn warn_if_truncated(
+    file_path: &Path,
+    url_capped: bool,
+    byte_capped: bool,
+    max_urls: usize,
+    max_bytes: u64,
+) {
+    if url_capped {
+        eprintln!(
+            "[urx] {}: stopped at the {}-URL cap; results truncated",
+            file_path.display(),
+            max_urls
+        );
+    } else if byte_capped {
+        eprintln!(
+            "[urx] {}: stopped after {} bytes read (possible decompression bomb); results truncated",
+            file_path.display(),
+            max_bytes
+        );
+    }
+}
+
 /// Trait for reading URLs from different file formats
 pub trait FileReader {
     /// Read URLs from a file and return them as a vector of strings

@@ -5,9 +5,20 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::providers::Provider;
+
+/// Cap on the bytes read from a robots.txt. The body was previously read whole
+/// with `text()`, so a host serving an endless stream at /robots.txt could grow
+/// urx's memory without bound — and robots.txt is fetched from every target,
+/// including ones the user has no control over. Real files are a few KB;
+/// Google's own crawler stops at 500 KiB, so 1 MiB is generous.
+const MAX_ROBOTS_BYTES: usize = 1024 * 1024;
+
+/// Cap on entries taken from one robots.txt, bounding the parsed output the way
+/// the sitemap provider bounds its own.
+const MAX_ROBOTS_ENTRIES: usize = 100_000;
 
 #[derive(Clone)]
 pub struct RobotsProvider {
@@ -106,10 +117,12 @@ impl Provider for RobotsProvider {
                 // A body that dies mid-read is "no robots.txt" for our purposes,
                 // not a fatal error — same best-effort contract as the HTTP
                 // fallback below.
-                Ok(resp) if resp.status().is_success() => match resp.text().await {
-                    Ok(text) => (true, text),
-                    Err(_) => return Ok(urls),
-                },
+                Ok(resp) if resp.status().is_success() => {
+                    match read_body_capped(resp, MAX_ROBOTS_BYTES).await {
+                        Ok(text) => (true, text),
+                        Err(_) => return Ok(urls),
+                    }
+                }
                 _ => {
                     // If HTTPS fails, try HTTP
                     #[cfg(not(test))]
@@ -137,7 +150,7 @@ impl Provider for RobotsProvider {
                     if !http_resp.status().is_success() {
                         return Ok(urls);
                     }
-                    match http_resp.text().await {
+                    match read_body_capped(http_resp, MAX_ROBOTS_BYTES).await {
                         Ok(text) => (false, text),
                         Err(_) => return Ok(urls),
                     }
@@ -148,6 +161,9 @@ impl Provider for RobotsProvider {
             let protocol = if is_https { "https" } else { "http" };
 
             for line in text.lines() {
+                if urls.len() >= MAX_ROBOTS_ENTRIES {
+                    break;
+                }
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {
                     continue;
@@ -453,6 +469,69 @@ Sitemap: https://example.com/sitemap.xml
         // Protocol should be https because first request (simulated https) succeeded
         assert!(urls.contains(&"https://example.com/private/".to_string()));
         assert!(urls.contains(&"https://example.com/sitemap.xml".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_robots_body_is_capped() {
+        // Regression: the body was read whole with text(), so a host streaming
+        // an endless /robots.txt could grow memory without bound — and robots.txt
+        // is fetched from every target, including ones the user doesn't control.
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // A body well past the cap. Entries before the cut are still parsed.
+        let mut body = String::from("Disallow: /early\n");
+        while body.len() < MAX_ROBOTS_BYTES + 4096 {
+            body.push_str("# padding padding padding padding padding padding\n");
+        }
+        body.push_str("Disallow: /past-the-cap\n");
+
+        let _m = mock_server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(body)
+            .create();
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(mock_server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert!(
+            urls.contains(&"https://example.com/early".to_string()),
+            "{urls:?}"
+        );
+        assert!(
+            !urls.contains(&"https://example.com/past-the-cap".to_string()),
+            "body past the cap must not be parsed: {urls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_robots_entry_count_is_capped() {
+        // The byte cap bounds the input; this bounds the parsed output, the way
+        // the sitemap provider bounds its own.
+        let mut mock_server = mockito::Server::new_async().await;
+
+        let mut body = String::new();
+        for i in 0..(MAX_ROBOTS_ENTRIES + 500) {
+            body.push_str(&format!("Disallow: /p{i}\n"));
+        }
+
+        let _m = mock_server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(body)
+            .create();
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(mock_server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert!(
+            urls.len() <= MAX_ROBOTS_ENTRIES,
+            "entry count must be bounded, got {}",
+            urls.len()
+        );
     }
 
     #[tokio::test]
