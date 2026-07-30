@@ -150,8 +150,18 @@ impl UrlTransformer {
 
         for url_str in urls {
             if let Ok(url) = Url::parse(&url_str) {
-                // Create a key using host and path
-                let key = format!("{}{}", url.host_str().unwrap_or(""), url.path());
+                // Key on the full origin plus the path. Keying on host+path alone
+                // merged endpoints that are not the same endpoint at all:
+                // `http://host/api?a=1` and `https://host/api?b=2` collapsed into a
+                // single URL that carried one scheme and both origins' parameters,
+                // and `host:8080/api` was folded into `host/api` the same way.
+                let key = format!(
+                    "{}://{}{}{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or(""),
+                    url.port().map(|p| format!(":{p}")).unwrap_or_default(),
+                    url.path()
+                );
 
                 path_groups.entry(key).or_default().push(url_str);
             } else {
@@ -321,6 +331,50 @@ mod tests {
         let out = transformer.transform(urls);
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0], "https://example.com/s?q=a+b&debug");
+    }
+
+    #[test]
+    fn test_merge_endpoints_keeps_origins_apart() {
+        // Regression: the group key was host+path, so a plain-HTTP endpoint and
+        // its HTTPS counterpart (and a non-default port) merged into one URL —
+        // inventing an endpoint that carried parameters never seen on that origin.
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "http://example.com/api?a=1".to_string(),
+            "https://example.com/api?b=2".to_string(),
+            "https://example.com:8443/api?c=3".to_string(),
+        ];
+
+        let out = transformer.transform(urls);
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(
+            out.contains(&"http://example.com/api?a=1".to_string()),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(&"https://example.com/api?b=2".to_string()),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(&"https://example.com:8443/api?c=3".to_string()),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn test_merge_endpoints_still_merges_same_origin() {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "https://example.com/api?a=1".to_string(),
+            "https://example.com/api?b=2".to_string(),
+        ];
+
+        let out = transformer.transform(urls);
+        assert_eq!(out, vec!["https://example.com/api?a=1&b=2".to_string()]);
     }
 
     #[test]
