@@ -10,6 +10,53 @@ use url::Url;
 use super::Tester;
 use crate::network::client::HttpClientConfig;
 
+/// Cap on bytes read from one page before parsing.
+///
+/// `--extract-links` runs over whatever the archives recorded, which routinely
+/// includes multi-gigabyte media. The whole body was previously buffered into
+/// memory and handed to the HTML parser, so a single large URL in the list could
+/// exhaust memory. The sitemap provider already caps its documents this way;
+/// this is the same guard for the same reason. 10 MiB is far more than any real
+/// HTML page.
+const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
+/// Whether a response body is worth handing to the HTML parser.
+///
+/// A missing `Content-Type` is treated as "maybe HTML" and parsed, since plenty
+/// of servers omit it; an explicitly non-HTML type (an image, a video, a zip) is
+/// skipped — running an HTML parser over binary yields nothing but the bytes are
+/// downloaded either way.
+fn is_html_like(headers: &reqwest::header::HeaderMap) -> bool {
+    match headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(ct) => {
+            let ct = ct.to_ascii_lowercase();
+            ct.contains("html") || ct.contains("xml") || ct.contains("text/plain")
+        }
+        None => true,
+    }
+}
+
+/// Read a response body, stopping after `max` bytes. Reads incrementally via
+/// `chunk()` so an oversized body is never fully buffered.
+async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result<String> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let remaining = max.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        if chunk.len() > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// HTML link extractor that finds URLs in web pages
 #[derive(Clone)]
 pub struct LinkExtractor {
@@ -113,8 +160,23 @@ impl Tester for LinkExtractor {
                             }
                         };
 
-                        // Get the HTML content
-                        let html_content = response.text().await?;
+                        // An error page still has a body, and its nav/footer is
+                        // full of links — mining those would inject the site's
+                        // chrome into the results as if it had been discovered.
+                        // A non-2xx page has no links worth extracting.
+                        if !response.status().is_success() {
+                            return Ok(Vec::new());
+                        }
+
+                        // Nor is there anything to extract from a response that
+                        // isn't markup.
+                        if !is_html_like(response.headers()) {
+                            return Ok(Vec::new());
+                        }
+
+                        // Get the HTML content, bounded so one huge page can't
+                        // exhaust memory.
+                        let html_content = read_body_capped(response, MAX_BODY_BYTES).await?;
 
                         // Extract links using the helper function
                         let links = Self::extract_links(&base_url, &html_content);
@@ -283,6 +345,122 @@ mod tests {
         let html = "<a>No href</a>";
         let links = LinkExtractor::extract_links(&base_url, html);
         assert!(links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_error_pages_are_not_mined_for_links() {
+        // Regression: the body of any response was parsed, including 404/500
+        // pages — so a dead URL contributed the site's nav and footer links to
+        // the results as though they had been discovered.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/gone")
+            .with_status(404)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="/nav">home</a><a href="/footer">about</a>"#)
+            .create_async()
+            .await;
+
+        let extractor = LinkExtractor::new();
+        let links = extractor
+            .test_url(&format!("{}/gone", server.url()))
+            .await
+            .unwrap();
+
+        assert!(links.is_empty(), "{links:?}");
+    }
+
+    #[tokio::test]
+    async fn test_non_markup_bodies_are_skipped() {
+        // Running an HTML parser over a JPEG finds nothing; skip it outright.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/photo.jpg")
+            .with_status(200)
+            .with_header("content-type", "image/jpeg")
+            .with_body(r#"<a href="/not-really-html">x</a>"#)
+            .create_async()
+            .await;
+
+        let extractor = LinkExtractor::new();
+        let links = extractor
+            .test_url(&format!("{}/photo.jpg", server.url()))
+            .await
+            .unwrap();
+
+        assert!(links.is_empty(), "{links:?}");
+    }
+
+    #[tokio::test]
+    async fn test_missing_content_type_is_still_parsed() {
+        // Plenty of servers omit Content-Type; treat that as "maybe HTML" rather
+        // than silently dropping the page.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/bare")
+            .with_status(200)
+            .with_body(r#"<a href="https://example.com/found">x</a>"#)
+            .create_async()
+            .await;
+
+        let extractor = LinkExtractor::new();
+        let links = extractor
+            .test_url(&format!("{}/bare", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(links, vec!["https://example.com/found".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_body_is_capped() {
+        // A body larger than the cap is truncated rather than buffered whole.
+        // Links before the cut are still found; the run does not blow up.
+        let mut body = String::from(r#"<a href="https://example.com/early">x</a>"#);
+        body.push_str(&"<!-- padding -->".repeat(80_000));
+        body.push_str(r#"<a href="https://example.com/late">y</a>"#);
+        assert!(
+            body.len() > MAX_BODY_BYTES / 10,
+            "test body should be large"
+        );
+
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/big")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let extractor = LinkExtractor::new();
+        let links = extractor
+            .test_url(&format!("{}/big", server.url()))
+            .await
+            .unwrap();
+
+        assert!(
+            links.contains(&"https://example.com/early".to_string()),
+            "{links:?}"
+        );
+    }
+
+    #[test]
+    fn test_is_html_like() {
+        use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+        let with = |v: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert(CONTENT_TYPE, HeaderValue::from_static(v));
+            h
+        };
+        assert!(is_html_like(&with("text/html; charset=utf-8")));
+        assert!(is_html_like(&with("application/xhtml+xml")));
+        assert!(is_html_like(&with("text/plain")));
+        assert!(!is_html_like(&with("image/png")));
+        assert!(!is_html_like(&with("video/mp4")));
+        assert!(!is_html_like(&with("application/octet-stream")));
+        // Absent header: assume markup rather than drop the page.
+        assert!(is_html_like(&HeaderMap::new()));
     }
 
     #[tokio::test]

@@ -718,22 +718,9 @@ fn apply_url_filters(
         if args.verbose && !args.silent {
             println!("Enforcing strict host validation...");
         }
-        // Re-resolve the original domain list, normalized the same way as the
-        // fetch targets so the validator's hosts line up with what was queried.
-        // We can't read stdin a second time, so this falls back to whatever
-        // positional args and --domain-list files supplied.
-        let mut domains: Vec<String> = args.domains.clone();
-        for path in &args.domain_list {
-            domains.extend(read_domains_from_file(path)?);
-        }
-        let domains: Vec<String> = domains
-            .iter()
-            .filter_map(|d| cli::normalize_domain(d))
-            .collect();
 
-        if !domains.is_empty() {
+        if let Some(host_validator) = build_host_validator(args)? {
             let before = sorted_urls.len();
-            let host_validator = HostValidator::new(&domains, args.subs);
             sorted_urls.retain(|url| host_validator.is_valid_host(url));
             let removed = before - sorted_urls.len();
 
@@ -770,6 +757,31 @@ fn apply_url_filters(
     Ok(sorted_urls)
 }
 
+/// Re-resolve the original target list into a [`HostValidator`], or `None` when
+/// strict mode is off or no host-bearing target was supplied.
+///
+/// The domains are normalized exactly the way the fetch targets were, so the
+/// validator's hosts line up with what was actually queried. stdin can't be read
+/// a second time, so this falls back to whatever positional args and
+/// `--domain-list` files supplied.
+fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
+    if !args.strict_enabled() {
+        return Ok(None);
+    }
+    let mut domains: Vec<String> = args.domains.clone();
+    for path in &args.domain_list {
+        domains.extend(read_domains_from_file(path)?);
+    }
+    let domains: Vec<String> = domains
+        .iter()
+        .filter_map(|d| cli::normalize_domain(d))
+        .collect();
+    if domains.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(HostValidator::new(&domains, args.subs)))
+}
+
 /// Build the filter/transformer pair used by both the batch and streaming
 /// paths, so a streamed run applies exactly the rules a batch run would.
 fn build_url_filter(args: &Args) -> UrlFilter {
@@ -785,6 +797,21 @@ fn build_url_filter(args: &Args) -> UrlFilter {
         .with_min_length(args.min_length)
         .with_max_length(args.max_length);
     url_filter
+}
+
+/// Build the per-URL transformer used everywhere a URL must be decided on its
+/// own: streaming output and links discovered by `--extract-links`.
+///
+/// `--merge-endpoint` is deliberately absent — it folds several URLs into one and
+/// so has no single-URL form (see [`UrlTransformer::transform_one`]).
+fn build_url_transformer(args: &Args) -> UrlTransformer {
+    let mut transformer = UrlTransformer::new();
+    transformer
+        .with_normalize_url(args.normalize_url)
+        .with_show_only_host(args.show_only_host)
+        .with_show_only_path(args.show_only_path)
+        .with_show_only_param(args.show_only_param);
+    transformer
 }
 
 /// Options that need the complete result set and therefore cannot be combined
@@ -864,30 +891,9 @@ fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>> {
 
     // Host validation mirrors the batch path: only meaningful when strict mode
     // is on and the targets came from the command line rather than a file.
-    let host_validator = if args.strict_enabled() {
-        let mut domains: Vec<String> = args.domains.clone();
-        for path in &args.domain_list {
-            domains.extend(read_domains_from_file(path)?);
-        }
-        let domains: Vec<String> = domains
-            .iter()
-            .filter_map(|d| cli::normalize_domain(d))
-            .collect();
-        if domains.is_empty() {
-            None
-        } else {
-            Some(HostValidator::new(&domains, args.subs))
-        }
-    } else {
-        None
-    };
+    let host_validator = build_host_validator(args)?;
 
-    let mut transformer = UrlTransformer::new();
-    transformer
-        .with_normalize_url(args.normalize_url)
-        .with_show_only_host(args.show_only_host)
-        .with_show_only_path(args.show_only_path)
-        .with_show_only_param(args.show_only_param);
+    let transformer = build_url_transformer(args);
 
     let writer: Box<dyn std::io::Write + Send> = match &args.output {
         Some(path) => Box::new(
@@ -910,6 +916,35 @@ fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>> {
         &args.format,
         writer,
     )?)))
+}
+
+/// The filter applied to links `--extract-links` discovers, or `None` when the
+/// extractor isn't running.
+///
+/// Links found *inside* pages come into existence after
+/// `apply_url_filters`/`apply_url_transformations` have already run over the
+/// primary list, so they have to be put through the same rules here. Without
+/// this, `--extract-links` silently bypasses every filter the user set: `-e js`
+/// emits non-JS links, and strict host validation (on by default) emits every
+/// off-site link a page happens to point at.
+fn build_extracted_link_filter(
+    args: &Args,
+) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
+    if !args.extract_links {
+        return Ok(None);
+    }
+    // File input has no queried domain to validate against, which is why the
+    // batch path skips host validation for it too.
+    let host_validator = if args.files.is_empty() {
+        build_host_validator(args)?
+    } else {
+        None
+    };
+    Ok(Some(Arc::new(tester_manager::ExtractedLinkFilter::new(
+        build_url_filter(args),
+        build_url_transformer(args),
+        host_validator,
+    ))))
 }
 
 /// Apply URL transformations
@@ -1388,6 +1423,8 @@ async fn main() -> Result<()> {
             testers.push(Box::new(link_extractor));
         }
 
+        let link_filter = build_extracted_link_filter(&args)?;
+
         // Process URLs with testers
         process_urls_with_testers(
             transformed_urls,
@@ -1395,6 +1432,7 @@ async fn main() -> Result<()> {
             &progress_manager,
             testers,
             should_check_status,
+            link_filter,
         )
         .await
     } else {
@@ -1661,6 +1699,54 @@ mod tests {
         use clap::Parser;
         let args = Args::parse_from(["urx", "example.com"]);
         assert!(build_stream_sink(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_extract_links_filter_is_wired_up_and_applies_every_rule() {
+        use clap::Parser;
+        // Regression: extracted links were appended straight to the results,
+        // after filtering and host validation had already run — so this filter
+        // has to exist *and* be handed to the tester stage.
+        let args = Args::parse_from([
+            "urx",
+            "--extract-links",
+            "-e",
+            "js",
+            "--silent",
+            "example.com",
+        ]);
+        let filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--extract-links must build a filter");
+
+        // Extension filter applies...
+        assert_eq!(
+            filter.accept("https://example.com/app.js").as_deref(),
+            Some("https://example.com/app.js")
+        );
+        assert!(filter.accept("https://example.com/index.html").is_none());
+        // ...and so does strict host validation, which is on by default.
+        assert!(filter.accept("https://ads.tracker.net/a.js").is_none());
+    }
+
+    #[test]
+    fn test_no_extract_links_builds_no_filter() {
+        use clap::Parser;
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(build_extracted_link_filter(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_extract_links_filter_skips_host_validation_for_file_input() {
+        use clap::Parser;
+        // With --files there is no queried domain to validate against, matching
+        // how the batch path treats file input.
+        let args = Args::parse_from(["urx", "--extract-links", "--files", "urls.txt", "--silent"]);
+        let filter = build_extracted_link_filter(&args).unwrap().unwrap();
+        assert_eq!(
+            filter.accept("https://anywhere.test/x").as_deref(),
+            Some("https://anywhere.test/x")
+        );
     }
 
     #[test]
@@ -2986,6 +3072,7 @@ mod tests {
             &progress_manager,
             testers,
             false, // 여기를 false로 변경 (should_check_status)
+            None,
         )
         .await;
 
