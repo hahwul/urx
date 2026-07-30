@@ -482,26 +482,44 @@ pub fn normalize_domain(raw: &str) -> Option<String> {
 }
 
 impl Args {
-    /// Parse `--rate-limit-by` entries into a `provider_id -> requests/sec`
-    /// map. Malformed entries are dropped and reported via `parse_errors`
-    /// when verbose; the caller decides whether to surface them.
-    pub fn rate_limit_overrides(&self) -> std::collections::HashMap<String, f32> {
+    /// Parse `--rate-limit-by` entries into a `provider_id -> requests/sec` map,
+    /// alongside the raw entries that did not parse.
+    ///
+    /// Every rejection here is otherwise invisible: `wayback` (no `=`),
+    /// `wayback:5` (wrong separator), `wayback=fast`, and `wayback=0` all used to
+    /// vanish, leaving the user with an unthrottled run they believe they
+    /// limited. Unknown provider *ids* are already rejected loudly, as are
+    /// unknown `--preset` values; malformed entries now travel back to the caller
+    /// so they can be too.
+    pub fn parse_rate_limit_overrides(
+        &self,
+    ) -> (std::collections::HashMap<String, f32>, Vec<String>) {
         let mut map = std::collections::HashMap::new();
+        let mut malformed = Vec::new();
         for raw in &self.rate_limit_by {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            if let Some((k, v)) = trimmed.split_once('=') {
-                let id = k.trim().to_string();
-                if let Ok(rate) = v.trim().parse::<f32>() {
-                    if !id.is_empty() && rate > 0.0 {
-                        map.insert(id, rate);
-                    }
+            let Some((k, v)) = trimmed.split_once('=') else {
+                malformed.push(trimmed.to_string());
+                continue;
+            };
+            let id = k.trim().to_string();
+            match v.trim().parse::<f32>() {
+                Ok(rate) if !id.is_empty() && rate > 0.0 && rate.is_finite() => {
+                    map.insert(id, rate);
                 }
+                _ => malformed.push(trimmed.to_string()),
             }
         }
-        map
+        (map, malformed)
+    }
+
+    /// Just the successfully parsed overrides. See
+    /// [`Args::parse_rate_limit_overrides`] for what gets rejected.
+    pub fn rate_limit_overrides(&self) -> std::collections::HashMap<String, f32> {
+        self.parse_rate_limit_overrides().0
     }
 
     /// Effective host-validation setting. `--no-strict` wins over `--strict`,
@@ -838,13 +856,34 @@ mod tests {
             "vt=oops,nokey=1,=2,wayback=-1",
             "example.com",
         ]);
-        let map = args.rate_limit_overrides();
-        // "vt=oops" -> not a number, dropped
-        // "nokey=1" -> kept, "nokey" -> 1
-        // "=2" -> empty id, dropped
-        // "wayback=-1" -> non-positive, dropped
+        let (map, malformed) = args.parse_rate_limit_overrides();
+        // "vt=oops" -> not a number, rejected
+        // "nokey=1" -> kept, "nokey" -> 1 (an unknown id, rejected separately)
+        // "=2" -> empty id, rejected
+        // "wayback=-1" -> non-positive, rejected
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("nokey"), Some(&1.0));
+        // ...and every rejection is reported rather than vanishing.
+        assert_eq!(malformed, vec!["vt=oops", "=2", "wayback=-1"]);
+    }
+
+    #[test]
+    fn test_rate_limit_overrides_report_every_silent_rejection() {
+        // Each of these used to leave the run unthrottled with no diagnostic.
+        for entry in ["wayback", "wayback:5", "wayback=fast", "wayback=0"] {
+            let args = Args::parse_from(["urx", "--rate-limit-by", entry, "example.com"]);
+            let (map, malformed) = args.parse_rate_limit_overrides();
+            assert!(map.is_empty(), "{entry}: {map:?}");
+            assert_eq!(malformed, vec![entry.to_string()], "{entry}");
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_overrides_accept_valid_entries_without_complaint() {
+        let args = Args::parse_from(["urx", "--rate-limit-by", "wayback=5", "example.com"]);
+        let (map, malformed) = args.parse_rate_limit_overrides();
+        assert_eq!(map.get("wayback"), Some(&5.0));
+        assert!(malformed.is_empty());
     }
 
     #[test]
