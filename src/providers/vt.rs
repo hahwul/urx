@@ -5,7 +5,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::Provider;
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -191,7 +191,7 @@ impl VirusTotalProvider {
                         last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                         continue;
                     }
-                    match response.json::<VtUrlsResponse>().await {
+                    match read_json_capped::<VtUrlsResponse>(response).await {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
                             attempt += 1;

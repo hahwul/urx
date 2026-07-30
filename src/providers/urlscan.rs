@@ -5,7 +5,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::Provider;
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -58,6 +58,11 @@ const URLSCAN_MAX_PAGES: usize = 100;
 /// Turn a result's `sort` array into the `search_after` cursor urlscan expects:
 /// the array values rendered as a comma-separated string. Returns `None` when
 /// the result carries no sort key (so we can't page further).
+///
+/// The result is percent-encoded, because it is spliced straight back into the
+/// next request's query string. The values come from urlscan's response, not
+/// from us: a sort value containing `&` or `=` would otherwise end the parameter
+/// and inject arbitrary query parameters into the follow-up request.
 fn sort_to_search_after(sort: &[serde_json::Value]) -> Option<String> {
     if sort.is_empty() {
         return None;
@@ -69,7 +74,7 @@ fn sort_to_search_after(sort: &[serde_json::Value]) -> Option<String> {
             other => other.to_string(),
         })
         .collect();
-    Some(parts.join(","))
+    Some(url::form_urlencoded::byte_serialize(parts.join(",").as_bytes()).collect::<String>())
 }
 
 impl UrlscanProvider {
@@ -159,7 +164,7 @@ impl UrlscanProvider {
                         last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
                         continue;
                     }
-                    match response.json::<UrlscanResponse>().await {
+                    match read_json_capped::<UrlscanResponse>(response).await {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
                             attempt += 1;
@@ -340,6 +345,26 @@ impl Provider for UrlscanProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sort_cursor_is_percent_encoded() {
+        // The cursor is spliced into the next request's query string, and its
+        // values come from urlscan's response — an unencoded '&' or '=' used to
+        // end the parameter and inject query parameters of the server's choosing.
+        let sort = vec![
+            serde_json::Value::from(1699999999999i64),
+            serde_json::Value::from("a&size=1&x=y"),
+        ];
+        let cursor = sort_to_search_after(&sort).unwrap();
+        assert!(!cursor.contains('&'), "{cursor}");
+        assert!(!cursor.contains('='), "{cursor}");
+        assert!(cursor.starts_with("1699999999999%2C"), "{cursor}");
+    }
+
+    #[test]
+    fn test_sort_cursor_none_when_absent() {
+        assert!(sort_to_search_after(&[]).is_none());
+    }
 
     #[test]
     fn test_new_provider() {

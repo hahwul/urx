@@ -119,6 +119,19 @@ pub async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Read a JSON response body and deserialize it, bounded by
+/// [`MAX_RESPONSE_BYTES`].
+///
+/// `reqwest::Response::json` buffers the entire body first, which the keyed API
+/// providers (urlscan, VirusTotal, ZoomEye, GitHub) must not do for a host urx
+/// does not control — the same reason [`get_with_retry`] reads capped.
+pub async fn read_json_capped<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T> {
+    let body = read_body_capped(resp, MAX_RESPONSE_BYTES).await?;
+    Ok(serde_json::from_str(&body)?)
+}
+
 /// Whether an HTTP status is worth another attempt.
 ///
 /// Server errors and explicit throttling are transient. The rest of the 4xx
