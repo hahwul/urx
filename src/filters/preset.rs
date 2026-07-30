@@ -35,7 +35,7 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "webm", "pgm", "pbm", "ppm", "pnm", "exr", "xcf", "pcx", "tga", "emf", "wmf", "jxr", "hdp",
     "wdp", "cur", "dcm", "wbmp", "j2k", "art", "jng", "3fr", "ari", "srf", "sr2", "bay", "crw",
     "kdc", "erf", "mrw", "rw2", "pef", "dicom", "djvu", "fpx", "hdr", "mng", "ora", "pic", "rgb",
-    "rgba", "webm", "webp", "xbm", "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
+    "rgba", "xbm", "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
 ];
 
 const FONT_EXTENSIONS: &[&str] = &[
@@ -66,8 +66,54 @@ const STYLE_EXTENSIONS: &[&str] = &[
     "css", "scss", "sass", "less", "stylus", "postcss", "pcss", "cssm", "cssx", "cssb",
 ];
 
+/// Canonical preset name for each variant, in the order `--help` should list
+/// them. Used to validate `--preset` and to name the alternatives in the error.
+pub const PRESET_IDS: [&str; 13] = [
+    "no-resources",
+    "no-images",
+    "no-fonts",
+    "no-documents",
+    "no-videos",
+    "no-audio",
+    "only-js",
+    "only-style",
+    "only-fonts",
+    "only-documents",
+    "only-videos",
+    "only-audio",
+    "only-images",
+];
+
+/// Reject `--preset` values that name nothing.
+///
+/// An unrecognised preset used to be dropped in silence (see
+/// [`crate::filters::UrlFilter::apply_presets`]), so a typo like `only-image`
+/// or `onlyjs` produced an unfiltered run that looked like the filter had simply
+/// matched everything. Unknown provider ids already fail loudly; presets now do
+/// the same.
+pub fn validate_presets(presets: &[String]) -> anyhow::Result<()> {
+    let unknown: Vec<&str> = presets
+        .iter()
+        .filter(|p| FilterPreset::from_str(p).is_none())
+        .map(String::as_str)
+        .collect();
+
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "Unknown preset(s) in --preset: {}. Allowed values: {}",
+        unknown.join(", "),
+        PRESET_IDS.join(", ")
+    ))
+}
+
 impl FilterPreset {
     /// Parse a preset string into a FilterPreset enum
+    ///
+    /// Both singular and plural spellings are accepted for every preset, so
+    /// `only-image` and `only-images` mean the same thing — the `no-*` family
+    /// already worked that way and the `only-*` family did not.
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "no-resource" | "no-resources" => Some(FilterPreset::NoResources),
@@ -78,11 +124,11 @@ impl FilterPreset {
             "no-audio" | "no-audios" => Some(FilterPreset::NoAudio),
             "only-js" => Some(FilterPreset::OnlyJs),
             "only-style" | "only-styles" => Some(FilterPreset::OnlyStyle),
-            "only-fonts" => Some(FilterPreset::OnlyFonts),
-            "only-documents" => Some(FilterPreset::OnlyDocuments),
-            "only-videos" => Some(FilterPreset::OnlyVideos),
+            "only-font" | "only-fonts" => Some(FilterPreset::OnlyFonts),
+            "only-document" | "only-documents" => Some(FilterPreset::OnlyDocuments),
+            "only-video" | "only-videos" => Some(FilterPreset::OnlyVideos),
             "only-audio" | "only-audios" => Some(FilterPreset::OnlyAudio),
-            "only-images" => Some(FilterPreset::OnlyImages),
+            "only-image" | "only-images" => Some(FilterPreset::OnlyImages),
             _ => None,
         }
     }
@@ -108,7 +154,28 @@ impl FilterPreset {
             }
             FilterPreset::NoVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::NoAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyJs | FilterPreset::OnlyStyle => vec![],
+            // An `only-*` preset narrows the result set with an *inclusion* list
+            // (see `get_extensions`); it excludes nothing.
+            FilterPreset::OnlyJs
+            | FilterPreset::OnlyStyle
+            | FilterPreset::OnlyFonts
+            | FilterPreset::OnlyDocuments
+            | FilterPreset::OnlyVideos
+            | FilterPreset::OnlyAudio
+            | FilterPreset::OnlyImages => vec![],
+        }
+    }
+
+    /// Get included extensions for this preset
+    ///
+    /// Every `only-*` preset belongs here, not in
+    /// [`FilterPreset::get_exclude_extensions`]. Returning e.g. the image
+    /// extensions as *exclusions* made `--preset only-images` drop every image
+    /// and keep everything else — the exact inverse of its name.
+    pub fn get_extensions(&self) -> Vec<String> {
+        match self {
+            FilterPreset::OnlyJs => JS_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::OnlyStyle => STYLE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyFonts => FONT_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyDocuments => {
                 DOCUMENT_EXTENSIONS.iter().map(|&s| s.to_string()).collect()
@@ -116,15 +183,12 @@ impl FilterPreset {
             FilterPreset::OnlyVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyImages => IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-        }
-    }
-
-    /// Get included extensions for this preset
-    pub fn get_extensions(&self) -> Vec<String> {
-        match self {
-            FilterPreset::OnlyJs => JS_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyStyle => STYLE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            _ => vec![],
+            FilterPreset::NoResources
+            | FilterPreset::NoImages
+            | FilterPreset::NoFonts
+            | FilterPreset::NoDocuments
+            | FilterPreset::NoVideos
+            | FilterPreset::NoAudio => vec![],
         }
     }
 
@@ -265,6 +329,114 @@ mod tests {
     }
 
     #[test]
+    fn test_every_only_preset_includes_rather_than_excludes() {
+        // Regression: only-fonts/-documents/-videos/-audio/-images returned their
+        // extensions from get_exclude_extensions() with an empty get_extensions(),
+        // so each one dropped exactly the family it claimed to keep. only-js and
+        // only-style were the only two wired up correctly.
+        let cases = [
+            (FilterPreset::OnlyJs, "js"),
+            (FilterPreset::OnlyStyle, "css"),
+            (FilterPreset::OnlyFonts, "woff2"),
+            (FilterPreset::OnlyDocuments, "pdf"),
+            (FilterPreset::OnlyVideos, "mp4"),
+            (FilterPreset::OnlyAudio, "mp3"),
+            (FilterPreset::OnlyImages, "png"),
+        ];
+
+        for (preset, sample) in cases {
+            let included = preset.get_extensions();
+            let excluded = preset.get_exclude_extensions();
+            assert!(
+                included.contains(&sample.to_string()),
+                "{sample} must be an *inclusion* for this only-* preset"
+            );
+            assert!(
+                excluded.is_empty(),
+                "an only-* preset must exclude nothing, got {excluded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_only_images_keeps_images_end_to_end() {
+        // The inversion was only visible through UrlFilter, which feeds
+        // get_extensions() into the include list and get_exclude_extensions()
+        // into the exclude list — so assert the actual filtering decision.
+        use super::super::UrlFilter;
+        let mut filter = UrlFilter::new();
+        filter.apply_presets(&["only-images".to_string()]);
+
+        assert!(filter.matches("https://example.com/logo.png"));
+        assert!(filter.matches("https://example.com/hero.jpg"));
+        assert!(!filter.matches("https://example.com/app.js"));
+        assert!(!filter.matches("https://example.com/index.html"));
+    }
+
+    #[test]
+    fn test_no_images_still_drops_images_end_to_end() {
+        // The `no-*` family was always correct; pin it so the fix above can't
+        // flip it by accident.
+        use super::super::UrlFilter;
+        let mut filter = UrlFilter::new();
+        filter.apply_presets(&["no-images".to_string()]);
+
+        assert!(!filter.matches("https://example.com/logo.png"));
+        assert!(filter.matches("https://example.com/app.js"));
+    }
+
+    #[test]
+    fn test_singular_and_plural_only_aliases_agree() {
+        // The no-* family already accepted both spellings; only-* did not, so
+        // `--preset only-image` silently did nothing.
+        for (singular, plural) in [
+            ("only-font", "only-fonts"),
+            ("only-document", "only-documents"),
+            ("only-video", "only-videos"),
+            ("only-image", "only-images"),
+        ] {
+            let a = FilterPreset::from_str(singular).expect(singular);
+            let b = FilterPreset::from_str(plural).expect(plural);
+            assert_eq!(a.get_extensions(), b.get_extensions(), "{singular}");
+        }
+    }
+
+    #[test]
+    fn test_validate_presets_rejects_unknown_names() {
+        assert!(validate_presets(&[]).is_ok());
+        assert!(validate_presets(&["only-js".to_string(), "no-images".to_string()]).is_ok());
+
+        let err = validate_presets(&["only-js".to_string(), "onlyjs".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("onlyjs"), "{err}");
+        // The error names the alternatives rather than leaving the user guessing.
+        assert!(err.contains("only-images"), "{err}");
+    }
+
+    #[test]
+    fn test_preset_ids_cover_every_variant() {
+        // PRESET_IDS drives the error message, so a new preset that isn't listed
+        // there would be accepted by from_str yet absent from the help text.
+        for id in PRESET_IDS {
+            assert!(
+                FilterPreset::from_str(id).is_some(),
+                "{id} is listed but not parseable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_image_extension_list_has_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        let dupes: Vec<&&str> = IMAGE_EXTENSIONS
+            .iter()
+            .filter(|e| !seen.insert(**e))
+            .collect();
+        assert!(dupes.is_empty(), "duplicate image extensions: {dupes:?}");
+    }
+
+    #[test]
     fn test_filter_preset_patterns() {
         // Test that patterns are empty by default
         for preset in [
@@ -350,75 +522,85 @@ mod tests {
     #[test]
     fn test_only_fonts_preset() {
         let preset = FilterPreset::OnlyFonts;
-        let exclude_extensions = preset.get_exclude_extensions();
+        let extensions = preset.get_extensions();
 
-        // OnlyFonts uses exclude_extensions to store font types (get_extensions returns empty)
-        assert!(exclude_extensions.contains(&"ttf".to_string()));
-        assert!(exclude_extensions.contains(&"otf".to_string()));
-        assert!(exclude_extensions.contains(&"woff".to_string()));
-        assert!(exclude_extensions.contains(&"woff2".to_string()));
+        // `only-fonts` keeps font files, so they belong in the *inclusion*
+        // list. Storing them as exclusions made the preset drop exactly
+        // what it promised to keep.
+        assert!(extensions.contains(&"ttf".to_string()));
+        assert!(extensions.contains(&"otf".to_string()));
+        assert!(extensions.contains(&"woff".to_string()));
+        assert!(extensions.contains(&"woff2".to_string()));
 
-        // get_extensions should be empty for OnlyFonts
-        assert!(preset.get_extensions().is_empty());
+        // ...and it excludes nothing.
+        assert!(preset.get_exclude_extensions().is_empty());
     }
 
     #[test]
     fn test_only_documents_preset() {
         let preset = FilterPreset::OnlyDocuments;
-        let exclude_extensions = preset.get_exclude_extensions();
+        let extensions = preset.get_extensions();
 
-        // OnlyDocuments uses exclude_extensions to store document types
-        assert!(exclude_extensions.contains(&"pdf".to_string()));
-        assert!(exclude_extensions.contains(&"doc".to_string()));
-        assert!(exclude_extensions.contains(&"docx".to_string()));
+        // `only-documents` keeps document files, so they belong in the *inclusion*
+        // list. Storing them as exclusions made the preset drop exactly
+        // what it promised to keep.
+        assert!(extensions.contains(&"pdf".to_string()));
+        assert!(extensions.contains(&"doc".to_string()));
+        assert!(extensions.contains(&"docx".to_string()));
 
-        // get_extensions should be empty for OnlyDocuments
-        assert!(preset.get_extensions().is_empty());
+        // ...and it excludes nothing.
+        assert!(preset.get_exclude_extensions().is_empty());
     }
 
     #[test]
     fn test_only_videos_preset() {
         let preset = FilterPreset::OnlyVideos;
-        let exclude_extensions = preset.get_exclude_extensions();
+        let extensions = preset.get_extensions();
 
-        // OnlyVideos uses exclude_extensions to store video types
-        assert!(exclude_extensions.contains(&"mp4".to_string()));
-        assert!(exclude_extensions.contains(&"mkv".to_string()));
-        assert!(exclude_extensions.contains(&"avi".to_string()));
+        // `only-videos` keeps video files, so they belong in the *inclusion*
+        // list. Storing them as exclusions made the preset drop exactly
+        // what it promised to keep.
+        assert!(extensions.contains(&"mp4".to_string()));
+        assert!(extensions.contains(&"mkv".to_string()));
+        assert!(extensions.contains(&"avi".to_string()));
 
-        // get_extensions should be empty for OnlyVideos
-        assert!(preset.get_extensions().is_empty());
+        // ...and it excludes nothing.
+        assert!(preset.get_exclude_extensions().is_empty());
     }
 
     #[test]
     fn test_only_audio_preset() {
         let preset = FilterPreset::OnlyAudio;
-        let exclude_extensions = preset.get_exclude_extensions();
+        let extensions = preset.get_extensions();
 
-        // OnlyAudio uses exclude_extensions to store audio types
-        assert!(exclude_extensions.contains(&"mp3".to_string()));
-        assert!(exclude_extensions.contains(&"wav".to_string()));
-        assert!(exclude_extensions.contains(&"flac".to_string()));
-        assert!(exclude_extensions.contains(&"aac".to_string()));
+        // `only-audios` keeps audio files, so they belong in the *inclusion*
+        // list. Storing them as exclusions made the preset drop exactly
+        // what it promised to keep.
+        assert!(extensions.contains(&"mp3".to_string()));
+        assert!(extensions.contains(&"wav".to_string()));
+        assert!(extensions.contains(&"flac".to_string()));
+        assert!(extensions.contains(&"aac".to_string()));
 
-        // get_extensions should be empty for OnlyAudio
-        assert!(preset.get_extensions().is_empty());
+        // ...and it excludes nothing.
+        assert!(preset.get_exclude_extensions().is_empty());
     }
 
     #[test]
     fn test_only_images_preset() {
         let preset = FilterPreset::OnlyImages;
-        let exclude_extensions = preset.get_exclude_extensions();
+        let extensions = preset.get_extensions();
 
-        // OnlyImages uses exclude_extensions to store image types
-        assert!(exclude_extensions.contains(&"png".to_string()));
-        assert!(exclude_extensions.contains(&"jpg".to_string()));
-        assert!(exclude_extensions.contains(&"jpeg".to_string()));
-        assert!(exclude_extensions.contains(&"gif".to_string()));
-        assert!(exclude_extensions.contains(&"svg".to_string()));
+        // `only-images` keeps image files, so they belong in the *inclusion*
+        // list. Storing them as exclusions made the preset drop exactly
+        // what it promised to keep.
+        assert!(extensions.contains(&"png".to_string()));
+        assert!(extensions.contains(&"jpg".to_string()));
+        assert!(extensions.contains(&"jpeg".to_string()));
+        assert!(extensions.contains(&"gif".to_string()));
+        assert!(extensions.contains(&"svg".to_string()));
 
-        // get_extensions should be empty for OnlyImages
-        assert!(preset.get_extensions().is_empty());
+        // ...and it excludes nothing.
+        assert!(preset.get_exclude_extensions().is_empty());
     }
 
     #[test]

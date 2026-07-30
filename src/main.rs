@@ -20,7 +20,7 @@ mod utils;
 use cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
 use cli::{read_domains_from_file, read_domains_from_stdin, Args};
 use config::Config;
-use filters::{HostValidator, UrlFilter};
+use filters::{validate_presets, HostValidator, UrlFilter};
 use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
@@ -440,6 +440,9 @@ fn initialize_providers(args: &Args, network_settings: &NetworkSettings) -> Resu
     let mut provider_names: Vec<String> = Vec::new();
 
     validate_provider_ids(&args.providers, "--providers")?;
+    // A misspelled preset used to be dropped in silence, producing an
+    // unfiltered run that looked like the filter had matched everything.
+    validate_presets(&args.preset)?;
     validate_provider_ids(&args.exclude_providers, "--exclude-providers")?;
     validate_rate_limit_override_ids(args)?;
 

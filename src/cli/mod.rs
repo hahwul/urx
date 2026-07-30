@@ -221,7 +221,11 @@ pub struct Args {
     #[clap(long)]
     pub stats: bool,
 
-    /// Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
+    /// Filter presets (comma-separated). Exclude a family: "no-resources",
+    /// "no-images", "no-fonts", "no-documents", "no-videos", "no-audio".
+    /// Keep only a family: "only-js", "only-style", "only-fonts",
+    /// "only-documents", "only-videos", "only-audio", "only-images".
+    /// Singular spellings are accepted too. An unknown name is an error.
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
     pub preset: Vec<String>,
