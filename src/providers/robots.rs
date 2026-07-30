@@ -103,7 +103,13 @@ impl Provider for RobotsProvider {
             let https_resp = client.get(&https_url).send().await;
             // Track which protocol was successful
             let (is_https, text) = match https_resp {
-                Ok(resp) if resp.status().is_success() => (true, resp.text().await?),
+                // A body that dies mid-read is "no robots.txt" for our purposes,
+                // not a fatal error — same best-effort contract as the HTTP
+                // fallback below.
+                Ok(resp) if resp.status().is_success() => match resp.text().await {
+                    Ok(text) => (true, text),
+                    Err(_) => return Ok(urls),
+                },
                 _ => {
                     // If HTTPS fails, try HTTP
                     #[cfg(not(test))]
@@ -131,7 +137,10 @@ impl Provider for RobotsProvider {
                     if !http_resp.status().is_success() {
                         return Ok(urls);
                     }
-                    (false, http_resp.text().await?)
+                    match http_resp.text().await {
+                        Ok(text) => (false, text),
+                        Err(_) => return Ok(urls),
+                    }
                 }
             };
 

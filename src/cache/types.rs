@@ -60,8 +60,18 @@ impl std::fmt::Display for CacheKey {
     }
 }
 
-/// Represents the filtering configuration used in a scan
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Everything about a scan's configuration that changes *which URLs it would
+/// produce*. Any option that narrows or widens the result set has to be in
+/// here, or two different runs collide on one cache entry and the second gets
+/// served the first one's answer.
+///
+/// That includes the archive-side predicates, not just the local filters:
+/// `--from 2020` and `--from 2024` ask the CDX index two different questions.
+///
+/// [`Default`] is derived deliberately — it means a new option can be added to
+/// this struct without having to touch every construction site, so the "we
+/// forgot to put the new flag in the cache key" bug can't come back quietly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CacheFilters {
     pub subs: bool,
     pub extensions: Vec<String>,
@@ -74,6 +84,16 @@ pub struct CacheFilters {
     pub strict: bool,
     pub normalize_url: bool,
     pub merge_endpoint: bool,
+    /// `--cc-index`: distinct Common Crawl indexes are distinct corpora.
+    pub cc_index: Vec<String>,
+    /// `--from` / `--to`: the CDX date window.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// `--archive-*`: status-code and MIME predicates the archive applies.
+    pub archive_status: Vec<String>,
+    pub archive_exclude_status: Vec<String>,
+    pub archive_mime: Vec<String>,
+    pub archive_exclude_mime: Vec<String>,
 }
 
 impl CacheFilters {
@@ -109,6 +129,19 @@ impl CacheFilters {
         hasher.update([self.strict as u8]);
         hasher.update([self.normalize_url as u8]);
         hasher.update([self.merge_endpoint as u8]);
+        feed_list(&mut hasher, &self.cc_index);
+        feed(
+            &mut hasher,
+            self.from.as_deref().unwrap_or_default().as_bytes(),
+        );
+        feed(
+            &mut hasher,
+            self.to.as_deref().unwrap_or_default().as_bytes(),
+        );
+        feed_list(&mut hasher, &self.archive_status);
+        feed_list(&mut hasher, &self.archive_exclude_status);
+        feed_list(&mut hasher, &self.archive_mime);
+        feed_list(&mut hasher, &self.archive_exclude_mime);
 
         hasher
             .finalize()
@@ -178,7 +211,7 @@ mod tests {
             max_length: Some(100),
             strict: true,
             normalize_url: true,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let key = CacheKey::new(
@@ -197,29 +230,15 @@ mod tests {
         let filters1 = CacheFilters {
             subs: true,
             extensions: vec!["js".to_string(), "php".to_string()],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: true,
             extensions: vec!["js".to_string(), "php".to_string()],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         assert_eq!(filters1.compute_hash(), filters2.compute_hash());
@@ -230,29 +249,15 @@ mod tests {
         let filters1 = CacheFilters {
             subs: true,
             extensions: vec!["js".to_string()],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: false, // Different
             extensions: vec!["js".to_string()],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         assert_ne!(filters1.compute_hash(), filters2.compute_hash());
@@ -273,17 +278,8 @@ mod tests {
     #[test]
     fn test_cache_key_string_representation() {
         let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let key1 = CacheKey::new("example.com", &["wayback".to_string()], &filters);
@@ -336,29 +332,15 @@ mod tests {
         let filters1 = CacheFilters {
             subs: true,
             extensions: vec!["js".to_string()],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: true,
             extensions: vec!["php".to_string()], // Different
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         assert_ne!(filters1.compute_hash(), filters2.compute_hash());
@@ -368,30 +350,16 @@ mod tests {
     fn test_cache_filters_hash_with_different_patterns() {
         let filters1 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
             patterns: vec!["admin".to_string()],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
             patterns: vec!["api".to_string()], // Different
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         assert_ne!(filters1.compute_hash(), filters2.compute_hash());
@@ -401,30 +369,18 @@ mod tests {
     fn test_cache_filters_hash_with_length_options() {
         let filters1 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
             min_length: Some(10),
             max_length: Some(100),
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
             min_length: Some(20), // Different
             max_length: Some(100),
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         assert_ne!(filters1.compute_hash(), filters2.compute_hash());
@@ -434,30 +390,16 @@ mod tests {
     fn test_cache_filters_hash_with_normalize_url() {
         let filters1 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
             normalize_url: true,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
             normalize_url: false, // Different
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         assert_ne!(filters1.compute_hash(), filters2.compute_hash());
@@ -467,30 +409,16 @@ mod tests {
     fn test_cache_filters_hash_with_merge_endpoint() {
         let filters1 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
             merge_endpoint: true,
+            ..Default::default()
         };
 
         let filters2 = CacheFilters {
             subs: true,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
             merge_endpoint: false, // Different
+            ..Default::default()
         };
 
         assert_ne!(filters1.compute_hash(), filters2.compute_hash());
@@ -499,17 +427,8 @@ mod tests {
     #[test]
     fn test_cache_key_providers_sorted() {
         let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         // Providers in different order should result in same sorted list
@@ -532,47 +451,69 @@ mod tests {
     fn test_cache_filters_hash_no_field_boundary_collision() {
         // presets=["a"] + min_length=Some(1) must NOT hash the same as
         // presets=["a1"] + min_length=None (the old concatenation collided).
-        let base = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
-            strict: false,
-            normalize_url: false,
-            merge_endpoint: false,
-        };
         let a = CacheFilters {
             presets: vec!["a".to_string()],
             min_length: Some(1),
-            ..base.clone()
+            ..Default::default()
         };
         let b = CacheFilters {
             presets: vec!["a1".to_string()],
             min_length: None,
-            ..base.clone()
+            ..Default::default()
         };
         assert_ne!(a.compute_hash(), b.compute_hash());
     }
 
     #[test]
+    fn test_archive_scope_changes_the_hash() {
+        // Regression: these options were absent from the key, so
+        // `urx example.com --from 2020` and `--from 2024` shared one cache
+        // entry and the second run was served the first one's URLs.
+        let base = CacheFilters::default();
+        let variants = [
+            CacheFilters {
+                cc_index: vec!["CC-MAIN-2025-51".to_string()],
+                ..Default::default()
+            },
+            CacheFilters {
+                from: Some("20200101000000".to_string()),
+                ..Default::default()
+            },
+            CacheFilters {
+                to: Some("20201231235959".to_string()),
+                ..Default::default()
+            },
+            CacheFilters {
+                archive_status: vec!["200".to_string()],
+                ..Default::default()
+            },
+            CacheFilters {
+                archive_exclude_status: vec!["404".to_string()],
+                ..Default::default()
+            },
+            CacheFilters {
+                archive_mime: vec!["application/json".to_string()],
+                ..Default::default()
+            },
+            CacheFilters {
+                archive_exclude_mime: vec!["text/html".to_string()],
+                ..Default::default()
+            },
+        ];
+
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(base.compute_hash());
+        for v in &variants {
+            assert!(
+                seen.insert(v.compute_hash()),
+                "archive scope must alter the cache key: {v:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_cache_key_no_field_boundary_collision() {
-        let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
-            strict: false,
-            normalize_url: false,
-            merge_endpoint: false,
-        };
+        let filters = CacheFilters::default();
         // domain "ab" + provider "c" vs domain "a" + provider "bc".
         let k1 = CacheKey::new("ab", &["c".to_string()], &filters);
         let k2 = CacheKey::new("a", &["bc".to_string()], &filters);
@@ -582,17 +523,8 @@ mod tests {
     #[test]
     fn test_cache_key_empty_providers() {
         let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let key = CacheKey::new("example.com", &[], &filters);

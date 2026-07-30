@@ -61,6 +61,13 @@ pub async fn process_urls_with_testers(
     let check_status = should_check_status;
     let extract_links = args.extract_links;
     let silent = args.silent;
+    // With an --include-status allowlist, a URL whose status we could never
+    // resolve has not been shown to match it. Emitting it with a placeholder
+    // status would smuggle it past the very filter the user asked for — so an
+    // allowlist drops unresolvable URLs. An --exclude-status denylist is the
+    // other way round: a failed check matched nothing on the list, so the URL
+    // is kept (flagged) rather than silently discarded.
+    let drop_unresolved = !args.include_status.is_empty();
 
     let url_chunks: Vec<Vec<String>> = transformed_urls
         .chunks(10)
@@ -109,11 +116,13 @@ pub async fn process_urls_with_testers(
                     } else {
                         // If no status but URL should be included anyway
                         if check_status {
-                            let url_data = output::UrlData::with_status(
-                                url.clone(),
-                                "Status check failed".to_string(),
-                            );
-                            result_urls.push(url_data);
+                            if !drop_unresolved {
+                                let url_data = output::UrlData::with_status(
+                                    url.clone(),
+                                    "Status check failed".to_string(),
+                                );
+                                result_urls.push(url_data);
+                            }
                         } else {
                             let url_data = output::UrlData::new(url.clone());
                             result_urls.push(url_data);
@@ -215,6 +224,74 @@ mod tests {
         fn with_proxy_auth(&mut self, auth: Option<String>) {
             self.proxy_auth = auth;
         }
+    }
+
+    /// A tester whose every request fails, standing in for an unreachable host.
+    #[derive(Clone, Default)]
+    struct FailingTester;
+
+    impl Tester for FailingTester {
+        fn clone_box(&self) -> Box<dyn Tester> {
+            Box::new(self.clone())
+        }
+
+        fn test_url<'a>(
+            &'a self,
+            url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+            let url = url.to_string();
+            Box::pin(async move { Err(anyhow::anyhow!("connection refused for {url}")) })
+        }
+
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+    }
+
+    async fn run_failing_status_check(argv: &[&str]) -> Vec<output::UrlData> {
+        use clap::Parser;
+        let args = Args::parse_from(argv);
+        let progress = ProgressManager::new(true);
+        process_urls_with_testers(
+            vec!["https://example.com/a".to_string()],
+            &args,
+            &progress,
+            vec![Box::new(FailingTester)],
+            true,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_include_status_drops_urls_whose_status_never_resolved() {
+        // Regression: an unreachable URL was emitted with a placeholder
+        // "Status check failed" status even under --include-status 200, so the
+        // allowlist leaked URLs that were never shown to return 200.
+        let out =
+            run_failing_status_check(&["urx", "--is", "200", "--silent", "example.com"]).await;
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn test_plain_check_status_still_reports_the_failure() {
+        // Without an allowlist there is nothing to leak past, and the failure is
+        // itself information worth surfacing.
+        let out =
+            run_failing_status_check(&["urx", "--check-status", "--silent", "example.com"]).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status.as_deref(), Some("Status check failed"));
+    }
+
+    #[tokio::test]
+    async fn test_exclude_status_keeps_urls_whose_status_never_resolved() {
+        // A denylist is the inverse: a failed check matched nothing on the list.
+        let out =
+            run_failing_status_check(&["urx", "--es", "404", "--silent", "example.com"]).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status.as_deref(), Some("Status check failed"));
     }
 
     #[test]
