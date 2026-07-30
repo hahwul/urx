@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::Provider;
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_body_capped, HttpClientConfig, MAX_RESPONSE_BYTES};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -195,7 +195,10 @@ impl Provider for OTXProvider {
                     match client.get(&url).send().await {
                         Ok(response) => {
                             if response.status().is_success() {
-                                match response.text().await {
+                                // Capped: OTX is a third-party host, and an
+                                // unbounded body would be buffered whole before
+                                // serde ever sees it.
+                                match read_body_capped(response, MAX_RESPONSE_BYTES).await {
                                     Ok(text) => {
                                         // Try to parse as OTXResult first
                                         let parse_result = serde_json::from_str::<OTXResult>(&text);
