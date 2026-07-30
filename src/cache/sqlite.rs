@@ -217,17 +217,8 @@ mod tests {
         let cache = SqliteCache::new(&db_path).await?;
 
         let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
@@ -263,17 +254,8 @@ mod tests {
         let cache = SqliteCache::new(&db_path).await?;
 
         let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
@@ -302,17 +284,8 @@ mod tests {
         let cache = SqliteCache::new(&db_path).await?;
 
         let filters = CacheFilters {
-            subs: false,
-            extensions: vec![],
-            exclude_extensions: vec![],
-            patterns: vec![],
-            exclude_patterns: vec![],
-            presets: vec![],
-            min_length: None,
-            max_length: None,
             strict: true,
-            normalize_url: false,
-            merge_endpoint: false,
+            ..Default::default()
         };
 
         let key1 = CacheKey::new("example.com", &["wayback".to_string()], &filters);

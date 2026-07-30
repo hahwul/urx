@@ -111,7 +111,14 @@ impl SitemapProvider {
         if let Some(rl) = limiter {
             rl.acquire().await;
         }
-        let resp = client.get(sitemap_url).send().await?;
+        // Sitemap discovery is best-effort and speculative: most of the
+        // candidate locations we probe don't exist. A transport failure or a
+        // non-200 means "nothing here", not an error that should sink the whole
+        // provider — the `visited` insert above already stops us re-asking.
+        let resp = match client.get(sitemap_url).send().await {
+            Ok(resp) => resp,
+            Err(_) => return Ok(Vec::new()),
+        };
         if !resp.status().is_success() {
             return Ok(Vec::new());
         }
@@ -128,7 +135,12 @@ impl SitemapProvider {
                 .map(|ct| ct.to_ascii_lowercase().contains("text/plain"))
                 .unwrap_or(false);
 
-        let content = read_body_capped(resp, MAX_SITEMAP_BYTES).await?;
+        let content = match read_body_capped(resp, MAX_SITEMAP_BYTES).await {
+            Ok(content) => content,
+            // A body that dies mid-stream yields no usable URLs; same
+            // best-effort reasoning as above.
+            Err(_) => return Ok(Vec::new()),
+        };
         let mut urls = Vec::new();
 
         match Document::parse(&content) {
@@ -226,23 +238,16 @@ impl Provider for SitemapProvider {
                 format!("http://{}/sitemap.txt", domain),
             ];
 
+            // `parse_sitemap` does the request itself and reports "nothing here"
+            // for a missing or unreachable location, so probing first would just
+            // fetch every sitemap that *does* exist twice — doubling the requests
+            // aimed at the target and the bytes pulled for a large sitemap.
+            // It also paces each request through the limiter, so this loop's up
+            // to six candidate locations stay rate-limited.
             for sitemap_url in sitemap_urls {
-                // Pace the candidate-location probes too: this loop fires up to
-                // six back-to-back requests at the target.
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                let resp = client.get(&sitemap_url).send().await;
-
-                if let Ok(resp) = resp {
-                    if resp.status().is_success() {
-                        // Found a valid sitemap, parse it
-                        let sitemap_urls =
-                            Self::parse_sitemap(&client, &sitemap_url, 0, &mut visited, limiter)
-                                .await?;
-                        urls.extend(sitemap_urls);
-                    }
-                }
+                let found =
+                    Self::parse_sitemap(&client, &sitemap_url, 0, &mut visited, limiter).await?;
+                urls.extend(found);
             }
 
             Ok(urls)
@@ -322,6 +327,37 @@ mod tests {
             "rate limit did not pace the sitemap probe requests: {:?}",
             start.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn test_sitemap_is_fetched_once_not_probed_then_refetched() {
+        // Regression: fetch_urls used to GET each candidate location to check it
+        // existed and then hand the same URL to parse_sitemap, which fetched it
+        // again — two requests (and two full downloads) for every sitemap that
+        // actually exists.
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+        let sitemap = server
+            .mock("GET", "/sitemap.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/only</loc></url>
+</urlset>"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        // The https:// candidates can't reach a plain-HTTP mock; the http:// one
+        // does, which is what exercises the single-fetch path.
+        let urls = provider.fetch_urls(&host).await.unwrap();
+
+        assert_eq!(urls, vec!["https://example.com/only".to_string()]);
+        sitemap.assert();
     }
 
     #[test]

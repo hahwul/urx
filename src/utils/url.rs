@@ -174,16 +174,27 @@ impl UrlTransformer {
                 // Merge parameters from all URLs with the same path
                 if let Ok(base_url) = Url::parse(&group_urls[0]) {
                     let mut merged_url = base_url.clone();
-                    let mut all_params = Vec::new();
+                    let mut all_params: Vec<String> = Vec::new();
                     let mut seen_params = HashSet::new();
 
-                    // Collect parameters from all URLs
+                    // Collect parameters from all URLs. We copy the *raw*
+                    // `key=value` tokens rather than decoding via
+                    // `query_pairs()`: decoding and re-joining silently rewrites
+                    // the URL the archive recorded — a value containing an
+                    // encoded `&` or `=` (`?next=%2Fa%3Fb%3D1`) would come back
+                    // out as extra parameters, `+` would turn into a space, and
+                    // a bare `?foo` would gain an `=`. Merging must only add
+                    // parameters, never alter them.
                     for url_str in &group_urls {
                         if let Ok(url) = Url::parse(url_str) {
-                            for (key, value) in url.query_pairs() {
-                                let pair = (key.to_string(), value.to_string());
-                                if seen_params.insert(pair.clone()) {
-                                    all_params.push(pair);
+                            for pair in url
+                                .query()
+                                .unwrap_or("")
+                                .split('&')
+                                .filter(|s| !s.is_empty())
+                            {
+                                if seen_params.insert(pair.to_string()) {
+                                    all_params.push(pair.to_string());
                                 }
                             }
                         }
@@ -191,17 +202,11 @@ impl UrlTransformer {
 
                     // Set merged parameters
                     if !all_params.is_empty() {
-                        let query_string = all_params
-                            .into_iter()
-                            .map(|(k, v)| format!("{k}={v}"))
-                            .collect::<Vec<_>>()
-                            .join("&");
+                        let query_string = all_params.join("&");
 
                         // Clear existing query and set merged query
                         merged_url.set_query(None);
-                        if !query_string.is_empty() {
-                            merged_url.set_query(Some(&query_string));
-                        }
+                        merged_url.set_query(Some(&query_string));
                     }
 
                     merged_urls.push(merged_url.to_string());
@@ -277,6 +282,45 @@ mod tests {
             &"https://example.com/api?param1=value1&param2=value2&param3=value3".to_string()
         ));
         assert!(transformed.contains(&"https://other.com/path".to_string()));
+    }
+
+    #[test]
+    fn test_merge_endpoints_preserves_encoded_values() {
+        // Regression: merging used to decode each pair with query_pairs() and
+        // re-join the results raw, so an encoded '&' or '=' inside a value broke
+        // out and became extra parameters — silently rewriting the URL the
+        // archive actually recorded.
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "https://example.com/go?next=%2Fadmin%3Fdebug%3D1".to_string(),
+            "https://example.com/go?ref=home".to_string(),
+        ];
+
+        let out = transformer.transform(urls);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(
+            out[0],
+            "https://example.com/go?next=%2Fadmin%3Fdebug%3D1&ref=home"
+        );
+    }
+
+    #[test]
+    fn test_merge_endpoints_preserves_plus_and_bare_params() {
+        // '+' must not become a space, and a valueless `?foo` must not gain an
+        // '=' — both were casualties of the decode/re-encode round trip.
+        let mut transformer = UrlTransformer::new();
+        transformer.with_merge_endpoint(true);
+
+        let urls = vec![
+            "https://example.com/s?q=a+b".to_string(),
+            "https://example.com/s?debug".to_string(),
+        ];
+
+        let out = transformer.transform(urls);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0], "https://example.com/s?q=a+b&debug");
     }
 
     #[test]

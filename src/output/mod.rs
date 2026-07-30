@@ -50,10 +50,14 @@ impl UrlData {
 
     /// Parse a URL data entry from a string
     ///
-    /// Can handle strings in the format "{url} - {status}" or plain URLs
+    /// Can handle strings in the format "{url} - {status}" or plain URLs.
+    /// Archived URLs can themselves contain " - " (unencoded spaces do show up
+    /// in CDX rows), so the split takes the *last* separator: the status the
+    /// checker appends is always the final field, whereas the URL is not
+    /// guaranteed to be separator-free.
     pub fn from_string(data: String) -> Self {
         // Parse strings in the format "{url} - {status}" if possible
-        if let Some((url, status)) = data.split_once(" - ") {
+        if let Some((url, status)) = data.rsplit_once(" - ") {
             UrlData {
                 url: url.to_string(),
                 status: Some(status.to_string()),
@@ -186,6 +190,15 @@ mod tests {
             with_status.status,
             Some("301 Moved Permanently".to_string())
         );
+    }
+
+    #[test]
+    fn test_url_data_from_string_url_containing_the_separator() {
+        // A URL with a literal " - " in it used to be truncated at that point,
+        // with the rest of the URL swallowed into the status field.
+        let parsed = UrlData::from_string("https://example.com/a - b/c.pdf - 200 OK".to_string());
+        assert_eq!(parsed.url, "https://example.com/a - b/c.pdf");
+        assert_eq!(parsed.status.as_deref(), Some("200 OK"));
     }
 
     #[test]

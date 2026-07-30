@@ -1015,6 +1015,16 @@ fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         strict: args.strict_enabled(),
         normalize_url: args.normalize_url,
         merge_endpoint: args.merge_endpoint,
+        // Archive-side scope. These change what the index returns, so leaving
+        // them out would serve a `--from 2020` run the answer cached for a
+        // `--from 2024` one.
+        cc_index: args.cc_index.clone(),
+        from: args.from.clone(),
+        to: args.to.clone(),
+        archive_status: args.archive_status.clone(),
+        archive_exclude_status: args.archive_exclude_status.clone(),
+        archive_mime: args.archive_mime.clone(),
+        archive_exclude_mime: args.archive_exclude_mime.clone(),
     };
 
     CacheKey::new(domain, &effective_provider_ids(args), &filters)
@@ -1310,7 +1320,7 @@ async fn main() -> Result<()> {
         if let Some(sink) = &stream_sink {
             verbose_print(&args, format!("Streamed {} URLs", sink.emitted()));
         }
-        if args.stats {
+        if args.stats && !args.silent {
             print_provider_stats(&run_result.stats);
         }
         return Ok(());

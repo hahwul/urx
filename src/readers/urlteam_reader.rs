@@ -45,16 +45,30 @@ impl UrlTeamFileReader {
         }
     }
 
-    /// Determine if file is gzip compressed based on magic bytes
-    fn is_gzip(file_path: &Path) -> Result<bool> {
+    /// Read the file's leading magic bytes, or an empty slice when the file is
+    /// too short to have any.
+    fn magic(file_path: &Path) -> Result<[u8; 3]> {
         let mut file = File::open(file_path)
             .with_context(|| format!("Failed to open file: {}", file_path.display()))?;
 
-        let mut magic = [0u8; 2];
-        match file.read_exact(&mut magic) {
-            Ok(()) => Ok(magic[0] == 0x1f && magic[1] == 0x8b),
-            Err(_) => Ok(false), // File too small or other read error
-        }
+        let mut magic = [0u8; 3];
+        // A short read leaves the tail zeroed, which matches no signature.
+        let _ = file.read(&mut magic);
+        Ok(magic)
+    }
+
+    /// Determine if file is gzip compressed based on magic bytes
+    fn is_gzip(file_path: &Path) -> Result<bool> {
+        let magic = Self::magic(file_path)?;
+        Ok(magic[0] == 0x1f && magic[1] == 0x8b)
+    }
+
+    /// Whether the file is bzip2-compressed. urx has no bzip2 decoder, and
+    /// reading such a file as text yields binary noise with no extractable
+    /// URLs — an empty result that reads as "this archive had nothing". Detect
+    /// it so the user gets told what actually happened.
+    fn is_bzip2(file_path: &Path) -> Result<bool> {
+        Ok(&Self::magic(file_path)? == b"BZh")
     }
 
     /// Read URL lines from `src`, bounding both the number of URLs collected and
@@ -101,6 +115,14 @@ impl UrlTeamFileReader {
 
 impl FileReader for UrlTeamFileReader {
     fn read_urls(&self, file_path: &Path) -> Result<Vec<String>> {
+        if Self::is_bzip2(file_path)? {
+            anyhow::bail!(
+                "{}: bzip2 input is not supported. Decompress it first \
+                 (`bunzip2 -k <file>`) and pass the result to --files.",
+                file_path.display()
+            );
+        }
+
         let file = File::open(file_path)
             .with_context(|| format!("Failed to open URLTeam file: {}", file_path.display()))?;
 
@@ -288,6 +310,22 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(!url_capped);
         assert!(!byte_capped);
+        Ok(())
+    }
+
+    #[test]
+    fn test_bzip2_input_is_reported_not_silently_empty() -> Result<()> {
+        // `--files foo.bz2` routes here (detect_file_format maps .bz2 to
+        // URLTeam), but there is no bzip2 decoder — so the bytes used to be read
+        // as text, yield zero URLs, and look exactly like an empty archive.
+        let mut temp_file = NamedTempFile::new()?;
+        // A bzip2 header is enough; we reject before decoding anything.
+        temp_file.write_all(b"BZh91AY&SY\x00\x00\x00\x00")?;
+        temp_file.flush()?;
+
+        let reader = UrlTeamFileReader::new();
+        let err = reader.read_urls(temp_file.path()).unwrap_err();
+        assert!(err.to_string().contains("bzip2"), "{err}");
         Ok(())
     }
 

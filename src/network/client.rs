@@ -86,10 +86,26 @@ pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duratio
     Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
 }
 
+/// Whether an HTTP status is worth another attempt.
+///
+/// Server errors and explicit throttling are transient. The rest of the 4xx
+/// range is a deterministic "no" and retrying it only wastes requests and
+/// wall-clock: a 404 from a CDX index is how those APIs say "this domain has no
+/// captures", so re-asking three times with back-off turns an instant miss into
+/// a multi-second one — per domain, per provider.
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+}
+
 /// Execute an HTTP GET request with retry and linear back-off.
 ///
 /// `max_retries` is the number of **additional** attempts after the first
-/// failure (i.e. total attempts = 1 + max_retries).
+/// failure (i.e. total attempts = 1 + max_retries). A response the server has
+/// told us not to repeat (see [`is_retryable_status`]) ends the loop early, and
+/// a `Retry-After` header overrides our own back-off so a throttled request
+/// waits as long as the server asked instead of hammering it again.
 ///
 /// On success the response body is returned as a `String`.
 ///
@@ -98,47 +114,46 @@ pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duratio
 /// Returns the last encountered error if all attempts are exhausted.
 pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Result<String> {
     let mut last_error: Option<anyhow::Error> = None;
-    let mut attempt: u32 = 0;
+    // Server-dictated wait for the *next* attempt, when it sent one.
+    let mut next_delay: Option<Duration> = None;
+    let mut attempts: u32 = 0;
 
-    while attempt <= max_retries {
+    for attempt in 0..=max_retries {
         if attempt > 0 {
-            // Linear back-off: 500ms, 1000ms, 1500ms, …
-            tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+            // Linear back-off: 500ms, 1000ms, 1500ms, … unless the server named
+            // its own delay.
+            let delay = next_delay
+                .take()
+                .unwrap_or_else(|| Duration::from_millis(500 * attempt as u64));
+            tokio::time::sleep(delay).await;
         }
+        attempts += 1;
 
         match client.get(url).send().await {
             Ok(response) => {
-                if !response.status().is_success() {
-                    last_error = Some(anyhow::anyhow!("HTTP error: {}", response.status()));
-                    attempt += 1;
+                let status = response.status();
+                if !status.is_success() {
+                    last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
+                    if !is_retryable_status(status) {
+                        break;
+                    }
+                    next_delay = retry_after_delay(response.headers());
                     continue;
                 }
 
                 match response.text().await {
                     Ok(text) => return Ok(text),
-                    Err(e) => {
-                        last_error = Some(e.into());
-                        attempt += 1;
-                        continue;
-                    }
+                    Err(e) => last_error = Some(e.into()),
                 }
             }
-            Err(e) => {
-                last_error = Some(e.into());
-                attempt += 1;
-                continue;
-            }
+            Err(e) => last_error = Some(e.into()),
         }
     }
 
-    if let Some(e) = last_error {
-        Err(anyhow::anyhow!(
-            "Failed after {} attempts: {}",
-            max_retries + 1,
-            e
-        ))
-    } else {
-        Err(anyhow::anyhow!("Failed after {} attempts", max_retries + 1))
+    let noun = if attempts == 1 { "attempt" } else { "attempts" };
+    match last_error {
+        Some(e) => Err(anyhow::anyhow!("Failed after {attempts} {noun}: {e}")),
+        None => Err(anyhow::anyhow!("Failed after {attempts} {noun}")),
     }
 }
 
@@ -327,6 +342,56 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Failed after 2 attempts"));
+    }
+
+    #[tokio::test]
+    async fn test_get_with_retry_does_not_retry_client_errors() {
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // A 404 is a definitive answer (for CDX indexes it means "no captures"),
+        // so it must cost exactly one request no matter how many retries were
+        // configured.
+        let m = mock_server
+            .mock("GET", "/missing")
+            .with_status(404)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/missing", mock_server.url());
+        let err = get_with_retry(&client, &url, 5).await.unwrap_err();
+
+        assert!(err.to_string().contains("Failed after 1 attempt"), "{err}");
+        m.assert();
+    }
+
+    #[tokio::test]
+    async fn test_get_with_retry_retries_throttling() {
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // 429 is transient, and the Retry-After the server names is what we
+        // wait — capped, so a hostile value can't stall the run.
+        let throttled = mock_server
+            .mock("GET", "/slow")
+            .with_status(429)
+            .with_header("retry-after", "0")
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = mock_server
+            .mock("GET", "/slow")
+            .with_status(200)
+            .with_body("done")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let client = Client::new();
+        let url = format!("{}/slow", mock_server.url());
+        assert_eq!(get_with_retry(&client, &url, 2).await.unwrap(), "done");
+        throttled.assert();
+        ok.assert();
     }
 
     #[tokio::test]
