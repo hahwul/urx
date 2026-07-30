@@ -1,7 +1,6 @@
 use super::FileReader;
 use anyhow::{Context, Result};
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 
 /// Reader for plain text files containing URLs (one per line)
@@ -18,19 +17,31 @@ impl FileReader for TextFileReader {
         let file = File::open(file_path)
             .with_context(|| format!("Failed to open text file: {}", file_path.display()))?;
 
-        let reader = BufReader::new(file);
-        let mut urls = Vec::new();
-
-        super::for_each_line_lossy(reader, |line| {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && !trimmed.starts_with('#') {
+        // Bounded like every other reader: `--files` takes whatever it is
+        // pointed at, and a plain-text list is the densest possible source of
+        // URL lines.
+        let (urls, url_capped, byte_capped) =
+            super::collect_capped(file, super::MAX_FILE_URLS, super::MAX_FILE_BYTES, |line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    return None;
+                }
                 // Basic URL validation - must start with http or https
                 if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                    urls.push(trimmed.to_string());
+                    Some(trimmed.to_string())
+                } else {
+                    None
                 }
-            }
-        })
-        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+            })
+            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+
+        super::warn_if_truncated(
+            file_path,
+            url_capped,
+            byte_capped,
+            super::MAX_FILE_URLS,
+            super::MAX_FILE_BYTES,
+        );
 
         Ok(urls)
     }

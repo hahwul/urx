@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::providers::Provider;
 
@@ -24,25 +24,6 @@ const MAX_SITEMAP_URLS: usize = 1_000_000;
 /// hostile or misconfigured endpoint could stream gigabytes into memory before
 /// any URL parsing happens (the per-URL cap only bounds the *parsed* output).
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
-
-/// Read a response body but stop after `max` bytes, so an unbounded (or
-/// deliberately huge) document can't exhaust memory. Reads incrementally via
-/// `chunk()` rather than buffering the whole body up front.
-async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result<String> {
-    let mut buf: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await? {
-        let remaining = max.saturating_sub(buf.len());
-        if remaining == 0 {
-            break;
-        }
-        if chunk.len() > remaining {
-            buf.extend_from_slice(&chunk[..remaining]);
-            break;
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
 
 #[derive(Clone)]
 pub struct SitemapProvider {

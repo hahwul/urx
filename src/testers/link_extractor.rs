@@ -8,7 +8,7 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 use super::Tester;
-use crate::network::client::HttpClientConfig;
+use crate::network::client::{read_body_capped, HttpClientConfig};
 
 /// Cap on bytes read from one page before parsing.
 ///
@@ -37,24 +37,6 @@ fn is_html_like(headers: &reqwest::header::HeaderMap) -> bool {
         }
         None => true,
     }
-}
-
-/// Read a response body, stopping after `max` bytes. Reads incrementally via
-/// `chunk()` so an oversized body is never fully buffered.
-async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result<String> {
-    let mut buf: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await? {
-        let remaining = max.saturating_sub(buf.len());
-        if remaining == 0 {
-            break;
-        }
-        if chunk.len() > remaining {
-            buf.extend_from_slice(&chunk[..remaining]);
-            break;
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// HTML link extractor that finds URLs in web pages
