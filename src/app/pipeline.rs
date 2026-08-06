@@ -483,6 +483,36 @@ mod tests {
     }
 
     #[test]
+    fn test_streaming_rejects_value_taking_options_too() {
+        // --files and --output-dir take values, so they don't fit the flag-only
+        // table above — but they conflict for the same reason.
+        //
+        // --files is rejected here rather than when the file is read: main builds
+        // the sink before touching input, so `--stream --files missing.txt`
+        // reports the unsupported combination instead of a read error for a file
+        // streaming would never have used.
+        for (argv, expected) in [
+            (
+                vec!["urx", "--stream", "--files", "urls.txt", "example.com"],
+                "--files",
+            ),
+            (
+                vec!["urx", "--stream", "--output-dir", "/tmp/out", "example.com"],
+                "--output-dir",
+            ),
+        ] {
+            let args = Args::parse_from(argv);
+            assert!(streaming_conflicts(&args)
+                .iter()
+                .any(|(flag, _)| flag.contains(expected)));
+            match build_stream_sink(&args) {
+                Err(e) => assert!(e.to_string().contains(expected), "{e}"),
+                Ok(_) => panic!("{expected} should have been rejected"),
+            }
+        }
+    }
+
+    #[test]
     fn test_streaming_allows_per_url_options() {
         // --normalize-url and the show-only views are per-URL, so they stream
         // fine; only cross-URL work is off limits.
