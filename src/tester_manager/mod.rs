@@ -726,4 +726,36 @@ mod tests {
         assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
         assert_eq!(tester.proxy_auth, None);
     }
+
+    #[tokio::test]
+    async fn test_input_urls_pass_through_when_statuses_are_not_consumed() {
+        // With should_check_status false, a tester still runs (it may be the
+        // link extractor) but its output must not replace the input list.
+        use crate::test_support::{build_test_args, MockStatusChecker};
+
+        let testers: Vec<Box<dyn Tester>> = vec![Box::new(MockStatusChecker::new(vec![
+            "https://example.com/result1".to_string(),
+            "https://example.com/result2".to_string(),
+        ]))];
+
+        let input_urls = vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ];
+
+        let result = process_urls_with_testers(
+            input_urls,
+            &build_test_args(),
+            &ProgressManager::new(true),
+            testers,
+            false,
+            None,
+        )
+        .await;
+
+        let urls: Vec<String> = result.iter().map(|d| d.url.clone()).collect();
+        assert_eq!(urls.len(), 2);
+        assert!(urls.contains(&"https://example.com/page1".to_string()));
+        assert!(urls.contains(&"https://example.com/page2".to_string()));
+    }
 }

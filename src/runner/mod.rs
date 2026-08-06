@@ -687,3 +687,354 @@ pub async fn process_domains(
     };
     ProviderRunResult { urls, stats }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filters::UrlFilter;
+    use crate::output;
+    use crate::test_support::{build_test_args, MockProvider};
+    use crate::utils::UrlTransformer;
+
+    #[tokio::test]
+    async fn test_process_domains() {
+        let provider = MockProvider::new(
+            vec![
+                "https://example.com/page1".to_string(),
+                "https://example.com/page2".to_string(),
+            ],
+            false,
+        );
+        let calls = provider.calls.clone();
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+
+        let args = build_test_args();
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        // The provider was asked about exactly the requested domain.
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.as_slice(), ["example.com"]);
+
+        // URLs come back attributed to the provider that reported them.
+        assert_eq!(result.urls.len(), 2);
+        assert!(result.urls.contains_key("https://example.com/page1"));
+        assert!(result.urls.contains_key("https://example.com/page2"));
+        assert!(result.urls["https://example.com/page1"].contains("MockProvider"));
+
+        assert_eq!(result.stats.len(), 1);
+        assert_eq!(result.stats[0].name, "MockProvider");
+        assert_eq!(result.stats[0].url_count, 2);
+        assert_eq!(result.stats[0].error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_provider_failure_is_counted_not_fatal() {
+        let providers: Vec<Box<dyn Provider>> = vec![
+            Box::new(MockProvider::new(vec![], true)),
+            Box::new(MockProvider::new(
+                vec!["https://example.com/ok".to_string()],
+                false,
+            )),
+        ];
+        let provider_names = vec!["Broken".to_string(), "Working".to_string()];
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &build_test_args(),
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        // One provider failing must not lose the other's results.
+        assert!(result.urls.contains_key("https://example.com/ok"));
+        let broken = result.stats.iter().find(|s| s.name == "Broken").unwrap();
+        assert_eq!(broken.error_count, 1);
+        assert_eq!(broken.url_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_processes_provider_domains_concurrently() {
+        // One provider, five domains, each fetch sleeps 200ms. With --parallel 5
+        // the provider's domains must be fetched concurrently — finishing in
+        // ~200ms rather than the ~1s a sequential per-provider drain would take.
+        // This guards the #270 fix from regressing back to single-flight.
+        let provider =
+            MockProvider::new(vec!["https://example.com/a".to_string()], false).with_delay_ms(200);
+        let calls = provider.calls.clone();
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+        let domains: Vec<String> = ["a.com", "b.com", "c.com", "d.com", "e.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut args = build_test_args();
+        args.parallel = Some(5);
+
+        let start = std::time::Instant::now();
+        let _ = process_domains(
+            domains,
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        // All five domains were fetched...
+        assert_eq!(calls.lock().unwrap().len(), 5);
+        // ...and concurrently: well under the ~1s a sequential drain would need.
+        assert!(
+            elapsed < std::time::Duration::from_millis(800),
+            "expected concurrent per-provider fetches (~200ms), took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parallel_one_processes_sequentially() {
+        // With --parallel 1 the same five 200ms fetches must run one at a time,
+        // taking ~1s. This pins the sequential (rich-UI) path so the
+        // concurrency knob is honored in both directions.
+        let provider =
+            MockProvider::new(vec!["https://example.com/a".to_string()], false).with_delay_ms(200);
+        let calls = provider.calls.clone();
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+        let domains: Vec<String> = ["a.com", "b.com", "c.com", "d.com", "e.com"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut args = build_test_args();
+        args.parallel = Some(1);
+
+        let start = std::time::Instant::now();
+        let _ = process_domains(
+            domains,
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(calls.lock().unwrap().len(), 5);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "expected sequential fetches (~1s) with --parallel 1, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_emits_before_slow_provider_finishes() {
+        // The whole point of --stream: a fast provider's URLs must reach the
+        // consumer while a slow one is still fetching, instead of everyone
+        // waiting for the slowest.
+        use std::io::Write;
+
+        #[derive(Clone, Default)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let fast = MockProvider::new(vec!["https://example.com/fast".to_string()], false);
+        let slow = MockProvider::new(vec!["https://example.com/slow".to_string()], false)
+            .with_delay_ms(2_000);
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(fast), Box::new(slow)];
+        let provider_names = vec!["Fast".to_string(), "Slow".to_string()];
+
+        let buf = SharedBuf::default();
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::new(),
+                None,
+                "plain",
+                Box::new(buf.clone()),
+            )
+            .unwrap(),
+        );
+
+        let args = build_test_args();
+        let run = tokio::spawn({
+            let sink = Arc::clone(&sink);
+            let providers: Vec<Box<dyn Provider>> =
+                providers.iter().map(|p| p.clone_box()).collect();
+            let provider_names = provider_names.clone();
+            async move {
+                process_domains(
+                    vec!["example.com".to_string()],
+                    &args,
+                    &ProgressManager::new(true),
+                    &providers,
+                    &provider_names,
+                    Some(sink),
+                )
+                .await
+            }
+        });
+
+        // Half a second in — long before the slow provider's 2s delay elapses —
+        // the fast provider's URL must already be written.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let mid_run = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            mid_run.contains("https://example.com/fast"),
+            "fast provider's URL should be streamed while the slow one is still running, got {mid_run:?}"
+        );
+        assert!(
+            !mid_run.contains("https://example.com/slow"),
+            "slow provider should not have reported yet, got {mid_run:?}"
+        );
+
+        run.await.unwrap();
+        let final_out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            final_out.contains("https://example.com/slow"),
+            "{final_out}"
+        );
+        assert_eq!(sink.emitted(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_stream_mode_skips_the_batch_url_map() {
+        // Streaming runs must not also accumulate every URL in memory — that
+        // map exists only to feed the batch output path.
+        use std::io::Write;
+
+        struct Sink;
+        impl Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(MockProvider::new(
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ],
+            false,
+        ))];
+        let provider_names = vec!["Mock".to_string()];
+
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::new(),
+                None,
+                "plain",
+                Box::new(Sink),
+            )
+            .unwrap(),
+        );
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &build_test_args(),
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            Some(Arc::clone(&sink)),
+        )
+        .await;
+
+        assert!(
+            result.urls.is_empty(),
+            "batch map should stay empty when streaming, got {:?}",
+            result.urls
+        );
+        assert_eq!(sink.emitted(), 2);
+        // Stats are still tallied so --stats keeps working.
+        assert_eq!(result.stats[0].url_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_max_time_aborts_slow_provider() {
+        // A provider that sleeps for 5s should be cut off when max_time=1.
+        let slow = MockProvider::new(vec!["https://example.com/never".to_string()], false)
+            .with_delay_ms(5_000);
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(slow)];
+        let provider_names = vec!["SlowProvider".to_string()];
+
+        let mut args = build_test_args();
+        args.max_time = 1;
+
+        let started = std::time::Instant::now();
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        // Should bail out well before the provider's 5s sleep finishes.
+        assert!(
+            elapsed.as_secs() < 4,
+            "expected --max-time to abort within ~1s, got {elapsed:?}"
+        );
+        // No URLs were produced because the provider was cut off mid-await.
+        assert!(
+            result.urls.is_empty(),
+            "expected no URLs, got {:?}",
+            result.urls
+        );
+    }
+
+    #[tokio::test]
+    async fn test_zero_timeout_does_not_panic() {
+        let provider = MockProvider::new(vec!["https://example.com/page1".to_string()], false)
+            .with_delay_ms(25);
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["MockProvider".to_string()];
+
+        let mut args = build_test_args();
+        args.timeout = 0;
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        assert!(result.urls.contains_key("https://example.com/page1"));
+    }
+}
