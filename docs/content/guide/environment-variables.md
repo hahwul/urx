@@ -53,6 +53,21 @@ export URX_ZOOMEYE_API_KEY=key1,key2,key3
 urx example.com --providers zoomeye
 ```
 
+#### URX_GITHUB_API_KEY
+GitHub personal access token for the `github` provider (GitHub Code Search),
+which requires a token to run.
+
+```bash
+export URX_GITHUB_API_KEY=your_token_here
+urx example.com --providers github
+```
+
+**Multiple Keys (Rotation):**
+```bash
+export URX_GITHUB_API_KEY=token1,token2,token3
+urx example.com --providers github
+```
+
 ### Summary
 
 | Variable | Provider | Description |
@@ -60,6 +75,7 @@ urx example.com --providers zoomeye
 | `URX_VT_API_KEY` | VirusTotal | VirusTotal API key |
 | `URX_URLSCAN_API_KEY` | URLScan | Optional URLScan API key (the provider also works anonymously) |
 | `URX_ZOOMEYE_API_KEY` | ZoomEye | ZoomEye API key |
+| `URX_GITHUB_API_KEY` | GitHub | GitHub Code Search personal access token |
 
 ### Usage Notes
 

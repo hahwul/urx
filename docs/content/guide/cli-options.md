@@ -57,6 +57,7 @@ Display Options:
   -v, --verbose       Show verbose output
       --silent        Silent mode (no output)
       --no-progress   No progress bar
+      --no-color      Disable ANSI color (NO_COLOR is also honored)
       --show-sources  Annotate output URLs with the providers that returned them
       --stats         Print a per-provider summary to stderr at end of run
 
@@ -72,9 +73,10 @@ Filter Options:
       --min-length <MIN_LENGTH>              Minimum URL length
       --max-length <MAX_LENGTH>              Maximum URL length
       --strict                               Enforce exact host validation (default)
+      --no-strict                            Disable host validation entirely (wins over --strict)
 
 Network Options:
-  --network-scope <SCOPE>        Apply settings to: all, providers, testers [default: all]
+  --network-scope <SCOPE>        Apply settings to: all, providers, testers, providers,testers [default: all]
   --proxy <PROXY>                HTTP proxy (e.g., http://proxy:8080)
   --proxy-auth <PROXY_AUTH>      Proxy credentials (username:password)
   --insecure                     Skip SSL certificate verification
@@ -112,16 +114,29 @@ Cache Options:
 | VirusTotal | `vt` | Yes | `URX_VT_API_KEY` |
 | URLScan | `urlscan` | No (optional) | `URX_URLSCAN_API_KEY` |
 | ZoomEye | `zoomeye` | Yes | `URX_ZOOMEYE_API_KEY` |
+| GitHub Code Search | `github` | Yes | `URX_GITHUB_API_KEY` |
 
-Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation.
+Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`).
+
+Run `urx --list-providers` to print the full catalog (id, API-key requirement, and a one-line summary) directly from the binary.
 
 ## Filter Presets
 
+Exclude a family with a `no-*` preset, or keep only a family with an `only-*`
+preset. Singular spellings (e.g. `no-image`, `only-font`) are accepted too.
+
 | Preset | Description |
 |--------|-------------|
-| `no-resources` | Exclude resource files (images, CSS, fonts, etc.) |
+| `no-resources` | Exclude resource files (images, CSS, fonts, documents, videos, audio) |
 | `no-images` | Exclude image files |
+| `no-fonts` | Exclude font files |
+| `no-documents` | Exclude document files |
+| `no-videos` | Exclude video files |
 | `no-audio` | Exclude audio files |
 | `only-js` | Only JavaScript files |
 | `only-style` | Only stylesheet files |
+| `only-fonts` | Only font files |
+| `only-documents` | Only document files |
+| `only-videos` | Only video files |
 | `only-audio` | Only audio files |
+| `only-images` | Only image files |
