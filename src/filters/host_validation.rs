@@ -7,18 +7,38 @@ pub struct HostValidator {
     include_subdomains: bool,
 }
 
+/// Put a target domain into the exact form [`Url::host_str`] would report for
+/// it, so the two sides of the comparison speak the same dialect.
+///
+/// The important case is IDN. `Url::parse` runs IDNA on the host, so
+/// `https://café.com/x` reports its host as `xn--caf-dma.com`; comparing that
+/// against the raw `café.com` the user typed never matched, and strict mode
+/// (the default) therefore discarded *every* URL of an internationalised
+/// target. Feeding the domain through the same parser also folds in the case,
+/// trailing-dot and percent-encoding normalisation the host side already gets.
+///
+/// Input the parser cannot make a host of (a leading dot, say) falls back to
+/// the trimmed, lowercased original so it keeps behaving as before.
+fn normalize_domain(domain: &str) -> Option<String> {
+    let trimmed = domain.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = Url::parse(&format!("https://{trimmed}/"))
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_lowercase()));
+    Some(match parsed {
+        Some(host) => host.trim_end_matches('.').to_string(),
+        None => trimmed.to_lowercase(),
+    })
+}
+
 impl HostValidator {
     /// Create a new host validator with the given domains that can include subdomains
     pub fn new(domains: &[String], include_subdomains: bool) -> Self {
         let normalized_domains: HashSet<String> = domains
             .iter()
-            .map(|domain| {
-                domain
-                    .trim()
-                    .to_lowercase()
-                    .trim_end_matches('.')
-                    .to_string()
-            })
+            .filter_map(|domain| normalize_domain(domain))
             .collect();
 
         HostValidator {
@@ -114,6 +134,71 @@ mod tests {
         assert!(!validator.is_valid_host("https://api.example.com/path"));
         // a www-of-www is a sub-subdomain, not the apex.
         assert!(!validator.is_valid_host("https://www.www.example.com/path"));
+    }
+
+    #[test]
+    fn test_idn_target_matches_the_punycode_host() {
+        // Regression: `Url::parse` reports an IDN host in its punycode form, so
+        // comparing it against the Unicode domain the user typed never matched
+        // and strict mode (the default) dropped every URL of the target.
+        let domains = vec!["café.com".to_string()];
+        let validator = HostValidator::new(&domains, false);
+
+        assert!(validator.is_valid_host("https://café.com/path"));
+        assert!(validator.is_valid_host("https://xn--caf-dma.com/path"));
+        assert!(validator.is_valid_host("https://www.café.com/path"));
+        // ...and an unrelated host is still rejected.
+        assert!(!validator.is_valid_host("https://evil.com/path"));
+        assert!(!validator.is_valid_host("https://café.com.evil.com/path"));
+    }
+
+    #[test]
+    fn test_idn_target_matches_subdomains_with_subs() {
+        let domains = vec!["例え.jp".to_string()];
+        let validator = HostValidator::new(&domains, true);
+
+        assert!(validator.is_valid_host("https://例え.jp/a"));
+        assert!(validator.is_valid_host("https://api.例え.jp/a"));
+        assert!(validator.is_valid_host("https://api.xn--r8jz45g.jp/a"));
+        assert!(!validator.is_valid_host("https://xn--r8jz45g.jp.evil.tld/a"));
+    }
+
+    #[test]
+    fn test_punycode_target_matches_the_unicode_url() {
+        // The mirror image: the target is already punycode (what
+        // `urx https://café.com` normalizes to) and the archive returned the
+        // Unicode spelling.
+        let domains = vec!["xn--caf-dma.com".to_string()];
+        let validator = HostValidator::new(&domains, false);
+
+        assert!(validator.is_valid_host("https://café.com/path"));
+        assert!(validator.is_valid_host("https://xn--caf-dma.com/path"));
+    }
+
+    #[test]
+    fn test_domain_normalization_does_not_widen_matching() {
+        // The domain now goes through the URL parser, so make sure that did not
+        // turn any near-miss host into a match.
+        let domains = vec!["example.com".to_string()];
+        for validator in [
+            HostValidator::new(&domains, false),
+            HostValidator::new(&domains, true),
+        ] {
+            assert!(!validator.is_valid_host("https://evil-example.com/x"));
+            assert!(!validator.is_valid_host("https://example.com.evil.tld/x"));
+            assert!(!validator.is_valid_host("http://example.com@evil.tld/x"));
+            assert!(!validator.is_valid_host("https://example%2ecom.evil.tld/x"));
+            assert!(!validator.is_valid_host("https://notexample.com/x"));
+            // userinfo before the real host must not confuse it either way
+            assert!(validator.is_valid_host("http://evil.tld@example.com/x"));
+        }
+    }
+
+    #[test]
+    fn test_empty_domains_are_dropped() {
+        // A blank line in --domain-list must not become a domain that matches.
+        let validator = HostValidator::new(&[String::new(), "  ".to_string()], true);
+        assert!(!validator.is_valid_host("https://example.com/x"));
     }
 
     #[test]

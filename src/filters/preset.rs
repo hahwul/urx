@@ -29,13 +29,18 @@ pub enum FilterPreset {
 }
 
 /// Common file extensions for various resource types
+///
+/// `webm` is deliberately absent: it is a video/audio container with no image
+/// variant (the image format is `webp`, listed below). Having it here made
+/// `--preset no-images` silently delete video URLs and `--preset only-images`
+/// return them as images. It lives in [`VIDEO_EXTENSIONS`], where it belongs.
 const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "tiff", "tif", "heic", "heif", "raw",
     "psd", "ai", "eps", "avif", "jfif", "jp2", "jpx", "apng", "cr2", "nef", "orf", "arw", "dng",
-    "webm", "pgm", "pbm", "ppm", "pnm", "exr", "xcf", "pcx", "tga", "emf", "wmf", "jxr", "hdp",
-    "wdp", "cur", "dcm", "wbmp", "j2k", "art", "jng", "3fr", "ari", "srf", "sr2", "bay", "crw",
-    "kdc", "erf", "mrw", "rw2", "pef", "dicom", "djvu", "fpx", "hdr", "mng", "ora", "pic", "rgb",
-    "rgba", "xbm", "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
+    "pgm", "pbm", "ppm", "pnm", "exr", "xcf", "pcx", "tga", "emf", "wmf", "jxr", "hdp", "wdp",
+    "cur", "dcm", "wbmp", "j2k", "art", "jng", "3fr", "ari", "srf", "sr2", "bay", "crw", "kdc",
+    "erf", "mrw", "rw2", "pef", "dicom", "djvu", "fpx", "hdr", "mng", "ora", "pic", "rgb", "rgba",
+    "xbm", "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
 ];
 
 const FONT_EXTENSIONS: &[&str] = &[
@@ -278,6 +283,32 @@ mod tests {
         assert!(exclude_extensions.contains(&"pdf".to_string()));
         assert!(exclude_extensions.contains(&"woff".to_string()));
         assert!(exclude_extensions.contains(&"mp4".to_string()));
+    }
+
+    #[test]
+    fn test_webm_is_a_video_not_an_image() {
+        // Regression: `webm` sat in IMAGE_EXTENSIONS next to `webp`, so
+        // `--preset no-images` silently deleted WebM *video* URLs and
+        // `--preset only-images` handed them back as images.
+        let images = FilterPreset::NoImages.get_exclude_extensions();
+        assert!(!images.contains(&"webm".to_string()), "{images:?}");
+        assert!(images.contains(&"webp".to_string()));
+
+        assert!(!FilterPreset::OnlyImages
+            .get_extensions()
+            .contains(&"webm".to_string()));
+
+        // It is still classified as a video on both video presets...
+        assert!(FilterPreset::NoVideos
+            .get_exclude_extensions()
+            .contains(&"webm".to_string()));
+        assert!(FilterPreset::OnlyVideos
+            .get_extensions()
+            .contains(&"webm".to_string()));
+        // ...and no-resources, which excludes every family, still covers it.
+        assert!(FilterPreset::NoResources
+            .get_exclude_extensions()
+            .contains(&"webm".to_string()));
     }
 
     #[test]
