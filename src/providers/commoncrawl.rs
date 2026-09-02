@@ -20,6 +20,12 @@ pub(crate) const LATEST_INDEX_ALIAS: &str = "latest";
 /// covers far more captures than any real domain has.
 const CC_MAX_PAGES: usize = 10_000;
 
+/// How many pages in a row may fail before we give up on the whole walk.
+/// A single failed page is skipped (they are independently addressable), but a
+/// run of them means the index is unhealthy and continuing would only add
+/// requests and back-off delay to an already-doomed fetch.
+const MAX_CONSECUTIVE_PAGE_FAILURES: usize = 3;
+
 /// Validate that a Common Crawl index identifier matches the expected
 /// `CC-MAIN-YYYY-WW` shape before we splice it into a URL path. This guards
 /// against a hostile or corrupted `collinfo.json` causing path manipulation.
@@ -250,6 +256,7 @@ impl Provider for CommonCrawlProvider {
             let pages = pages.min(CC_MAX_PAGES);
 
             let mut urls = Vec::new();
+            let mut consecutive_failures = 0usize;
             for page in 0..pages {
                 if let Some(rl) = &limiter {
                     rl.acquire().await;
@@ -257,6 +264,7 @@ impl Provider for CommonCrawlProvider {
                 let page_url = format!("{query_base}&page={page}");
                 match get_with_retry(&client, &page_url, self.retries).await {
                     Ok(text) => {
+                        consecutive_failures = 0;
                         // Common Crawl returns one JSON object per line.
                         for line in text.lines() {
                             if let Ok(record) = serde_json::from_str::<CCRecord>(line) {
@@ -268,17 +276,28 @@ impl Provider for CommonCrawlProvider {
                         }
                     }
                     Err(e) => {
-                        // Nothing collected yet (e.g. a not-found domain whose
-                        // first page 404s) is a hard failure, matching the old
-                        // single-request behaviour. A mid-pagination failure
-                        // keeps what we have and flags the result as partial.
-                        if urls.is_empty() {
+                        // A failure on the very first page (e.g. the 404 the
+                        // index returns for a domain it has no captures for) is
+                        // a hard failure, matching the old single-request
+                        // behaviour.
+                        if page == 0 {
                             return Err(e);
                         }
+                        // Later pages are *independently addressable* — `page=N`
+                        // is a direct block address, not a cursor — so one bad
+                        // page says nothing about the rest. Skipping it costs a
+                        // slice; abandoning the walk here used to throw away
+                        // every remaining page (on a 266-page domain, a single
+                        // hiccup on page 5 discarded 98% of the result).
                         if let Some(r) = &reporter {
                             r.mark_partial();
                         }
-                        break;
+                        consecutive_failures += 1;
+                        if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES {
+                            // The index itself is unhealthy rather than one page
+                            // being unlucky; stop hammering it.
+                            break;
+                        }
                     }
                 }
             }
@@ -810,5 +829,154 @@ mod tests {
 
         let q = provider.query_base("CC-MAIN-2026-17", "example.com");
         assert!(!q.contains("filter="), "{q}");
+    }
+
+    #[tokio::test]
+    async fn test_one_failed_page_does_not_abandon_the_rest() {
+        // Common Crawl's `page=N` is a direct block address, not a cursor, so a
+        // failure on one page tells us nothing about the pages after it. The
+        // walk used to `break` here, discarding every remaining page — on a
+        // 266-page domain one transient 503 cost 98% of the result.
+        let mut server = mockito::Server::new_async().await;
+
+        let _probe = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showNumPages".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"pages": 3, "pageSize": 5, "blocks": 12}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let page0 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/a\"}")
+            .expect(1)
+            .create_async()
+            .await;
+        let page1 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_status(503)
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "2".into()))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/c\"}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::new();
+        provider.base_url = server.url();
+        provider.with_retries(0); // fail fast, don't sleep through back-off
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        // Page 2 is still fetched even though page 1 failed.
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/c".to_string(),
+            ]
+        );
+        // ...and the gap is reported rather than passed off as a clean crawl.
+        assert!(reporter.is_partial());
+        page0.assert();
+        page1.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_walk_gives_up_after_repeated_page_failures() {
+        // A run of failures means the index is unhealthy, not that one page was
+        // unlucky — stop instead of walking every remaining page.
+        let mut server = mockito::Server::new_async().await;
+
+        let _probe = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showNumPages".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"pages": 20, "pageSize": 5, "blocks": 100}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let _page0 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/a\"}")
+            .expect(1)
+            .create_async()
+            .await;
+        // Pages 1.. all fail; only MAX_CONSECUTIVE_PAGE_FAILURES of them are
+        // attempted before the walk stops.
+        let failing = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .expect(MAX_CONSECUTIVE_PAGE_FAILURES)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::new();
+        provider.base_url = server.url();
+        provider.with_retries(0);
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(urls, vec!["https://example.com/a".to_string()]);
+        assert!(reporter.is_partial());
+        failing.assert();
+    }
+
+    #[tokio::test]
+    async fn test_first_page_failure_is_still_fatal() {
+        // A domain the index has no captures for answers page 0 with a 404;
+        // that must stay an error rather than an empty success.
+        let mut server = mockito::Server::new_async().await;
+
+        let _probe = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showNumPages".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"pages": 2, "pageSize": 5, "blocks": 6}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let _page0 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::Any)
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::new();
+        provider.base_url = server.url();
+        provider.with_retries(0);
+
+        assert!(provider.fetch_urls("example.com").await.is_err());
     }
 }
