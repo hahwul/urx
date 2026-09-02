@@ -104,6 +104,8 @@ async fn collect_urls(
                 error_count: 0,
                 partial_count: 0,
                 elapsed,
+                // Reading local files has no deadline to be cut off by.
+                aborted: false,
             }],
         });
     }
