@@ -336,6 +336,16 @@ impl Provider for OTXProvider {
                     break;
                 }
 
+                // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+                // Hand back the pages already walked instead of losing them to
+                // the hard cancel after the runner's grace window.
+                if let Some(r) = &reporter {
+                    if r.stop_requested() {
+                        r.mark_partial();
+                        break;
+                    }
+                }
+
                 page += 1;
                 if page >= OTX_MAX_PAGES {
                     break;

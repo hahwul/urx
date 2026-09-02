@@ -111,6 +111,21 @@ impl StopSignal {
     pub fn is_stopped(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+
+    /// Resolve once a stop has been requested, so a provider can race this
+    /// against an in-flight request instead of only checking between pages.
+    ///
+    /// Checking between pages is not enough on its own: a Wayback CDX slice of
+    /// `limit=50000` takes tens of seconds, far longer than the runner's grace
+    /// window, so a deadline landing mid-page was never noticed and the whole
+    /// buffer died with the cancelled future. Polling rather than notifying
+    /// keeps [`StopSignal`] a plain flag usable from synchronous code; the
+    /// interval is negligible against any network fetch it races.
+    pub async fn stopped(&self) {
+        while !self.is_stopped() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }
 
 /// A small, cloneable handle that providers use to surface fine-grained
@@ -162,6 +177,11 @@ impl ProgressReporter {
     /// [`mark_partial`]: ProgressReporter::mark_partial
     pub fn stop_requested(&self) -> bool {
         self.stop.is_stopped()
+    }
+
+    /// Resolve once the run asks this fetch to stop. See [`StopSignal::stopped`].
+    pub async fn stopped(&self) {
+        self.stop.stopped().await
     }
 
     /// Replace the trailing status detail, keeping the stable prefix.

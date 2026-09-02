@@ -220,7 +220,25 @@ impl Provider for WaybackMachineProvider {
                 if let Some(rl) = &limiter {
                     rl.acquire().await;
                 }
-                let text = match get_with_retry(&client, &url, self.retries).await {
+                // Race the request against the stop signal. Checking only
+                // between pages is not enough: one CDX slice takes tens of
+                // seconds, so a deadline landing mid-page went unnoticed until
+                // long after the runner's grace window had closed and the hard
+                // cancel had thrown the buffer away.
+                let fetched = match &reporter {
+                    Some(r) => tokio::select! {
+                        biased;
+                        _ = r.stopped() => None,
+                        res = get_with_retry(&client, &url, self.retries) => Some(res),
+                    },
+                    None => Some(get_with_retry(&client, &url, self.retries).await),
+                };
+                let Some(result) = fetched else {
+                    // Stopped mid-request: keep the pages already walked.
+                    truncated = true;
+                    break;
+                };
+                let text = match result {
                     Ok(text) => text,
                     Err(e) => {
                         // Best effort: a mid-cursor failure shouldn't discard
@@ -244,6 +262,13 @@ impl Provider for WaybackMachineProvider {
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", urls.len()));
+                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+                    // Hand back the pages already walked instead of losing them
+                    // to the hard cancel after the runner's grace window.
+                    if r.stop_requested() {
+                        truncated = true;
+                        break;
+                    }
                 }
 
                 // No resume key ⇒ the server said this was the last slice, so
@@ -316,6 +341,7 @@ impl Provider for WaybackMachineProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::StopSignal;
     // Removed unused import: std::time::Duration
 
     #[test]
@@ -504,6 +530,103 @@ mod tests {
         assert_eq!(urls[1], "http://example.com/page2");
 
         mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_stop_request_keeps_the_pages_already_walked() {
+        // Regression: `--max-time` is documented as returning "whatever URLs
+        // have been collected so far". The runner raises a stop signal at the
+        // deadline, but the walk never consulted it, so the hard cancel that
+        // followed the grace window dropped the provider's whole local buffer
+        // -- a 90s run over a domain with 860k captures returned zero URLs.
+        //
+        // The stop is raised from the page-one handler, so it lands exactly
+        // once that page has been served: no sleeps, no race.
+        let mut server = mockito::Server::new_async().await;
+        let stop = StopSignal::default();
+
+        let flip = stop.clone();
+        let page1 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
+                mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
+            ]))
+            .with_status(200)
+            .with_body_from_request(move |_| {
+                flip.request_stop();
+                b"http://example.com/a\nhttp://example.com/b\n\nKEY2\n".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        // The continuation carries a resume key, so without the stop the walk
+        // would follow it. It must never be requested.
+        let page2 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/c\n")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_stop_signal(stop.clone());
+
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        // Page one survives the deadline instead of dying with the future.
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+            ]
+        );
+        // ...and the walk is reported as incomplete, not as a clean crawl.
+        assert!(reporter.is_partial());
+        page1.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_stop_before_the_first_request_issues_none() {
+        // A stop already pending when the fetch starts must not fire off a
+        // request that can only be thrown away.
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock("GET", "/cdx/search/cdx")
+            .with_status(200)
+            .with_body("http://example.com/a\n")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let stop = StopSignal::default();
+        stop.request_stop();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_stop_signal(stop);
+
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter))
+            .await
+            .unwrap();
+
+        assert!(urls.is_empty());
+        page1.assert();
     }
 
     #[tokio::test]

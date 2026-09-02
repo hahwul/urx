@@ -235,7 +235,25 @@ impl Provider for ArquivoProvider {
                 if let Some(rl) = &limiter {
                     rl.acquire().await;
                 }
-                let text = match get_with_retry(&client, &url, self.retries).await {
+                // Race the request against the stop signal, for the same
+                // reason wayback does: one page is large enough that a deadline
+                // landing mid-request would otherwise go unnoticed until after
+                // the runner's grace window had closed and thrown the buffer
+                // away.
+                let fetched = match &reporter {
+                    Some(r) => tokio::select! {
+                        biased;
+                        _ = r.stopped() => None,
+                        res = get_with_retry(&client, &url, self.retries) => Some(res),
+                    },
+                    None => Some(get_with_retry(&client, &url, self.retries).await),
+                };
+                let Some(result) = fetched else {
+                    // Stopped mid-request: keep the pages already walked.
+                    truncated = true;
+                    break;
+                };
+                let text = match result {
                     Ok(text) => text,
                     Err(e) => {
                         // Best effort: a mid-walk failure shouldn't discard the
@@ -264,6 +282,13 @@ impl Provider for ArquivoProvider {
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", seen.len()));
+                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+                    // Hand back the pages already walked instead of losing them
+                    // to the hard cancel after the runner's grace window.
+                    if r.stop_requested() {
+                        truncated = true;
+                        break;
+                    }
                 }
 
                 // Short page ⇒ the server gave us everything it had for this

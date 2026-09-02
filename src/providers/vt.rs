@@ -292,6 +292,13 @@ impl Provider for VirusTotalProvider {
                 }
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", urls.len()));
+                    // The run asked us to stop (--max-time elapsed, or
+                    // Ctrl-C). Hand back the pages already walked instead of
+                    // losing them to the hard cancel after the grace window.
+                    if r.stop_requested() {
+                        r.mark_partial();
+                        break;
+                    }
                 }
 
                 match page.meta.cursor {

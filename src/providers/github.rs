@@ -243,6 +243,14 @@ impl Provider for GitHubProvider {
                                         // No more results — stop paginating.
                                         break 'pages;
                                     }
+                                    // The run asked us to stop (--max-time
+                                    // elapsed, or Ctrl-C). Keep the pages
+                                    // already walked instead of losing them to
+                                    // the hard cancel after the grace window.
+                                    if reporter.as_ref().is_some_and(|r| r.stop_requested()) {
+                                        truncated = true;
+                                        break 'pages;
+                                    }
                                     break;
                                 }
                                 Err(e) => {
