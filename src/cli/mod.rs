@@ -1,4 +1,5 @@
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
@@ -399,6 +400,51 @@ pub struct Args {
     pub no_cache: bool,
 }
 
+/// The set of options the user actually named on the command line.
+///
+/// The config layers need this. A parsed [`Args`] cannot tell `--retries 2`
+/// from an unset `--retries`, so the old "does this field still equal its
+/// default?" test treated an explicitly supplied value as absent and let the
+/// config file overwrite it — the exact inverse of the documented
+/// `CLI > config` precedence.
+#[derive(Debug, Default, Clone)]
+pub struct CliProvided {
+    ids: HashSet<String>,
+}
+
+impl CliProvided {
+    /// True when `id` was supplied on the command line. `id` is the clap
+    /// argument id, which for this parser is the [`Args`] field name
+    /// (`format`, `providers`, `cache_ttl`, ...) regardless of the flag's
+    /// spelling.
+    pub fn has(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+}
+
+/// Parse the process arguments, recording which options were given explicitly.
+pub fn parse_args() -> (Args, CliProvided) {
+    parse_args_from(std::env::args_os())
+}
+
+/// [`parse_args`] over an explicit argv. Parse failures are rendered and the
+/// process exits exactly as [`Parser::parse_from`] would.
+pub fn parse_args_from<I, T>(argv: I) -> (Args, CliProvided)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let matches = Args::command().get_matches_from(argv);
+    // Collected before `from_arg_matches`, which is free to consume `matches`.
+    let ids = matches
+        .ids()
+        .map(|id| id.as_str().to_string())
+        .filter(|id| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine))
+        .collect();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    (args, CliProvided { ids })
+}
+
 pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
     use anyhow::Context;
     use std::io::{self, BufRead};
@@ -437,9 +483,22 @@ pub fn read_domains_from_file(path: &std::path::Path) -> anyhow::Result<Vec<Stri
     Ok(domains)
 }
 
+/// Drop a leading UTF-8 byte-order mark.
+///
+/// `str::trim` does not remove U+FEFF (it is not `White_Space`), so a domain
+/// list saved by Notepad, Excel, or PowerShell's `>` redirect used to turn its
+/// first entry into the host `"\u{feff}example.com"`. Every provider then
+/// queried that literally and returned nothing, with no diagnostic — the run
+/// simply looked like the archives had never seen the domain.
+fn strip_bom(s: &str) -> &str {
+    s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
 /// Trim whitespace and drop blank / comment lines from a single text line.
 fn parse_domain_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
+    // The BOM has to go before the comment test too, or `\u{feff}# note` on
+    // the first line reads as a domain instead of a comment.
+    let trimmed = strip_bom(line.trim()).trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         None
     } else {
@@ -454,7 +513,10 @@ fn parse_domain_line(line: &str) -> Option<String> {
 /// fragment and lowercase the host. Returns `None` when nothing host-like
 /// remains. `www.` is intentionally preserved (it can be a distinct host).
 pub fn normalize_domain(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
+    // Also applied here, not just in `parse_domain_line`: a positional target
+    // can be pasted with a BOM too, and `--files`-mode host validation
+    // re-reads the raw target list.
+    let trimmed = strip_bom(raw.trim()).trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -956,6 +1018,79 @@ mod tests {
             args.provider_config.as_deref().map(|p| p.to_str().unwrap()),
             Some("/tmp/keys.toml")
         );
+    }
+
+    #[test]
+    fn test_utf8_bom_is_stripped_from_domain_lines() {
+        // Regression: `str::trim` leaves U+FEFF in place (it is not
+        // `White_Space`), so the first entry of a BOM-prefixed domain list
+        // became the host "\u{feff}example.com". That host is interpolated
+        // straight into the CDX query string (`?url={domain}/*`), where reqwest
+        // percent-encodes it to %EF%BB%BF and every archive returns nothing —
+        // and strict host validation then rejects any URL that did come back.
+        // Both failures are silent: the run just looks like an empty archive.
+        assert_eq!(
+            parse_domain_line("\u{feff}example.com"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            normalize_domain("\u{feff}example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            normalize_domain("\u{feff}https://example.com/path").as_deref(),
+            Some("example.com")
+        );
+        // A BOM in front of a comment marker must not turn the comment into a
+        // target either.
+        assert_eq!(parse_domain_line("\u{feff}# a note"), None);
+        // A BOM-only line is blank.
+        assert_eq!(parse_domain_line("\u{feff}"), None);
+        assert_eq!(normalize_domain("\u{feff}"), None);
+    }
+
+    #[test]
+    fn test_read_domains_from_file_handles_bom_and_crlf() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        // Exactly what Notepad / Excel / PowerShell `>` produce.
+        file.write_all("\u{feff}example.com\r\n# note\r\nanother.test\r\n".as_bytes())
+            .unwrap();
+        let domains = read_domains_from_file(file.path()).unwrap();
+        assert_eq!(domains, vec!["example.com", "another.test"]);
+    }
+
+    #[test]
+    fn test_parse_args_records_only_command_line_options() {
+        // The whole point of `CliProvided`: a flag whose value equals the clap
+        // default is still an explicit choice, and the config layers must be
+        // able to see that.
+        let (args, provided) = parse_args_from(["urx", "example.com", "--format", "plain"]);
+        assert_eq!(args.format, "plain");
+        assert!(provided.has("format"), "--format was typed");
+        assert!(!provided.has("retries"), "--retries was not");
+        assert!(!provided.has("providers"));
+
+        let (_, provided) = parse_args_from(["urx", "example.com"]);
+        assert!(
+            !provided.has("format"),
+            "an untouched default must not look supplied"
+        );
+
+        // Defaults that happen to match what the user typed still count.
+        let (_, provided) = parse_args_from([
+            "urx",
+            "example.com",
+            "--retries",
+            "2",
+            "--providers",
+            "wayback,cc,otx",
+            "--cache-ttl",
+            "86400",
+        ]);
+        for id in ["retries", "providers", "cache_ttl"] {
+            assert!(provided.has(id), "{id} was supplied on the command line");
+        }
     }
 
     #[test]
