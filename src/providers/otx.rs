@@ -392,6 +392,7 @@ impl Provider for OTXProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::StopSignal;
 
     #[test]
     fn test_preview_text_multibyte_boundary() {
@@ -742,6 +743,67 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stop_request_keeps_the_pages_already_walked() {
+        // The runner raises a stop at the --max-time deadline; without the walk
+        // consulting it, the hard cancel that follows the grace window dropped
+        // every page already collected. The stop is raised from page one's own
+        // handler, so it lands exactly when that page has been served.
+        let mut server = mockito::Server::new_async().await;
+        let url = server.url();
+        let stop = StopSignal::default();
+
+        // A full page, so `has_next` aside the walk would ask for page 2.
+        let rows: Vec<String> = (0..OTX_RESULTS_LIMIT)
+            .map(|i| format!(r#"{{"url":"http://example.com/{i}"}}"#))
+            .collect();
+        let flip = stop.clone();
+        let body = format!(
+            r#"{{ "has_next": true, "url_list": [{}] }}"#,
+            rows.join(",")
+        );
+        let _page1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |_| {
+                flip.request_stop();
+                body.clone().into_bytes()
+            })
+            .create();
+        // Page two must never be requested once the stop is pending.
+        let page2 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=2",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{ "has_next": false, "url_list": [{"url":"http://example.com/late"}] }"#)
+            .expect(0)
+            .create();
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(url);
+        provider.with_retries(0);
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_stop_signal(stop.clone());
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .expect("page one must survive the deadline");
+
+        assert_eq!(urls.len(), OTX_RESULTS_LIMIT as usize);
+        assert!(!urls.contains(&"http://example.com/late".to_string()));
+        // Stopping early leaves the crawl incomplete, not cleanly finished.
+        assert!(reporter.is_partial());
+        page2.assert();
     }
 
     #[tokio::test]
