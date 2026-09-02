@@ -60,26 +60,35 @@ pub fn print_provider_stats(stats: &[ProviderStats]) {
     if stats.is_empty() {
         return;
     }
-    eprintln!();
-    eprintln!("Provider stats:");
-    eprintln!(
-        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+    eprintln!("{}", render_provider_stats(stats));
+}
+
+/// The per-provider summary table, as text.
+fn render_provider_stats(stats: &[ProviderStats]) -> String {
+    let mut out = String::from("\nProvider stats:\n");
+    out.push_str(&format!(
+        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}\n",
         "provider", "urls", "partial", "errors", "elapsed"
-    );
-    eprintln!(
-        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+    ));
+    out.push_str(&format!(
+        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}\n",
         "------------------", "--------", "--------", "-------", "----------"
-    );
+    ));
     for s in stats {
-        eprintln!(
-            "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}",
+        // A provider cut off by --max-time / Ctrl-C is called out: every count
+        // on its row is a floor, not a total, and without the marker a run that
+        // was stopped mid-fetch reads exactly like one that finished.
+        out.push_str(&format!(
+            "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}{}\n",
             s.name,
             s.url_count,
             s.partial_count,
             s.error_count,
-            format_elapsed(s.elapsed)
-        );
+            format_elapsed(s.elapsed),
+            if s.aborted { "  (aborted)" } else { "" }
+        ));
     }
+    out
 }
 
 /// Sub-second durations read better in milliseconds; anything longer in
@@ -170,6 +179,43 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_millis(999)), "999ms");
         assert_eq!(format_elapsed(Duration::from_millis(1000)), "1.00s");
         assert_eq!(format_elapsed(Duration::from_millis(1500)), "1.50s");
+    }
+
+    #[test]
+    fn test_stats_table_flags_a_provider_that_was_cut_off() {
+        // Regression: a provider aborted by --max-time was rendered exactly
+        // like one that finished — same columns, no marker — so a truncated run
+        // read as a complete one.
+        let rows = [
+            ProviderStats {
+                name: "Wayback Machine".to_string(),
+                url_count: 1_200,
+                partial_count: 1,
+                error_count: 0,
+                elapsed: Duration::from_secs(90),
+                aborted: true,
+            },
+            ProviderStats {
+                name: "OTX".to_string(),
+                url_count: 3,
+                partial_count: 0,
+                error_count: 0,
+                elapsed: Duration::from_millis(120),
+                aborted: false,
+            },
+        ];
+
+        let table = render_provider_stats(&rows);
+        let wayback = table
+            .lines()
+            .find(|l| l.contains("Wayback Machine"))
+            .unwrap();
+        assert!(wayback.contains("90.00s"), "{wayback}");
+        assert!(wayback.ends_with("(aborted)"), "{wayback}");
+
+        // A provider that ran to completion carries no marker.
+        let otx = table.lines().find(|l| l.contains("OTX")).unwrap();
+        assert!(!otx.contains("aborted"), "{otx}");
     }
 
     #[test]

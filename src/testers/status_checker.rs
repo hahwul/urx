@@ -69,9 +69,13 @@ impl StatusChecker {
     /// Return the shared HTTP client, building it on the first call and reusing
     /// it thereafter. If a build fails the cell stays empty, so a later call
     /// retries rather than caching the error.
+    ///
+    /// The client does *not* follow redirects: the status urx reports has to
+    /// belong to the URL it prints, and `--include-status 30x` can only match a
+    /// 3xx that is actually surfaced.
     async fn client(&self) -> Result<&Client> {
         self.client
-            .get_or_try_init(|| async { self.client_config().build_client() })
+            .get_or_try_init(|| async { self.client_config().build_client_no_redirect() })
             .await
     }
 
@@ -157,7 +161,7 @@ impl Tester for StatusChecker {
             // Perform the request with retries
             let mut last_error = None;
 
-            for _ in 0..=self.retries {
+            for attempt in 0..=self.retries {
                 match client.get(url).send().await {
                     Ok(response) => {
                         let status = response.status();
@@ -177,7 +181,13 @@ impl Tester for StatusChecker {
                     }
                     Err(e) => {
                         last_error = Some(e);
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        // Back off only when another attempt follows. Sleeping
+                        // after the *last* one bought nothing and cost 500ms per
+                        // unreachable URL — with `--retries 0`, which means "no
+                        // retries", every failure still waited half a second.
+                        if attempt < self.retries {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
                         continue;
                     }
                 }
@@ -324,6 +334,88 @@ mod tests {
         checker.with_exclude_status(Some(vec!["2xx".to_string()]));
         assert!(checker.should_include_status(200));
         assert!(!checker.should_include_status(201));
+    }
+
+    #[tokio::test]
+    async fn test_redirects_are_reported_not_followed() {
+        // Regression: the client followed redirects, so `/redir` was reported
+        // as "200 OK" — the status of a *different* URL than the one printed.
+        let mut server = mockito::Server::new_async().await;
+        let redirect = server
+            .mock("GET", "/redir")
+            .with_status(301)
+            .with_header("location", "/final")
+            .expect(1)
+            .create_async()
+            .await;
+        // Never requested: following the redirect is exactly what must not
+        // happen.
+        let final_page = server
+            .mock("GET", "/final")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let checker = StatusChecker::new();
+        let out = checker
+            .test_url(&format!("{}/redir", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("301"), "{out:?}");
+        redirect.assert();
+        final_page.assert();
+    }
+
+    #[tokio::test]
+    async fn test_include_status_30x_matches_a_redirect() {
+        // The documented `--include-status 200,30x` could never match anything:
+        // a followed redirect resolves to its target's status, so no 3xx ever
+        // reached the filter.
+        let mut server = mockito::Server::new_async().await;
+        let _r = server
+            .mock("GET", "/redir")
+            .with_status(302)
+            .with_header("location", "/final")
+            .create_async()
+            .await;
+        let _f = server
+            .mock("GET", "/final")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let mut checker = StatusChecker::new();
+        checker.with_include_status(Some(vec!["30x".to_string()]));
+        let out = checker
+            .test_url(&format!("{}/redir", server.url()))
+            .await
+            .unwrap();
+
+        assert_eq!(out.len(), 1, "--is 30x should keep a redirect: {out:?}");
+        assert!(out[0].contains("302"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn test_no_retries_means_no_backoff_wait() {
+        // Regression: the 500ms back-off was slept after the *final* attempt
+        // too, so even `--retries 0` ("no retries") cost half a second for
+        // every unreachable URL.
+        let mut checker = StatusChecker::new();
+        checker.with_retries(0);
+
+        let start = std::time::Instant::now();
+        // Port 0 is never listening, so this fails immediately.
+        let result = checker.test_url("http://127.0.0.1:0/nope").await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "a single failed attempt must not sleep, took {elapsed:?}"
+        );
     }
 
     #[tokio::test]
