@@ -352,33 +352,44 @@ mod tests {
         assert_eq!(out.lines().count(), 3);
     }
 
-    /// A writer that fails every write the way a closed pipe does.
-    struct ClosedPipe;
+    /// A writer that fails with `kind`, either on the write itself or only when
+    /// it flushes. Both shapes are real: an unbuffered pipe rejects the write,
+    /// while a buffered one accepts it and only fails at the flush.
+    struct FailingWriter {
+        kind: std::io::ErrorKind,
+        only_on_flush: bool,
+    }
 
-    impl Write for ClosedPipe {
-        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Broken pipe (os error 32)",
-            ))
+    impl FailingWriter {
+        fn on_write(kind: std::io::ErrorKind) -> Self {
+            Self {
+                kind,
+                only_on_flush: false,
+            }
         }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+
+        fn on_flush(kind: std::io::ErrorKind) -> Self {
+            Self {
+                kind,
+                only_on_flush: true,
+            }
+        }
+
+        fn error(&self) -> std::io::Error {
+            std::io::Error::new(self.kind, "synthetic failure")
         }
     }
 
-    /// A writer that fails with something that is *not* a closed pipe.
-    struct FailingWriter;
-
     impl Write for FailingWriter {
-        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::StorageFull,
-                "No space left on device",
-            ))
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.only_on_flush {
+                Ok(buf.len())
+            } else {
+                Err(self.error())
+            }
         }
         fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+            Err(self.error())
         }
     }
 
@@ -392,12 +403,31 @@ mod tests {
             UrlTransformer::new(),
             None,
             "plain",
-            Box::new(ClosedPipe),
+            Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),
         )
         .unwrap();
 
         assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
         // Later batches are dropped without retrying a write that cannot work.
+        assert_eq!(sink.emit(&["https://a.com/2".to_string()]).unwrap(), 0);
+        assert_eq!(sink.emitted(), 0);
+    }
+
+    #[test]
+    fn test_a_pipe_that_closes_at_flush_time_also_stops_the_stream() {
+        // The sink flushes after every batch (that is what makes streaming
+        // useful downstream), so on a buffered destination the closed pipe
+        // surfaces there rather than on the write.
+        let sink = StreamSink::new(
+            UrlFilter::new(),
+            UrlTransformer::new(),
+            None,
+            "plain",
+            Box::new(FailingWriter::on_flush(std::io::ErrorKind::BrokenPipe)),
+        )
+        .unwrap();
+
+        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
         assert_eq!(sink.emit(&["https://a.com/2".to_string()]).unwrap(), 0);
         assert_eq!(sink.emitted(), 0);
     }
@@ -409,7 +439,7 @@ mod tests {
             UrlTransformer::new(),
             None,
             "plain",
-            Box::new(FailingWriter),
+            Box::new(FailingWriter::on_write(std::io::ErrorKind::StorageFull)),
         )
         .unwrap();
 
@@ -429,7 +459,7 @@ mod tests {
             UrlTransformer::new(),
             None,
             "csv",
-            Box::new(ClosedPipe),
+            Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),
         )
         .unwrap();
         assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);

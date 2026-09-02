@@ -278,17 +278,22 @@ mod tests {
         Ok(())
     }
 
-    /// Concatenate two independently-gzipped payloads, which is exactly how
+    /// Concatenate independently-gzipped payloads, which is exactly how
     /// `.warc.gz` (one member per record) and `cat a.gz b.gz` are built.
-    fn write_multi_member_gzip(path: &Path, chunks: &[&str]) -> Result<()> {
+    fn multi_member_gzip(chunks: &[&str]) -> Vec<u8> {
         let mut out = Vec::new();
         for chunk in chunks {
             let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(chunk.as_bytes())?;
-            out.extend_from_slice(&encoder.finish()?);
+            encoder
+                .write_all(chunk.as_bytes())
+                .expect("writing to an in-memory encoder cannot fail");
+            out.extend_from_slice(
+                &encoder
+                    .finish()
+                    .expect("finishing an in-memory encoder cannot fail"),
+            );
         }
-        std::fs::write(path, out)?;
-        Ok(())
+        out
     }
 
     #[test]
@@ -297,14 +302,12 @@ mod tests {
         // (gzip per record) or any concatenated .gz silently yielded only the
         // first record's URLs — `gunzip -c` showed all of them.
         let temp_file = NamedTempFile::new()?;
-        write_multi_member_gzip(
-            temp_file.path(),
-            &[
-                "https://example.com/one\n",
-                "https://example.com/two\n",
-                "https://example.com/three\n",
-            ],
-        )?;
+        let bytes = multi_member_gzip(&[
+            "https://example.com/one\n",
+            "https://example.com/two\n",
+            "https://example.com/three\n",
+        ]);
+        std::fs::write(temp_file.path(), bytes)?;
 
         let reader = UrlTeamFileReader::new();
         let urls = reader.read_urls(temp_file.path())?;
@@ -337,11 +340,10 @@ mod tests {
         std::fs::write(truncated.path(), &full[..full.len() / 2])?;
 
         let reader = UrlTeamFileReader::new();
-        let urls = reader.read_urls(truncated.path())?;
+        let recovered = reader.read_urls(truncated.path())?.len();
         assert!(
-            !urls.is_empty() && urls.len() < 5_000,
-            "a truncated archive should yield what decoded, got {}",
-            urls.len()
+            recovered > 0 && recovered < 5_000,
+            "a truncated archive should yield what decoded, got {recovered}"
         );
         Ok(())
     }
@@ -351,8 +353,7 @@ mod tests {
         // MultiGzDecoder reports junk after the final member as a bad header;
         // that must not lose the members that decoded cleanly.
         let temp_file = NamedTempFile::new()?;
-        write_multi_member_gzip(temp_file.path(), &["https://example.com/kept\n"])?;
-        let mut bytes = std::fs::read(temp_file.path())?;
+        let mut bytes = multi_member_gzip(&["https://example.com/kept\n"]);
         bytes.extend_from_slice(b"NOT-A-GZIP-HEADER");
         std::fs::write(temp_file.path(), bytes)?;
 
@@ -372,16 +373,90 @@ mod tests {
         let member: String = (0..50_000)
             .map(|i| format!("https://example.com/bomb/{i}\n"))
             .collect();
-        write_multi_member_gzip(temp_file.path(), &[&member, &member, &member])?;
+        let bytes = multi_member_gzip(&[&member, &member, &member]);
+        std::fs::write(temp_file.path(), bytes)?;
 
         let reader = UrlTeamFileReader::with_caps(MAX_FILE_URLS, 4096);
-        let urls = reader.read_urls(temp_file.path())?;
+        let found = reader.read_urls(temp_file.path())?.len();
         assert!(
-            !urls.is_empty() && urls.len() < 1_000,
-            "the byte cap must bound every member, got {} URLs",
-            urls.len()
+            found > 0 && found < 1_000,
+            "the byte cap must bound every member, got {found} URLs"
         );
         Ok(())
+    }
+
+    /// A reader that yields `head`, then fails with `kind` on the next call.
+    struct FailAfter {
+        head: Vec<u8>,
+        kind: std::io::ErrorKind,
+        interrupts_left: usize,
+    }
+
+    impl Read for FailAfter {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.head.is_empty() {
+                let n = self.head.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.head[..n]);
+                self.head.drain(..n);
+                return Ok(n);
+            }
+            if self.interrupts_left > 0 {
+                self.interrupts_left -= 1;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "eintr",
+                ));
+            }
+            Err(std::io::Error::new(self.kind, "synthetic decode failure"))
+        }
+    }
+
+    #[test]
+    fn test_stop_on_decode_error_ends_the_read_and_records_why() {
+        // The adapter is what keeps a half-decoded archive's URLs: it converts
+        // the failure into a clean EOF so the caller's Vec survives, and holds
+        // on to the error so the reader can say what happened.
+        let mut src = StopOnDecodeError::new(FailAfter {
+            head: b"https://example.com/a\nhttps://example.com/b\n".to_vec(),
+            kind: std::io::ErrorKind::UnexpectedEof,
+            interrupts_left: 0,
+        });
+
+        let (urls, _, _) = UrlTeamFileReader::collect_capped(&mut src, MAX_FILE_URLS, 1 << 20)
+            .expect("a decode failure must not surface as an error");
+        assert_eq!(
+            urls,
+            vec!["https://example.com/a", "https://example.com/b"],
+            "everything decoded before the failure must survive"
+        );
+
+        let recorded = src.error.as_ref().expect("the failure must be recorded");
+        assert_eq!(recorded.kind(), std::io::ErrorKind::UnexpectedEof);
+
+        // Once it has failed, further reads report EOF rather than re-failing.
+        assert_eq!(src.read(&mut [0u8; 8]).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_stop_on_decode_error_passes_interrupted_through() {
+        // EINTR is retryable, not a decode failure: swallowing it as EOF would
+        // truncate a perfectly good stream.
+        let mut src = StopOnDecodeError::new(FailAfter {
+            head: b"x".to_vec(),
+            kind: std::io::ErrorKind::UnexpectedEof,
+            interrupts_left: 1,
+        });
+
+        let mut buf = [0u8; 8];
+        assert_eq!(src.read(&mut buf).unwrap(), 1);
+        assert_eq!(
+            src.read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        assert!(
+            src.error.is_none(),
+            "a retryable error must not end the read"
+        );
     }
 
     #[test]

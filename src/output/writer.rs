@@ -45,6 +45,18 @@ impl PlainOutputter {
     }
 }
 
+impl PlainOutputter {
+    /// Render the whole result set. Both destinations go through this, so the
+    /// bytes a pipe sees and the bytes a file gets can never drift apart.
+    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
+        for (i, url_data) in urls.iter().enumerate() {
+            let formatted = self.format(url_data, i == urls.len() - 1);
+            out.write_all(formatted.as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
 impl Outputter for PlainOutputter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
         self.formatter.format(url_data, is_last)
@@ -62,16 +74,12 @@ impl Outputter for PlainOutputter {
                 // NO_COLOR run stays colourless instead of being re-enabled.
                 let prev_colorize = colored::control::SHOULD_COLORIZE.should_colorize();
                 colored::control::set_override(false);
-                let mut file = File::create(&path).context("Failed to create output file")?;
-
-                let result = (|| {
-                    for (i, url_data) in urls.iter().enumerate() {
-                        let formatted = self.format(url_data, i == urls.len() - 1);
-                        file.write_all(formatted.as_bytes())
-                            .context("Failed to write to output file")?;
-                    }
-                    Ok(())
-                })();
+                let result = File::create(&path)
+                    .context("Failed to create output file")
+                    .and_then(|mut file| {
+                        self.render(urls, &mut file)
+                            .context("Failed to write to output file")
+                    });
                 colored::control::set_override(prev_colorize);
                 result
             }
@@ -80,13 +88,7 @@ impl Outputter for PlainOutputter {
                     return Ok(());
                 };
 
-                write_stdout(|out| {
-                    for (i, url_data) in urls.iter().enumerate() {
-                        let formatted = self.format(url_data, i == urls.len() - 1);
-                        out.write_all(formatted.as_bytes())?;
-                    }
-                    Ok(())
-                })
+                write_stdout(|out| self.render(urls, out))
             }
         }
     }
@@ -105,6 +107,19 @@ impl JsonOutputter {
     }
 }
 
+impl JsonOutputter {
+    /// Render the array. Shared by both destinations; stdout adds a trailing
+    /// newline afterwards so an interactive run ends on its own line.
+    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
+        out.write_all(b"[")?;
+        for (i, url_data) in urls.iter().enumerate() {
+            let formatted = self.format(url_data, i == urls.len() - 1);
+            out.write_all(formatted.as_bytes())?;
+        }
+        out.write_all(b"]")
+    }
+}
+
 impl Outputter for JsonOutputter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
         self.formatter.format(url_data, is_last)
@@ -114,19 +129,8 @@ impl Outputter for JsonOutputter {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
-
-                file.write_all(b"[")
-                    .context("Failed to write JSON opening bracket")?;
-
-                for (i, url_data) in urls.iter().enumerate() {
-                    let formatted = self.format(url_data, i == urls.len() - 1);
-                    file.write_all(formatted.as_bytes())
-                        .context("Failed to write to output file")?;
-                }
-
-                file.write_all(b"]")
-                    .context("Failed to write JSON closing bracket")?;
-                Ok(())
+                self.render(urls, &mut file)
+                    .context("Failed to write to output file")
             }
             None => {
                 if silent {
@@ -134,12 +138,8 @@ impl Outputter for JsonOutputter {
                 };
 
                 write_stdout(|out| {
-                    out.write_all(b"[")?;
-                    for (i, url_data) in urls.iter().enumerate() {
-                        let formatted = self.format(url_data, i == urls.len() - 1);
-                        out.write_all(formatted.as_bytes())?;
-                    }
-                    out.write_all(b"]\n")
+                    self.render(urls, out)?;
+                    out.write_all(b"\n")
                 })
             }
         }
@@ -167,6 +167,16 @@ impl Default for JsonLinesOutputter {
     }
 }
 
+impl JsonLinesOutputter {
+    /// Render one standalone JSON object per line, for either destination.
+    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
+        for url_data in urls {
+            out.write_all(self.format(url_data, false).as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
 impl Outputter for JsonLinesOutputter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
         self.formatter.format(url_data, is_last)
@@ -176,22 +186,14 @@ impl Outputter for JsonLinesOutputter {
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
-                for url_data in urls {
-                    file.write_all(self.format(url_data, false).as_bytes())
-                        .context("Failed to write to output file")?;
-                }
-                Ok(())
+                self.render(urls, &mut file)
+                    .context("Failed to write to output file")
             }
             None => {
                 if silent {
                     return Ok(());
                 };
-                write_stdout(|out| {
-                    for url_data in urls {
-                        out.write_all(self.format(url_data, false).as_bytes())?;
-                    }
-                    Ok(())
-                })
+                write_stdout(|out| self.render(urls, out))
             }
         }
     }
@@ -210,46 +212,44 @@ impl CsvOutputter {
     }
 }
 
+impl CsvOutputter {
+    /// Render header plus rows for either destination.
+    ///
+    /// The column layout is decided once for the whole run so the header and
+    /// every row emit exactly the same columns (otherwise rows could carry a
+    /// trailing/extra comma the header doesn't, breaking strict CSV parsers) —
+    /// which is also why both destinations must share this one function.
+    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
+        let has_status = urls.iter().any(|url| url.status.is_some());
+        let has_sources = urls.iter().any(|url| !url.sources.is_empty());
+
+        out.write_all(super::formatter::csv_header(has_status, has_sources).as_bytes())?;
+        for url_data in urls {
+            let formatted = super::formatter::csv_row(url_data, has_status, has_sources);
+            out.write_all(formatted.as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
 impl Outputter for CsvOutputter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
         self.formatter.format(url_data, is_last)
     }
 
     fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
-        // Decide the column layout once for the whole run so the header and
-        // every row emit exactly the same columns (otherwise rows could carry a
-        // trailing/extra comma the header doesn't, breaking strict CSV parsers).
-        let has_status = urls.iter().any(|url| url.status.is_some());
-        let has_sources = urls.iter().any(|url| !url.sources.is_empty());
-        let header = super::formatter::csv_header(has_status, has_sources);
         match output_path {
             Some(path) => {
                 let mut file = File::create(&path).context("Failed to create output file")?;
-                file.write_all(header.as_bytes())
-                    .context("Failed to write CSV header")?;
-
-                for url_data in urls {
-                    let formatted = super::formatter::csv_row(url_data, has_status, has_sources);
-                    file.write_all(formatted.as_bytes())
-                        .context("Failed to write to output file")?;
-                }
-
-                Ok(())
+                self.render(urls, &mut file)
+                    .context("Failed to write to output file")
             }
             None => {
                 if silent {
                     return Ok(());
                 };
 
-                write_stdout(|out| {
-                    out.write_all(header.as_bytes())?;
-                    for url_data in urls {
-                        let formatted =
-                            super::formatter::csv_row(url_data, has_status, has_sources);
-                        out.write_all(formatted.as_bytes())?;
-                    }
-                    Ok(())
-                })
+                write_stdout(|out| self.render(urls, out))
             }
         }
     }
@@ -258,6 +258,7 @@ impl Outputter for CsvOutputter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::create_outputter;
     use std::io::Read;
     use tempfile::NamedTempFile;
 
@@ -527,6 +528,104 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    fn rendered(f: impl FnOnce(&mut Vec<u8>) -> std::io::Result<()>) -> String {
+        let mut buf = Vec::new();
+        f(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn sample() -> Vec<UrlData> {
+        vec![
+            UrlData::new("https://example.com/page1".to_string()),
+            UrlData::with_status(
+                "https://example.com/page2".to_string(),
+                "200 OK".to_string(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_render_produces_the_same_bytes_for_every_destination() {
+        // The stdout and file branches used to be twin copies of the same loop,
+        // so a fix to one could silently miss the other. They now share
+        // `render`; these assert what both destinations therefore emit.
+        let urls = sample();
+
+        assert_eq!(
+            rendered(|out| PlainOutputter::new().render(&urls, out)),
+            "https://example.com/page1\nhttps://example.com/page2 [200 OK]\n"
+        );
+        assert_eq!(
+            rendered(|out| JsonOutputter::new().render(&urls, out)),
+            "[{\"url\":\"https://example.com/page1\"},\
+             {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]"
+        );
+        assert_eq!(
+            rendered(|out| JsonLinesOutputter::new().render(&urls, out)),
+            "{\"url\":\"https://example.com/page1\"}\n\
+             {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n"
+        );
+        assert_eq!(
+            rendered(|out| CsvOutputter::new().render(&urls, out)),
+            "url,status\nhttps://example.com/page1,\nhttps://example.com/page2,200 OK\n"
+        );
+    }
+
+    #[test]
+    fn test_render_of_an_empty_result_set() {
+        let none: Vec<UrlData> = Vec::new();
+        // json stays a valid (empty) array; csv still declares its columns.
+        assert_eq!(
+            rendered(|out| JsonOutputter::new().render(&none, out)),
+            "[]"
+        );
+        assert_eq!(
+            rendered(|out| CsvOutputter::new().render(&none, out)),
+            "url\n"
+        );
+        assert_eq!(rendered(|out| PlainOutputter::new().render(&none, out)), "");
+        assert_eq!(
+            rendered(|out| JsonLinesOutputter::new().render(&none, out)),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_render_with_sources() {
+        let urls = vec![UrlData::new("https://example.com/a".to_string())
+            .with_sources(vec!["wayback".into(), "cc".into()])];
+
+        assert_eq!(
+            rendered(|out| CsvOutputter::new().render(&urls, out)),
+            "url,sources\nhttps://example.com/a,cc|wayback\n"
+        );
+        assert_eq!(
+            rendered(|out| JsonLinesOutputter::new().render(&urls, out)),
+            "{\"url\":\"https://example.com/a\",\"sources\":[\"cc\",\"wayback\"]}\n"
+        );
+    }
+
+    #[test]
+    fn test_stdout_destination_writes_every_format() {
+        // Exercises the stdout branch of all four outputters end to end — the
+        // path that used to panic on a closed pipe. The bytes are pinned by the
+        // render tests above; what matters here is that the real destination is
+        // driven without panicking and reports success. One URL only: these
+        // writes go straight to fd 1 and so escape the harness's per-test
+        // capture, and this keeps the stray lines to a minimum.
+        let urls = vec![UrlData::new("https://example.com/a".to_string())];
+        for outputter in [
+            create_outputter("plain"),
+            create_outputter("json"),
+            create_outputter("jsonl"),
+            create_outputter("csv"),
+        ] {
+            outputter.output(&urls, None, false).unwrap();
+            // --silent short-circuits before touching stdout at all.
+            outputter.output(&urls, None, true).unwrap();
+        }
     }
 
     #[test]
