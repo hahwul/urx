@@ -174,9 +174,14 @@ fn warn_about_inert_archive_filters(
     );
 }
 
-/// Validate every provider-selecting flag before any network client is built,
-/// so a typo fails immediately instead of after minutes of fetching.
-fn validate_selection_flags(args: &Args) -> Result<()> {
+/// Validate every selection flag before any network client is built, so a typo
+/// fails immediately instead of after minutes of fetching.
+///
+/// Public because `--files` runs never reach [`initialize_providers`], and
+/// `--preset` is applied on that path too: `main` calls this up front so the
+/// checks cover every input mode. Running it twice on the provider path is
+/// harmless — it only reads `args`.
+pub fn validate_selection_flags(args: &Args) -> Result<()> {
     validate_provider_ids(&trimmed_ids(&args.providers), "--providers")?;
     // A misspelled preset used to be dropped in silence, producing an
     // unfiltered run that looked like the filter had matched everything.

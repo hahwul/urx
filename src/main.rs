@@ -27,13 +27,13 @@ use app::pipeline::{
     build_testers, collect_domains, read_urls_from_files, should_check_status,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
-use app::selection::initialize_providers;
+use app::selection::{initialize_providers, validate_selection_flags};
 use cli::{Args, CliProvided};
 use config::Config;
 use network::NetworkSettings;
 use output::create_outputter;
 use progress::ProgressManager;
-use runner::{process_domains, ProviderRunResult};
+use runner::{process_domains, ProviderRunResult, ProviderStats};
 use tester_manager::process_urls_with_testers;
 use utils::verbose_print;
 
@@ -71,9 +71,20 @@ async fn collect_urls(
     stream_sink: Option<&Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
 ) -> Result<ProviderRunResult> {
+    // Ahead of the `--files` short-circuit below, which never reaches
+    // `initialize_providers`. `--preset` is applied to file input just like
+    // provider output, so a misspelled preset used to be dropped in silence
+    // there and emit an unfiltered run that looked like the filter had matched
+    // everything — the exact failure this validation exists to prevent.
+    validate_selection_flags(args)?;
+
     // File input skips provider processing entirely. Every URL is attributed to
     // "file" so downstream `--show-sources` stays consistent.
+    let read_started = std::time::Instant::now();
     if let Some(urls) = read_urls_from_files(args)? {
+        let elapsed = read_started.elapsed();
+        // Counted before deduplication, matching what a provider row reports.
+        let url_count = urls.len();
         let mut url_map: std::collections::HashMap<String, std::collections::HashSet<String>> =
             std::collections::HashMap::new();
         for url in urls {
@@ -81,7 +92,19 @@ async fn collect_urls(
         }
         return Ok(ProviderRunResult {
             urls: url_map,
-            stats: Vec::new(),
+            // `--stats` must not fall silent just because the URLs came from a
+            // file rather than a provider: an explicit flag printing nothing at
+            // all reads as "the run collected nothing". Labelled "file", the
+            // same source name `--show-sources` gives these URLs. `error_count`
+            // is honestly 0 — `read_urls_from_files` propagates the first
+            // failure, so reaching here means every file was read.
+            stats: vec![ProviderStats {
+                name: "file".to_string(),
+                url_count,
+                error_count: 0,
+                partial_count: 0,
+                elapsed,
+            }],
         });
     }
 
@@ -311,5 +334,99 @@ mod tests {
         .expect_err("a run with no resolvable target must not succeed");
 
         assert!(err.to_string().contains("No domains provided"), "{err}");
+    }
+
+    /// Build an `Args` for a `--files` run over a temp file of `urls`.
+    fn files_args(file: &tempfile::NamedTempFile, extra: &[&str]) -> Args {
+        let mut argv = vec![
+            "urx",
+            "--no-progress",
+            "--files",
+            file.path().to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        Args::parse_from(argv)
+    }
+
+    fn temp_urls() -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "https://example.com/a.js\nhttps://example.com/b.php\nhttps://example.com/c.png"
+        )
+        .unwrap();
+        file
+    }
+
+    async fn run_files(args: &Args) -> Result<ProviderRunResult> {
+        collect_urls(
+            args,
+            &NetworkSettings::default(),
+            &ProgressManager::new(true),
+            None,
+            &mut None,
+        )
+        .await
+    }
+
+    /// Regression: `--files` short-circuits before `initialize_providers`, so
+    /// none of the selection flags were validated on that path. A misspelled
+    /// `--preset` was the damaging case — presets *are* applied to file input,
+    /// so `--preset only-jss` silently emitted every URL, which reads as a
+    /// filter that matched everything.
+    #[tokio::test]
+    async fn selection_flags_are_validated_for_file_input_too() {
+        let file = temp_urls();
+
+        for (extra, expected) in [
+            (
+                vec!["--preset", "only-jss"],
+                "Unknown preset(s) in --preset",
+            ),
+            (
+                vec!["--providers", "bogus"],
+                "Unknown provider id(s) in --providers",
+            ),
+            (
+                vec!["--exclude-providers", "bogus"],
+                "Unknown provider id(s) in --exclude-providers",
+            ),
+            (
+                vec!["--rate-limit-by", "wayback=fast"],
+                "Malformed entry in --rate-limit-by",
+            ),
+        ] {
+            let args = files_args(&file, &extra);
+            let err = run_files(&args)
+                .await
+                .expect_err("a bad selection flag must fail even with --files");
+            assert!(err.to_string().contains(expected), "{extra:?}: {err}");
+        }
+
+        // ...and a valid invocation still runs.
+        assert!(run_files(&files_args(&file, &["--preset", "only-js"]))
+            .await
+            .is_ok());
+    }
+
+    /// Regression: file input reported `stats: Vec::new()`, and
+    /// `print_provider_stats` returns early on an empty slice — so an explicit
+    /// `--stats` printed absolutely nothing, which reads as "the run collected
+    /// nothing" rather than "these URLs did not come from a provider".
+    #[tokio::test]
+    async fn file_input_reports_a_stats_row() {
+        let file = temp_urls();
+        let result = run_files(&files_args(&file, &["--stats"])).await.unwrap();
+
+        assert_eq!(result.stats.len(), 1, "{:?}", result.stats);
+        let row = &result.stats[0];
+        assert_eq!(row.name, "file");
+        // Counted before deduplication, exactly as a provider row is.
+        assert_eq!(row.url_count, 3);
+        assert_eq!(row.error_count, 0);
+        assert_eq!(row.partial_count, 0);
+        // Every URL is still attributed to the "file" source.
+        assert_eq!(result.urls.len(), 3);
+        assert!(result.urls.values().all(|sources| sources.contains("file")));
     }
 }
