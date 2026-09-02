@@ -262,7 +262,25 @@ impl Provider for CommonCrawlProvider {
                     rl.acquire().await;
                 }
                 let page_url = format!("{query_base}&page={page}");
-                match get_with_retry(&client, &page_url, self.retries).await {
+                // Race the request against the stop signal so a deadline
+                // landing mid-page is noticed inside the runner's grace window
+                // rather than after the hard cancel has discarded the buffer.
+                let fetched = match &reporter {
+                    Some(r) => tokio::select! {
+                        biased;
+                        _ = r.stopped() => None,
+                        res = get_with_retry(&client, &page_url, self.retries) => Some(res),
+                    },
+                    None => Some(get_with_retry(&client, &page_url, self.retries).await),
+                };
+                let Some(result) = fetched else {
+                    // Stopped mid-request: keep the pages already walked.
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
+                    break;
+                };
+                match result {
                     Ok(text) => {
                         consecutive_failures = 0;
                         // Common Crawl returns one JSON object per line.
@@ -273,6 +291,16 @@ impl Provider for CommonCrawlProvider {
                         }
                         if let Some(r) = &reporter {
                             r.detail(format!("{} URLs…", urls.len()));
+                            // The run asked us to stop (--max-time elapsed, or
+                            // Ctrl-C). Hand back the pages already walked
+                            // instead of losing them to the hard cancel after
+                            // the runner's grace window.
+                            if r.stop_requested() {
+                                if page + 1 < pages {
+                                    r.mark_partial();
+                                }
+                                break;
+                            }
                         }
                     }
                     Err(e) => {
@@ -399,6 +427,7 @@ impl Provider for MockCommonCrawlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::StopSignal;
 
     #[test]
     fn test_new_provider() {
@@ -829,6 +858,68 @@ mod tests {
 
         let q = provider.query_base("CC-MAIN-2026-17", "example.com");
         assert!(!q.contains("filter="), "{q}");
+    }
+
+    #[tokio::test]
+    async fn test_stop_request_keeps_the_pages_already_walked() {
+        // Companion to the wayback case: the page walk must hand back what it
+        // has when the run asks it to stop, instead of letting the runner's
+        // hard cancel drop the whole buffer. The stop is raised from the
+        // page-zero handler, so it lands exactly once that page has been
+        // served -- no sleeps, no race.
+        let mut server = mockito::Server::new_async().await;
+        let stop = StopSignal::default();
+
+        let _probe = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showNumPages".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"pages": 3, "pageSize": 5, "blocks": 12}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let flip = stop.clone();
+        let page0 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_status(200)
+            .with_body_from_request(move |_| {
+                flip.request_stop();
+                b"{\"url\": \"https://example.com/a\"}".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        // Pages after the stop must never be requested.
+        let page1 = server
+            .mock("GET", "/CC-MAIN-2026-17-index")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_status(200)
+            .with_body("{\"url\": \"https://example.com/b\"}")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = CommonCrawlProvider::new();
+        provider.base_url = server.url();
+        provider.with_retries(0);
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_stop_signal(stop.clone());
+
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(urls, vec!["https://example.com/a".to_string()]);
+        // Pages 1 and 2 were never walked, so the crawl is incomplete.
+        assert!(reporter.is_partial());
+        page0.assert();
+        page1.assert();
     }
 
     #[tokio::test]

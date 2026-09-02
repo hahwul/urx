@@ -285,6 +285,13 @@ impl Provider for ZoomEyeProvider {
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", all_urls.len()));
+                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+                    // Hand back the pages already walked instead of losing them
+                    // to the hard cancel after the runner's grace window.
+                    if r.stop_requested() {
+                        r.mark_partial();
+                        break;
+                    }
                 }
 
                 // Check if there are more pages. `rows_received` is what the

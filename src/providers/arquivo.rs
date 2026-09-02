@@ -235,7 +235,25 @@ impl Provider for ArquivoProvider {
                 if let Some(rl) = &limiter {
                     rl.acquire().await;
                 }
-                let text = match get_with_retry(&client, &url, self.retries).await {
+                // Race the request against the stop signal, for the same
+                // reason wayback does: one page is large enough that a deadline
+                // landing mid-request would otherwise go unnoticed until after
+                // the runner's grace window had closed and thrown the buffer
+                // away.
+                let fetched = match &reporter {
+                    Some(r) => tokio::select! {
+                        biased;
+                        _ = r.stopped() => None,
+                        res = get_with_retry(&client, &url, self.retries) => Some(res),
+                    },
+                    None => Some(get_with_retry(&client, &url, self.retries).await),
+                };
+                let Some(result) = fetched else {
+                    // Stopped mid-request: keep the pages already walked.
+                    truncated = true;
+                    break;
+                };
+                let text = match result {
                     Ok(text) => text,
                     Err(e) => {
                         // Best effort: a mid-walk failure shouldn't discard the
@@ -264,6 +282,13 @@ impl Provider for ArquivoProvider {
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", seen.len()));
+                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+                    // Hand back the pages already walked instead of losing them
+                    // to the hard cancel after the runner's grace window.
+                    if r.stop_requested() {
+                        truncated = true;
+                        break;
+                    }
                 }
 
                 // Short page ⇒ the server gave us everything it had for this
@@ -331,6 +356,7 @@ impl Provider for ArquivoProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::StopSignal;
 
     #[test]
     fn test_new_provider() {
@@ -645,6 +671,93 @@ mod tests {
         );
         assert!(reporter.is_partial());
         // Exactly two requests: page 0 (new rows) then page 1 (all duplicates).
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_stop_request_keeps_the_pages_already_walked() {
+        // The runner raises a stop at the --max-time deadline and gives fetches
+        // a short grace window to hand back what they have. Without this the
+        // hard cancel that follows dropped the whole `seen` buffer, so
+        // --max-time returned nothing at all. The stop is raised from page
+        // zero's own handler, so it lands exactly when that page is served.
+        let mut server = mockito::Server::new_async().await;
+        let stop = StopSignal::default();
+
+        let flip = stop.clone();
+        let page0 = server
+            .mock("GET", "/wayback/cdx")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_status(200)
+            .with_body_from_request(move |_| {
+                flip.request_stop();
+                b"{\"url\":\"http://example.com/a\"}\n{\"url\":\"http://example.com/b\"}\n".to_vec()
+            })
+            .expect(1)
+            .create_async()
+            .await;
+        // A full page means rows remain, so without the stop the walk would ask
+        // for page 1. It must not.
+        let page1 = server
+            .mock("GET", "/wayback/cdx")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_status(200)
+            .with_body("{\"url\":\"http://example.com/c\"}\n")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = ArquivoProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_row_limit(2); // 2 rows == limit ⇒ the page was capped
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_stop_signal(stop.clone());
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+            ]
+        );
+        assert!(reporter.is_partial());
+        page0.assert();
+        page1.assert();
+    }
+
+    #[tokio::test]
+    async fn test_stop_before_the_first_request_issues_none() {
+        // A stop already pending must not fire off a request whose result can
+        // only be thrown away.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/wayback/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("{\"url\":\"http://example.com/a\"}\n")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = ArquivoProvider::new();
+        provider.with_base_url(server.url());
+
+        let stop = StopSignal::default();
+        stop.request_stop();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_stop_signal(stop);
+
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter))
+            .await
+            .unwrap();
+
+        assert!(urls.is_empty());
         mock.assert();
     }
 
