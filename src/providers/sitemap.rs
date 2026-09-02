@@ -49,6 +49,21 @@ fn same_host_as_parent(parent: &str, child: &str) -> bool {
     }
 }
 
+/// State threaded through one domain's sitemap walk.
+#[derive(Default)]
+struct Walk {
+    /// Sitemap URLs already fetched, so a cycle (`A → A`, `A → B → A`) or a
+    /// sitemap reachable from two entry points is fetched at most once.
+    visited: HashSet<String>,
+    /// Set once any request produced a definitive answer — a body we read, or
+    /// an HTTP status saying there is nothing at this location. This is what
+    /// separates "this host has no sitemap" (a successful scan with zero URLs)
+    /// from "we never reached this host at all" (an error the run must report).
+    answered: bool,
+    /// The last transport-level failure, surfaced when nothing ever answered.
+    failure: Option<anyhow::Error>,
+}
+
 #[derive(Clone)]
 pub struct SitemapProvider {
     timeout: Duration,
@@ -91,7 +106,7 @@ impl SitemapProvider {
 
     /// Recursively fetch and parse a sitemap (or sitemap index).
     ///
-    /// `visited` records already-fetched sitemap URLs to break cycles
+    /// `walk.visited` records already-fetched sitemap URLs to break cycles
     /// (`A → A`, `A → B → A`); `depth` bounds straight-line nesting; and the
     /// caller stops feeding work once [`MAX_SITEMAP_URLS`] is reached. Together
     /// these stop a malicious sitemap from hanging the run or exhausting memory.
@@ -100,14 +115,14 @@ impl SitemapProvider {
         client: &Client,
         sitemap_url: &str,
         depth: usize,
-        visited: &mut HashSet<String>,
+        walk: &mut Walk,
         limiter: Option<&RateLimiter>,
     ) -> Result<Vec<String>> {
         if depth > MAX_SITEMAP_DEPTH {
             return Ok(Vec::new());
         }
         // A sitemap URL we've already fetched in this walk is a cycle — skip it.
-        if !visited.insert(sitemap_url.to_string()) {
+        if !walk.visited.insert(sitemap_url.to_string()) {
             return Ok(Vec::new());
         }
 
@@ -117,14 +132,22 @@ impl SitemapProvider {
             rl.acquire().await;
         }
         // Sitemap discovery is best-effort and speculative: most of the
-        // candidate locations we probe don't exist. A transport failure or a
-        // non-200 means "nothing here", not an error that should sink the whole
-        // provider — the `visited` insert above already stops us re-asking.
+        // candidate locations we probe don't exist, so a single location that
+        // isn't there means "nothing here", not an error that should sink the
+        // whole provider — the `visited` insert above already stops us re-asking.
+        //
+        // A transport failure is different in kind from a non-200 and is
+        // recorded as such: if *no* location ever answered, the caller turns
+        // that into a real error rather than an empty success.
         let resp = match client.get(sitemap_url).send().await {
             Ok(resp) => resp,
-            Err(_) => return Ok(Vec::new()),
+            Err(e) => {
+                walk.failure = Some(e.into());
+                return Ok(Vec::new());
+            }
         };
         if !resp.status().is_success() {
+            walk.answered = true;
             return Ok(Vec::new());
         }
 
@@ -144,8 +167,12 @@ impl SitemapProvider {
             Ok(content) => content,
             // A body that dies mid-stream yields no usable URLs; same
             // best-effort reasoning as above.
-            Err(_) => return Ok(Vec::new()),
+            Err(e) => {
+                walk.failure = Some(e);
+                return Ok(Vec::new());
+            }
         };
+        walk.answered = true;
         let mut urls = Vec::new();
 
         match Document::parse(&content) {
@@ -175,7 +202,7 @@ impl SitemapProvider {
                                     client,
                                     nested_sitemap_url.trim(),
                                     depth + 1,
-                                    visited,
+                                    walk,
                                     limiter,
                                 ))
                                 .await?;
@@ -193,7 +220,17 @@ impl SitemapProvider {
                             url_node.descendants().find(|n| n.has_tag_name("loc"))
                         {
                             if let Some(url) = loc_node.text() {
-                                urls.push(url.to_string());
+                                // Trimmed, like the sitemap-index branch above:
+                                // XML lets a pretty-printed
+                                // `<loc>\n  https://…\n</loc>` carry the
+                                // surrounding indentation into the text node,
+                                // and the newlines rode along into the emitted
+                                // URL — which then failed host validation, so
+                                // every URL of such a sitemap was silently lost.
+                                let url = url.trim();
+                                if !url.is_empty() {
+                                    urls.push(url.to_string());
+                                }
                             }
                         }
                     }
@@ -236,8 +273,9 @@ impl Provider for SitemapProvider {
             let limiter = self.rate_limit.as_ref();
             let mut urls = Vec::new();
             // Shared across all candidate locations so a sitemap reachable from
-            // more than one entry point is fetched at most once.
-            let mut visited = HashSet::new();
+            // more than one entry point is fetched at most once, and so
+            // reachability is judged over the whole set of probes.
+            let mut walk = Walk::default();
 
             // Try common sitemap locations
             let sitemap_urls = vec![
@@ -257,8 +295,22 @@ impl Provider for SitemapProvider {
             // to six candidate locations stay rate-limited.
             for sitemap_url in sitemap_urls {
                 let found =
-                    Self::parse_sitemap(&client, &sitemap_url, 0, &mut visited, limiter).await?;
+                    Self::parse_sitemap(&client, &sitemap_url, 0, &mut walk, limiter).await?;
                 urls.extend(found);
+            }
+
+            // Not one of the candidate locations produced an HTTP response —
+            // DNS failure, refused connection, TLS failure, timeout. That is a
+            // failed scan, and returning `Ok(vec![])` for it made `--stats`
+            // print "Sitemap  0 urls  0 errors", indistinguishable from a host
+            // that simply publishes no sitemap.
+            if !walk.answered {
+                return Err(match walk.failure {
+                    Some(e) => {
+                        anyhow::anyhow!("could not reach {domain} to look for a sitemap: {e}")
+                    }
+                    None => anyhow::anyhow!("could not reach {domain} to look for a sitemap"),
+                });
             }
 
             // The https and http candidates are distinct sitemap URLs, so
@@ -765,5 +817,82 @@ mod tests {
         assert!(result.is_ok());
         let urls = result.unwrap();
         assert!(urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_unreachable_host_is_an_error_not_an_empty_success() {
+        // Regression: every transport failure was swallowed into `Ok(vec![])`,
+        // so a run against a host urx could not connect to at all reported
+        // "Sitemap  0 urls  0 errors" in --stats — a failed scan wearing a ✓.
+        // Bind a port, drop the listener: nothing answers on it.
+        let addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            addr
+        };
+
+        let mut provider = SitemapProvider::new();
+        provider.with_timeout(5);
+        let err = provider
+            .fetch_urls(&addr.to_string())
+            .await
+            .expect_err("an unreachable host must be reported as an error");
+        assert!(err.to_string().contains("could not reach"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_host_with_no_sitemap_is_a_success_with_zero_urls() {
+        // The other side of the line above: a host that answers 404 at every
+        // candidate location has told us it publishes no sitemap. That is a
+        // completed scan with zero URLs and must stay an `Ok`.
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(404)
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        let urls = provider
+            .fetch_urls(&host)
+            .await
+            .expect("a host without a sitemap is an empty result, not an error");
+        assert!(urls.is_empty(), "{urls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_pretty_printed_loc_values_are_trimmed() {
+        // Regression: XML keeps the indentation inside a pretty-printed
+        // `<loc>\n  https://…\n</loc>`, and the surrounding whitespace rode
+        // along into the emitted URL. Such a "URL" fails host validation, so
+        // every URL of a pretty-printed sitemap was silently dropped.
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+        let _m = server
+            .mock("GET", "/sitemap.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(
+                "<?xml version=\"1.0\"?>\n\
+<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
+  <url>\n    <loc>\n      https://example.com/pretty\n    </loc>\n  </url>\n\
+  <url>\n    <loc>   </loc>\n  </url>\n\
+</urlset>",
+            )
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        let urls = provider.fetch_urls(&host).await.unwrap();
+
+        assert_eq!(urls, vec!["https://example.com/pretty".to_string()]);
+        // Belt and braces: nothing we emit may carry stray whitespace.
+        for u in &urls {
+            assert_eq!(u.trim(), u, "{u:?}");
+            assert!(url::Url::parse(u).is_ok(), "{u:?}");
+        }
     }
 }

@@ -81,6 +81,59 @@ impl RobotsProvider {
     }
 }
 
+/// What one `/robots.txt` request told us.
+///
+/// The distinction between the last two variants is the whole point: a host
+/// that answers "404" has told us there is no robots.txt (a real, successful
+/// answer with zero URLs), while a host we could not connect to has told us
+/// nothing at all — and reporting that as a clean zero-URL success hides a
+/// failed scan behind a ✓.
+enum RobotsFetch {
+    /// 2xx, and the body was read.
+    Body(String),
+    /// The host answered, but there is no robots.txt to read (non-2xx).
+    Absent,
+    /// We never got a usable answer: DNS/connect/TLS failure, a timeout, or a
+    /// body that died mid-read.
+    Failed(anyhow::Error),
+}
+
+/// Issue one robots.txt request, classifying the outcome for the caller.
+async fn fetch_robots(client: &Client, url: &str, limiter: Option<&RateLimiter>) -> RobotsFetch {
+    if let Some(rl) = limiter {
+        rl.acquire().await;
+    }
+    match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match read_body_capped(resp, MAX_ROBOTS_BYTES).await {
+                Ok(text) => RobotsFetch::Body(text),
+                Err(e) => RobotsFetch::Failed(e),
+            }
+        }
+        Ok(_) => RobotsFetch::Absent,
+        Err(e) => RobotsFetch::Failed(e.into()),
+    }
+}
+
+/// Resolve a `Sitemap:` value into an absolute http(s) URL.
+///
+/// RFC 9309 says the value is an absolute URL, but relative values
+/// (`/sitemap.xml`, `sitemap.xml`) are common in the wild and were emitted
+/// verbatim — `/sitemap.xml` is not a URL, so it was dropped in host validation
+/// and the sitemap it pointed at was silently lost. Resolving against the
+/// robots.txt we actually fetched is exactly what a crawler does.
+///
+/// Anything that doesn't resolve to http(s) (`javascript:`, `ftp:`, junk) is
+/// dropped rather than emitted as a "URL" nothing downstream can fetch.
+fn resolve_sitemap_value(protocol: &str, domain: &str, value: &str) -> Option<String> {
+    let base = url::Url::parse(&format!("{protocol}://{domain}/robots.txt")).ok()?;
+    let joined = base.join(value).ok()?;
+    match joined.scheme() {
+        "http" | "https" => Some(joined.into()),
+        _ => None,
+    }
+}
+
 #[async_trait]
 impl Provider for RobotsProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
@@ -107,58 +160,65 @@ impl Provider for RobotsProvider {
 
             let mut urls = Vec::new();
 
-            // Try HTTPS first
-            if let Some(rl) = &limiter {
-                rl.acquire().await;
+            // Whether *either* scheme managed to get an answer out of the host.
+            // A 404 counts: it means "this host has no robots.txt", which is a
+            // successful scan with zero URLs. Nothing at all means we never
+            // reached the host, and the run must report that as an error rather
+            // than as a clean, empty success.
+            let mut host_answered = false;
+            let mut https_error: Option<anyhow::Error> = None;
+            let mut http_error: Option<anyhow::Error> = None;
+            let mut body: Option<(&str, String)> = None;
+
+            // Try HTTPS first.
+            match fetch_robots(&client, &https_url, limiter).await {
+                RobotsFetch::Body(text) => body = Some(("https", text)),
+                RobotsFetch::Absent => host_answered = true,
+                RobotsFetch::Failed(e) => https_error = Some(e),
             }
-            let https_resp = client.get(&https_url).send().await;
-            // Track which protocol was successful
-            let (is_https, text) = match https_resp {
-                // A body that dies mid-read is "no robots.txt" for our purposes,
-                // not a fatal error — same best-effort contract as the HTTP
-                // fallback below.
-                Ok(resp) if resp.status().is_success() => {
-                    match read_body_capped(resp, MAX_ROBOTS_BYTES).await {
-                        Ok(text) => (true, text),
-                        Err(_) => return Ok(urls),
-                    }
+
+            if body.is_none() {
+                // If HTTPS didn't produce a robots.txt, try HTTP.
+                #[cfg(not(test))]
+                let http_url = format!("http://{domain}/robots.txt");
+
+                #[cfg(test)]
+                let http_url = if !self.base_url_http.is_empty() {
+                    format!("{}/robots.txt", self.base_url_http)
+                } else if !self.base_url.is_empty() {
+                    format!("{}/robots.txt", self.base_url)
+                } else {
+                    format!("http://{domain}/robots.txt")
+                };
+
+                match fetch_robots(&client, &http_url, limiter).await {
+                    RobotsFetch::Body(text) => body = Some(("http", text)),
+                    RobotsFetch::Absent => host_answered = true,
+                    RobotsFetch::Failed(e) => http_error = Some(e),
                 }
-                _ => {
-                    // If HTTPS fails, try HTTP
-                    #[cfg(not(test))]
-                    let http_url = format!("http://{domain}/robots.txt");
+            }
 
-                    #[cfg(test)]
-                    let http_url = if !self.base_url_http.is_empty() {
-                        format!("{}/robots.txt", self.base_url_http)
-                    } else if !self.base_url.is_empty() {
-                        format!("{}/robots.txt", self.base_url)
-                    } else {
-                        format!("http://{domain}/robots.txt")
+            // Use the protocol that worked.
+            let (protocol, text) = match body {
+                Some(found) => found,
+                // The host answered over at least one scheme and said there is
+                // no robots.txt — an empty result, not a failure.
+                None if host_answered => return Ok(urls),
+                // Neither scheme ever got an answer: DNS failure, refused
+                // connection, TLS failure, timeout. Surface it so `--stats`
+                // counts an error instead of showing "0 urls, 0 errors".
+                None => {
+                    let detail = match (https_error, http_error) {
+                        (Some(https), Some(http)) => format!("https: {https}; http: {http}"),
+                        (Some(https), None) => format!("https: {https}"),
+                        (None, Some(http)) => format!("http: {http}"),
+                        (None, None) => "no response".to_string(),
                     };
-
-                    // robots.txt discovery is best-effort: a transport failure
-                    // on the HTTP fallback means "no robots.txt", not a fatal
-                    // error that should sink the whole provider.
-                    if let Some(rl) = &limiter {
-                        rl.acquire().await;
-                    }
-                    let http_resp = match client.get(&http_url).send().await {
-                        Ok(resp) => resp,
-                        Err(_) => return Ok(urls),
-                    };
-                    if !http_resp.status().is_success() {
-                        return Ok(urls);
-                    }
-                    match read_body_capped(http_resp, MAX_ROBOTS_BYTES).await {
-                        Ok(text) => (false, text),
-                        Err(_) => return Ok(urls),
-                    }
+                    return Err(anyhow::anyhow!(
+                        "could not fetch robots.txt for {domain} ({detail})"
+                    ));
                 }
             };
-
-            // Use the protocol that worked
-            let protocol = if is_https { "https" } else { "http" };
 
             for line in text.lines() {
                 if urls.len() >= MAX_ROBOTS_ENTRIES {
@@ -203,7 +263,12 @@ impl Provider for RobotsProvider {
                         }
                     }
                     "sitemap" if !value.is_empty() => {
-                        urls.push(value.to_string());
+                        // Resolved rather than pushed verbatim: a relative
+                        // `Sitemap: /sitemap.xml` is not a URL, and a
+                        // non-http(s) value is not one urx can fetch.
+                        if let Some(resolved) = resolve_sitemap_value(protocol, domain, value) {
+                            urls.push(resolved);
+                        }
                     }
                     _ => {}
                 }
@@ -608,6 +673,133 @@ Sitemap: https://example.com/sitemap.xml
             "entry count must be bounded, got {}",
             urls.len()
         );
+    }
+
+    #[tokio::test]
+    async fn test_unreachable_host_is_an_error_not_an_empty_success() {
+        // Regression: every transport failure was swallowed into `Ok(vec![])`,
+        // so a run against a host urx could not connect to at all reported
+        // "Robots.txt  0 urls  0 errors" in --stats — a failed scan wearing a ✓.
+        // Point both schemes at a closed port so `send()` fails outright.
+        let dead = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener); // nothing is listening on `addr` now
+            format!("http://{addr}")
+        };
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(dead.clone());
+        provider.with_http_base_url(dead);
+        provider.with_timeout(5);
+
+        let err = provider
+            .fetch_urls("example.com")
+            .await
+            .expect_err("an unreachable host must be reported as an error");
+        assert!(
+            err.to_string().contains("could not fetch robots.txt"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_missing_robots_txt_is_a_success_with_zero_urls() {
+        // The other side of the line above: a host that answers 404 has told us
+        // there is no robots.txt. That is a completed scan with no URLs, and it
+        // must stay an `Ok`, not become an error.
+        let mut https = mockito::Server::new_async().await;
+        let mut http = mockito::Server::new_async().await;
+        let _m1 = https
+            .mock("GET", "/robots.txt")
+            .with_status(404)
+            .create_async()
+            .await;
+        let _m2 = http
+            .mock("GET", "/robots.txt")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(https.url());
+        provider.with_http_base_url(http.url());
+
+        let urls = provider
+            .fetch_urls("example.com")
+            .await
+            .expect("a 404 robots.txt is an empty result, not an error");
+        assert!(urls.is_empty(), "{urls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_https_404_with_unreachable_http_fallback_is_still_a_success() {
+        // HTTPS reached the host and said "no robots.txt". The HTTP fallback
+        // failing to connect doesn't change that answer, so this stays Ok.
+        let mut https = mockito::Server::new_async().await;
+        let _m = https
+            .mock("GET", "/robots.txt")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let dead = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            format!("http://{addr}")
+        };
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(https.url());
+        provider.with_http_base_url(dead);
+
+        assert!(provider.fetch_urls("example.com").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_relative_sitemap_directives_are_resolved() {
+        // Regression: relative `Sitemap:` values were emitted verbatim, so
+        // `/sitemap.xml` left the provider as the literal string "/sitemap.xml".
+        // It isn't a URL, so host validation dropped it and the sitemap it
+        // pointed at was silently lost.
+        let mut server = mockito::Server::new_async().await;
+        let robots = "User-agent: *\n\
+                      Sitemap: /sitemap.xml\n\
+                      Sitemap: sitemaps/extra.xml\n\
+                      Sitemap: https://cdn.example.com/absolute.xml\n\
+                      Sitemap: javascript:alert(1)\n";
+        let _m = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body(robots)
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+
+        assert!(
+            urls.contains(&"https://example.com/sitemap.xml".to_string()),
+            "{urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://example.com/sitemaps/extra.xml".to_string()),
+            "{urls:?}"
+        );
+        // An absolute value is spec-legal cross-submission and is kept as-is.
+        assert!(
+            urls.contains(&"https://cdn.example.com/absolute.xml".to_string()),
+            "{urls:?}"
+        );
+        // A non-http(s) value is not something urx can fetch.
+        assert!(
+            !urls.iter().any(|u| u.starts_with("javascript:")),
+            "{urls:?}"
+        );
+        // Nothing may leave the provider as a bare path.
+        assert!(urls.iter().all(|u| u.starts_with("http")), "{urls:?}");
     }
 
     #[tokio::test]
