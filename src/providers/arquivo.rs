@@ -10,13 +10,23 @@ use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
-/// Hard ceiling on the number of CDX pages walked for one domain. Arquivo.pt's
-/// CDX server paginates large result sets into ZipNum blocks via `page=`, but a
-/// domain small enough to fit in a single block ignores `page` and returns the
-/// full set on every request. We stop as soon as a page contributes no new URLs
-/// (see the fetch loop), so this ceiling is only a runaway backstop — at tens of
-/// thousands of rows per page it covers far more URLs than any real domain has.
+/// Hard ceiling on the number of CDX pages walked for one domain. Arquivo.pt
+/// accepts `page=` but was measured to ignore it — `page=0` and `page=1` come
+/// back byte-identical for both a five-row domain and a capped 100k-row one. We
+/// stop as soon as a page contributes no new URLs (see the fetch loop), so this
+/// ceiling is only a runaway backstop in case a future deployment does start
+/// honouring the parameter.
 const MAX_PAGES: usize = 1_000;
+
+/// Rows to request per page. Arquivo.pt caps a `limit`-less response at 100,000
+/// rows *silently*: the body simply stops, with no marker and no cursor to
+/// resume from. Asking for that same bound explicitly is what makes the cap
+/// detectable — a page that comes back holding exactly `ROW_LIMIT` rows was
+/// truncated, and anything shorter is the complete result set.
+///
+/// Raising it does not help: `limit=300000` made the server stream so slowly
+/// that a 300-second request delivered only 59k rows before timing out.
+const ROW_LIMIT: usize = 100_000;
 
 /// One row of Arquivo.pt's CDX `output=json` response. Each line of the body is
 /// a standalone JSON object (CDXJ / NDJSON); we only need the captured URL.
@@ -59,6 +69,8 @@ pub struct ArquivoProvider {
     filters: ArchiveFilters,
     #[cfg(test)]
     base_url: String,
+    #[cfg(test)]
+    row_limit: usize,
 }
 
 impl ArquivoProvider {
@@ -76,6 +88,8 @@ impl ArquivoProvider {
             filters: ArchiveFilters::default(),
             #[cfg(test)]
             base_url: "https://arquivo.pt".to_string(),
+            #[cfg(test)]
+            row_limit: ROW_LIMIT,
         }
     }
 
@@ -91,6 +105,26 @@ impl ArquivoProvider {
     pub fn with_base_url(&mut self, url: String) -> &mut Self {
         self.base_url = url;
         self
+    }
+
+    /// Shrink the per-page row bound so a test can exercise the truncated-page
+    /// path without a mock body of a hundred thousand rows.
+    #[cfg(test)]
+    pub fn with_row_limit(&mut self, rows: usize) -> &mut Self {
+        self.row_limit = rows;
+        self
+    }
+
+    /// Rows requested per page. See [`ROW_LIMIT`].
+    fn row_limit(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.row_limit
+        }
+        #[cfg(not(test))]
+        {
+            ROW_LIMIT
+        }
     }
 
     /// Build an `HttpClientConfig` from the current provider settings.
@@ -121,13 +155,16 @@ impl ArquivoProvider {
     /// `/*` matches the host and all of its paths — the same wildcard forms the
     /// Wayback provider uses, which Arquivo's CDX server honours as well.
     ///
-    /// `collapse=urlkey` is essential, not just an optimisation: Arquivo returns
-    /// one row per *capture*, and popular URLs accumulate thousands of captures
-    /// (observed ~3.7× row inflation). Without collapsing, a single
-    /// heavily-recaptured URL can fill an entire `page`, which the walk would
-    /// see as "no new URLs" and stop early — silently under-collecting every URL
-    /// that sorts after it. Collapsing adjacent duplicate urlkeys yields ~one row
-    /// per unique URL per page, so a non-final page always carries new URLs.
+    /// `fl=url` asks for just the captured URL, which is the only field
+    /// [`parse_records`] reads. It matters at this scale: a full-record page of
+    /// a large domain is ~25 MB where the same rows as `fl=url` are ~6 MB, and
+    /// that whole body is buffered in memory before parsing.
+    ///
+    /// `collapse=urlkey` is sent because it is the correct request for a
+    /// capture-level index — Arquivo returns one row per *capture*, so popular
+    /// URLs repeat for thousands of rows — but the live server was measured to
+    /// ignore it (`limit=3` returns three rows sharing one urlkey). Nothing here
+    /// may assume the rows are collapsed.
     fn query_base(&self, domain: &str) -> String {
         let host = if self.include_subdomains {
             format!("*.{domain}")
@@ -135,7 +172,7 @@ impl ArquivoProvider {
             domain.to_string()
         };
         let mut url = format!(
-            "{}/wayback/cdx?url={host}/*&output=json&collapse=urlkey",
+            "{}/wayback/cdx?url={host}/*&output=json&fl=url&collapse=urlkey",
             self.base_url()
         );
         url.push_str(&self.filters.query_params(CdxDialect::Pywb));
@@ -169,22 +206,31 @@ impl Provider for ArquivoProvider {
                 r.detail("fetching…");
             }
 
-            // Walk the `page=` cursor. Arquivo only paginates result sets that
-            // span multiple ZipNum blocks; a domain that fits in a single block
-            // ignores `page` and returns the full set on every request. So we
-            // stop as soon as a page adds no new URLs (rather than waiting for an
-            // empty page, which never comes for small domains). `seen` is the
-            // single source of truth: it dedups across pages and its growth
-            // drives the no-progress stop condition.
+            // Walk the `page=` cursor. Arquivo accepts `page` but was measured
+            // to ignore it, so in practice this loop runs once — and that is the
+            // point of the explicit `limit`: a page holding fewer rows than we
+            // asked for is provably the complete result set, so we stop without
+            // spending a second request re-downloading the identical body. Only
+            // a page the server truncated is worth a follow-up, and if that
+            // follow-up adds nothing then `page` is not advancing and the rest
+            // of the result set is unreachable — a partial, not a clean, crawl.
+            //
+            // `seen` is the single source of truth: it dedups across pages and
+            // its growth drives the no-progress stop condition.
+            let row_limit = self.row_limit();
             let mut seen: HashSet<String> = HashSet::new();
             let mut page = 0usize;
+            let mut truncated = false;
 
             loop {
                 if page >= MAX_PAGES {
+                    // Only reachable after a truncated page, i.e. with rows the
+                    // server still has and we have not read.
+                    truncated = true;
                     break;
                 }
 
-                let url = format!("{query_base}&page={page}");
+                let url = format!("{query_base}&limit={row_limit}&page={page}");
 
                 if let Some(rl) = &limiter {
                     rl.acquire().await;
@@ -208,6 +254,11 @@ impl Provider for ArquivoProvider {
                     }
                 };
 
+                // Row count, not URL count: rows the server sent that we could
+                // not parse, or that were duplicate captures of a URL we already
+                // have, still count against `limit`. Only the raw row total says
+                // whether the server truncated us.
+                let rows = text.lines().filter(|l| !l.trim().is_empty()).count();
                 let before = seen.len();
                 seen.extend(parse_records(&text));
 
@@ -215,13 +266,26 @@ impl Provider for ArquivoProvider {
                     r.detail(format!("{} URLs…", seen.len()));
                 }
 
-                // No new URLs ⇒ either this was the last page, or the server is
-                // ignoring `page` and re-serving the same rows. Either way, stop.
+                // Short page ⇒ the server gave us everything it had for this
+                // query. Done, and complete.
+                if rows < row_limit {
+                    break;
+                }
+
+                // The page was capped, so rows remain. Adding no new URLs means
+                // `page` did not move us past them and never will.
                 if seen.len() == before {
+                    truncated = true;
                     break;
                 }
 
                 page += 1;
+            }
+
+            if truncated {
+                if let Some(r) = &reporter {
+                    r.mark_partial();
+                }
             }
 
             let mut urls: Vec<String> = seen.into_iter().collect();
@@ -368,7 +432,7 @@ mod tests {
         let provider = ArquivoProvider::new();
         assert_eq!(
             provider.query_base("example.com"),
-            "https://arquivo.pt/wayback/cdx?url=example.com/*&output=json&collapse=urlkey"
+            "https://arquivo.pt/wayback/cdx?url=example.com/*&output=json&fl=url&collapse=urlkey"
         );
     }
 
@@ -378,7 +442,7 @@ mod tests {
         provider.with_subdomains(true);
         assert_eq!(
             provider.query_base("example.com"),
-            "https://arquivo.pt/wayback/cdx?url=*.example.com/*&output=json&collapse=urlkey"
+            "https://arquivo.pt/wayback/cdx?url=*.example.com/*&output=json&fl=url&collapse=urlkey"
         );
     }
 
@@ -404,14 +468,17 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_urls_integration() {
         let mut server = mockito::Server::new_async().await;
-        // Page 0 carries results (with a duplicate to prove dedup); page 1 is
-        // empty, which terminates the walk.
+        // Page 0 carries results (with a duplicate to prove dedup) and comes
+        // back short of the requested `limit`, so it is provably the whole
+        // result set and no second page is requested.
         let page0 = server
             .mock("GET", "/wayback/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
                 mockito::Matcher::UrlEncoded("output".into(), "json".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), "url".into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
+                mockito::Matcher::UrlEncoded("limit".into(), ROW_LIMIT.to_string()),
                 mockito::Matcher::UrlEncoded("page".into(), "0".into()),
             ]))
             .with_status(200)
@@ -429,18 +496,23 @@ mod tests {
             .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
             .with_status(200)
             .with_body("")
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
 
         let mut provider = ArquivoProvider::new();
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
 
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "http://example.com/page1");
         assert_eq!(urls[1], "http://example.com/page2");
+        assert!(!reporter.is_partial());
 
         page0.assert();
         page1.assert();
@@ -512,8 +584,15 @@ mod tests {
 
         let mut provider = ArquivoProvider::new();
         provider.with_base_url(server.url());
+        // Two rows per page is a full page here, so each page looks truncated
+        // and the walk keeps going until a short one.
+        provider.with_row_limit(2);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
 
         assert_eq!(
             urls,
@@ -523,16 +602,20 @@ mod tests {
                 "http://example.com/c".to_string(),
             ]
         );
+        // Page 2 was short, so the walk reached the real end.
+        assert!(!reporter.is_partial());
         page0.assert();
         page1.assert();
         page2.assert();
     }
 
     #[tokio::test]
-    async fn test_fetch_urls_stops_when_page_param_ignored() {
-        // A small domain fits in one ZipNum block, so Arquivo ignores `page` and
-        // re-serves the same rows. The walk must stop after the first repeat
-        // (page 1 adds no new URLs) instead of looping forever.
+    async fn test_truncated_page_that_repeats_is_reported_partial() {
+        // Arquivo ignores `page`: a truncated page 0 and page 1 come back with
+        // the identical rows. The walk must stop after the first repeat instead
+        // of looping forever — and, because the server told us (by filling the
+        // page to the limit) that it still had rows we never reached, the result
+        // must be flagged partial rather than passed off as a full crawl.
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("GET", "/wayback/cdx")
@@ -545,6 +628,89 @@ mod tests {
 
         let mut provider = ArquivoProvider::new();
         provider.with_base_url(server.url());
+        provider.with_row_limit(2); // both pages come back full ⇒ truncated
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+            ]
+        );
+        assert!(reporter.is_partial());
+        // Exactly two requests: page 0 (new rows) then page 1 (all duplicates).
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_short_page_costs_only_one_request() {
+        // `page` is ignored by the live server, so a follow-up page re-downloads
+        // the identical body — up to ~25 MB on a large domain — for nothing. A
+        // page shorter than the requested limit is provably complete, so there
+        // is no follow-up to make.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/wayback/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("{\"url\":\"http://example.com/a\"}\n{\"url\":\"http://example.com/b\"}\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = ArquivoProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_row_limit(10); // 2 rows < 10 ⇒ that was everything
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(urls.len(), 2);
+        assert!(!reporter.is_partial());
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_captures_still_count_against_the_row_limit() {
+        // Arquivo ignores `collapse=urlkey` and returns one row per capture, so
+        // a page can be full of rows while adding few unique URLs. Truncation
+        // must be judged on rows received, not on URLs collected, or a page of
+        // repeats reads as "short" and the rest of the domain is dropped.
+        let mut server = mockito::Server::new_async().await;
+        let page0 = server
+            .mock("GET", "/wayback/cdx")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_status(200)
+            // Three rows, one unique URL — a capture-level index doing its thing.
+            .with_body(
+                "{\"url\":\"http://example.com/a\"}\n\
+                 {\"url\":\"http://example.com/a\"}\n\
+                 {\"url\":\"http://example.com/a\"}\n",
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let page1 = server
+            .mock("GET", "/wayback/cdx")
+            .match_query(mockito::Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_status(200)
+            .with_body("{\"url\":\"http://example.com/b\"}\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = ArquivoProvider::new();
+        provider.with_base_url(server.url());
+        provider.with_row_limit(3);
 
         let urls = provider.fetch_urls("example.com").await.unwrap();
 
@@ -555,8 +721,8 @@ mod tests {
                 "http://example.com/b".to_string(),
             ]
         );
-        // Exactly two requests: page 0 (new rows) then page 1 (all duplicates).
-        mock.assert();
+        page0.assert();
+        page1.assert();
     }
 
     #[tokio::test]
@@ -621,6 +787,7 @@ mod tests {
         let mut provider = ArquivoProvider::new();
         provider.with_base_url(server.url());
         provider.with_retries(0); // fail fast, don't sleep through back-off
+        provider.with_row_limit(2); // page 0 comes back full ⇒ page 1 is fetched
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = provider
@@ -669,6 +836,9 @@ mod tests {
 
         let mut provider = ArquivoProvider::new();
         provider.with_base_url(server.url());
+        // One row fills a page here, so page 0 looks truncated and page 1 is
+        // fetched — which is what gives the limiter something to pace.
+        provider.with_row_limit(1);
         // 5 req/s ⇒ a 200ms minimum gap between page requests.
         provider.with_rate_limit(Some(5.0));
 

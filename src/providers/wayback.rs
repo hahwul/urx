@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -191,11 +192,22 @@ impl Provider for WaybackMachineProvider {
             // fast requests instead of one unbounded request that times out.
             let mut urls: Vec<String> = Vec::new();
             let mut resume_key: Option<String> = None;
+            // Every cursor position we have already requested. A key we have
+            // seen before means the cursor is stuck or cycling, which is the
+            // only way this walk can fail to terminate — comparing against just
+            // the previous key misses cycles of length two or more.
+            let mut seen_keys: HashSet<String> = HashSet::new();
             let mut pages = 0usize;
+            // Set when we stop while the server was still advertising more
+            // results, so a truncated crawl is never reported as a clean one.
+            let mut truncated = false;
 
             loop {
                 pages += 1;
                 if pages > MAX_PAGES {
+                    // We only get here holding a resume key, i.e. with results
+                    // left on the server.
+                    truncated = true;
                     break;
                 }
 
@@ -228,21 +240,34 @@ impl Provider for WaybackMachineProvider {
                 };
 
                 let (page_urls, next_key) = split_page(&text);
-                let got = page_urls.len();
                 urls.extend(page_urls);
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", urls.len()));
                 }
 
-                // Continue only when the cursor actually advanced: a new resume
-                // key AND a non-empty page. Otherwise we've reached the end (or
-                // a stuck cursor) and must stop to avoid looping forever.
+                // No resume key ⇒ the server said this was the last slice, so
+                // the walk is complete. A key means more results remain: follow
+                // it whenever it is one we have not used yet. A *new* key is
+                // progress even when the page carried no rows — a server-side
+                // `filter=` can empty an entire slice — while a key we have
+                // already requested means the cursor is not advancing, and
+                // continuing would just re-fetch the same slices forever.
                 match next_key {
-                    Some(key) if got > 0 && resume_key.as_deref() != Some(key.as_str()) => {
+                    None => break,
+                    Some(key) => {
+                        if !seen_keys.insert(key.clone()) {
+                            truncated = true;
+                            break;
+                        }
                         resume_key = Some(key);
                     }
-                    _ => break,
+                }
+            }
+
+            if truncated {
+                if let Some(r) = &reporter {
+                    r.mark_partial();
                 }
             }
 
@@ -850,5 +875,177 @@ mod tests {
         assert!(q.contains("&from=20200101000000"), "{q}");
         // Multiple exclusions fold into one negated alternation on this dialect.
         assert!(q.contains("&filter=!statuscode:%28404%7C500%29"), "{q}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_follows_a_new_key_past_an_empty_page() {
+        // A slice can come back with zero rows and still carry a resume key —
+        // a server-side `filter=` predicate can reject every capture in it.
+        // The key is the server saying "more results remain", so the walk must
+        // follow it instead of treating the empty page as the end.
+        let mut server = mockito::Server::new_async().await;
+        let empty = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showResumeKey".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body("\nKEY2\n")
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/a\nhttp://example.com/b\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+            ]
+        );
+        // The walk ran to the server's own end, so nothing is missing.
+        assert!(!reporter.is_partial());
+        empty.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_stops_on_a_cycling_cursor() {
+        // A cursor that alternates A → B → A → B never repeats the *previous*
+        // key, so a one-step comparison never fires and the walk runs until the
+        // MAX_PAGES backstop (10k requests at the archive). Any key we have
+        // already requested must end the walk immediately.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .expect_at_least(1)
+            .with_body_from_request(move |req| {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                let next = if req.path_and_query().contains("resumeKey=A") {
+                    "B"
+                } else {
+                    "A"
+                };
+                format!("http://example.com/{n}\n\n{next}\n").into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        // First page (key A), second page (key B), third page hands back A —
+        // already used, so we stop there.
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        assert_eq!(urls.len(), 3);
+        // The server still claimed more results, so this is not a clean crawl.
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_urls_stops_on_a_stalled_cursor_and_flags_partial() {
+        // The degenerate case of the same bug: the server keeps handing back
+        // the identical key. One repeat is enough to stop.
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("http://example.com/a\n\nSTUCK\n")
+            .expect(2)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(urls, vec!["http://example.com/a".to_string()]);
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_complete_walk_is_not_flagged_partial() {
+        // The happy path must stay clean: the last page carries no resume key.
+        let mut server = mockito::Server::new_async().await;
+        let _page1 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "showResumeKey".into(),
+                "true".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/a\n\nKEY2\n")
+            .expect(1)
+            .create_async()
+            .await;
+        let _page2 = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "resumeKey".into(),
+                "KEY2".into(),
+            ))
+            .with_status(200)
+            .with_body("http://example.com/b\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/a".to_string(),
+                "http://example.com/b".to_string(),
+            ]
+        );
+        assert!(!reporter.is_partial());
     }
 }
