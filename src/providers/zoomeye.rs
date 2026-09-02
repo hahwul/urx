@@ -160,6 +160,11 @@ impl Provider for ZoomEyeProvider {
             let mut all_urls: Vec<String> = Vec::new();
             let mut page: u32 = 1;
             let pagesize: u32 = 100;
+            // Rows actually received, counted before we drop the ones without a
+            // `url`. Progress against `total` must be measured from what the
+            // server sent, not from the page size we asked for — see the stop
+            // condition at the bottom of the loop.
+            let mut rows_received: u64 = 0;
 
             loop {
                 let request_body = ZoomEyeRequest {
@@ -172,6 +177,7 @@ impl Provider for ZoomEyeProvider {
                 let mut last_error = None;
                 let mut attempt = 0;
                 let mut page_urls: Vec<String> = Vec::new();
+                let mut page_rows: u64 = 0;
                 let mut total: u64 = 0;
 
                 while attempt <= self.retries {
@@ -220,6 +226,7 @@ impl Provider for ZoomEyeProvider {
                                         break;
                                     }
                                     total = zoomeye_response.total;
+                                    page_rows = zoomeye_response.data.len() as u64;
                                     for entry in zoomeye_response.data {
                                         if !entry.url.is_empty() {
                                             page_urls.push(entry.url);
@@ -269,17 +276,24 @@ impl Provider for ZoomEyeProvider {
 
                 // A page that returned no rows means the data is exhausted even
                 // if `total` claims otherwise — stop rather than loop on a stale
-                // count.
-                let page_was_empty = page_urls.is_empty();
+                // count. Judged on the rows the server sent, not on the URLs we
+                // kept: a page whose rows all lack a `url` is still a page of
+                // data, and treating it as the end truncated the walk.
+                let page_was_empty = page_rows == 0;
+                rows_received += page_rows;
                 all_urls.extend(page_urls);
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", all_urls.len()));
                 }
 
-                // Check if there are more pages
-                let fetched_so_far = (page as u64) * (pagesize as u64);
-                if page_was_empty || fetched_so_far >= total || page >= ZOOMEYE_MAX_PAGES {
+                // Check if there are more pages. `rows_received` is what the
+                // server actually returned; the old code assumed every page held
+                // exactly `pagesize` rows, so a server that clamps the page size
+                // below what we asked for (plan limits, or its own cap) made urx
+                // believe it had seen `page * 100` results and stop after a
+                // fraction of them.
+                if page_was_empty || rows_received >= total || page >= ZOOMEYE_MAX_PAGES {
                     break;
                 }
 
@@ -673,6 +687,95 @@ mod tests {
         provider.with_retries(0);
 
         assert!(provider.fetch_urls("example.com").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pagination_counts_rows_returned_not_the_requested_page_size() {
+        // Regression: progress against `total` was computed as `page * 100`,
+        // the page size urx *asks* for. A server that returns fewer rows per
+        // page than requested — ZoomEye clamps by plan — made urx believe it
+        // had already seen 100 results after a 10-row page, so it stopped after
+        // 3 pages of a 25-result set and dropped the rest.
+        let mut mock_server = mockito::Server::new_async().await;
+
+        // 25 results served 10 rows at a time: pages 1 and 2 full, page 3 short.
+        for (page, range) in [(1u32, 0..10u32), (2, 10..20), (3, 20..25)] {
+            let rows: Vec<String> = range
+                .map(|i| {
+                    format!(
+                        r#"{{"url":"https://example.com/{i}","ip":"1.2.3.4","domain":"example.com","port":443,"title":"t"}}"#
+                    )
+                })
+                .collect();
+            mock_server
+                .mock("POST", "/v2/search")
+                .match_body(mockito::Matcher::PartialJsonString(format!(
+                    r#"{{"page":{page}}}"#
+                )))
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(format!(
+                    r#"{{ "code": 60000, "total": 25, "data": [{}] }}"#,
+                    rows.join(",")
+                ))
+                .create_async()
+                .await;
+        }
+
+        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
+        provider.with_base_url(mock_server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls.len(), 25, "walk stopped early: {}", urls.len());
+        assert!(urls.contains(&"https://example.com/24".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_pagination_continues_past_a_page_whose_rows_all_lack_a_url() {
+        // A page of rows without a usable `url` is still a page of data. It used
+        // to read as "no more results" because emptiness was judged after the
+        // rows were filtered, halting the walk before the rest of the set.
+        let mut mock_server = mockito::Server::new_async().await;
+
+        let blank: Vec<String> = (0..2)
+            .map(|_| {
+                r#"{"url":"","ip":"1.2.3.4","domain":"example.com","port":80,"title":""}"#
+                    .to_string()
+            })
+            .collect();
+        let _p1 = mock_server
+            .mock("POST", "/v2/search")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"page":1}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{ "code": 60000, "total": 3, "data": [{}] }}"#,
+                blank.join(",")
+            ))
+            .create_async()
+            .await;
+        let _p2 = mock_server
+            .mock("POST", "/v2/search")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"page":2}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{ "code": 60000, "total": 3, "data": [
+                    {"url":"https://example.com/kept","ip":"1.2.3.4","domain":"example.com","port":443,"title":"t"}
+                ] }"#,
+            )
+            .create_async()
+            .await;
+
+        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
+        provider.with_base_url(mock_server.url());
+
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
     }
 
     #[tokio::test]
