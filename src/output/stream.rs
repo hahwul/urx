@@ -17,7 +17,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use super::{create_outputter, Outputter, UrlData};
@@ -38,6 +38,10 @@ pub struct StreamSink {
     writer: Mutex<Box<dyn Write + Send>>,
     outputter: Box<dyn Outputter>,
     emitted: AtomicUsize,
+    /// Set once the destination stops accepting writes — `urx --stream | head`
+    /// closes the pipe long before the providers are done. Later batches are
+    /// then dropped instead of re-attempting a write that can only fail again.
+    closed: AtomicBool,
 }
 
 impl StreamSink {
@@ -61,6 +65,7 @@ impl StreamSink {
             writer: Mutex::new(writer),
             outputter: create_outputter(format),
             emitted: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
         };
 
         // CSV needs its header up front. A streamed run carries neither status
@@ -69,9 +74,15 @@ impl StreamSink {
         if format.eq_ignore_ascii_case("csv") {
             let header = super::formatter::csv_header(false, false);
             let mut w = sink.lock_writer();
-            w.write_all(header.as_bytes())
-                .context("Failed to write CSV header")?;
-            w.flush().context("Failed to flush CSV header")?;
+            let wrote = w
+                .write_all(header.as_bytes())
+                .and_then(|()| w.flush())
+                .map(|()| true)
+                .or_else(broken_pipe_is_ok);
+            drop(w);
+            if !wrote.context("Failed to write CSV header")? {
+                sink.closed.store(true, Ordering::Relaxed);
+            }
         }
 
         Ok(sink)
@@ -95,6 +106,10 @@ impl StreamSink {
     /// buffered, so without an explicit flush a downstream `grep` would see
     /// nothing until the buffer filled — which would defeat the whole point.
     pub fn emit(&self, urls: &[String]) -> Result<usize> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Ok(0);
+        }
+
         let mut batch: Vec<UrlData> = Vec::new();
 
         {
@@ -122,12 +137,23 @@ impl StreamSink {
         }
 
         let mut w = self.lock_writer();
-        for entry in &batch {
-            let formatted = self.outputter.format(entry, false);
-            w.write_all(formatted.as_bytes())
-                .context("Failed to write streamed URL")?;
+        let written = (|| -> std::io::Result<bool> {
+            for entry in &batch {
+                let formatted = self.outputter.format(entry, false);
+                w.write_all(formatted.as_bytes())?;
+            }
+            w.flush()?;
+            Ok(true)
+        })()
+        .or_else(broken_pipe_is_ok);
+        drop(w);
+
+        if !written.context("Failed to write streamed output")? {
+            // `urx --stream | head -1`: the consumer has what it wanted. Stop
+            // emitting quietly instead of failing the whole run.
+            self.closed.store(true, Ordering::Relaxed);
+            return Ok(0);
         }
-        w.flush().context("Failed to flush streamed output")?;
 
         self.emitted.fetch_add(batch.len(), Ordering::Relaxed);
         Ok(batch.len())
@@ -136,6 +162,17 @@ impl StreamSink {
     /// Total URLs written so far.
     pub fn emitted(&self) -> usize {
         self.emitted.load(Ordering::Relaxed)
+    }
+}
+
+/// Map a closed destination onto `Ok(false)` and leave every other I/O error
+/// alone. A downstream `head`/`grep -q` closing the pipe is how a streaming CLI
+/// is normally stopped, not a failure to report.
+fn broken_pipe_is_ok(e: std::io::Error) -> std::io::Result<bool> {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        Ok(false)
+    } else {
+        Err(e)
     }
 }
 
@@ -313,6 +350,89 @@ mod tests {
         assert_eq!(out.lines().next().unwrap(), "url");
         assert_eq!(out.matches("url\n").count(), 1, "{out}");
         assert_eq!(out.lines().count(), 3);
+    }
+
+    /// A writer that fails every write the way a closed pipe does.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Broken pipe (os error 32)",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A writer that fails with something that is *not* a closed pipe.
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::StorageFull,
+                "No space left on device",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_closed_pipe_stops_the_stream_instead_of_failing_the_run() {
+        // `urx target --stream | head -1`: the consumer stops reading long
+        // before the providers finish. That used to bubble up as
+        // "Failed to write streamed URL: Broken pipe" and fail the whole run.
+        let sink = StreamSink::new(
+            UrlFilter::new(),
+            UrlTransformer::new(),
+            None,
+            "plain",
+            Box::new(ClosedPipe),
+        )
+        .unwrap();
+
+        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
+        // Later batches are dropped without retrying a write that cannot work.
+        assert_eq!(sink.emit(&["https://a.com/2".to_string()]).unwrap(), 0);
+        assert_eq!(sink.emitted(), 0);
+    }
+
+    #[test]
+    fn test_a_real_write_failure_is_still_reported() {
+        let sink = StreamSink::new(
+            UrlFilter::new(),
+            UrlTransformer::new(),
+            None,
+            "plain",
+            Box::new(FailingWriter),
+        )
+        .unwrap();
+
+        let err = sink.emit(&["https://a.com/1".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to write streamed output"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_csv_header_on_a_closed_pipe_does_not_fail_construction() {
+        // The CSV header is written from the constructor, so it needs the same
+        // treatment: `urx target --stream -f csv | head -0` must not error.
+        let sink = StreamSink::new(
+            UrlFilter::new(),
+            UrlTransformer::new(),
+            None,
+            "csv",
+            Box::new(ClosedPipe),
+        )
+        .unwrap();
+        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
     }
 
     #[test]

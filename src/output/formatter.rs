@@ -209,15 +209,41 @@ pub(crate) fn csv_row(url_data: &UrlData, has_status: bool, has_sources: bool) -
     line
 }
 
+/// Leading characters that make a spreadsheet evaluate a cell as a formula
+/// rather than display it. A tab or carriage return counts because Excel strips
+/// it and then looks at the next character.
+const FORMULA_TRIGGERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
 /// Escape a field value for CSV output per RFC 4180.
-/// If the value contains a comma, double-quote, or newline, wrap it in
-/// double-quotes and escape any internal double-quotes by doubling them.
+///
+/// A value containing a comma, double-quote, CR or LF is wrapped in
+/// double-quotes with any internal double-quotes doubled. CR matters as much as
+/// LF: a bare `\r` in a field splits the row in Excel and in most spreadsheet
+/// importers, so leaving it unquoted corrupts the table.
+///
+/// A value *starting* with one of [`FORMULA_TRIGGERS`] is additionally prefixed
+/// with an apostrophe. Every field here is archive-controlled — the URL itself,
+/// and under `--show-only-param` a parameter name lifted verbatim out of a
+/// query string — so `=cmd|'/C calc'!A0` reaches the CSV unaltered and executes
+/// when the file is opened. Quoting alone does not stop that; the apostrophe is
+/// the standard mitigation for CSV formula injection (CWE-1236).
 pub(crate) fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        let escaped = value.replace('"', "\"\"");
-        format!("\"{escaped}\"")
+    let starts_formula = value.starts_with(FORMULA_TRIGGERS);
+    let needs_quoting = starts_formula
+        || value.contains(',')
+        || value.contains('"')
+        || value.contains('\n')
+        || value.contains('\r');
+
+    if !needs_quoting {
+        return value.to_string();
+    }
+
+    let escaped = value.replace('"', "\"\"");
+    if starts_formula {
+        format!("\"'{escaped}\"")
     } else {
-        value.to_string()
+        format!("\"{escaped}\"")
     }
 }
 
@@ -413,6 +439,35 @@ mod tests {
     #[test]
     fn test_csv_escape_with_quote() {
         assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn test_csv_escape_neutralises_formula_triggers() {
+        // Regression: a field starting with a formula trigger reached the CSV
+        // verbatim, so `urx ... --show-only-param -f csv` could emit
+        // `=cmd|'/C calc'!A0=1` and a spreadsheet would execute it on open.
+        for trigger in ['=', '+', '-', '@', '\t', '\r'] {
+            let value = format!("{trigger}cmd|'/C calc'!A0");
+            let escaped = csv_escape(&value);
+            assert!(
+                escaped.starts_with("\"'"),
+                "{value:?} must be neutralised, got {escaped:?}"
+            );
+        }
+        assert_eq!(csv_escape("=1+1"), "\"'=1+1\"");
+        // A trigger anywhere but the start is harmless and left alone.
+        assert_eq!(csv_escape("https://a.com/x=1"), "https://a.com/x=1");
+    }
+
+    #[test]
+    fn test_csv_escape_quotes_carriage_return() {
+        // A bare CR splits the row in Excel and most importers, so it has to be
+        // quoted just like LF.
+        assert_eq!(csv_escape("https://a.com/a\rb"), "\"https://a.com/a\rb\"");
+        assert_eq!(
+            csv_escape("https://a.com/a\r\nb"),
+            "\"https://a.com/a\r\nb\""
+        );
     }
 
     #[test]

@@ -76,6 +76,24 @@ mod tests {
     }
 
     #[test]
+    fn test_leading_utf8_bom_does_not_swallow_the_first_url() -> Result<()> {
+        // Regression: a BOM-prefixed list (what Notepad and Excel write by
+        // default) lost its first URL — the byte order mark made the line fail
+        // the "starts with http" check, and nothing said so.
+        let mut temp_file = NamedTempFile::new()?;
+        temp_file.write_all("\u{feff}https://example.com/first\n".as_bytes())?;
+        writeln!(temp_file, "https://example.com/second")?;
+        temp_file.flush()?;
+
+        let urls = TextFileReader::new().read_urls(temp_file.path())?;
+        assert_eq!(
+            urls,
+            vec!["https://example.com/first", "https://example.com/second"]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_read_urls_from_empty_file() -> Result<()> {
         let temp_file = NamedTempFile::new()?;
 

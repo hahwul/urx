@@ -7,6 +7,31 @@ use std::path::PathBuf;
 // Outputter implementations for different formats
 use super::{Outputter, UrlData};
 
+/// Write to stdout, treating a closed pipe as a normal end of output.
+///
+/// `print!`/`println!` *panic* when stdout is gone, so `urx example.com | head -1`
+/// used to end in `thread 'main' panicked ... failed printing to stdout: Broken
+/// pipe` instead of the silent stop every other CLI gives. Taking the lock once
+/// also avoids re-locking stdout for every URL.
+fn write_stdout(f: impl FnOnce(&mut dyn Write) -> std::io::Result<()>) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    finish_stdout_write(f(&mut handle).and_then(|()| handle.flush()))
+}
+
+/// Decide what a finished stdout write means.
+///
+/// A closed pipe is not a failure: the reader (`| head`, `| grep -q`, a shut
+/// terminal) already has what it asked for, so the run stops delivering output
+/// and reports success. Any other I/O error is real and is surfaced.
+fn finish_stdout_write(result: std::io::Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(anyhow::Error::new(e).context("Failed to write to stdout")),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlainOutputter {
     formatter: Box<dyn Formatter>,
@@ -55,11 +80,13 @@ impl Outputter for PlainOutputter {
                     return Ok(());
                 };
 
-                for (i, url_data) in urls.iter().enumerate() {
-                    let formatted = self.format(url_data, i == urls.len() - 1);
-                    print!("{formatted}");
-                }
-                Ok(())
+                write_stdout(|out| {
+                    for (i, url_data) in urls.iter().enumerate() {
+                        let formatted = self.format(url_data, i == urls.len() - 1);
+                        out.write_all(formatted.as_bytes())?;
+                    }
+                    Ok(())
+                })
             }
         }
     }
@@ -106,15 +133,14 @@ impl Outputter for JsonOutputter {
                     return Ok(());
                 };
 
-                print!("[");
-
-                for (i, url_data) in urls.iter().enumerate() {
-                    let formatted = self.format(url_data, i == urls.len() - 1);
-                    print!("{formatted}");
-                }
-
-                println!("]");
-                Ok(())
+                write_stdout(|out| {
+                    out.write_all(b"[")?;
+                    for (i, url_data) in urls.iter().enumerate() {
+                        let formatted = self.format(url_data, i == urls.len() - 1);
+                        out.write_all(formatted.as_bytes())?;
+                    }
+                    out.write_all(b"]\n")
+                })
             }
         }
     }
@@ -160,10 +186,12 @@ impl Outputter for JsonLinesOutputter {
                 if silent {
                     return Ok(());
                 };
-                for url_data in urls {
-                    print!("{}", self.format(url_data, false));
-                }
-                Ok(())
+                write_stdout(|out| {
+                    for url_data in urls {
+                        out.write_all(self.format(url_data, false).as_bytes())?;
+                    }
+                    Ok(())
+                })
             }
         }
     }
@@ -213,14 +241,15 @@ impl Outputter for CsvOutputter {
                     return Ok(());
                 };
 
-                print!("{header}");
-
-                for url_data in urls {
-                    let formatted = super::formatter::csv_row(url_data, has_status, has_sources);
-                    print!("{formatted}");
-                }
-
-                Ok(())
+                write_stdout(|out| {
+                    out.write_all(header.as_bytes())?;
+                    for url_data in urls {
+                        let formatted =
+                            super::formatter::csv_row(url_data, has_status, has_sources);
+                        out.write_all(formatted.as_bytes())?;
+                    }
+                    Ok(())
+                })
             }
         }
     }
@@ -409,6 +438,30 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_output_neutralises_a_formula_field_end_to_end() -> Result<()> {
+        // `urx ... --show-only-param -f csv` writes a raw query-parameter name
+        // into the url column; one starting with `=` is a live DDE formula in
+        // Excel. Reproduced from real output: `=cmd|'/C calc'!A0=1&normal=2`.
+        let outputter = CsvOutputter::new();
+        let urls = vec![
+            UrlData::new("=cmd|'/C calc'!A0=1".to_string()),
+            UrlData::new("https://example.com/ok".to_string()),
+        ];
+
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+        outputter.output(&urls, Some(temp_path.clone()), false)?;
+
+        let mut content = String::new();
+        File::open(&temp_path)?.read_to_string(&mut content)?;
+        assert_eq!(
+            content,
+            "url\n\"'=cmd|'/C calc'!A0=1\"\nhttps://example.com/ok\n"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_empty_urls() -> Result<()> {
         let outputter = PlainOutputter::new();
         let urls: Vec<UrlData> = vec![];
@@ -474,6 +527,26 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_broken_pipe_on_stdout_is_a_clean_stop_not_a_failure() {
+        // Regression: every stdout path used `print!`, which *panics* when the
+        // reader is gone, so `urx example.com | head -1` ended in
+        // "thread 'main' panicked ... failed printing to stdout: Broken pipe".
+        // The outputters now funnel through this policy instead.
+        let closed = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Broken pipe");
+        assert!(finish_stdout_write(Err(closed)).is_ok());
+
+        // A genuine write failure is still reported.
+        let disk_full = std::io::Error::new(std::io::ErrorKind::StorageFull, "No space left");
+        let err = finish_stdout_write(Err(disk_full)).unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to write to stdout"),
+            "{err}"
+        );
+
+        assert!(finish_stdout_write(Ok(())).is_ok());
     }
 
     #[test]

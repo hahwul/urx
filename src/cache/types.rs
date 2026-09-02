@@ -151,6 +151,21 @@ impl CacheFilters {
     }
 }
 
+/// The instant before which an entry counts as expired, for a TTL in seconds.
+///
+/// `--cache-ttl` is an unvalidated `u64` (and callers double it for the cleanup
+/// sweep), so the value routinely exceeds what `chrono::Duration` accepts:
+/// `Duration::seconds` *panics* past its bounds, and casting a huge `u64` to
+/// `i64` wraps negative, which puts the cutoff in the *future* and makes a
+/// cleanup delete the entire cache. Saturating instead means a TTL that large
+/// reads as "never expire": the cutoff falls back to the earliest representable
+/// instant, which no stored entry precedes.
+pub fn expiry_cutoff(ttl_seconds: u64) -> DateTime<Utc> {
+    chrono::Duration::try_seconds(ttl_seconds.min(i64::MAX as u64) as i64)
+        .and_then(|d| Utc::now().checked_sub_signed(d))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
+
 /// Cache entry containing URLs and metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -168,10 +183,16 @@ impl CacheEntry {
     }
 
     /// Check if the cache entry is expired
+    ///
+    /// A negative age — the entry was written by a machine whose clock is ahead,
+    /// or this one's went backwards — is not expiry. Casting it straight to
+    /// `u64` wrapped it to ~1.8e19 seconds, so any such entry looked ancient and
+    /// was deleted on sight.
     pub fn is_expired(&self, ttl_seconds: u64) -> bool {
-        let now = Utc::now();
-        let elapsed = now.signed_duration_since(self.timestamp).num_seconds() as u64;
-        elapsed >= ttl_seconds
+        let elapsed = Utc::now()
+            .signed_duration_since(self.timestamp)
+            .num_seconds();
+        elapsed >= 0 && (elapsed as u64) >= ttl_seconds
     }
 }
 
@@ -273,6 +294,43 @@ mod tests {
         // Simulate old entry
         entry.timestamp = Utc::now() - chrono::Duration::hours(2);
         assert!(entry.is_expired(3600)); // Should be expired
+    }
+
+    #[test]
+    fn test_expiry_cutoff_saturates_instead_of_panicking_or_wrapping() {
+        // `--cache-ttl` is an unvalidated u64 and callers double it. The raw
+        // conversion panics past chrono's bounds, and `u64 as i64` wraps a huge
+        // TTL negative — which puts the cutoff in the *future* and makes a
+        // cleanup sweep delete every entry in the cache.
+        let now = Utc::now();
+        for ttl in [
+            u64::MAX,
+            u64::MAX / 2,
+            10_000_000_000_000_000,
+            i64::MAX as u64,
+        ] {
+            let cutoff = expiry_cutoff(ttl);
+            assert!(
+                cutoff < now,
+                "a huge TTL must never push the cutoff forward: ttl={ttl} cutoff={cutoff}"
+            );
+        }
+
+        // Ordinary TTLs still land where they should.
+        let hour = expiry_cutoff(3600);
+        assert!((now - hour).num_seconds() >= 3599);
+        assert!((now - hour).num_seconds() <= 3601);
+    }
+
+    #[test]
+    fn test_entry_from_the_future_is_not_treated_as_expired() {
+        // Regression: a negative age was cast straight to u64 and wrapped to
+        // ~1.8e19 seconds, so an entry written by a machine whose clock runs
+        // ahead (or after a local clock step back) looked ancient and was
+        // deleted on sight.
+        let mut entry = CacheEntry::new(vec!["https://example.com".to_string()]);
+        entry.timestamp = Utc::now() + chrono::Duration::minutes(5);
+        assert!(!entry.is_expired(3600));
     }
 
     #[test]

@@ -1,11 +1,47 @@
 use super::FileReader;
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
 use super::{MAX_FILE_BYTES, MAX_FILE_URLS};
+
+/// Turns a mid-stream read failure into a clean end of input, remembering it so
+/// the caller can say what happened.
+///
+/// A truncated `.gz` — an interrupted download, an archive cut short — used to
+/// abort the whole read with "unexpected end of file", discarding every URL
+/// already decoded. The bytes that *did* decompress are perfectly good results;
+/// the same goes for trailing junk after the final gzip member, which
+/// [`MultiGzDecoder`] reports as a bad header rather than ignoring.
+struct StopOnDecodeError<R> {
+    inner: R,
+    error: Option<std::io::Error>,
+}
+
+impl<R: Read> StopOnDecodeError<R> {
+    fn new(inner: R) -> Self {
+        Self { inner, error: None }
+    }
+}
+
+impl<R: Read> Read for StopOnDecodeError<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.error.is_some() {
+            return Ok(0);
+        }
+        match self.inner.read(buf) {
+            Ok(n) => Ok(n),
+            // Interrupted is retryable and not a decode failure.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Err(e),
+            Err(e) => {
+                self.error = Some(e);
+                Ok(0)
+            }
+        }
+    }
+}
 
 /// Reader for URLTeam compressed files (typically gzip format)
 pub struct UrlTeamFileReader {
@@ -92,7 +128,20 @@ impl FileReader for UrlTeamFileReader {
 
         let (urls, url_capped, byte_capped) = if Self::is_gzip(file_path)? {
             // File is gzip compressed: bound the *decompressed* stream.
-            Self::collect_capped(GzDecoder::new(file), self.max_urls, self.max_bytes)
+            //
+            // MultiGzDecoder, not GzDecoder: gzip members concatenate, and both
+            // `.warc.gz` (one member per record) and any `cat a.gz b.gz` archive
+            // are made that way. GzDecoder stops after the first member, so urx
+            // returned the first record's URLs and silently dropped the rest.
+            let mut src = StopOnDecodeError::new(MultiGzDecoder::new(file));
+            let collected = Self::collect_capped(&mut src, self.max_urls, self.max_bytes);
+            if let Some(e) = src.error {
+                eprintln!(
+                    "[urx] {}: gzip stream ended early ({e}); keeping the URLs decoded so far",
+                    file_path.display()
+                );
+            }
+            collected
         } else {
             // File is not compressed, read as plain text.
             Self::collect_capped(file, self.max_urls, self.max_bytes)
@@ -224,6 +273,112 @@ mod tests {
         assert!(
             !urls.is_empty() && urls.len() < 1000,
             "byte cap should truncate the stream, got {} URLs",
+            urls.len()
+        );
+        Ok(())
+    }
+
+    /// Concatenate two independently-gzipped payloads, which is exactly how
+    /// `.warc.gz` (one member per record) and `cat a.gz b.gz` are built.
+    fn write_multi_member_gzip(path: &Path, chunks: &[&str]) -> Result<()> {
+        let mut out = Vec::new();
+        for chunk in chunks {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(chunk.as_bytes())?;
+            out.extend_from_slice(&encoder.finish()?);
+        }
+        std::fs::write(path, out)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_reads_every_member_of_a_multi_member_gzip() -> Result<()> {
+        // Regression: GzDecoder stops after the first member, so a `.warc.gz`
+        // (gzip per record) or any concatenated .gz silently yielded only the
+        // first record's URLs — `gunzip -c` showed all of them.
+        let temp_file = NamedTempFile::new()?;
+        write_multi_member_gzip(
+            temp_file.path(),
+            &[
+                "https://example.com/one\n",
+                "https://example.com/two\n",
+                "https://example.com/three\n",
+            ],
+        )?;
+
+        let reader = UrlTeamFileReader::new();
+        let urls = reader.read_urls(temp_file.path())?;
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/one",
+                "https://example.com/two",
+                "https://example.com/three",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_truncated_gzip_keeps_what_it_decoded() -> Result<()> {
+        // Regression: a half-downloaded archive aborted the read with
+        // "unexpected end of file" and threw away every URL already decoded.
+        let source = NamedTempFile::new()?;
+        {
+            let mut encoder = GzEncoder::new(File::create(source.path())?, Compression::default());
+            for i in 0..5_000 {
+                writeln!(encoder, "https://example.com/page{i}")?;
+            }
+            encoder.finish()?;
+        }
+        let full = std::fs::read(source.path())?;
+        let truncated = NamedTempFile::new()?;
+        std::fs::write(truncated.path(), &full[..full.len() / 2])?;
+
+        let reader = UrlTeamFileReader::new();
+        let urls = reader.read_urls(truncated.path())?;
+        assert!(
+            !urls.is_empty() && urls.len() < 5_000,
+            "a truncated archive should yield what decoded, got {}",
+            urls.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_trailing_garbage_after_the_last_member_is_not_fatal() -> Result<()> {
+        // MultiGzDecoder reports junk after the final member as a bad header;
+        // that must not lose the members that decoded cleanly.
+        let temp_file = NamedTempFile::new()?;
+        write_multi_member_gzip(temp_file.path(), &["https://example.com/kept\n"])?;
+        let mut bytes = std::fs::read(temp_file.path())?;
+        bytes.extend_from_slice(b"NOT-A-GZIP-HEADER");
+        std::fs::write(temp_file.path(), bytes)?;
+
+        let reader = UrlTeamFileReader::new();
+        assert_eq!(
+            reader.read_urls(temp_file.path())?,
+            vec!["https://example.com/kept"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_byte_cap_still_bounds_a_multi_member_bomb() -> Result<()> {
+        // Reading every member must not weaken the decompression-bomb guard:
+        // the cap applies to the decompressed stream as a whole.
+        let temp_file = NamedTempFile::new()?;
+        let member: String = (0..50_000)
+            .map(|i| format!("https://example.com/bomb/{i}\n"))
+            .collect();
+        write_multi_member_gzip(temp_file.path(), &[&member, &member, &member])?;
+
+        let reader = UrlTeamFileReader::with_caps(MAX_FILE_URLS, 4096);
+        let urls = reader.read_urls(temp_file.path())?;
+        assert!(
+            !urls.is_empty() && urls.len() < 1_000,
+            "the byte cap must bound every member, got {} URLs",
             urls.len()
         );
         Ok(())
