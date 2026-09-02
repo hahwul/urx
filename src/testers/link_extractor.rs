@@ -171,7 +171,7 @@ impl Tester for LinkExtractor {
             // Perform the request with retries
             let mut last_error = None;
 
-            for _ in 0..=self.retries {
+            for attempt in 0..=self.retries {
                 match client.get(url).send().await {
                     Ok(response) => {
                         // Get the base URL for resolving relative URLs
@@ -208,7 +208,12 @@ impl Tester for LinkExtractor {
                     }
                     Err(e) => {
                         last_error = Some(e);
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        // Back off only when another attempt follows; a sleep
+                        // after the final one is pure latency, paid once per
+                        // unreachable URL (and even with `--retries 0`).
+                        if attempt < self.retries {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
                         continue;
                     }
                 }
@@ -554,6 +559,25 @@ mod tests {
         assert!(!is_html_like(&with("application/octet-stream")));
         // Absent header: assume markup rather than drop the page.
         assert!(is_html_like(&HeaderMap::new()));
+    }
+
+    #[tokio::test]
+    async fn test_no_retries_means_no_backoff_wait() {
+        // Regression: the 500ms back-off was slept after the *final* attempt as
+        // well, so an unreachable page cost half a second even with
+        // `--retries 0` — once per URL, across a whole --extract-links run.
+        let mut extractor = LinkExtractor::new();
+        extractor.with_retries(0);
+
+        let start = std::time::Instant::now();
+        let result = extractor.test_url("http://127.0.0.1:0/nope").await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "a single failed attempt must not sleep, took {elapsed:?}"
+        );
     }
 
     #[tokio::test]

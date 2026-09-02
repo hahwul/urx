@@ -36,11 +36,37 @@ impl Default for HttpClientConfig {
 impl HttpClientConfig {
     /// Build a `reqwest::Client` from this configuration.
     ///
+    /// Redirects are followed (reqwest's default), which is what a provider
+    /// walking an archive index wants.
+    ///
     /// # Errors
     ///
     /// Returns an error if the proxy URL is invalid or the client fails to build.
     pub fn build_client(&self) -> Result<Client> {
+        self.build(true)
+    }
+
+    /// Build a client that reports redirects instead of following them.
+    ///
+    /// For a status *check* the redirect is the answer: following it reports
+    /// the status of a different URL than the one printed (`/old - 200 OK` when
+    /// `/old` actually answers 301), and it makes the documented
+    /// `--include-status 30x` unmatchable, because a 3xx never reaches the
+    /// filter. Not following also spares a redirect chain (or loop) per URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the proxy URL is invalid or the client fails to build.
+    pub fn build_client_no_redirect(&self) -> Result<Client> {
+        self.build(false)
+    }
+
+    fn build(&self, follow_redirects: bool) -> Result<Client> {
         let mut builder = Client::builder().timeout(Duration::from_secs(self.timeout));
+
+        if !follow_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
 
         if self.insecure {
             builder = builder.danger_accept_invalid_certs(true);
@@ -319,6 +345,47 @@ mod tests {
         };
         let client = config.build_client();
         assert!(client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_redirect_policy_differs_between_the_two_builders() {
+        // Providers need the redirect followed to reach the document; a status
+        // check needs the redirect itself, or `--include-status 30x` can never
+        // match and the reported status belongs to another URL.
+        let mut server = mockito::Server::new_async().await;
+        let _redirect = server
+            .mock("GET", "/redir")
+            .with_status(302)
+            .with_header("location", "/final")
+            .create_async()
+            .await;
+        let _final_page = server
+            .mock("GET", "/final")
+            .with_status(200)
+            .with_body("arrived")
+            .create_async()
+            .await;
+
+        let config = HttpClientConfig::default();
+        let url = format!("{}/redir", server.url());
+
+        let followed = config
+            .build_client()
+            .unwrap()
+            .get(&url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(followed.status(), 200);
+
+        let reported = config
+            .build_client_no_redirect()
+            .unwrap()
+            .get(&url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reported.status(), 302);
     }
 
     #[tokio::test]

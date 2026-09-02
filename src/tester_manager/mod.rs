@@ -117,12 +117,17 @@ pub async fn process_urls_with_testers(
         .map(|chunk| chunk.to_vec())
         .collect();
 
+    // Per-URL diagnostics belong on stderr, above the live region — stdout is
+    // the URL list a caller pipes onward.
+    let notifier = progress_manager.notifier();
+
     let chunk_results: Vec<Vec<output::UrlData>> =
         stream::iter(url_chunks.into_iter().map(|url_vec| {
             let testers_clone: Vec<_> = testers.iter().map(|t| t.clone_box()).collect();
             let test_bar = test_bar.clone();
             let completed = Arc::clone(&completed);
             let link_filter = link_filter.clone();
+            let notifier = notifier.clone();
 
             async move {
                 let mut result_urls = Vec::new();
@@ -145,7 +150,7 @@ pub async fn process_urls_with_testers(
                             }
                             Err(e) => {
                                 if verbose && !silent {
-                                    eprintln!("Error testing URL {url}: {e}");
+                                    notifier.note(format!("Error testing URL {url}: {e}"));
                                 }
                             }
                         }
@@ -229,7 +234,10 @@ pub async fn process_urls_with_testers(
     test_bar.finish_with_message(format!("Testing complete, found {} URLs", new_urls.len()));
 
     if args.verbose && !args.silent {
-        println!("Testing complete, final URL count: {}", new_urls.len());
+        progress_manager.note(format!(
+            "Testing complete, final URL count: {}",
+            new_urls.len()
+        ));
     }
 
     new_urls

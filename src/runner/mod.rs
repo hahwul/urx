@@ -2,7 +2,7 @@ use futures::future::join_all;
 use futures::stream::{self, StreamExt};
 use indicatif::ProgressBar;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
@@ -11,10 +11,20 @@ use crate::network::{NetworkScope, NetworkSettings};
 use crate::output::StreamSink;
 use crate::progress::{
     provider_error_style, provider_partial_style, provider_running_style, provider_success_style,
-    ProgressManager, ProgressReporter,
+    Notifier, ProgressManager, ProgressReporter, StopSignal,
 };
 use crate::providers::Provider;
 use crate::utils::verbose_print;
+
+/// How long a fetch gets, after the run has asked it to stop, to come back
+/// with the URLs it has already collected before it is hard-cancelled.
+///
+/// Cancelling drops a paginating provider's whole in-memory result set, so this
+/// window is what makes `--max-time` keep its promise to "proceed with whatever
+/// URLs have been collected so far". Kept short: it is time spent past the
+/// deadline the user asked for, and a provider only has to notice the flag
+/// between two requests.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Format an integer with thousands separators (e.g. `12345` → `12,345`) so
 /// large URL counts stay legible in the progress summary.
@@ -78,6 +88,7 @@ struct DomainCompletionCtx {
     domain_completion: Arc<Mutex<HashMap<String, usize>>>,
     processed_domains: Arc<Mutex<usize>>,
     overall_bar: ProgressBar,
+    notifier: Notifier,
     verbose: bool,
     silent: bool,
 }
@@ -106,10 +117,10 @@ impl DomainCompletionCtx {
             ));
 
             if self.verbose && !self.silent {
-                println!(
+                self.notifier.note(format!(
                     "Domain completed: {} ({}/{})",
                     domain, *count, self.total_domains
-                );
+                ));
             }
         }
 
@@ -119,12 +130,18 @@ impl DomainCompletionCtx {
 
 /// Helper function to apply network settings to a provider
 pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
+    // `--subs` is a *search scope* option, not a network setting: it decides
+    // which hosts the archive query asks for. `--network-scope testers` narrows
+    // where proxy/timeout/TLS/rate-limit apply, and used to take subdomain
+    // inclusion down with it — so `urx example.com --subs --network-scope
+    // testers` silently queried the apex only.
+    provider.with_subdomains(settings.include_subdomains);
+
     // Skip applying settings if network scope doesn't include providers
     if settings.scope == NetworkScope::Testers {
         return;
     }
 
-    provider.with_subdomains(settings.include_subdomains);
     provider.with_timeout(settings.timeout);
     provider.with_retries(settings.retries);
     provider.with_random_agent(settings.random_agent);
@@ -190,7 +207,9 @@ pub fn add_provider<T: Provider + 'static>(
             config_info.push(format!("  Rate limit: {rate} requests/second{label}"));
         }
 
-        println!("{}", config_info.join("\n"));
+        // stderr: stdout is the URL list. This runs before any progress bar is
+        // drawn (providers are built first), so a plain write is safe here.
+        eprintln!("{}", config_info.join("\n"));
     }
 
     let mut provider = provider_builder();
@@ -208,10 +227,18 @@ pub struct ProviderStats {
     pub url_count: usize,
     /// Number of domain fetches that failed.
     pub error_count: usize,
-    /// Number of domain fetches that returned incomplete (partial) results.
+    /// Number of domain fetches that returned incomplete (partial) results,
+    /// including the ones cut off by `--max-time` or Ctrl-C.
     pub partial_count: usize,
-    /// Total wall-clock time spent in fetch_urls across domains.
+    /// Total wall-clock time spent in fetch_urls across domains. For an
+    /// [`aborted`] provider this is at least the time the run actually spent
+    /// waiting on it, not the (zero) time its unfinished fetches recorded.
+    ///
+    /// [`aborted`]: ProviderStats::aborted
     pub elapsed: std::time::Duration,
+    /// The provider was still fetching when `--max-time` or Ctrl-C ended the
+    /// run, so every other number in this row is a floor, not a total.
+    pub aborted: bool,
 }
 
 /// Result of a provider run: URLs mapped to the providers that reported them,
@@ -298,12 +325,32 @@ pub async fn process_domains(
     // per domain) keeps --rate-limit honest across these concurrent fetches.
     let parallel = args.parallel.unwrap_or(5).max(1) as usize;
 
+    // Per-provider bookkeeping the *outer* task needs after an abort: how many
+    // domains each provider actually got through, and whether it ran to
+    // completion at all. Both live outside the spawned task because a task that
+    // `--max-time` cancels never comes back to report them.
+    let done_counters: Vec<Arc<AtomicUsize>> = (0..total_providers)
+        .map(|_| Arc::new(AtomicUsize::new(0)))
+        .collect();
+    let finished_flags: Vec<Arc<AtomicBool>> = (0..total_providers)
+        .map(|_| Arc::new(AtomicBool::new(false)))
+        .collect();
+    let run_start = std::time::Instant::now();
+    let notifier = progress_manager.notifier();
+    // Raised when --max-time or Ctrl-C ends the run, so a provider mid-cursor
+    // can return what it has instead of losing it to a cancelled future.
+    let stop_signal = StopSignal::default();
+
     for (provider_clone, provider_name, original_idx) in provider_data.into_iter() {
         let all_urls = Arc::clone(&all_urls);
         let stream = stream.clone();
         let stats = Arc::clone(&stats);
         let provider_bar = provider_bars[original_idx].clone();
         let domains = domains.clone();
+        let notifier = notifier.clone();
+        let stop_signal = stop_signal.clone();
+        let done = Arc::clone(&done_counters[original_idx]);
+        let finished = Arc::clone(&finished_flags[original_idx]);
 
         // Shared so each concurrent domain future can mark domain completion
         // against the run-wide progress without contending on a &mut.
@@ -313,6 +360,7 @@ pub async fn process_domains(
             domain_completion: Arc::clone(&domain_completion),
             processed_domains: Arc::clone(&processed_domains),
             overall_bar: overall_bar.clone(),
+            notifier: notifier.clone(),
             verbose,
             silent,
         });
@@ -331,13 +379,13 @@ pub async fn process_domains(
             let url_total = Arc::new(AtomicUsize::new(0));
             let err_total = Arc::new(AtomicUsize::new(0));
             let partial_total = Arc::new(AtomicUsize::new(0));
-            let done = Arc::new(AtomicUsize::new(0));
             let total = domains.len();
 
             // Handles retained for the summary after the stream consumes the
             // per-domain clones.
             let summary_bar = provider_bar.clone();
             let summary_name = provider_name.clone();
+            let summary_notifier = notifier.clone();
             let summary_urls = Arc::clone(&url_total);
             let summary_errs = Arc::clone(&err_total);
             let summary_partials = Arc::clone(&partial_total);
@@ -367,6 +415,8 @@ pub async fn process_domains(
                     let err_total = Arc::clone(&err_total);
                     let partial_total = Arc::clone(&partial_total);
                     let done = Arc::clone(&done);
+                    let notifier = notifier.clone();
+                    let stop_signal = stop_signal.clone();
 
                     async move {
                         let prefix = format!("{domain} · ");
@@ -376,9 +426,12 @@ pub async fn process_domains(
                         // Aggregate mode: it only carries the partial-result
                         // flag (a hidden bar) so concurrent domains don't fight
                         // over the single line; --silent suppresses it entirely.
-                        let reporter = if silent {
-                            None
-                        } else if rich {
+                        // A reporter is handed in even under --silent: besides
+                        // the (then hidden) line it carries the partial flag and
+                        // the run-wide stop signal, and a provider that cannot
+                        // see the stop signal loses everything it has paged in
+                        // when --max-time cancels it.
+                        let reporter = if rich && !silent {
                             provider_bar.set_style(provider_running_style());
                             provider_bar.set_prefix(format!("{provider_name:<16}"));
                             provider_bar.reset_elapsed();
@@ -386,10 +439,11 @@ pub async fn process_domains(
                             if !no_progress {
                                 provider_bar.tick();
                             }
-                            Some(ProgressReporter::new(provider_bar.clone(), prefix.clone()))
+                            ProgressReporter::new(provider_bar.clone(), prefix.clone())
                         } else {
-                            Some(ProgressReporter::new(ProgressBar::hidden(), prefix.clone()))
+                            ProgressReporter::new(ProgressBar::hidden(), prefix.clone())
                         };
+                        let reporter = Some(reporter.with_stop_signal(stop_signal.clone()));
 
                         // Fetch URLs for this domain using this provider.
                         let fetch_start = std::time::Instant::now();
@@ -405,9 +459,14 @@ pub async fn process_domains(
                                 // A *partial* result (e.g. a page failed
                                 // mid-pagination) is surfaced as a distinct,
                                 // warned state so a truncated crawl is never
-                                // mistaken for a clean success.
-                                let partial =
-                                    reporter.as_ref().is_some_and(|r| r.is_partial());
+                                // mistaken for a clean success. A result that
+                                // lands after the run asked everyone to stop
+                                // counts too: the provider may have cut its
+                                // cursor walk short to hand back what it had,
+                                // so it cannot be reported as complete.
+                                let partial = reporter
+                                    .as_ref()
+                                    .is_some_and(|r| r.is_partial() || r.stop_requested());
                                 if partial {
                                     partial_total.fetch_add(1, Ordering::Relaxed);
                                 }
@@ -419,7 +478,9 @@ pub async fn process_domains(
                                     Some(sink) => {
                                         if let Err(e) = sink.emit(&urls) {
                                             if !silent {
-                                                eprintln!("Error writing streamed output: {e}");
+                                                notifier.note(format!(
+                                                    "Error writing streamed output: {e}"
+                                                ));
                                             }
                                         }
                                     }
@@ -465,9 +526,9 @@ pub async fn process_domains(
                                     }
                                     provider_bar.tick();
                                     if partial && verbose && !silent {
-                                        eprintln!(
-                                            "Warning: partial results for {domain} from {provider_name}: a request failed mid-fetch; returning {url_count} URL(s) collected so far"
-                                        );
+                                        notifier.note(format!(
+                                            "Warning: partial results for {domain} from {provider_name}: the fetch stopped early; returning {url_count} URL(s) collected so far"
+                                        ));
                                     }
                                 } else {
                                     tick_aggregate(
@@ -483,9 +544,9 @@ pub async fn process_domains(
                                 completion_ctx.track(&domain);
 
                                 if verbose && !silent {
-                                    println!(
+                                    notifier.note(format!(
                                         "  - {provider_name}: Found {url_count} URLs for {domain}"
-                                    );
+                                    ));
                                 }
                             }
                             Err(e) => {
@@ -518,9 +579,9 @@ pub async fn process_domains(
                                 completion_ctx.track(&domain);
 
                                 if verbose && !silent {
-                                    eprintln!(
+                                    notifier.note(format!(
                                         "Error fetching URLs for {domain} from {provider_name}: {e}"
-                                    );
+                                    ));
                                 }
                             }
                         }
@@ -567,8 +628,14 @@ pub async fn process_domains(
             }
 
             if verbose && !silent {
-                println!("Provider {provider_name} has completed processing all domains");
+                summary_notifier.note(format!(
+                    "Provider {provider_name} has completed processing all domains"
+                ));
             }
+
+            // Last thing the task does: whoever is watching the deadline uses
+            // this to tell "ran to completion" from "cancelled mid-flight".
+            finished.store(true, Ordering::Relaxed);
         });
 
         provider_futures.push(provider_future);
@@ -580,7 +647,6 @@ pub async fn process_domains(
     // pushed into the shared map — an interrupted run still produces output and
     // a summary instead of dying with nothing.
     let abort_handles: Vec<_> = provider_futures.iter().map(|h| h.abort_handle()).collect();
-    let join_future = join_all(provider_futures);
     let deadline = (args.max_time > 0).then(|| std::time::Duration::from_secs(args.max_time));
 
     enum RunEnd {
@@ -589,8 +655,13 @@ pub async fn process_domains(
         Interrupted,
     }
 
+    // Pinned in the enclosing scope, not inside the `select!` block: after the
+    // deadline fires we still need the same join future to await the graceful
+    // wind-down below.
+    let join_future = join_all(provider_futures);
+    tokio::pin!(join_future);
+
     let run_end = {
-        tokio::pin!(join_future);
         // A deadline that simply never fires when --max-time isn't set.
         let timeout = async {
             match deadline {
@@ -613,41 +684,65 @@ pub async fn process_domains(
         }
     };
 
-    match &run_end {
-        RunEnd::Completed => {}
-        RunEnd::TimedOut => {
-            for h in &abort_handles {
-                h.abort();
-            }
-            if !args.silent {
-                progress_manager.note(format!(
-                    "[urx] --max-time {}s elapsed; aborting in-flight provider fetches and returning partial results",
+    if !matches!(run_end, RunEnd::Completed) {
+        // Say why the run is wrapping up before waiting on it, so the grace
+        // window below never looks like a hang.
+        if !args.silent {
+            match run_end {
+                RunEnd::TimedOut => progress_manager.note(format!(
+                    "[urx] --max-time {}s elapsed; stopping in-flight provider fetches and returning partial results",
                     deadline.map(|d| d.as_secs()).unwrap_or(0)
-                ));
+                )),
+                _ => progress_manager.note(
+                    "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
+                ),
             }
         }
-        RunEnd::Interrupted => {
-            for h in &abort_handles {
-                h.abort();
-            }
-            if !args.silent {
-                progress_manager.note(
-                    "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
-                );
-            }
-            // The rest of the pipeline (output, optional testing) can still take
-            // a while, so a second Ctrl-C force-quits.
+
+        // The rest of the pipeline (output, optional testing) can still take a
+        // while, so a second Ctrl-C force-quits. Armed before the grace window
+        // so it also covers the wait itself.
+        if matches!(run_end, RunEnd::Interrupted) {
             tokio::spawn(async {
                 if tokio::signal::ctrl_c().await.is_ok() {
                     std::process::exit(130);
                 }
             });
         }
-    }
 
-    // A timeout/interrupt leaves the provider(s) that were mid-fetch on a
-    // spinning "fetching…" line; freeze them so the final display is honest.
-    if !matches!(run_end, RunEnd::Completed) {
+        // Cancelling a provider task drops everything it has buffered but not
+        // yet returned, and a paginating provider buffers the whole crawl until
+        // its last page — so a hard abort here threw away exactly the results
+        // --max-time promises to keep. Raise the cooperative stop signal and
+        // give in-flight fetches a brief window to return what they already
+        // have; only what is still running when it closes gets cancelled.
+        stop_signal.request_stop();
+        let _ = tokio::time::timeout(STOP_GRACE, &mut join_future).await;
+        for h in &abort_handles {
+            h.abort();
+        }
+
+        // A provider cancelled mid-fetch never reached the stats update that
+        // runs after a fetch resolves, so its row stayed at 0 urls / 0 partial
+        // / 0 errors / 0ms — a run that spent 90 seconds on it read as an
+        // instant, clean pass. Charge it the wall time the run actually spent
+        // and flag it, counting each domain it never finished as partial.
+        let wall = run_start.elapsed();
+        {
+            let mut s = lock_ignore_poison(&stats);
+            for (idx, entry) in s.iter_mut().enumerate() {
+                if finished_flags[idx].load(Ordering::Relaxed) {
+                    continue;
+                }
+                entry.aborted = true;
+                entry.elapsed = entry.elapsed.max(wall);
+                let completed = done_counters[idx].load(Ordering::Relaxed);
+                entry.partial_count += total_domains.saturating_sub(completed);
+            }
+        }
+
+        // A timeout/interrupt leaves the provider(s) that were mid-fetch on a
+        // spinning "fetching…" line; freeze them so the final display is honest.
         let label = if matches!(run_end, RunEnd::TimedOut) {
             "timed out"
         } else {
@@ -695,6 +790,94 @@ mod tests {
     use crate::output;
     use crate::test_support::{build_test_args, MockProvider};
     use crate::utils::UrlTransformer;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    /// A provider that paginates: it collects one URL every `step`, and honours
+    /// the run-wide stop signal the way a real cursor-walking provider is meant
+    /// to — flag the result partial and return what it already has, rather than
+    /// let a cancelled future take the whole buffer with it.
+    #[derive(Clone)]
+    struct PaginatingProvider {
+        step: std::time::Duration,
+        pages: usize,
+    }
+
+    impl Provider for PaginatingProvider {
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        fn fetch_urls<'a>(
+            &'a self,
+            domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+            self.fetch_urls_with_progress(domain, None)
+        }
+
+        fn fetch_urls_with_progress<'a>(
+            &'a self,
+            domain: &'a str,
+            reporter: Option<ProgressReporter>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+            let step = self.step;
+            let pages = self.pages;
+            let domain = domain.to_string();
+            Box::pin(async move {
+                let mut urls = Vec::new();
+                for page in 0..pages {
+                    tokio::time::sleep(step).await;
+                    urls.push(format!("https://{domain}/page{page}"));
+                    if let Some(r) = &reporter {
+                        if r.stop_requested() {
+                            r.mark_partial();
+                            break;
+                        }
+                    }
+                }
+                Ok(urls)
+            })
+        }
+
+        fn with_subdomains(&mut self, _include: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    }
+
+    /// A provider that records what `with_subdomains` was told.
+    #[derive(Clone, Default)]
+    struct SubdomainRecordingProvider {
+        include_subdomains: bool,
+    }
+
+    impl Provider for SubdomainRecordingProvider {
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        fn fetch_urls<'a>(
+            &'a self,
+            _domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+            Box::pin(async move { Ok(vec![]) })
+        }
+
+        fn with_subdomains(&mut self, include: bool) {
+            self.include_subdomains = include;
+        }
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    }
 
     #[tokio::test]
     async fn test_process_domains() {
@@ -1012,6 +1195,151 @@ mod tests {
             result.urls.is_empty(),
             "expected no URLs, got {:?}",
             result.urls
+        );
+    }
+
+    #[tokio::test]
+    async fn test_max_time_charges_the_aborted_provider_real_elapsed_time() {
+        // Regression: a provider cancelled by --max-time never reached the
+        // stats update at the end of its fetch, so `--stats` reported it as
+        // "0 urls · 0 partial · 0 errors · 0ms" — a run that spent the whole
+        // deadline on it read as an instant, clean pass.
+        let slow = MockProvider::new(vec!["https://example.com/never".to_string()], false)
+            .with_delay_ms(30_000);
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(slow)];
+        let provider_names = vec!["SlowProvider".to_string()];
+
+        let mut args = build_test_args();
+        args.max_time = 1;
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        let stats = &result.stats[0];
+        assert!(stats.aborted, "aborted provider must be flagged: {stats:?}");
+        assert!(
+            stats.elapsed >= std::time::Duration::from_millis(900),
+            "elapsed must be real wall time, got {:?}",
+            stats.elapsed
+        );
+        // The one domain it never finished is reported as an incomplete result
+        // rather than a silent zero.
+        assert_eq!(stats.partial_count, 1, "{stats:?}");
+    }
+
+    #[tokio::test]
+    async fn test_max_time_keeps_the_urls_a_provider_already_collected() {
+        // Regression: --max-time is documented as "in-flight provider fetches
+        // are aborted and urx proceeds with whatever URLs have been collected
+        // so far", but cancelling the task dropped the provider's in-memory
+        // buffer — a paginating provider accumulates the whole crawl until it
+        // returns, so a timed-out run yielded *nothing*. The runner now asks
+        // fetches to stop and gives them a moment to hand back what they have.
+        let provider = PaginatingProvider {
+            step: std::time::Duration::from_millis(100),
+            pages: 10_000,
+        };
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+        let provider_names = vec!["Paginating".to_string()];
+
+        let mut args = build_test_args();
+        args.max_time = 1;
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        assert!(
+            !result.urls.is_empty(),
+            "URLs collected before the deadline must survive it"
+        );
+        let stats = &result.stats[0];
+        assert_eq!(stats.url_count, result.urls.len(), "{stats:?}");
+        // The provider wrapped up on its own, so it isn't flagged as cancelled —
+        // but the truncated result is still reported as partial, never clean.
+        assert!(!stats.aborted, "{stats:?}");
+        assert_eq!(stats.partial_count, 1, "{stats:?}");
+        assert!(
+            stats.elapsed >= std::time::Duration::from_millis(900),
+            "{stats:?}"
+        );
+    }
+
+    #[test]
+    fn test_subdomain_inclusion_is_not_a_network_setting() {
+        // Regression: --network-scope testers made
+        // apply_network_settings_to_provider bail before it applied --subs, so
+        // `urx example.com --subs --network-scope testers` silently queried the
+        // apex only. Subdomain inclusion decides *what* is searched, not how
+        // the request is made.
+        let settings = NetworkSettings::new().with_subdomains(true);
+
+        for scope in [
+            NetworkScope::All,
+            NetworkScope::Providers,
+            NetworkScope::Testers,
+        ] {
+            let mut settings = settings.clone();
+            settings.scope = scope.clone();
+            let mut provider = SubdomainRecordingProvider::default();
+            apply_network_settings_to_provider(&mut provider, &settings);
+            assert!(
+                provider.include_subdomains,
+                "--subs must survive --network-scope {scope:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verbose_progress_lines_never_touch_stdout() {
+        // Regression: the per-domain verbose lines went out through `println!`,
+        // so `urx -v > urls.txt` interleaved "Domain completed: …" into the URL
+        // list a caller was piping — and, drawn straight to the terminal, they
+        // also bypassed MultiProgress and desynced the live region. They must
+        // go through the progress note channel (stderr) instead.
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(MockProvider::new(
+            vec!["https://example.com/a".to_string()],
+            false,
+        ))];
+        let provider_names = vec!["Mock".to_string()];
+
+        let mut args = build_test_args();
+        args.verbose = true;
+        args.silent = false;
+
+        let (progress_manager, notes) = ProgressManager::capturing();
+        let _ = process_domains(
+            vec!["example.com".to_string()],
+            &args,
+            &progress_manager,
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        let notes = notes.lock().unwrap().join("\n");
+        assert!(
+            notes.contains("Mock: Found 1 URLs for example.com"),
+            "per-provider verbose line should reach the note channel: {notes:?}"
+        );
+        assert!(
+            notes.contains("Domain completed: example.com"),
+            "domain completion line should reach the note channel: {notes:?}"
         );
     }
 

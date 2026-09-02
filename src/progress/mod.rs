@@ -1,6 +1,8 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 /// Braille-dot spinner frames — the calm, ubiquitous "modern CLI" spinner.
 /// Cycled at ~80ms it reads as smooth, light motion that pairs with the thin
@@ -80,6 +82,37 @@ pub fn provider_partial_style() -> ProgressStyle {
     .expect("static provider partial template is valid")
 }
 
+/// A run-wide "wrap up now" flag, shared by every [`ProgressReporter`] handed
+/// to a provider.
+///
+/// `--max-time` (and Ctrl-C) end a run by cancelling the provider tasks. A
+/// cancelled future is *dropped*, and a paginating provider accumulates its
+/// results in a local buffer until it returns — so every URL it had already
+/// paged in dies with the future. That is why a 90-second `--max-time` run over
+/// a domain with hundreds of thousands of captures yields zero URLs, despite
+/// `--max-time` being documented as "urx proceeds with whatever URLs have been
+/// collected so far".
+///
+/// The fix is cooperative: the runner raises this flag at the deadline and
+/// gives in-flight fetches a short grace window to notice. A provider that
+/// walks a cursor checks it between requests and takes the path it already has
+/// for a mid-walk failure — [`ProgressReporter::mark_partial`] and `break`,
+/// returning what it collected — instead of being cancelled with it.
+#[derive(Clone, Debug, Default)]
+pub struct StopSignal(Arc<AtomicBool>);
+
+impl StopSignal {
+    /// Ask every fetch sharing this signal to stop at its next checkpoint.
+    pub fn request_stop(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether a stop has been requested.
+    pub fn is_stopped(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// A small, cloneable handle that providers use to surface fine-grained
 /// progress (e.g. "page 3/12") on their own line without knowing anything
 /// about `indicatif`. Cloning is cheap and updates are no-ops on a hidden bar,
@@ -90,6 +123,8 @@ pub struct ProgressReporter {
     /// Stable leading context (e.g. "(1/3) example.com · ") prepended to every
     /// detail so the line keeps identifying which domain is being worked.
     prefix: String,
+    /// Raised by the runner when the run must end. See [`StopSignal`].
+    stop: StopSignal,
     /// Set by a provider when the results it is about to return are known to be
     /// incomplete (e.g. a paginating fetch lost a page after already collecting
     /// some). Shared across clones via `Arc`, so the runner that handed the
@@ -106,7 +141,27 @@ impl ProgressReporter {
             bar,
             prefix: prefix.into(),
             partial: Arc::new(AtomicBool::new(false)),
+            stop: StopSignal::default(),
         }
+    }
+
+    /// Attach the run-wide stop signal, so this reporter's provider can wrap up
+    /// gracefully when the run ends.
+    pub fn with_stop_signal(mut self, stop: StopSignal) -> Self {
+        self.stop = stop;
+        self
+    }
+
+    /// Whether the run has asked this fetch to stop.
+    ///
+    /// A provider walking a paginated cursor should check this between requests
+    /// and, when it is `true`, call [`mark_partial`] and return the URLs it has
+    /// already collected. Ignoring it is safe but costs those URLs: the runner
+    /// hard-cancels whatever is still in flight once the grace window closes.
+    ///
+    /// [`mark_partial`]: ProgressReporter::mark_partial
+    pub fn stop_requested(&self) -> bool {
+        self.stop.is_stopped()
     }
 
     /// Replace the trailing status detail, keeping the stable prefix.
@@ -130,16 +185,92 @@ impl ProgressReporter {
     }
 }
 
+/// Where an out-of-band operator line is written.
+#[derive(Clone)]
+enum NoteSink {
+    /// Above the live region, through `MultiProgress` (which draws to stderr)
+    /// so the region's line tracking stays correct.
+    Region(MultiProgress),
+    /// No live region to disturb — straight to stderr.
+    Stderr,
+    /// Test-only: collect the lines so a test can assert *that* a message went
+    /// through this channel rather than to stdout.
+    #[cfg(test)]
+    Capture(Arc<Mutex<Vec<String>>>),
+}
+
+/// A cloneable, `Send + Sync` handle for writing an operator-facing line from
+/// inside a spawned task.
+///
+/// Everything urx says *about* a run belongs on stderr: stdout carries the URL
+/// list a caller pipes onward. The runner's per-domain verbose lines used to go
+/// through `println!`, so `urx -v > urls.txt` interleaved "Domain completed: …"
+/// into the results — and, written straight to the terminal, they also bypassed
+/// `MultiProgress`, desyncing its line tracking so a later [`ProgressManager::clear`]
+/// left stale bars behind.
+#[derive(Clone)]
+pub struct Notifier {
+    sink: NoteSink,
+}
+
+impl Notifier {
+    /// Write one line above the live region (or to stderr when there is none).
+    pub fn note(&self, msg: impl AsRef<str>) {
+        match &self.sink {
+            NoteSink::Region(multi) => {
+                let _ = multi.println(msg.as_ref());
+            }
+            NoteSink::Stderr => eprintln!("{}", msg.as_ref()),
+            #[cfg(test)]
+            NoteSink::Capture(lines) => lines
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(msg.as_ref().to_string()),
+        }
+    }
+}
+
 pub struct ProgressManager {
     multi_progress: MultiProgress,
     no_progress: bool,
+    notes: NoteSink,
 }
 
 impl ProgressManager {
     pub fn new(no_progress: bool) -> Self {
+        let multi_progress = MultiProgress::new();
+        let notes = if no_progress {
+            NoteSink::Stderr
+        } else {
+            NoteSink::Region(multi_progress.clone())
+        };
         ProgressManager {
-            multi_progress: MultiProgress::new(),
+            multi_progress,
             no_progress,
+            notes,
+        }
+    }
+
+    /// A [`ProgressManager`] whose notes are collected instead of printed, plus
+    /// the buffer they land in.
+    #[cfg(test)]
+    pub fn capturing() -> (Self, Arc<Mutex<Vec<String>>>) {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let manager = ProgressManager {
+            multi_progress: MultiProgress::new(),
+            no_progress: true,
+            notes: NoteSink::Capture(Arc::clone(&lines)),
+        };
+        (manager, lines)
+    }
+
+    /// A handle the spawned provider/tester tasks can carry, so their
+    /// operator-facing lines reach the same place [`note`] writes to.
+    ///
+    /// [`note`]: ProgressManager::note
+    pub fn notifier(&self) -> Notifier {
+        Notifier {
+            sink: self.notes.clone(),
         }
     }
 
@@ -314,11 +445,7 @@ impl ProgressManager {
     ///
     /// [`clear`]: ProgressManager::clear
     pub fn note(&self, msg: impl AsRef<str>) {
-        if self.no_progress {
-            eprintln!("{}", msg.as_ref());
-        } else {
-            let _ = self.multi_progress.println(msg.as_ref());
-        }
+        self.notifier().note(msg);
     }
 }
 
@@ -406,6 +533,44 @@ mod tests {
         // handle the runner kept (shared Arc).
         clone.mark_partial();
         assert!(reporter.is_partial());
+    }
+
+    #[test]
+    fn test_stop_signal_reaches_every_reporter_sharing_it() {
+        // The runner raises one signal at the deadline; every in-flight fetch's
+        // reporter must see it, or a paginating provider keeps walking its
+        // cursor until it is cancelled — losing everything it had collected.
+        let signal = StopSignal::default();
+        let a =
+            ProgressReporter::new(ProgressBar::hidden(), "a · ").with_stop_signal(signal.clone());
+        let b =
+            ProgressReporter::new(ProgressBar::hidden(), "b · ").with_stop_signal(signal.clone());
+
+        assert!(!a.stop_requested());
+        assert!(!b.stop_requested());
+
+        signal.request_stop();
+
+        assert!(a.stop_requested());
+        assert!(b.stop_requested());
+        // A clone a provider is holding sees it too.
+        assert!(a.clone().stop_requested());
+    }
+
+    #[test]
+    fn test_reporter_without_a_signal_is_never_asked_to_stop() {
+        let reporter = ProgressReporter::new(ProgressBar::hidden(), "x");
+        let other = StopSignal::default();
+        other.request_stop();
+        assert!(!reporter.stop_requested());
+    }
+
+    #[test]
+    fn test_notes_are_captured_rather_than_printed_in_tests() {
+        let (manager, lines) = ProgressManager::capturing();
+        manager.note("first");
+        manager.notifier().note("second");
+        assert_eq!(lines.lock().unwrap().as_slice(), ["first", "second"]);
     }
 
     #[test]
