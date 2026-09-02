@@ -239,7 +239,9 @@ impl UrlTransformer {
         match Url::parse(url_str) {
             Ok(url) => {
                 if self.show_only_host {
-                    url.host_str().map(|h| h.to_string())
+                    // An empty host carries nothing to show; emitting it would
+                    // put a blank line in the output.
+                    url.host_str().filter(|h| !h.is_empty()).map(String::from)
                 } else if self.show_only_path {
                     if url.path() != "/" {
                         Some(url.path().to_string())
@@ -247,7 +249,11 @@ impl UrlTransformer {
                         None
                     }
                 } else if self.show_only_param {
-                    url.query().map(|q| q.to_string())
+                    // `https://example.com/x?` parses with a query of `Some("")`
+                    // — a URL with no parameters at all. Treated as a value it
+                    // emitted an empty line into the result (and, on the
+                    // streaming path, reserved "" in the dedup set).
+                    url.query().filter(|q| !q.is_empty()).map(String::from)
                 } else {
                     Some(url_str.to_string())
                 }
@@ -589,6 +595,36 @@ mod tests {
         // Root path "/" should not be included
         assert_eq!(transformed.len(), 1);
         assert!(transformed.contains(&"/path".to_string()));
+    }
+
+    #[test]
+    fn test_show_only_param_skips_an_empty_query() {
+        // Regression: `https://example.com/x?` parses with a query of
+        // `Some("")`, which was emitted as a value — a blank line in the
+        // output (and a blank entry in JSON/CSV).
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_param(true);
+
+        let urls = vec![
+            "https://example.com/x?".to_string(),
+            "https://example.com/api?id=123".to_string(),
+        ];
+
+        let transformed = transformer.transform(urls);
+        assert_eq!(transformed, vec!["id=123".to_string()]);
+    }
+
+    #[test]
+    fn test_transform_one_skips_an_empty_query() {
+        // The streaming path decides each URL on arrival and must agree.
+        let mut transformer = UrlTransformer::new();
+        transformer.with_show_only_param(true);
+
+        assert_eq!(transformer.transform_one("https://example.com/x?"), None);
+        assert_eq!(
+            transformer.transform_one("https://example.com/api?id=123"),
+            Some("id=123".to_string())
+        );
     }
 
     #[test]
