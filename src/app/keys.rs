@@ -144,6 +144,7 @@ pub fn auto_enable_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::CliProvided;
     use crate::config::{self, Config};
     use crate::test_support::{env_mutex, EnvGuard};
     use clap::Parser;
@@ -307,13 +308,14 @@ mod tests {
         config.provider.vt_api_key = Some("config-vt".to_string());
         config.provider.urlscan_api_key = Some("config-urlscan".to_string());
         config.provider.zoomeye_api_key = Some("config-zoomeye".to_string());
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         let provider_keys = config::ProviderKeysConfig {
             vt_api_key: Some("provider-vt".to_string()),
             urlscan_api_key: Some("provider-urlscan".to_string()),
             zoomeye_api_key: Some("provider-zoomeye".to_string()),
             github_api_key: None,
+            unknown: Default::default(),
         };
         provider_keys.apply_to_args(
             &mut args,

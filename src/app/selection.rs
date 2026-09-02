@@ -35,6 +35,18 @@ const CDX_PROVIDERS: [&str; 3] = ["wayback", "cc", "arquivo"];
 /// a multi-value positive filter (see [`providers::ArchiveFilters`]).
 const PYWB_PROVIDERS: [&str; 2] = ["cc", "arquivo"];
 
+/// Trim the ids named by a provider-selecting flag.
+///
+/// clap splits `--providers` on commas but keeps the surrounding spaces, so the
+/// entirely natural `--providers "wayback, cc"` used to fail with
+/// `Unknown provider id(s) in --providers:  cc. Allowed values: ..., cc, ...`
+/// — an error that names the value it is simultaneously rejecting. An entry
+/// that is empty *after* trimming is left in place so it is still reported,
+/// rather than turning `--providers ""` into a silently different selection.
+fn trimmed_ids(raw: &[String]) -> Vec<String> {
+    raw.iter().map(|id| id.trim().to_string()).collect()
+}
+
 /// Which providers this run would use, given the flags and available API keys.
 ///
 /// Pure and side-effect free — [`crate::app::caching::create_cache_key`] relies
@@ -52,7 +64,7 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
             .map(|p| p.id.to_string())
             .collect()
     } else {
-        args.providers.clone()
+        trimmed_ids(&args.providers)
     };
 
     if !args.all_providers {
@@ -64,7 +76,8 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
         }
     }
 
-    let excluded: HashSet<&str> = args.exclude_providers.iter().map(String::as_str).collect();
+    let excluded_ids = trimmed_ids(&args.exclude_providers);
+    let excluded: HashSet<&str> = excluded_ids.iter().map(String::as_str).collect();
     providers_list.retain(|p| !excluded.contains(p.as_str()));
 
     for (id, requested) in [
@@ -164,11 +177,11 @@ fn warn_about_inert_archive_filters(
 /// Validate every provider-selecting flag before any network client is built,
 /// so a typo fails immediately instead of after minutes of fetching.
 fn validate_selection_flags(args: &Args) -> Result<()> {
-    validate_provider_ids(&args.providers, "--providers")?;
+    validate_provider_ids(&trimmed_ids(&args.providers), "--providers")?;
     // A misspelled preset used to be dropped in silence, producing an
     // unfiltered run that looked like the filter had matched everything.
     validate_presets(&args.preset)?;
-    validate_provider_ids(&args.exclude_providers, "--exclude-providers")?;
+    validate_provider_ids(&trimmed_ids(&args.exclude_providers), "--exclude-providers")?;
     validate_rate_limit_override_ids(args)
 }
 
@@ -303,13 +316,13 @@ pub fn initialize_providers(
     }
 
     if providers.is_empty() {
-        if !args.silent {
-            eprintln!(
-                "Error: No valid providers specified. Please use --providers with valid provider names ({})",
-                valid_provider_ids().join(", ")
-            );
-        }
-        return Err(anyhow::anyhow!("No valid providers specified"));
+        // Returned, not printed-and-returned: `main` reports the error too, so
+        // the old eprintln made every no-provider run emit the message twice —
+        // and the copy `--silent` suppressed was the one carrying the guidance.
+        return Err(anyhow::anyhow!(
+            "No valid providers specified. Please use --providers with valid provider names ({})",
+            valid_provider_ids().join(", ")
+        ));
     }
 
     Ok((providers, names))
@@ -561,6 +574,65 @@ mod tests {
         assert!(
             !ids.iter().any(|p| p == "vt"),
             "--exclude-providers must beat key-driven auto-enable; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn test_provider_flags_tolerate_whitespace_around_commas() {
+        // Regression: clap splits on ',' but keeps the spaces, so
+        // `--providers "wayback, cc"` failed with
+        // "Unknown provider id(s) in --providers:  cc. Allowed values: ..., cc, ..."
+        // — an error naming the very value it rejected.
+        let _env_lock = env_mutex().lock().unwrap();
+        let _guard = EnvGuard::unset(&KEYED_ENV);
+
+        let args = Args::parse_from([
+            "urx",
+            "--providers",
+            " wayback , cc ",
+            "--exclude-providers",
+            " cc ",
+            "--exclude-robots",
+            "--exclude-sitemap",
+            "example.com",
+        ]);
+
+        assert_eq!(effective_provider_ids(&args), vec!["wayback"]);
+        let (providers, names) = initialize_providers(&args, &NetworkSettings::default())
+            .expect("whitespace around ids must not be an error");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(names, vec!["Wayback Machine"]);
+    }
+
+    #[test]
+    fn test_empty_provider_id_is_still_rejected() {
+        // Trimming must not quietly reinterpret an explicitly empty selection.
+        let mut args = build_test_args();
+        args.providers = vec![String::new()];
+        assert!(
+            selection_error(&args).contains("Unknown provider id(s) in --providers"),
+            "an empty id must still be reported"
+        );
+    }
+
+    #[test]
+    fn test_no_provider_error_carries_the_guidance_exactly_once() {
+        // The message used to be printed by this function *and* reported again
+        // by `main`, so a failing run showed it twice — and `--silent`
+        // suppressed the copy that carried the list of valid ids, leaving only
+        // the bare "No valid providers specified".
+        let _env_lock = env_mutex().lock().unwrap();
+        let _guard = EnvGuard::unset(&KEYED_ENV);
+
+        let mut args = build_test_args();
+        args.silent = true;
+        args.providers = vec![];
+
+        let err = selection_error(&args);
+        assert!(err.contains("No valid providers specified"), "{err}");
+        assert!(
+            err.contains("wayback"),
+            "the allowed ids must travel with the error: {err}"
         );
     }
 

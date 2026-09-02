@@ -1,5 +1,4 @@
 use anyhow::Result;
-use clap::Parser;
 use std::sync::Arc;
 
 mod app;
@@ -29,7 +28,7 @@ use app::pipeline::{
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::initialize_providers;
-use cli::Args;
+use cli::{Args, CliProvided};
 use config::Config;
 use network::NetworkSettings;
 use output::create_outputter;
@@ -40,12 +39,12 @@ use utils::verbose_print;
 
 /// Load the config layers over `args`, honouring the documented precedence:
 /// `CLI/env` > provider-config file > main config file.
-fn apply_config_layers(args: &mut Args) -> Result<()> {
+fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
     // Must run before either config layer: afterwards there is no way to tell a
     // key the user supplied from one a config file filled in.
     let direct = seed_api_keys_from_env(args);
 
-    Config::load(args)?.apply_to_args(args);
+    Config::load(args)?.apply_to_args(args, provided);
 
     // The provider-config file is separate from the main config and overrides
     // it, but still loses to anything supplied on the CLI or in the environment.
@@ -71,7 +70,7 @@ async fn collect_urls(
     progress_manager: &ProgressManager,
     stream_sink: Option<&Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
-) -> Result<Option<ProviderRunResult>> {
+) -> Result<ProviderRunResult> {
     // File input skips provider processing entirely. Every URL is attributed to
     // "file" so downstream `--show-sources` stays consistent.
     if let Some(urls) = read_urls_from_files(args)? {
@@ -80,20 +79,21 @@ async fn collect_urls(
         for url in urls {
             url_map.entry(url).or_default().insert("file".to_string());
         }
-        return Ok(Some(ProviderRunResult {
+        return Ok(ProviderRunResult {
             urls: url_map,
             stats: Vec::new(),
-        }));
+        });
     }
 
     let domains = collect_domains(args)?;
     if domains.is_empty() {
-        if !args.silent {
-            eprintln!(
-                "No domains provided. Pass DOMAINS positionally, use --domain-list FILE, or pipe them through stdin."
-            );
-        }
-        return Ok(None);
+        // A usage error, not a successful empty run: reported through the
+        // `Result` so the process exits non-zero. Printing it and returning
+        // `Ok` made `urx | wc -l` in a script look like a target that simply
+        // has no archived URLs.
+        return Err(anyhow::anyhow!(
+            "No domains provided. Pass DOMAINS positionally, use --domain-list FILE, or pipe them through stdin."
+        ));
     }
 
     let (providers, provider_names) = initialize_providers(args, network_settings)?;
@@ -105,31 +105,27 @@ async fn collect_urls(
     // Streaming writes as it goes and bypasses the cache entirely (the cache
     // both reads whole domains and writes whole result sets).
     if let Some(sink) = stream_sink {
-        return Ok(Some(
-            process_domains(
-                domains,
-                args,
-                progress_manager,
-                &providers,
-                &provider_names,
-                Some(Arc::clone(sink)),
-            )
-            .await,
-        ));
-    }
-
-    let cache_manager = create_cache_manager(args).await?;
-    Ok(Some(
-        process_domains_with_cache(
+        return Ok(process_domains(
             domains,
             args,
             progress_manager,
             &providers,
             &provider_names,
-            cache_manager.as_ref(),
+            Some(Arc::clone(sink)),
         )
-        .await?,
-    ))
+        .await);
+    }
+
+    let cache_manager = create_cache_manager(args).await?;
+    process_domains_with_cache(
+        domains,
+        args,
+        progress_manager,
+        &providers,
+        &provider_names,
+        cache_manager.as_ref(),
+    )
+    .await
 }
 
 /// Re-request the surviving URLs when `--check-status` or `--extract-links`
@@ -204,7 +200,7 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut args = Args::parse();
+    let (mut args, provided) = cli::parse_args();
 
     // Short-circuit: list providers and exit without doing any I/O.
     if args.list_providers {
@@ -212,7 +208,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    apply_config_layers(&mut args)?;
+    apply_config_layers(&mut args, &provided)?;
 
     // Honor --no-color / NO_COLOR before any styled output is produced.
     configure_colors(&args);
@@ -225,17 +221,14 @@ async fn main() -> Result<()> {
     let stream_sink = build_stream_sink(&args)?;
 
     let mut header = None;
-    let Some(run_result) = collect_urls(
+    let run_result = collect_urls(
         &args,
         &network_settings,
         &progress_manager,
         stream_sink.as_ref(),
         &mut header,
     )
-    .await?
-    else {
-        return Ok(());
-    };
+    .await?;
 
     if let Some(sink) = &stream_sink {
         // Everything has already been written by the sink; printing the
@@ -278,4 +271,45 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use std::io::Write;
+
+    /// A run with nothing to scan must fail, not report success.
+    ///
+    /// `--domain-list` is used rather than an empty argv because
+    /// [`collect_domains`] falls back to reading stdin when no target was named
+    /// at all, which would block the test. A file holding only unusable entries
+    /// exercises the same "zero effective targets" path without it — and is
+    /// itself a case that used to exit 0 while scanning nothing.
+    #[tokio::test]
+    async fn no_effective_targets_is_a_usage_error() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        // Neither line yields a host: one is scheme-only, one is a bare slash.
+        writeln!(file, "https://\n/").unwrap();
+
+        let args = Args::parse_from([
+            "urx",
+            "--silent",
+            "--no-progress",
+            "--domain-list",
+            file.path().to_str().unwrap(),
+        ]);
+
+        let err = collect_urls(
+            &args,
+            &NetworkSettings::default(),
+            &ProgressManager::new(true),
+            None,
+            &mut None,
+        )
+        .await
+        .expect_err("a run with no resolvable target must not succeed");
+
+        assert!(err.to_string().contains("No domains provided"), "{err}");
+    }
 }

@@ -4,7 +4,15 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::Args;
+use crate::cli::{Args, CliProvided};
+
+/// Keys a config section did not recognise.
+///
+/// Captured rather than dropped so a typo can be reported. serde ignores
+/// unknown fields by default, which made a misspelled key — or worse, a
+/// misspelled *section* like `[filters]` — completely inert: every setting
+/// underneath it silently never applied.
+pub type UnknownKeys = std::collections::BTreeMap<String, toml::Value>;
 
 /// Represents the application configuration loaded from a file
 #[derive(Debug, Deserialize, Default)]
@@ -26,6 +34,10 @@ pub struct Config {
 
     #[serde(default)]
     pub cache: CacheConfig,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -34,6 +46,10 @@ pub struct OutputConfig {
     pub format: Option<String>,
     pub merge_endpoint: Option<bool>,
     pub stream: Option<bool>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -55,6 +71,10 @@ pub struct ProviderConfig {
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
     pub exclude_sitemap: Option<bool>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 /// Provider-config file: a small TOML that holds only API keys so the main
@@ -66,6 +86,37 @@ pub struct ProviderKeysConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
+}
+
+/// Render one unrecognised entry for the warning: a whole unknown table is
+/// shown in section form (`[filters]`) so it's obvious the entire block is
+/// inert, anything else as a plain key path.
+fn describe_unknown(section: Option<&str>, key: &str, value: &toml::Value) -> String {
+    match section {
+        Some(section) => format!("{section}.{key}"),
+        None if value.is_table() => format!("[{key}]"),
+        None => key.to_string(),
+    }
+}
+
+/// Warn once about every config key urx did not recognise.
+///
+/// Silence here is expensive: a config whose section is spelled `[filters]`
+/// instead of `[filter]` parses cleanly and then does nothing at all, which
+/// reads as "the filter matched everything".
+fn warn_about_unknown_keys(unknown: &[String], source: &str, silent: bool) {
+    if unknown.is_empty() || silent {
+        return;
+    }
+    eprintln!(
+        "Warning: ignoring unrecognised {} in {source}: {}. Check for a typo — settings under an unknown key have no effect.",
+        if unknown.len() == 1 { "key" } else { "keys" },
+        unknown.join(", ")
+    );
 }
 
 /// Split a comma-separated key list into individual keys, trimming each and
@@ -79,6 +130,14 @@ fn split_csv(s: &str) -> Vec<String> {
 }
 
 impl ProviderKeysConfig {
+    /// Every key in the provider-config file urx does not recognise, sorted.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        self.unknown
+            .iter()
+            .map(|(k, v)| describe_unknown(None, k, v))
+            .collect()
+    }
+
     /// Parse a provider-config TOML file from `path`. Returns the parsed
     /// struct or an error.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -154,6 +213,12 @@ impl ProviderKeysConfig {
         cli_supplied_zoomeye: bool,
         cli_supplied_github: bool,
     ) {
+        warn_about_unknown_keys(
+            &self.unknown_keys(),
+            "the provider-config file",
+            args.silent,
+        );
+
         if !cli_supplied_vt {
             if let Some(keys) = &self.vt_api_key {
                 args.vt_api_key = split_csv(keys);
@@ -189,6 +254,10 @@ pub struct FilterConfig {
     pub show_only_param: Option<bool>,
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -202,6 +271,10 @@ pub struct NetworkConfig {
     pub retries: Option<u32>,
     pub parallel: Option<u32>,
     pub rate_limit: Option<f32>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -210,6 +283,10 @@ pub struct TestingConfig {
     pub include_status: Option<Vec<String>>,
     pub exclude_status: Option<Vec<String>>,
     pub extract_links: Option<bool>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -220,6 +297,10 @@ pub struct CacheConfig {
     pub redis_url: Option<String>,
     pub cache_ttl: Option<u64>,
     pub no_cache: Option<bool>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 fn normalize_output_format(format: &str) -> Option<String> {
@@ -321,18 +402,50 @@ impl Config {
         Ok(Config::default())
     }
 
-    /// Apply configuration values to Args, respecting priority
-    /// Command line arguments take precedence over config file values
-    pub fn apply_to_args(self, args: &mut Args) {
-        self.apply_output_config(args);
-        self.apply_provider_config(args);
-        self.apply_filter_config(args);
-        self.apply_network_config(args);
-        self.apply_testing_config(args);
-        self.apply_cache_config(args);
+    /// Every key in the file urx does not recognise, as `section.key` — or
+    /// `[section]` for a whole unknown table. Sorted, so the warning is stable.
+    pub fn unknown_keys(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .unknown
+            .iter()
+            .map(|(k, v)| describe_unknown(None, k, v))
+            .collect();
+        for (section, unknown) in [
+            ("output", &self.output.unknown),
+            ("provider", &self.provider.unknown),
+            ("filter", &self.filter.unknown),
+            ("network", &self.network.unknown),
+            ("testing", &self.testing.unknown),
+            ("cache", &self.cache.unknown),
+        ] {
+            out.extend(
+                unknown
+                    .iter()
+                    .map(|(k, v)| describe_unknown(Some(section), k, v)),
+            );
+        }
+        out.sort();
+        out
     }
 
-    fn apply_output_config(&self, args: &mut Args) {
+    /// Apply configuration values to Args, respecting priority.
+    ///
+    /// `provided` names the options the user typed on the command line. Those
+    /// always win: a flag whose value happens to equal the clap default (say
+    /// an explicit `--format plain`) is still an explicit choice, and used to
+    /// be silently replaced by the config file's value.
+    pub fn apply_to_args(self, args: &mut Args, provided: &CliProvided) {
+        warn_about_unknown_keys(&self.unknown_keys(), "the config file", args.silent);
+
+        self.apply_output_config(args, provided);
+        self.apply_provider_config(args, provided);
+        self.apply_filter_config(args);
+        self.apply_network_config(args, provided);
+        self.apply_testing_config(args);
+        self.apply_cache_config(args, provided);
+    }
+
+    fn apply_output_config(&self, args: &mut Args, provided: &CliProvided) {
         // Output options
         if args.output.is_none() {
             if let Some(output) = &self.output.output {
@@ -340,7 +453,7 @@ impl Config {
             }
         }
 
-        if args.format == "plain" {
+        if !provided.has("format") {
             if let Some(format) = &self.output.format {
                 if let Some(format) = normalize_output_format(format) {
                     args.format = format;
@@ -361,9 +474,9 @@ impl Config {
         }
     }
 
-    fn apply_provider_config(&self, args: &mut Args) {
+    fn apply_provider_config(&self, args: &mut Args, provided: &CliProvided) {
         // Provider options
-        if args.providers == vec!["wayback", "cc", "otx"] {
+        if !provided.has("providers") {
             if let Some(providers) = &self.provider.providers {
                 args.providers = providers.clone();
             }
@@ -373,11 +486,9 @@ impl Config {
             args.subs = true;
         }
 
-        // Treat the default singleton list as "not user-supplied" so the file
-        // value wins. Config file still accepts a single string; we split it
-        // on commas so users can configure multi-index there too.
-        let cc_default = vec!["latest".to_string()];
-        if args.cc_index == cc_default {
+        // Config file still accepts a single string; we split it on commas so
+        // users can configure multi-index there too.
+        if !provided.has("cc_index") {
             if let Some(cc_index) = &self.provider.cc_index {
                 let split: Vec<String> = cc_index
                     .split(',')
@@ -529,9 +640,9 @@ impl Config {
         }
     }
 
-    fn apply_network_config(&self, args: &mut Args) {
+    fn apply_network_config(&self, args: &mut Args, provided: &CliProvided) {
         // Network options
-        if args.network_scope == "all" {
+        if !provided.has("network_scope") {
             if let Some(network_scope) = &self.network.network_scope {
                 if let Some(network_scope) = normalize_network_scope(network_scope) {
                     args.network_scope = network_scope;
@@ -559,7 +670,7 @@ impl Config {
             args.random_agent = true;
         }
 
-        if args.timeout == 120 {
+        if !provided.has("timeout") {
             if let Some(timeout) = self.network.timeout {
                 if timeout > 0 {
                     args.timeout = timeout;
@@ -571,13 +682,13 @@ impl Config {
             }
         }
 
-        if args.retries == 2 {
+        if !provided.has("retries") {
             if let Some(retries) = self.network.retries {
                 args.retries = retries;
             }
         }
 
-        if args.parallel.unwrap_or(5) == 5 && self.network.parallel.is_some() {
+        if !provided.has("parallel") {
             if let Some(parallel) = self.network.parallel {
                 if parallel > 0 {
                     args.parallel = Some(parallel);
@@ -615,13 +726,13 @@ impl Config {
         }
     }
 
-    fn apply_cache_config(&self, args: &mut Args) {
+    fn apply_cache_config(&self, args: &mut Args, provided: &CliProvided) {
         // Cache options
         if !args.incremental && self.cache.incremental.unwrap_or(false) {
             args.incremental = true;
         }
 
-        if args.cache_type == "sqlite" {
+        if !provided.has("cache_type") {
             if let Some(cache_type) = &self.cache.cache_type {
                 // Mirrors how [output].format and [network].network_scope are
                 // handled: name the bad value at the point it was read, rather
@@ -650,7 +761,7 @@ impl Config {
             args.redis_url = self.cache.redis_url.clone();
         }
 
-        if args.cache_ttl == 86400 {
+        if !provided.has("cache_ttl") {
             if let Some(cache_ttl) = self.cache.cache_ttl {
                 args.cache_ttl = cache_ttl;
             }
@@ -780,7 +891,7 @@ mod tests {
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
 
         // Apply config to args
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         // Verify args were updated correctly
         assert_eq!(args.output, Some(PathBuf::from("output.txt")));
@@ -795,7 +906,7 @@ mod tests {
         config.network.parallel = Some(0);
 
         let mut args = Args::parse_from(["urx", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.timeout, 120);
         assert_eq!(args.parallel, Some(5));
@@ -808,7 +919,7 @@ mod tests {
         config.network.network_scope = Some("providers only".to_string());
 
         let mut args = Args::parse_from(["urx", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.format, "plain");
         assert_eq!(args.network_scope, "all");
@@ -821,7 +932,7 @@ mod tests {
         config.network.network_scope = Some("TESTERS,PROVIDERS".to_string());
 
         let mut args = Args::parse_from(["urx", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.format, "json");
         assert_eq!(args.network_scope, "providers,testers");
@@ -882,7 +993,7 @@ mod tests {
         config.provider.github_api_key = Some("gh1,gh2".to_string());
 
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
         assert_eq!(args.urlscan_api_key, vec!["us1", "us2"]);
@@ -917,7 +1028,7 @@ mod tests {
         let mut config = Config::default();
         config.provider.github_api_key = Some("from-main".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
         assert_eq!(args.github_api_key, vec!["from-main"]);
 
         let keys = ProviderKeysConfig {
@@ -925,6 +1036,7 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: Some("from-provider-config".to_string()),
+            unknown: Default::default(),
         };
         keys.apply_to_args(&mut args, false, false, false, false);
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
@@ -942,14 +1054,14 @@ mod tests {
         let mut config = Config::default();
         config.cache.cache_type = Some("postgres".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
         assert_eq!(args.cache_type, "sqlite", "invalid value must be ignored");
 
         // A valid value still applies, case-insensitively.
         let mut config = Config::default();
         config.cache.cache_type = Some("Redis".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
         assert_eq!(args.cache_type, "redis");
     }
 
@@ -967,6 +1079,7 @@ mod tests {
             urlscan_api_key: Some("us-from-file".to_string()),
             zoomeye_api_key: None,
             github_api_key: None,
+            unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
         // Pretend the user supplied vt via CLI: provider-config should NOT
@@ -990,6 +1103,7 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: None,
+            unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
         cfg.apply_to_args(&mut args, false, false, false, false);
@@ -1011,7 +1125,7 @@ mod tests {
         let config = Config::from_file(file.path()).unwrap();
 
         let mut args = Args::parse_from(["urx", "example.com"]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.from.as_deref(), Some("2020"));
         assert_eq!(args.to.as_deref(), Some("2021"));
@@ -1019,6 +1133,218 @@ mod tests {
         assert_eq!(args.archive_exclude_status, vec!["404", "500"]);
         assert_eq!(args.archive_mime, vec!["application/json"]);
         assert_eq!(args.archive_exclude_mime, vec!["text/html"]);
+    }
+
+    #[test]
+    fn test_explicit_cli_flag_wins_even_when_it_equals_the_default() {
+        // Regression: precedence used to be decided by "does this field still
+        // equal its clap default?", which cannot see the difference between
+        // `--format plain` and no `--format` at all. Every option whose default
+        // a user might legitimately type back was therefore silently
+        // overridden by the config file — `urx --format plain` printed JSON.
+        let content = r#"
+            [output]
+            format = "json"
+
+            [provider]
+            providers = ["arquivo"]
+            cc_index = "CC-MAIN-2020-05"
+
+            [network]
+            network_scope = "testers"
+            timeout = 30
+            retries = 9
+            parallel = 2
+
+            [cache]
+            cache_type = "redis"
+            cache_ttl = 60
+        "#;
+        let file = create_temp_config_file(content);
+
+        let argv = [
+            "urx",
+            "--format",
+            "plain",
+            "--providers",
+            "wayback,cc,otx",
+            "--cc-index",
+            "latest",
+            "--network-scope",
+            "all",
+            "--timeout",
+            "120",
+            "--retries",
+            "2",
+            "--parallel",
+            "5",
+            "--cache-type",
+            "sqlite",
+            "--cache-ttl",
+            "86400",
+            "example.com",
+        ];
+        let (mut args, provided) = crate::cli::parse_args_from(argv);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+
+        assert_eq!(args.format, "plain");
+        assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
+        assert_eq!(args.cc_index, vec!["latest"]);
+        assert_eq!(args.network_scope, "all");
+        assert_eq!(args.timeout, 120);
+        assert_eq!(args.retries, 2);
+        assert_eq!(args.parallel, Some(5));
+        assert_eq!(args.cache_type, "sqlite");
+        assert_eq!(args.cache_ttl, 86400);
+    }
+
+    #[test]
+    fn test_config_still_applies_when_the_flag_was_not_supplied() {
+        // The other half of the contract: without the flag, the file wins.
+        let content = r#"
+            [output]
+            format = "json"
+
+            [provider]
+            providers = ["arquivo"]
+            cc_index = "CC-MAIN-2020-05"
+
+            [network]
+            network_scope = "testers"
+            timeout = 30
+            retries = 9
+            parallel = 2
+
+            [cache]
+            cache_type = "redis"
+            cache_ttl = 60
+        "#;
+        let file = create_temp_config_file(content);
+
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+
+        assert_eq!(args.format, "json");
+        assert_eq!(args.providers, vec!["arquivo"]);
+        assert_eq!(args.cc_index, vec!["CC-MAIN-2020-05"]);
+        assert_eq!(args.network_scope, "testers");
+        assert_eq!(args.timeout, 30);
+        assert_eq!(args.retries, 9);
+        assert_eq!(args.parallel, Some(2));
+        assert_eq!(args.cache_type, "redis");
+        assert_eq!(args.cache_ttl, 60);
+    }
+
+    #[test]
+    fn test_unknown_config_keys_and_sections_are_reported() {
+        // Regression: serde drops unknown fields in silence, so a misspelled
+        // key — or a whole misspelled section like `[filters]` — parsed
+        // cleanly and then did absolutely nothing. Users read the resulting
+        // unfiltered output as "the filter matched everything".
+        let content = r#"
+            stray = 1
+
+            [output]
+            fromat = "json"
+
+            [filters]
+            extensions = ["js"]
+
+            [provider]
+            provdiers = ["wayback"]
+
+            [network]
+            rate_limit = 5
+        "#;
+        let config = Config::from_file(create_temp_config_file(content).path()).unwrap();
+
+        assert_eq!(
+            config.unknown_keys(),
+            vec![
+                "[filters]".to_string(),
+                "output.fromat".to_string(),
+                "provider.provdiers".to_string(),
+                "stray".to_string(),
+            ]
+        );
+        // ...and capturing them must not disturb ordinary parsing, including
+        // the integer-to-float widening TOML does for `rate_limit`.
+        assert_eq!(config.network.rate_limit, Some(5.0));
+    }
+
+    #[test]
+    fn test_known_config_keys_are_not_reported_as_unknown() {
+        let content = r#"
+            [output]
+            output = "out.txt"
+            format = "json"
+            merge_endpoint = true
+            stream = false
+
+            [provider]
+            providers = ["wayback"]
+            subs = true
+            cc_index = "latest"
+            from = "2020"
+            to = "2021"
+            vt_api_key = "k"
+            include_robots = false
+
+            [filter]
+            preset = ["no-images"]
+            extensions = ["js"]
+            min_length = 5
+            max_length = 500
+
+            [network]
+            network_scope = "all"
+            proxy = "http://p:1"
+            insecure = true
+            timeout = 10
+            retries = 1
+            parallel = 2
+            rate_limit = 1.5
+
+            [testing]
+            check_status = true
+            include_status = ["200"]
+
+            [cache]
+            incremental = true
+            cache_type = "sqlite"
+            cache_path = "/tmp/x.db"
+            cache_ttl = 10
+            no_cache = false
+        "#;
+        let config = Config::from_file(create_temp_config_file(content).path()).unwrap();
+        assert!(
+            config.unknown_keys().is_empty(),
+            "{:?}",
+            config.unknown_keys()
+        );
+    }
+
+    #[test]
+    fn test_unknown_provider_config_keys_are_reported() {
+        let content = r#"
+            vt_api_key = "abc"
+            vt_apikey = "typo"
+
+            [provider]
+            zoomeye_api_key = "z"
+        "#;
+        let cfg = ProviderKeysConfig::from_file(create_temp_config_file(content).path()).unwrap();
+        assert_eq!(cfg.vt_api_key.as_deref(), Some("abc"));
+        let mut unknown = cfg.unknown_keys();
+        unknown.sort();
+        assert_eq!(
+            unknown,
+            vec!["[provider]".to_string(), "vt_apikey".to_string()]
+        );
     }
 
     #[test]
@@ -1039,7 +1365,7 @@ mod tests {
             "404",
             "example.com",
         ]);
-        config.apply_to_args(&mut args);
+        config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.from.as_deref(), Some("2015"));
         assert_eq!(args.archive_status, vec!["404"]);
