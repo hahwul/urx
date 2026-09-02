@@ -15,12 +15,16 @@ pub use warc_reader::WarcFileReader;
 /// decompresses to one enormous "line") from exhausting memory.
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+/// UTF-8 byte order mark, stripped from the first line of every input.
+const BOM: &[u8] = b"\xef\xbb\xbf";
+
 /// Call `f` for each line of `reader`, decoding lossily so binary content
 /// (common inside WARC response bodies) doesn't abort the whole read the way
 /// `BufRead::lines()` does on invalid UTF-8. Lines longer than
 /// `MAX_LINE_BYTES` are truncated and the remainder skipped.
 fn for_each_line_lossy<R: BufRead>(mut reader: R, mut f: impl FnMut(&str)) -> std::io::Result<()> {
     let mut buf = Vec::with_capacity(8 * 1024);
+    let mut first_line = true;
     loop {
         buf.clear();
         let n = reader
@@ -31,7 +35,17 @@ fn for_each_line_lossy<R: BufRead>(mut reader: R, mut f: impl FnMut(&str)) -> st
             break;
         }
         let hit_cap = n == MAX_LINE_BYTES && buf.last() != Some(&b'\n');
-        let line = String::from_utf8_lossy(&buf);
+        let mut bytes = &buf[..];
+        if first_line {
+            first_line = false;
+            // A UTF-8 BOM is invisible but glues itself to the first line, so
+            // "https://…" no longer starts with its scheme and every reader
+            // silently drops that URL. Editors on Windows add one routinely.
+            if let Some(rest) = bytes.strip_prefix(BOM) {
+                bytes = rest;
+            }
+        }
+        let line = String::from_utf8_lossy(bytes);
         f(line.trim_end_matches(['\n', '\r']));
         if hit_cap {
             skip_to_newline(&mut reader)?;
@@ -97,13 +111,16 @@ pub(crate) fn collect_capped<R: Read>(
     let mut url_capped = false;
 
     for_each_line_lossy(std::io::BufReader::new(&mut limited), |line| {
-        if urls.len() >= max_urls {
-            // Stop collecting; the `take` bound still drains the rest so we
-            // never read more than `max_bytes (+1)` total.
-            url_capped = true;
-            return;
-        }
         if let Some(url) = extract(line) {
+            if urls.len() >= max_urls {
+                // Stop collecting; the `take` bound still drains the rest so we
+                // never read more than `max_bytes (+1)` total. The flag is set
+                // only once a real URL is dropped — testing the cap before
+                // extraction reported "truncated" for a file that merely ended
+                // in a blank or comment line.
+                url_capped = true;
+                return;
+            }
             urls.push(url);
         }
     })?;
@@ -285,6 +302,54 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].len(), MAX_LINE_BYTES);
         assert_eq!(lines[1], "https://example.com/after");
+    }
+
+    #[test]
+    fn test_for_each_line_lossy_strips_a_leading_utf8_bom() {
+        // Regression: a BOM glued itself to the first line, so
+        // "\u{feff}https://example.com/a" did not start with "http" and every
+        // reader dropped that URL without a word.
+        let data = b"\xef\xbb\xbfhttps://example.com/a\nhttps://example.com/b\n";
+        let mut lines = Vec::new();
+        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        assert_eq!(
+            lines,
+            vec!["https://example.com/a", "https://example.com/b"]
+        );
+    }
+
+    #[test]
+    fn test_for_each_line_lossy_only_strips_the_bom_at_the_start() {
+        // A BOM-looking sequence later in the file is data, not a marker.
+        let data = "a\n\u{feff}b\n".as_bytes();
+        let mut lines = Vec::new();
+        for_each_line_lossy(data, |line| lines.push(line.to_string())).unwrap();
+        assert_eq!(lines, vec!["a", "\u{feff}b"]);
+    }
+
+    #[test]
+    fn test_url_cap_flag_reflects_a_dropped_url_not_a_trailing_line() {
+        // Regression: the cap was tested before extraction, so a file holding
+        // exactly `max_urls` URLs followed by a blank or comment line reported
+        // "results truncated" while nothing had been dropped.
+        let data = b"https://example.com/a\nhttps://example.com/b\n\n# done\n";
+        let (urls, url_capped, _) = collect_capped(&data[..], 2, MAX_FILE_BYTES, |line| {
+            let t = line.trim();
+            (t.starts_with("http://") || t.starts_with("https://")).then(|| t.to_string())
+        })
+        .unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(!url_capped, "nothing was dropped, so nothing was truncated");
+
+        // A third URL past the cap is a genuine truncation.
+        let data = b"https://example.com/a\nhttps://example.com/b\nhttps://example.com/c\n";
+        let (urls, url_capped, _) = collect_capped(&data[..], 2, MAX_FILE_BYTES, |line| {
+            let t = line.trim();
+            (t.starts_with("http://") || t.starts_with("https://")).then(|| t.to_string())
+        })
+        .unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(url_capped);
     }
 
     #[test]

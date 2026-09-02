@@ -169,15 +169,9 @@ impl CacheBackend for SqliteCache {
     }
 
     async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
-        // `chrono::Duration::seconds` panics past ~2.9e11 years, and `--cache-ttl`
-        // is a plain u64 straight off the command line — a large one crashed the
-        // run at cleanup time. Saturate instead: a TTL that long means "never
-        // expire", and `checked_sub` then leaves the cutoff at the earliest
-        // representable time so nothing is deleted.
-        let cutoff_time = chrono::Duration::try_seconds(ttl_seconds.min(i64::MAX as u64) as i64)
-            .and_then(|d| Utc::now().checked_sub_signed(d))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC);
-        let cutoff_str = cutoff_time.to_rfc3339();
+        // See `expiry_cutoff`: `--cache-ttl` is an unvalidated u64 and the raw
+        // chrono conversion either panics or wraps into the future.
+        let cutoff_str = super::types::expiry_cutoff(ttl_seconds).to_rfc3339();
 
         self.with_connection(move |conn| {
             let deleted = conn.execute(

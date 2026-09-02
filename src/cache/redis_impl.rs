@@ -131,7 +131,11 @@ impl CacheBackend for RedisCache {
             .await
             .context("Failed to connect to Redis")?;
 
-        let cutoff_time = Utc::now() - chrono::Duration::seconds(ttl_seconds as i64);
+        // `Duration::seconds` panics past its bounds and `ttl_seconds as i64`
+        // wraps a huge TTL negative, which would push the cutoff into the future
+        // and wipe every entry. The SQLite backend already guards this; share
+        // the same helper so the two cannot diverge again.
+        let cutoff_time = super::types::expiry_cutoff(ttl_seconds);
 
         // Get all metadata keys
         let meta_keys: Vec<String> = redis::cmd("KEYS")
