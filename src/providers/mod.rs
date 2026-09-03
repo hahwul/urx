@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 mod api_key_rotation;
+pub mod archived;
 mod arquivo;
 mod bevigil;
 pub mod cdx;

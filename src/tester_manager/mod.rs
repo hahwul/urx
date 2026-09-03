@@ -10,8 +10,8 @@ use crate::progress::ProgressManager;
 use crate::testers::Tester;
 use crate::utils::{verbose_print, UrlTransformer};
 
-/// The filtering a URL discovered by `--extract-links` or
-/// `--extract-js-endpoints` has to pass.
+/// The filtering a URL discovered by `--extract-links`, `--extract-js-endpoints`
+/// or `--archive-body` has to pass.
 ///
 /// The primary URL list goes through the filters, host validation, and the
 /// `show_only_*`/`--normalize-url` views *before* testing starts. Links found
@@ -103,7 +103,9 @@ pub async fn process_urls_with_testers(
 
     let verbose = args.verbose;
     let check_status = should_check_status;
-    let extract_links = args.extract_links || args.extract_js_endpoints;
+    // All three discover links inside fetched bodies; any subset may be in
+    // the tester list after the status checker.
+    let extract_links = args.extract_links || args.extract_js_endpoints || args.archive_body;
     let silent = args.silent;
     // With an --include-status allowlist, a URL whose status we could never
     // resolve has not been shown to match it. Emitting it with a placeholder
@@ -135,7 +137,7 @@ pub async fn process_urls_with_testers(
 
                 for url in url_vec {
                     let mut status_result = None;
-                    let mut links_result = None;
+                    let mut links_result: Option<Vec<String>> = None;
 
                     // Process URL with each tester
                     for (i, tester) in testers_clone.iter().enumerate() {
@@ -145,9 +147,10 @@ pub async fn process_urls_with_testers(
                                     // Status checker results (first tester if check_status is enabled)
                                     status_result = Some(results);
                                 } else if extract_links {
-                                    // Link / JS-endpoint extractor results.
-                                    // Both extractors may run in the same
-                                    // pass, so accumulate rather than replace.
+                                    // Link / JS-endpoint / archive-body
+                                    // extractor results. Any subset of these
+                                    // may run in the same pass, so accumulate
+                                    // rather than replace.
                                     links_result.get_or_insert_with(Vec::new).extend(results);
                                 }
                             }

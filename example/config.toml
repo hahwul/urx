@@ -34,6 +34,8 @@ vt_api_key = ""                      # VirusTotal API key (If using VirusTotal)
 # bevigil_api_key = ""               # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false               # Exclude robots.txt URLs
 exclude_sitemap = false              # Exclude sitemap.xml URLs
+archived_discovery = false           # Also read every archived version of robots.txt / sitemap.xml
+archived_discovery_limit = 50        # Documents fetched per domain by each archived provider
 
 # Display options
 verbose = false
@@ -76,6 +78,8 @@ exclude_status = ["404", "50x"] # Exclude URLs with these status codes
 extract_links = false           # Extract additional links from collected URLs
 extract_js_endpoints = false    # Fetch collected JavaScript and extract the endpoints in it
 max_js_files = 500              # Cap on files extract_js_endpoints fetches (0 = unlimited)
+archive_body = false            # Extract links from the *archived* bodies of collected URLs
+archive_body_limit = 500        # Distinct archived bodies fetched per run (duplicates never count)
 
 # Cache options
 [cache]

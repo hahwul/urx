@@ -56,6 +56,8 @@ github_api_key = ""                   # GitHub Code Search personal access token
 bevigil_api_key = ""                  # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false                # Skip robots.txt discovery
 exclude_sitemap = false               # Skip sitemap.xml discovery
+archived_discovery = false            # Also read archived robots.txt / sitemap versions
+archived_discovery_limit = 50         # Documents fetched per domain by each archived provider
 
 # ─── Filters ─────────────────────────────────────────────
 [filter]
@@ -92,6 +94,8 @@ exclude_status = ["404", "50x"]
 extract_links = false
 extract_js_endpoints = false   # Mine collected JavaScript for endpoints
 max_js_files = 500             # Cap on files --extract-js-endpoints fetches (0 = unlimited)
+archive_body = false                   # Mine the archived bodies of collected URLs
+archive_body_limit = 500               # Distinct bodies fetched per run (duplicates never count)
 
 # ─── Cache ────────────────────────────────────────────────
 [cache]

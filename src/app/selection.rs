@@ -292,12 +292,35 @@ pub fn initialize_providers(
         }
     }
 
+    // The archived variants are registered under the same ids as their live
+    // counterparts, the way each `--cc-index` becomes its own `cc` instance:
+    // they are the same provider reading a different copy of the file, so
+    // `--exclude-robots` and `--rate-limit-by robots=N` govern both, while
+    // separate instances give them their own stats row and `--show-sources`
+    // label. Only `--from`/`--to` carry over from the archive filters: status
+    // and MIME predicates are meaningful for a URL listing, not for the
+    // version history of one document.
+    let archived = args.archived_discovery.then(|| {
+        providers::archived::ArchivedDiscovery::new(args.archived_discovery_limit)
+            .with_window(archive_filters.from.clone(), archive_filters.to.clone())
+    });
+
     if enabled.contains("robots") {
         register!("robots", "Robots.txt".to_string(), RobotsProvider::new);
+        if let Some(settings) = archived.clone() {
+            register!("robots", "Robots.txt (archived)".to_string(), || {
+                RobotsProvider::archived(settings)
+            });
+        }
     }
 
     if enabled.contains("sitemap") {
         register!("sitemap", "Sitemap".to_string(), SitemapProvider::new);
+        if let Some(settings) = archived.clone() {
+            register!("sitemap", "Sitemap (archived)".to_string(), || {
+                SitemapProvider::archived(settings)
+            });
+        }
     }
 
     if enabled.contains("otx") {
@@ -812,6 +835,50 @@ mod tests {
         assert!(is_cdx_provider("cdx:vefsafn.is"));
         assert!(is_cdx_provider("wayback"));
         assert!(!is_cdx_provider("otx"));
+    }
+
+    #[test]
+    fn test_archived_discovery_adds_an_archived_instance_beside_each_live_one() {
+        let _env_lock = env_mutex().lock().unwrap();
+        let _guard = EnvGuard::unset(&KEYED_ENV);
+
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.include_robots = true;
+        args.exclude_robots = false;
+        args.include_sitemap = true;
+        args.exclude_sitemap = false;
+        args.archived_discovery = true;
+
+        let (providers, names) = initialize_providers(&args, &NetworkSettings::default()).unwrap();
+        assert_eq!(providers.len(), 5);
+        assert_eq!(
+            names,
+            vec![
+                "Wayback Machine",
+                "Robots.txt",
+                "Robots.txt (archived)",
+                "Sitemap",
+                "Sitemap (archived)",
+            ]
+        );
+
+        // No new provider id: the selection is still the three ids...
+        assert_eq!(
+            effective_provider_ids(&args),
+            vec!["wayback", "robots", "sitemap"]
+        );
+        // ...and excluding a discovery source excludes its archived twin.
+        args.exclude_sitemap = true;
+        let (_, names) = initialize_providers(&args, &NetworkSettings::default()).unwrap();
+        assert_eq!(
+            names,
+            vec!["Wayback Machine", "Robots.txt", "Robots.txt (archived)"]
+        );
+        // ...and the flag off means no archived instances at all.
+        args.archived_discovery = false;
+        let (_, names) = initialize_providers(&args, &NetworkSettings::default()).unwrap();
+        assert_eq!(names, vec!["Wayback Machine", "Robots.txt"]);
     }
 
     #[test]

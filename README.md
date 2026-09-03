@@ -35,6 +35,8 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * URL Testing:
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
+  * Mine the *archived* response bodies of collected URLs (`--archive-body`), so pages that no longer exist still give up the links they contained — one request per distinct body, thanks to CDX digest deduplication
+* Archived robots.txt and sitemap.xml discovery (`--archived-discovery`): every distinct version the Wayback Machine holds, so a `Disallow:` from 2015 still names the paths the site has since stopped mentioning
 * Caching and Incremental Scanning:
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
@@ -181,8 +183,14 @@ Provider Options:
           API key for BeVigil, which returns URLs extracted from unpacked Android apps (also reads URX_BEVIGIL_API_KEY, comma-separated for rotation). Required for the `bevigil` provider
 
 Discovery Options:
-      --exclude-robots   Exclude robots.txt discovery
-      --exclude-sitemap  Exclude sitemap.xml discovery
+      --exclude-robots
+          Exclude robots.txt discovery
+      --exclude-sitemap
+          Exclude sitemap.xml discovery
+      --archived-discovery
+          Also read every distinct archived version of robots.txt and sitemap.xml the Wayback Machine holds
+      --archived-discovery-limit <N>
+          Maximum archived documents fetched per domain by each archived provider (nested sitemaps count) [default: 50]
 
 Display Options:
   -v, --verbose       Show verbose output
@@ -246,6 +254,10 @@ Testing Options:
           Fetch collected JavaScript files and extract the endpoint paths and URLs found in their string literals (requires HTTP requests)
       --max-js-files <N>
           Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
+      --archive-body
+          Fetch the archived body of each collected URL from the Wayback Machine and extract the links inside it (works for pages that no longer exist)
+      --archive-body-limit <N>
+          Maximum number of archived bodies --archive-body fetches per run; bounds distinct bodies, not URLs [default: 500]
 
 Notification Options:
       --notify <URL>                   POST a run summary to this webhook when the run ends (repeatable; also URX_NOTIFY_URL, provider-config `notify_url`, or `[notify].url`)
@@ -273,6 +285,11 @@ CSS values, regex fragments and more are dropped), each body is capped at
 discovered endpoints pass the same filters and host validation as everything
 else. The full extraction and noise-suppression policy is in
 [docs/content/guide/cli-options.md](docs/content/guide/cli-options.md#javascript-endpoint-extraction).
+
+`--archive-body` does the same extraction over the bodies the Wayback Machine
+*stored* rather than over the live site, so a page that was deleted years ago
+still yields the links it contained. See
+[Mining Archived Response Bodies](#mining-archived-response-bodies).
 
 ### Examples
 
@@ -345,6 +362,13 @@ urx example.com --exclude-robots
 # Exclude URLs from sitemap
 urx example.com --exclude-sitemap
 
+# Also read every archived version of robots.txt and sitemap.xml, so paths the
+# site once listed and has since removed come back
+urx example.com --archived-discovery
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016 --exclude-sitemap
+
 # Include subdomains
 urx example.com --subs
 
@@ -371,6 +395,10 @@ urx example.com --extract-js-endpoints --patterns api
 
 # Chain them: collect the site's bundles, then mine those for endpoints
 urx example.com --extract-links --extract-js-endpoints --max-js-files 100
+
+# Mine the links inside the *archived* bodies instead — dead pages included.
+# One request per distinct body; the limit bounds bodies, not URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
 # Network configuration
 urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insecure
@@ -491,7 +519,7 @@ deduplicated. Two things differ:
   (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
   `--check-status` /
   `--include-status` / `--exclude-status`, `--extract-links`,
-  `--extract-js-endpoints`, `--incremental`,
+  `--extract-js-endpoints`, `--archive-body`, `--incremental`,
   `--show-sources`, `--show-meta`, `--output-dir`, and `--files`. Caching is
   bypassed, and
   `--format json` is refused in favour of `jsonl` because a JSON array has to
@@ -558,6 +586,105 @@ arrived, so `--show-meta` is rejected there for the same reason
 A cache hit also carries no metadata: the cache stores URLs, so a domain served
 from cache reports its URLs without capture fields. Use `--no-cache` (or wait
 for the TTL) for a run that repopulates them.
+
+### Mining Archived Response Bodies
+
+`--extract-links` fetches every collected URL from the live site, which is
+exactly the wrong place to look for the pages an OSINT sweep cares about most:
+the ones that no longer exist. `--archive-body` fetches the bodies the Wayback
+Machine stored instead. For every collected URL that carries a capture
+timestamp, urx replays that capture in its raw form
+(`https://web.archive.org/web/<timestamp>id_/<url>` — the `id_` flag turns off
+the Wayback toolbar and link rewriting, so the body is the original bytes) and
+runs the same link extraction `--extract-links` uses over it.
+
+```bash
+# Links from the archived bodies of everything the CDX providers found
+urx example.com --archive-body
+
+# Bound the run and pace it; the archive is one host no matter how many URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only the JavaScript those pages referenced back then
+urx example.com --archive-body -e js
+```
+
+**Why this needs far fewer requests than waymore.** Every CDX row carries a
+content digest, and two captures with the same digest are byte-for-byte the
+same body. Archives are full of them: every `?utm_source=` variant of a page,
+every `/index.html` next to its `/`, every tracking-parameter permutation
+serves identical bytes, so a list of tens of thousands of URLs routinely
+collapses to a few thousand distinct bodies. waymore has no notion of this — it
+downloads one response per URL and copes with the volume through a blunt
+`-l 5000` cap, which both hammers the archive and truncates coverage. urx
+claims each digest the first time it is seen and skips every later URL that
+would replay the same bytes, so the same coverage costs one request per
+*distinct body*. `--archive-body-limit` (default 500) bounds distinct bodies,
+not URLs; duplicates never count against it, and `--verbose` reports how many
+were skipped.
+
+Details worth knowing:
+
+- Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
+  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  results (the cache stores URLs only) have none. urx says so when there is
+  nothing to replay — pass `--no-cache` to get fresh captures.
+- The newest capture of each URL is replayed. A timestamp reported by another
+  archive lands on the nearest Wayback capture; a URL the Wayback Machine never
+  saw answers 404 and is skipped. Captures the archive recorded as errors are
+  not mined, exactly as `--extract-links` ignores live error pages.
+- Discovered links go through the same filters, host validation, and output
+  transforms as everything else, and each body is capped at 10 MiB.
+- `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
+  `--timeout`, and `--retries` all apply to the replay requests.
+- Incompatible with `--stream`, like every option that runs after collection.
+
+### Archived robots.txt and sitemap.xml
+
+The `robots` and `sitemap` providers read the *live* files, which only say what
+a site hides or lists today. `--archived-discovery` also reads every distinct
+version of those files the Wayback Machine has stored. A `Disallow:` from 2015
+names paths the site has since stopped mentioning — often because they were
+meant to be forgotten, not because they are gone — and an old sitemap lists
+everything the site once wanted crawled.
+
+```bash
+# Every archived version of robots.txt and sitemap.xml, alongside the live ones
+urx example.com --archived-discovery
+
+# Bound it and pace it; both archived providers answer to --rate-limit-by
+urx example.com --archived-discovery --archived-discovery-limit 20 --rate-limit-by robots=2,sitemap=2
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016
+```
+
+How it works, and why it is cheap:
+
+- The versions of a document are listed with one CDX query per file
+  (`robots.txt`, `sitemap.xml`, `sitemap_index.xml`, `sitemap.txt`), using
+  `collapse=digest` so consecutive captures that served the same bytes fold
+  into one row. Only rows recorded as a success are asked for: the index folds
+  `www.` and the apex into one listing, and their interleaved `301`/`200` rows
+  otherwise defeat the collapse — for github.com/robots.txt that is 325k rows
+  without the filter and 14k with it, for the same 107 distinct versions.
+- Each distinct version is replayed in raw form (`/web/<timestamp>id_/…`) and
+  handed to the **same parser as the live file**. No second parser: a 2015
+  robots.txt is read by exactly the rules the current one is, including the
+  absolute-path and pattern-skipping guards. An archived `<sitemapindex>` is
+  followed into its children as they were at that same moment.
+- Captures the archive recorded as errors (github.com's robots.txt was a 401
+  for part of 2007) are skipped without a request and reported under
+  `--verbose` only.
+- `--archived-discovery-limit` (default 50) caps the documents fetched per
+  domain by each archived provider, newest versions first; nested sitemaps
+  count. `--verbose` says when the cap cut the list short.
+- The archived variants run as their own provider instances — "Robots.txt
+  (archived)" and "Sitemap (archived)" in `--stats` and `--show-sources` — but
+  under the existing `robots` / `sitemap` ids, so `--exclude-robots`,
+  `--exclude-sitemap`, and `--rate-limit-by robots=N` govern both the live and
+  archived reads. `--from` / `--to` narrow which versions are considered.
+- Works with `--stream`; it is a provider like any other.
 
 ### Archive-side Filtering
 

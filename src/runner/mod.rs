@@ -466,7 +466,11 @@ pub async fn process_domains(
                         } else {
                             ProgressReporter::new(ProgressBar::hidden(), prefix.clone())
                         };
-                        let reporter = Some(reporter.with_stop_signal(stop_signal.clone()));
+                        let mut reporter = reporter.with_stop_signal(stop_signal.clone());
+                        if verbose && !silent {
+                            reporter = reporter.with_notifier(notifier.clone());
+                        }
+                        let reporter = Some(reporter);
 
                         // Fetch URLs for this domain using this provider.
                         let fetch_start = std::time::Instant::now();

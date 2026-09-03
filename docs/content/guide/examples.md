@@ -173,6 +173,21 @@ urx example.com --exclude-sitemap
 urx example.com --exclude-robots --exclude-sitemap
 ```
 
+### Archived robots.txt and sitemap.xml
+```bash
+# Every distinct archived version, alongside the live files
+urx example.com --archived-discovery
+
+# See which URLs came from an old version
+urx example.com --archived-discovery --show-sources
+
+# Only the versions captured in a given era, robots.txt only
+urx example.com --archived-discovery --from 2014 --to 2016 --exclude-sitemap
+
+# Cap the documents fetched per domain (newest versions first)
+urx example.com --archived-discovery --archived-discovery-limit 10
+```
+
 ## Testing & Validation
 
 ### Include Subdomains
@@ -230,6 +245,25 @@ urx example.com --extract-js-endpoints --patterns api,graphql --check-status --i
 Leave `-e js` off when using this option: discovered endpoints pass through
 your filters too, so `-e js` would keep only the `.js` files it found rather
 than the API paths.
+
+### Mine Archived Bodies
+```bash
+urx example.com --archive-body
+```
+
+`--archive-body` runs the same extraction over the bodies the Wayback Machine
+*stored*, so pages that no longer exist still give up the links they contained.
+URLs whose captures share a content digest are fetched once, so the run costs
+one request per distinct body rather than one per URL; `--archive-body-limit`
+(default 500) bounds those distinct bodies:
+
+```bash
+# Bounded and paced
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only what the archived pages referenced as JavaScript
+urx example.com --archive-body -e js --no-cache
+```
 
 ### Status Filtering
 ```bash

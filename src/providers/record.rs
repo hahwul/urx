@@ -85,6 +85,11 @@ impl Dated {
     fn get(&self) -> Option<&str> {
         self.value.as_deref()
     }
+
+    /// The value together with the timestamp of the capture it came from.
+    fn dated(&self) -> Option<(&str, &str)> {
+        Some((self.at.as_deref()?, self.value.as_deref()?))
+    }
 }
 
 /// Archive metadata for one URL, aggregated over every capture that reported
@@ -107,6 +112,12 @@ pub struct CaptureMeta {
     /// was never edited; one with many was. Kept as a set because that is what
     /// the data is — the output picks a single representative.
     digests: BTreeSet<String>,
+    /// Digest of the most recent capture that recorded one, dated by that
+    /// capture. `digests` alone cannot say *which* body a given timestamp
+    /// served, and `--archive-body` needs exactly that pairing: it replays the
+    /// newest capture and must know its digest to skip other URLs whose newest
+    /// capture served the same bytes.
+    newest_digest: Dated,
 }
 
 impl CaptureMeta {
@@ -131,9 +142,13 @@ impl CaptureMeta {
             },
             archive_status: Dated {
                 value: archive_status,
-                at: timestamp,
+                at: timestamp.clone(),
             },
             digests: digest.and_then(clean_field).into_iter().collect(),
+            newest_digest: Dated {
+                value: digest.and_then(clean_field),
+                at: timestamp,
+            },
         }
     }
 
@@ -173,6 +188,7 @@ impl CaptureMeta {
         self.mime.merge(&other.mime);
         self.archive_status.merge(&other.archive_status);
         self.digests.extend(other.digests.iter().cloned());
+        self.newest_digest.merge(&other.newest_digest);
     }
 
     /// Oldest capture timestamp, 14-digit CDX form.
@@ -207,6 +223,13 @@ impl CaptureMeta {
     /// Every distinct content digest seen for this URL.
     pub fn digests(&self) -> impl Iterator<Item = &str> {
         self.digests.iter().map(String::as_str)
+    }
+
+    /// The `(timestamp, digest)` of the most recent capture that recorded a
+    /// digest — the capture `--archive-body` replays, paired with the identity
+    /// of the body that replay will return.
+    pub fn newest_capture(&self) -> Option<(&str, &str)> {
+        self.newest_digest.dated()
     }
 }
 
@@ -458,6 +481,37 @@ mod tests {
         assert_eq!(a.last_seen(), Some("20240101000000"));
         assert_eq!(a.mime(), Some("text/html"));
         assert_eq!(a.digests().collect::<Vec<_>>(), vec!["NEW", "OLD"]);
+    }
+
+    #[test]
+    fn newest_capture_pairs_the_latest_timestamp_with_its_own_digest() {
+        // `digest()` picks the smallest digest for stable output; that is not
+        // necessarily the body the newest capture served. Replaying the newest
+        // capture and deduplicating on the smallest digest would skip URLs
+        // whose bytes were never fetched.
+        let mut meta = capture("20050101000000", "text/html", "200", "AAA-OLD");
+        meta.merge(&capture("20240101000000", "text/html", "200", "ZZZ-NEW"));
+
+        assert_eq!(meta.digest(), Some("AAA-OLD"));
+        assert_eq!(meta.newest_capture(), Some(("20240101000000", "ZZZ-NEW")));
+
+        // A newer capture that recorded no digest (a `-` revisit row) must not
+        // detach the timestamp from the digest it belongs to.
+        meta.merge(&CaptureMeta::capture(
+            Some("20250101000000"),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(meta.last_seen(), Some("20250101000000"));
+        assert_eq!(meta.newest_capture(), Some(("20240101000000", "ZZZ-NEW")));
+
+        // Nothing to replay without a digest-bearing capture.
+        assert_eq!(CaptureMeta::default().newest_capture(), None);
+        assert_eq!(
+            CaptureMeta::capture(None, None, None, Some("X")).newest_capture(),
+            None
+        );
     }
 
     #[test]

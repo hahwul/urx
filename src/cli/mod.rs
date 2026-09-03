@@ -226,6 +226,26 @@ pub struct Args {
     #[clap(long, help_heading = "Discovery Options")]
     pub exclude_sitemap: bool,
 
+    /// Also read the *archived* versions of robots.txt and sitemap.xml the
+    /// Wayback Machine holds — every distinct version, not just today's — so
+    /// paths a site once listed and has since removed are recovered. Obeys
+    /// --exclude-robots / --exclude-sitemap and --from / --to. Archived
+    /// results are attributed to "robots.txt (archived)" / "sitemap.xml
+    /// (archived)" under --show-sources and --stats.
+    #[clap(long, help_heading = "Discovery Options")]
+    pub archived_discovery: bool,
+
+    /// Maximum archived documents fetched per domain by each of the archived
+    /// robots.txt and sitemap providers (nested sitemaps count). The newest
+    /// versions are read first.
+    #[clap(
+        long,
+        help_heading = "Discovery Options",
+        value_name = "N",
+        default_value = "50"
+    )]
+    pub archived_discovery_limit: usize,
+
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
     #[clap(short, long)]
@@ -445,6 +465,23 @@ pub struct Args {
     #[clap(help_heading = "Testing Options")]
     #[clap(long, default_value = "500", value_name = "N")]
     pub max_js_files: usize,
+
+    /// Fetch the *archived* body of each collected URL from the Wayback
+    /// Machine and extract the links inside it. Unlike --extract-links this
+    /// works for pages that no longer exist. Only URLs with a capture
+    /// timestamp qualify (the CDX providers supply one; cached, --files and
+    /// non-CDX URLs have none). One request per distinct body: URLs whose
+    /// captures share a content digest are fetched once. Discovered links go
+    /// through the same filters and host validation as everything else.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long)]
+    pub archive_body: bool,
+
+    /// Maximum number of archived bodies --archive-body fetches per run. This
+    /// bounds distinct bodies, not URLs — duplicates never count against it.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, value_name = "N", default_value = "500")]
+    pub archive_body_limit: usize,
 
     /// Enable incremental scanning mode (only return new URLs compared to previous scans)
     #[clap(help_heading = "Cache Options")]
@@ -754,6 +791,10 @@ mod tests {
         assert_eq!(args.cc_index, vec!["latest"]);
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
+        assert!(!args.archive_body);
+        assert_eq!(args.archive_body_limit, 500);
+        assert!(!args.archived_discovery);
+        assert_eq!(args.archived_discovery_limit, 50);
         assert!(args.include_robots);
         assert!(args.include_sitemap);
         assert!(!args.exclude_robots);

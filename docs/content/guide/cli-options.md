@@ -56,8 +56,10 @@ Provider Options:
   --bevigil-api-key <BEVIGIL_API_KEY>   API key for BeVigil, URLs from unpacked Android apps (URX_BEVIGIL_API_KEY)
 
 Discovery Options:
-  --exclude-robots   Exclude robots.txt discovery
-  --exclude-sitemap  Exclude sitemap.xml discovery
+  --exclude-robots                   Exclude robots.txt discovery
+  --exclude-sitemap                  Exclude sitemap.xml discovery
+  --archived-discovery               Also read every distinct archived version of robots.txt and sitemap.xml (see "Archived robots.txt and sitemap.xml" below)
+  --archived-discovery-limit <N>     Maximum archived documents fetched per domain by each archived provider; nested sitemaps count [default: 50]
 
 Display Options:
   -v, --verbose       Show verbose output
@@ -104,6 +106,8 @@ Testing Options:
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
   --extract-js-endpoints             Fetch collected JavaScript and extract the endpoints in its string literals (see "JavaScript Endpoint Extraction" below)
   --max-js-files <N>                 Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
+  --archive-body                     Extract links from the *archived* body of each collected URL (see "Archived Response Bodies" below)
+  --archive-body-limit <N>           Maximum archived bodies fetched per run; bounds distinct bodies, not URLs [default: 500]
 
 Cache Options:
   --incremental              Only return new URLs compared to previous scans
@@ -554,3 +558,145 @@ urx example.com --extract-js-endpoints --patterns api,graphql --check-status
 urx example.com --extract-js-endpoints --max-js-files 50 --rate-limit 1
 ```
 
+
+## Archived Response Bodies
+
+`--extract-links` fetches every collected URL from the live site, which is the
+wrong place to look for the pages an OSINT sweep cares about most: the ones
+that no longer exist. `--archive-body` fetches the bodies the Wayback Machine
+*stored* instead, and runs exactly the link extraction described above over
+them.
+
+For every collected URL that carries a capture timestamp, urx replays that
+capture in its raw form:
+
+```text
+https://web.archive.org/web/<timestamp>id_/<url>
+```
+
+The `id_` flag after the timestamp switches off the Wayback toolbar and link
+rewriting, so the response is the original bytes with the original
+`Content-Type`. Relative links inside the body resolve against the captured
+URL, not the replay URL.
+
+```bash
+# Links from the archived bodies of everything the CDX providers found
+urx example.com --archive-body
+
+# Bound the run and pace it; the archive is one host no matter how many URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only the JavaScript those pages referenced back then
+urx example.com --archive-body -e js
+```
+
+### Why this needs far fewer requests than waymore
+
+Every CDX row carries a content digest, and two captures with the same digest
+are byte-for-byte the same body. Archives are full of such duplicates: every
+`?utm_source=` variant of a page, every `/index.html` next to its `/`, every
+tracking-parameter permutation serves identical bytes, so a list of tens of
+thousands of URLs routinely collapses to a few thousand distinct bodies.
+
+waymore has no notion of this. It downloads one response per URL and copes with
+the volume through a blunt `-l 5000` cap, which both hammers the archive and
+truncates coverage. urx claims each digest the first time it is seen and skips
+every later URL that would replay the same bytes, so the same coverage costs
+one request per *distinct body* rather than one per URL. `--archive-body-limit`
+(default 500) bounds distinct bodies, not URLs: duplicates never count against
+it, and `--verbose` reports how many URLs were skipped as duplicates, how many
+fell past the limit, and how many had no capture to replay.
+
+### Details
+
+- Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
+  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  results (the cache stores URLs only) have none. urx says so when there is
+  nothing to replay; pass `--no-cache` to get fresh captures.
+- The newest capture of each URL is replayed, and the digest of *that* capture
+  is what deduplication keys on. A timestamp reported by another archive lands
+  on the nearest Wayback capture; a URL the Wayback Machine never saw answers
+  404 and is skipped quietly.
+- Captures the archive recorded as errors are not mined, exactly as
+  `--extract-links` ignores live error pages, and non-markup bodies are skipped
+  without being parsed.
+- Discovered links go through the same filters, host validation, and output
+  transforms as URLs that came from a provider.
+- Each body is capped at 10 MiB, the same guard `--extract-links` uses.
+- `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
+  `--timeout`, and `--retries` apply to the replay requests. Under
+  `--network-scope providers` the replay requests, being part of the testing
+  stage, are left unconfigured like the other testers.
+- Incompatible with `--stream`, like every option that runs after collection.
+
+## Archived robots.txt and sitemap.xml
+
+The `robots` and `sitemap` providers read the *live* files, which only say
+what a site hides or lists today. `--archived-discovery` also reads every
+distinct version of those files the Wayback Machine has stored. A `Disallow:`
+from 2015 names paths the site has since stopped mentioning — often because
+they were meant to be forgotten, not because they are gone — and an old
+sitemap lists everything the site once wanted crawled.
+
+```bash
+# Every archived version of robots.txt and sitemap.xml, alongside the live ones
+urx example.com --archived-discovery
+
+# Bound it and pace it; both archived providers answer to --rate-limit-by
+urx example.com --archived-discovery --archived-discovery-limit 20 --rate-limit-by robots=2,sitemap=2
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016
+
+# Just the robots.txt history
+urx example.com --archived-discovery --exclude-sitemap --show-sources
+```
+
+### How it works
+
+1. The versions of each document are listed with one CDX query per file name
+   (`robots.txt`, `sitemap.xml`, `sitemap_index.xml`, `sitemap.txt`):
+
+   ```text
+   /cdx/search/cdx?url=<domain>/robots.txt&fl=original,timestamp,statuscode,digest
+       &collapse=digest&filter=statuscode:2..
+   ```
+
+   `collapse=digest` folds consecutive captures that served the same bytes into
+   one row, so a file crawled daily but edited yearly comes back as one row per
+   *change*. The status filter is what keeps that cheap: the CDX urlkey folds
+   `www.` and the apex into one listing, and their interleaved `301`/`200` rows
+   otherwise defeat the collapse. Measured on github.com/robots.txt: 325,036
+   rows without the filter, 13,909 with it, for the same 107 distinct versions.
+   Any duplicate digest that survives is dropped client-side.
+2. Each distinct version is replayed in raw form
+   (`/web/<timestamp>id_/<original url>`) and handed to the **same parser as
+   the live file**. There is no second parser: a 2015 robots.txt is read by
+   exactly the rules the current one is, including the absolute-path and
+   pattern-skipping guards, and its paths land on the host that actually
+   served it. An archived `<sitemapindex>` is followed into its children at
+   that same timestamp, with the same same-host rule as the live walk.
+3. Captures the archive recorded as anything but a success (github.com's
+   robots.txt was a 401 for part of 2007) are never requested. They are
+   counted and reported under `--verbose` only, as is any version the replay
+   endpoint refuses.
+
+### Details
+
+- `--archived-discovery-limit` (default 50) caps the documents fetched per
+  domain by each archived provider. The newest versions are read first — the
+  live provider already covers the present, and recently-removed paths are the
+  ones most likely to still exist — and nested sitemaps count against the
+  cap. `--verbose` says when the cap cut the list short.
+- The archived reads run as their own provider instances, labelled
+  "Robots.txt (archived)" and "Sitemap (archived)" in `--stats` and
+  `--show-sources`, but they are registered under the existing `robots` and
+  `sitemap` ids rather than as new providers. `--exclude-robots`,
+  `--exclude-sitemap`, and `--rate-limit-by robots=N` / `sitemap=N` therefore
+  govern the live and archived reads together.
+- `--from` / `--to` narrow which versions are considered; the other
+  `--archive-*` predicates do not apply to a version history.
+- Bodies are capped exactly as the live files are (1 MiB for robots.txt,
+  50 MiB per sitemap document).
+- Because it is a provider, it works with `--stream` and its results are
+  cached like any other provider's (the cache key includes the flag).

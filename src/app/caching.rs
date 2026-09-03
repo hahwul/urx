@@ -93,6 +93,7 @@ pub fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         archive_exclude_status: args.archive_exclude_status.clone(),
         archive_mime: args.archive_mime.clone(),
         archive_exclude_mime: args.archive_exclude_mime.clone(),
+        archived_discovery: args.archived_discovery,
     };
 
     CacheKey::new(domain, &effective_provider_ids(args), &filters)

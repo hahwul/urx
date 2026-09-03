@@ -7,6 +7,10 @@ use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
+use crate::providers::archived::{
+    describe_skipped, list_versions, replay_capture, ArchivedDiscovery, Replay,
+};
 use crate::providers::{Provider, UrlRecord};
 
 /// Cap on the bytes read from a robots.txt. The body was previously read whole
@@ -29,6 +33,10 @@ pub struct RobotsProvider {
     proxy_auth: Option<String>,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
+    /// When set, this instance reads the *archived* versions of robots.txt
+    /// from the Wayback Machine instead of the live file. See
+    /// [`RobotsProvider::archived`].
+    archived: Option<ArchivedDiscovery>,
     #[cfg(test)]
     base_url: String,
     #[cfg(test)]
@@ -45,11 +53,25 @@ impl RobotsProvider {
             proxy_auth: None,
             insecure: false,
             rate_limit: None,
+            archived: None,
             #[cfg(test)]
             base_url: String::new(),
             #[cfg(test)]
             base_url_http: String::new(),
         }
+    }
+
+    /// A provider over the robots.txt versions the Wayback Machine holds.
+    ///
+    /// The live file only says what the site hides *today*. A `Disallow:`
+    /// from 2015 names paths the site has since stopped mentioning — often
+    /// because they were meant to be forgotten, not because they are gone.
+    /// Every distinct archived version is replayed and fed to the same parser
+    /// as the live file.
+    pub fn archived(settings: ArchivedDiscovery) -> Self {
+        let mut provider = Self::new();
+        provider.archived = Some(settings);
+        provider
     }
 
     #[cfg(test)]
@@ -96,6 +118,169 @@ enum RobotsFetch {
     /// We never got a usable answer: DNS/connect/TLS failure, a timeout, or a
     /// body that died mid-read.
     Failed(anyhow::Error),
+}
+
+/// Turn the body of a robots.txt served at `protocol://domain/robots.txt` into
+/// the URLs it names: every literal `Disallow:` path and every `Sitemap:`.
+///
+/// One parser for both the live file and every archived version of it, so a
+/// 2015 robots.txt is read by exactly the rules the current one is.
+fn parse_robots_txt(protocol: &str, domain: &str, text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for line in text.lines() {
+        if urls.len() >= MAX_ROBOTS_ENTRIES {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // RFC 9309: field names are case-insensitive and may carry
+        // surrounding whitespace (e.g. `Disallow :`). Split on the first
+        // colon so `Sitemap: https://…` keeps its `https://` value.
+        let Some((field, value)) = line.split_once(':') else {
+            continue;
+        };
+        // Take the first whitespace-delimited token of the value: paths
+        // and URLs never contain spaces, so this drops any trailing
+        // inline `# comment` and stray whitespace in one step.
+        let value = value.split_whitespace().next().unwrap_or("");
+        match field.trim().to_ascii_lowercase().as_str() {
+            "disallow" if !value.is_empty() && value != "/" => {
+                // Disallow entries can be match patterns, not literal
+                // paths: skip glob (`*`) patterns and strip a trailing
+                // `$` end-anchor so we don't emit unfetchable junk URLs.
+                if value.contains('*') {
+                    continue;
+                }
+                // RFC 9309 requires the path to begin with '/', and this
+                // value is pasted directly after the host. Anything else
+                // does not produce the URL it looks like it does: a bare
+                // `admin` yields `https://example.comadmin`, and a value
+                // starting with `@` is worse — `@evil.example/` turns
+                // `https://example.com` into userinfo and the URL lands on
+                // evil.example, letting the file under audit put another
+                // host's URLs into urx's results.
+                if !value.starts_with('/') {
+                    continue;
+                }
+                let path = value.strip_suffix('$').unwrap_or(value);
+                if !path.is_empty() && path != "/" {
+                    urls.push(format!("{protocol}://{domain}{path}"));
+                }
+            }
+            "sitemap" if !value.is_empty() => {
+                // Resolved rather than pushed verbatim: a relative
+                // `Sitemap: /sitemap.xml` is not a URL, and a
+                // non-http(s) value is not one urx can fetch.
+                if let Some(resolved) = resolve_sitemap_value(protocol, domain, value) {
+                    urls.push(resolved);
+                }
+            }
+            _ => {}
+        }
+    }
+    urls
+}
+
+/// The scheme and host a robots.txt was archived under, so its paths are
+/// pasted onto the host that actually served them (the index folds `www.` and
+/// the apex into one listing).
+fn archived_origin(original: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(original).ok()?;
+    let host = parsed.host_str()?.to_string();
+    let host = match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    };
+    Some((parsed.scheme().to_string(), host))
+}
+
+impl RobotsProvider {
+    /// Read every distinct archived version of `domain`'s robots.txt.
+    ///
+    /// Captures the archive recorded as anything but a success are not
+    /// replayed at all (github.com's robots.txt was a 401 for part of 2007);
+    /// they are counted and reported under `--verbose` only. A capture the
+    /// replay endpoint refuses is skipped the same way.
+    async fn fetch_archived(
+        &self,
+        domain: &str,
+        settings: &ArchivedDiscovery,
+        reporter: Option<ProgressReporter>,
+    ) -> Result<Vec<UrlRecord>> {
+        let client = self.build_client()?;
+        let limiter = self.rate_limit.as_ref();
+        let note = |msg: String| {
+            if let Some(r) = &reporter {
+                r.note(msg);
+            }
+        };
+
+        if let Some(r) = &reporter {
+            r.detail("listing robots.txt versions…");
+        }
+        let listing = list_versions(
+            &client,
+            settings,
+            &format!("{domain}/robots.txt"),
+            self.retries,
+            limiter,
+        )
+        .await?;
+        if !listing.skipped.is_empty() {
+            note(format!(
+                "{domain}: archived robots.txt captures not worth replaying: {}",
+                describe_skipped(&listing.skipped)
+            ));
+        }
+        if listing.fetchable.len() > settings.limit {
+            note(format!(
+                "{domain}: {} distinct archived robots.txt versions; replaying the newest {} (raise --archived-discovery-limit for the rest)",
+                listing.fetchable.len(),
+                settings.limit
+            ));
+        }
+
+        let mut urls = Vec::new();
+        let total = listing.fetchable.len().min(settings.limit);
+        for (i, capture) in listing.fetchable.iter().take(settings.limit).enumerate() {
+            if let Some(r) = &reporter {
+                if r.stop_requested() {
+                    r.mark_partial();
+                    break;
+                }
+                r.detail(format!("robots.txt version {}/{total}…", i + 1));
+            }
+            match replay_capture(
+                &client,
+                settings.origin(),
+                capture,
+                MAX_ROBOTS_BYTES,
+                limiter,
+            )
+            .await
+            {
+                Ok(Replay::Body { text, .. }) => {
+                    let (protocol, host) = archived_origin(&capture.original)
+                        .unwrap_or_else(|| ("https".to_string(), domain.to_string()));
+                    urls.extend(parse_robots_txt(&protocol, &host, &text));
+                }
+                Ok(Replay::Unavailable(status)) => note(format!(
+                    "{domain}: skipping archived robots.txt from {} (archive answered {status})",
+                    capture.timestamp
+                )),
+                Err(e) => note(format!(
+                    "{domain}: failed to replay archived robots.txt from {}: {e}",
+                    capture.timestamp
+                )),
+            }
+        }
+
+        urls.sort();
+        urls.dedup();
+        Ok(urls.into_iter().map(UrlRecord::bare).collect())
+    }
 }
 
 /// Issue one robots.txt request, classifying the outcome for the caller.
@@ -145,6 +330,10 @@ impl Provider for RobotsProvider {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(settings) = &self.archived {
+                return self.fetch_archived(domain, settings, None).await;
+            }
+
             let client = self.build_client()?;
             let limiter = self.rate_limit.as_ref();
 
@@ -158,7 +347,7 @@ impl Provider for RobotsProvider {
                 format!("https://{domain}/robots.txt")
             };
 
-            let mut urls = Vec::new();
+            let mut urls: Vec<String> = Vec::new();
 
             // Whether *either* scheme managed to get an answer out of the host.
             // A 404 counts: it means "this host has no robots.txt", which is a
@@ -222,59 +411,7 @@ impl Provider for RobotsProvider {
                 }
             };
 
-            for line in text.lines() {
-                if urls.len() >= MAX_ROBOTS_ENTRIES {
-                    break;
-                }
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                // RFC 9309: field names are case-insensitive and may carry
-                // surrounding whitespace (e.g. `Disallow :`). Split on the first
-                // colon so `Sitemap: https://…` keeps its `https://` value.
-                let Some((field, value)) = line.split_once(':') else {
-                    continue;
-                };
-                // Take the first whitespace-delimited token of the value: paths
-                // and URLs never contain spaces, so this drops any trailing
-                // inline `# comment` and stray whitespace in one step.
-                let value = value.split_whitespace().next().unwrap_or("");
-                match field.trim().to_ascii_lowercase().as_str() {
-                    "disallow" if !value.is_empty() && value != "/" => {
-                        // Disallow entries can be match patterns, not literal
-                        // paths: skip glob (`*`) patterns and strip a trailing
-                        // `$` end-anchor so we don't emit unfetchable junk URLs.
-                        if value.contains('*') {
-                            continue;
-                        }
-                        // RFC 9309 requires the path to begin with '/', and this
-                        // value is pasted directly after the host. Anything else
-                        // does not produce the URL it looks like it does: a bare
-                        // `admin` yields `https://example.comadmin`, and a value
-                        // starting with `@` is worse — `@evil.example/` turns
-                        // `https://example.com` into userinfo and the URL lands on
-                        // evil.example, letting the file under audit put another
-                        // host's URLs into urx's results.
-                        if !value.starts_with('/') {
-                            continue;
-                        }
-                        let path = value.strip_suffix('$').unwrap_or(value);
-                        if !path.is_empty() && path != "/" {
-                            urls.push(format!("{protocol}://{domain}{path}"));
-                        }
-                    }
-                    "sitemap" if !value.is_empty() => {
-                        // Resolved rather than pushed verbatim: a relative
-                        // `Sitemap: /sitemap.xml` is not a URL, and a
-                        // non-http(s) value is not one urx can fetch.
-                        if let Some(resolved) = resolve_sitemap_value(protocol, domain, value) {
-                            urls.push(resolved);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            urls.extend(parse_robots_txt(protocol, domain, &text));
 
             // A robots.txt routinely repeats the same Disallow under several
             // User-agent groups; every other provider returns a deduplicated
@@ -284,6 +421,17 @@ impl Provider for RobotsProvider {
 
             Ok(urls.into_iter().map(UrlRecord::bare).collect())
         })
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
+        match &self.archived {
+            Some(settings) => Box::pin(self.fetch_archived(domain, settings, reporter)),
+            None => self.fetch_urls(domain),
+        }
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -840,5 +988,268 @@ Sitemap: http://example.com/sitemap.xml
         // Protocol should be http
         assert!(urls.contains(&"http://example.com/private/".to_string()));
         assert!(urls.contains(&"http://example.com/sitemap.xml".to_string()));
+    }
+
+    /// The archived robots.txt of a site as the CDX index lists it: one row
+    /// per distinct body, in chronological order, plus a row with no
+    /// recorded status (a revisit record) that the server-side filter lets
+    /// through and the client must set aside.
+    fn archived_index(server_host: &str) -> String {
+        format!(
+            "http://www.{server_host}/robots.txt 20070917000000 - -\n\
+             http://www.{server_host}/robots.txt 20150101000000 200 V2015\n\
+             https://{server_host}/robots.txt 20240101000000 200 V2024\n"
+        )
+    }
+
+    /// A reporter whose verbose notes land in `notes`.
+    fn capturing_reporter() -> (
+        ProgressReporter,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let (manager, notes) = crate::progress::ProgressManager::capturing();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_notifier(manager.notifier());
+        (reporter, notes)
+    }
+
+    #[test]
+    fn a_2015_robots_txt_parses_with_the_live_rules() {
+        // The point of the archived provider: a Disallow list from years ago
+        // still names paths, and it is read by exactly the parser the live
+        // file goes through — same case-insensitivity, same pattern skipping,
+        // same absolute-path rule.
+        let stale = "\
+# robots.txt as of 2015
+User-agent: *
+Disallow: /old-admin/
+Disallow: /beta/*
+disallow: /legacy-api/v1
+Disallow: /secret$
+Sitemap: /sitemap-2015.xml
+";
+        let urls = parse_robots_txt("https", "example.com", stale);
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/old-admin/".to_string(),
+                "https://example.com/legacy-api/v1".to_string(),
+                "https://example.com/secret".to_string(),
+                "https://example.com/sitemap-2015.xml".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn archived_origin_keeps_the_host_and_scheme_the_file_was_served_under() {
+        assert_eq!(
+            archived_origin("http://www.example.com/robots.txt"),
+            Some(("http".to_string(), "www.example.com".to_string()))
+        );
+        assert_eq!(
+            archived_origin("https://example.com:8443/robots.txt"),
+            Some(("https".to_string(), "example.com:8443".to_string()))
+        );
+        assert_eq!(archived_origin("not a url"), None);
+    }
+
+    #[tokio::test]
+    async fn archived_versions_are_replayed_and_parsed_and_dead_captures_are_skipped() {
+        let mut server = mockito::Server::new_async().await;
+        let index = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("url".into(), "example.com/robots.txt".into()),
+                mockito::Matcher::UrlEncoded("collapse".into(), "digest".into()),
+            ]))
+            .with_status(200)
+            .with_body(archived_index("example.com"))
+            .expect(1)
+            .create_async()
+            .await;
+        // Never requested: the index recorded no status for it.
+        let dead = server
+            .mock(
+                "GET",
+                "/web/20070917000000id_/http://www.example.com/robots.txt",
+            )
+            .expect(0)
+            .create_async()
+            .await;
+        let v2015 = server
+            .mock(
+                "GET",
+                "/web/20150101000000id_/http://www.example.com/robots.txt",
+            )
+            .with_status(200)
+            .with_body("User-agent: *\nDisallow: /old-admin/\nDisallow: /shared\n")
+            .expect(1)
+            .create_async()
+            .await;
+        let v2024 = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/robots.txt",
+            )
+            .with_status(200)
+            .with_body("User-agent: *\nDisallow: /new-admin/\nDisallow: /shared\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let provider =
+            RobotsProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        let (reporter, notes) = capturing_reporter();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter))
+                .await
+                .unwrap(),
+        );
+
+        // Both versions contribute; paths land on the host that served them;
+        // the union is sorted and deduplicated like every provider's output.
+        assert_eq!(
+            urls,
+            vec![
+                "http://www.example.com/old-admin/".to_string(),
+                "http://www.example.com/shared".to_string(),
+                "https://example.com/new-admin/".to_string(),
+                "https://example.com/shared".to_string(),
+            ]
+        );
+        index.assert();
+        dead.assert();
+        v2015.assert();
+        v2024.assert();
+
+        // The skipped capture is reported — through the verbose channel only.
+        let notes = notes.lock().unwrap().join("\n");
+        assert!(notes.contains("1 skipped (no status ×1)"), "{notes}");
+    }
+
+    #[tokio::test]
+    async fn archived_limit_replays_the_newest_versions_first() {
+        let mut server = mockito::Server::new_async().await;
+        let _index = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "url".into(),
+                "example.com/robots.txt".into(),
+            ))
+            .with_status(200)
+            .with_body(archived_index("example.com"))
+            .create_async()
+            .await;
+        let older = server
+            .mock(
+                "GET",
+                "/web/20150101000000id_/http://www.example.com/robots.txt",
+            )
+            .expect(0)
+            .create_async()
+            .await;
+        let newest = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/robots.txt",
+            )
+            .with_status(200)
+            .with_body("Disallow: /new-admin/\n")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let provider =
+            RobotsProvider::archived(ArchivedDiscovery::new(1).with_origin(server.url()));
+        let (reporter, notes) = capturing_reporter();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter))
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(urls, vec!["https://example.com/new-admin/".to_string()]);
+        older.assert();
+        newest.assert();
+        let notes = notes.lock().unwrap().join("\n");
+        assert!(
+            notes.contains("2 distinct archived robots.txt versions; replaying the newest 1"),
+            "{notes}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_version_the_archive_will_not_replay_is_skipped_not_fatal() {
+        let mut server = mockito::Server::new_async().await;
+        let _index = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "url".into(),
+                "example.com/robots.txt".into(),
+            ))
+            .with_status(200)
+            .with_body("https://example.com/robots.txt 20240101000000 200 V2024\n")
+            .create_async()
+            .await;
+        let _replay = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/robots.txt",
+            )
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let provider =
+            RobotsProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        let (reporter, notes) = capturing_reporter();
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter))
+            .await
+            .expect("a refused replay is an empty result, not an error");
+        assert!(urls.is_empty());
+        let notes = notes.lock().unwrap().join("\n");
+        assert!(notes.contains("archive answered 404"), "{notes}");
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_index_is_an_error() {
+        // The listing is the one request the archived provider cannot do
+        // without; failing it must not read as "no archived versions".
+        let dead = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            format!("http://{addr}")
+        };
+        let mut provider = RobotsProvider::archived(ArchivedDiscovery::new(10).with_origin(dead));
+        provider.with_retries(0);
+        assert!(provider.fetch_urls("example.com").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_live_provider_is_unchanged_by_the_archived_mode() {
+        // `RobotsProvider::new()` must never touch the archive.
+        let mut server = mockito::Server::new_async().await;
+        let index = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let _live = server
+            .mock("GET", "/robots.txt")
+            .with_status(200)
+            .with_body("Disallow: /live\n")
+            .create_async()
+            .await;
+
+        let mut provider = RobotsProvider::new();
+        provider.with_base_url(server.url());
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
+        assert_eq!(urls, vec!["https://example.com/live".to_string()]);
+        index.assert();
     }
 }
