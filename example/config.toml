@@ -70,6 +70,8 @@ check_status = false            # Check HTTP status code of collected URLs
 include_status = ["200", "30x"] # Include URLs with these status codes
 exclude_status = ["404", "50x"] # Exclude URLs with these status codes
 extract_links = false           # Extract additional links from collected URLs
+extract_js_endpoints = false    # Fetch collected JavaScript and extract the endpoints in it
+max_js_files = 500              # Cap on files extract_js_endpoints fetches (0 = unlimited)
 
 # Cache options
 [cache]

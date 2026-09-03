@@ -99,6 +99,8 @@ Testing Options:
   --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x)
   --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x)
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
+  --extract-js-endpoints             Fetch collected JavaScript and extract the endpoints in its string literals (see "JavaScript Endpoint Extraction" below)
+  --max-js-files <N>                 Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
 
 Cache Options:
   --incremental              Only return new URLs compared to previous scans
@@ -438,3 +440,88 @@ urx example.com --extract-links -e js
 # Extraction obeys the network settings too
 urx example.com --extract-links --proxy http://localhost:8080 --timeout 20
 ```
+
+## JavaScript Endpoint Extraction
+
+`--extract-js-endpoints` is the companion to `--extract-links` for the URLs
+that never appear in HTML. A modern web app's API surface lives inside its
+JavaScript bundles as string literals — `fetch("/api/v2/users")`,
+`axios.post("/graphql")`, `` `/api/orders/${id}` `` — and `-e js` collects
+those bundles without ever reading them. This option re-fetches every
+collected URL that looks like JavaScript and mines the body for those
+literals.
+
+**What is fetched.** URLs are skipped up front when their extension is
+certainly not script (images, fonts, CSS, archives, `.json`, `.map`, ...).
+Everything else is requested and classified by `Content-Type`: JavaScript
+types are scanned whole; HTML is scanned for its inline `<script>` blocks
+only; a `.js`/`.mjs`/`.jsx`/`.ts` URL served as `text/plain` or
+`application/octet-stream` is still treated as script. Anything else is
+discarded unread.
+
+**What is extracted.**
+
+- Quoted absolute and origin-relative paths: `"/api/v2/users"`, `'/graphql'`.
+- Full and protocol-relative URLs: `"https://api.example.com/v1"`, `"//cdn.example.com/x"`.
+- The URL argument of `fetch(...)`, `axios.get/post/...(...)`, `axios({url: ...})`,
+  `$.ajax(...)`, and `XMLHttpRequest.open(method, ...)`, including the
+  `base + "/path"` spelling.
+- The static prefix of a template literal: `` `/api/users/${id}` `` → `/api/users/`.
+- ES-module chunk imports and asset references: `import("./chunk-ab12.js")`.
+
+**How relative paths resolve.** `/api/x` resolves against the script's
+origin, which is what the browser does at runtime. `./chunk.js` resolves
+against the script's own URL, as an ES-module import does. Bare relative
+paths (`api/v1/x`) and `./x` request arguments resolve at runtime against the
+page that loaded the bundle, which urx does not know; they are resolved
+against the origin root, since resolving them under the bundle's asset
+directory would certainly be wrong.
+
+**Noise suppression.** Regex-mining a minified bundle produces mostly
+garbage, so the policy errs towards dropping. The following are discarded,
+and the code comments in `src/testers/js_endpoint_extractor.rs` name the
+real-bundle shape behind each rule:
+
+| Dropped | Why |
+|---------|-----|
+| MIME types (`image/png`, `application/json`, `*/*`) | Header values with the shape of a two-segment path — the single most common false positive |
+| `"/"`, `"/x"`, `"//"`, `"./"`, `"../"` | Path-join fragments and comment delimiters (`fetch("/")` is still kept) |
+| Sourcemap directives, `//#`, `//@` | Not URLs |
+| Base64 and `data:` payloads | Inline images and fonts; hex content hashes and hashed filenames survive |
+| CSS shorthand and ratios (`12px/1.5`, `16/9`) | Style values |
+| Date formats (`MM/DD/YYYY`, `HH/mm`) | Formatting tokens |
+| Bare extensions (`.js`, `/.png`) | File-type checks |
+| Regex sources and tag fragments (`/^\/api/(\d+)`, `</div>`) | Excluded by the character class — they never match at all |
+| Strings closed by a different quote (`'/g,"`), trailing `,` `;` `:` | Artifacts of regex literals next to strings |
+| `x/y` with only two bare segments (`react/jsx-runtime`, `en/US`) | Package paths and locale tags; three segments, a query, or a file extension is enough evidence to keep |
+| Package and source-tree paths (`@scope/pkg/...`, `node_modules/...`, `./src/...`, `lib/esm/...`) | Import specifiers and webpack module keys |
+| `./x` without a fetchable extension (`require("./utils")`, `{"./zlib/deflate":46}`) | CommonJS module specifiers — a real bundle contributed ~50 of them from jszip and pako alone |
+| Path suffixes after `+` (`"/users/" + id + "/avatar"` → `/avatar`) | Only the prefix is a route; `base + "/api/x"` is still kept |
+| XML namespaces and schema hosts (`www.w3.org`, `schema.org`) | Boilerplate in every SVG-bearing bundle |
+
+A string that is the argument of a request call is known to be a URL and
+bypasses the length and bare-relative rules.
+
+**Safety.** Each body is capped at 10 MiB, fetches respect `--timeout`,
+`--retries`, `--proxy`, `--insecure`, `--random-agent`, and `--rate-limit`,
+and the number of files fetched per run is capped by `--max-js-files`
+(default 500, `0` for unlimited). Discovered endpoints go through the same
+filters and host validation as everything else, so strict mode (the default)
+drops off-site URLs, and `--no-strict` keeps them. Note that because
+discovered endpoints pass through your filters, combining this option with
+`-e js` keeps only the `.js` endpoints it found — the extractor already
+selects JavaScript by itself, so leave `-e js` off when you want the API paths.
+`--extract-js-endpoints` needs the complete result set and cannot be combined
+with `--stream`.
+
+```bash
+# Mine every collected script for API paths
+urx example.com --extract-js-endpoints
+
+# Keep the discovered paths that look like an API, and check they respond
+urx example.com --extract-js-endpoints --patterns api,graphql --check-status
+
+# Bound the run: at most 50 bundles, one request per second
+urx example.com --extract-js-endpoints --max-js-files 50 --rate-limit 1
+```
+

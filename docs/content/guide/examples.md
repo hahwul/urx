@@ -200,6 +200,34 @@ host validation, and output transforms as the rest of the run:
 urx example.com --extract-links -e js
 ```
 
+### Extract Endpoints from JavaScript
+```bash
+urx example.com --extract-js-endpoints
+```
+
+`--extract-js-endpoints` fetches every collected URL that looks like a script
+and mines its string literals for the paths and URLs the app calls:
+`fetch("/api/v2/users")`, `axios.post("/graphql")`, the static prefix of
+`` `/api/orders/${id}` ``, ES-module chunk imports. These are the endpoints
+that never appear in HTML. Output is heavily de-noised (MIME types, module
+specifiers, base64 payloads, CSS values, regex fragments and the like are
+dropped — see the [CLI options guide](/guide/cli-options/#javascript-endpoint-extraction)
+for the full policy), bodies are capped at 10 MiB, the number of files fetched
+is bounded by `--max-js-files`, and the discovered endpoints go through the
+same filters and host validation as the rest of the run.
+
+```bash
+# Collect the site's bundles with --extract-links, then mine them
+urx example.com --extract-links --extract-js-endpoints --max-js-files 100
+
+# Keep the API-looking paths and probe them
+urx example.com --extract-js-endpoints --patterns api,graphql --check-status --include-status 200,401,403
+```
+
+Leave `-e js` off when using this option: discovered endpoints pass through
+your filters too, so `-e js` would keep only the `.js` files it found rather
+than the API paths.
+
 ### Status Filtering
 ```bash
 # Include only successful responses

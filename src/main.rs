@@ -186,8 +186,8 @@ async fn collect_urls(
     Ok((result, domains))
 }
 
-/// Re-request the surviving URLs when `--check-status` or `--extract-links`
-/// asked for it; otherwise wrap them unchanged.
+/// Re-request the surviving URLs when `--check-status`, `--extract-links` or
+/// `--extract-js-endpoints` asked for it; otherwise wrap them unchanged.
 async fn run_testers(
     args: &Args,
     network_settings: &NetworkSettings,
