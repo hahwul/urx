@@ -398,6 +398,16 @@ pub struct Args {
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]
     pub no_cache: bool,
+
+    /// Print a shell completion script to stdout and exit. Needs no DOMAINS,
+    /// so `urx --completions zsh > ~/.zfunc/_urx` works on its own.
+    #[clap(long, value_name = "SHELL", value_enum)]
+    pub completions: Option<clap_complete::Shell>,
+
+    /// Print the roff man page to stdout and exit, e.g.
+    /// `urx --manpage > ~/.local/share/man/man1/urx.1`. Needs no DOMAINS.
+    #[clap(long)]
+    pub manpage: bool,
 }
 
 /// The set of options the user actually named on the command line.

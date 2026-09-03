@@ -1,9 +1,11 @@
 use anyhow::Result;
 use reqwest::Client;
+use scraper::node::Element;
 use scraper::{Html, Selector};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
 
@@ -37,6 +39,100 @@ fn is_html_like(headers: &reqwest::header::HeaderMap) -> bool {
         }
         None => true,
     }
+}
+
+/// Element name to the attribute on it that holds a URL.
+///
+/// A page's fetchable surface is not just its anchors. Script bundles,
+/// stylesheets, form endpoints, iframes and embedded objects are precisely the
+/// URLs an OSINT sweep is after — script and form targets especially, since
+/// they name endpoints that never appear as a link — and only `<a href>` was
+/// ever read, so every one of them was dropped on the floor.
+const URL_ATTRIBUTES: &[(&str, &str)] = &[
+    ("a", "href"),
+    ("script", "src"),
+    ("link", "href"),
+    ("form", "action"),
+    ("iframe", "src"),
+    ("img", "src"),
+    ("source", "src"),
+    ("object", "data"),
+    ("embed", "src"),
+];
+
+/// `<meta http-equiv="refresh" content="0; url=/next">`: a redirect written in
+/// markup instead of a header, so its target is a real successor page.
+const META_REFRESH_SELECTOR: &str = "meta[http-equiv]";
+
+/// The selectors [`LinkExtractor::extract_links`] runs, parsed once for the
+/// process.
+///
+/// `Selector::parse` is real work and every one of these strings is fixed at
+/// compile time, so re-parsing them for each of the thousands of pages an
+/// `--extract-links` run touches is pure waste.
+struct LinkSelectors {
+    /// `<base href>`, which redefines what relative URLs resolve against.
+    base: Selector,
+    /// Every entry of [`URL_ATTRIBUTES`] plus the meta-refresh tag, as a single
+    /// selector: one walk of the document, and matches arrive in document
+    /// order rather than grouped by tag.
+    links: Selector,
+}
+
+static SELECTORS: LazyLock<LinkSelectors> = LazyLock::new(|| {
+    let mut parts: Vec<String> = URL_ATTRIBUTES
+        .iter()
+        .map(|(tag, attr)| format!("{tag}[{attr}]"))
+        .collect();
+    parts.push(META_REFRESH_SELECTOR.to_string());
+
+    LinkSelectors {
+        base: Selector::parse("base[href]").expect("`base[href]` is a valid CSS selector"),
+        links: Selector::parse(&parts.join(", "))
+            .expect("URL_ATTRIBUTES and META_REFRESH_SELECTOR must form a valid CSS selector"),
+    }
+});
+
+/// The raw URL carried by `element`, if it carries one.
+///
+/// Every tag but `<meta>` simply holds it in an attribute; a meta refresh
+/// buries it inside `content`.
+fn url_attribute(element: &Element) -> Option<&str> {
+    if element.name() == "meta" {
+        return meta_refresh_target(element);
+    }
+    URL_ATTRIBUTES
+        .iter()
+        .find(|(tag, _)| *tag == element.name())
+        .and_then(|(_, attr)| element.attr(attr))
+}
+
+/// The target of a `<meta http-equiv="refresh">`, or `None` when the element is
+/// some other `http-equiv` or names no URL.
+///
+/// The content is a delay optionally followed by `url=...`. The key is
+/// case-insensitive, the spacing is arbitrary, and the value is frequently
+/// quoted — all three appear in the wild.
+fn meta_refresh_target(element: &Element) -> Option<&str> {
+    if !element
+        .attr("http-equiv")?
+        .trim()
+        .eq_ignore_ascii_case("refresh")
+    {
+        return None;
+    }
+
+    let target = element
+        .attr("content")?
+        .split(';')
+        // The delay carries no '=', so it falls out here without being skipped
+        // positionally — some pages omit it entirely.
+        .find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            key.trim().eq_ignore_ascii_case("url").then(|| value.trim())
+        })?;
+
+    Some(target.trim_matches(['"', '\'']))
 }
 
 /// HTML link extractor that finds URLs in web pages
@@ -117,37 +213,46 @@ impl LinkExtractor {
 
     /// Extracts links from HTML content, resolving them against a base URL.
     ///
+    /// Every URL-bearing tag in [`URL_ATTRIBUTES`] is read, plus meta refresh
+    /// targets — not just `<a href>`.
+    ///
     /// A `<base href>` in the document overrides `base_url` for relative links —
     /// that is the entire purpose of the tag, and ignoring it meant every
     /// relative href on a page that declares one resolved to the wrong absolute
     /// URL. An unparseable or relative `<base href>` is itself resolved against
     /// the page URL, as browsers do.
+    ///
+    /// The result is deduplicated in document order: a single page names the
+    /// same stylesheet or logo from a dozen places, and reporting each of them
+    /// as a separate discovery is noise.
     fn extract_links(base_url: &Url, html_content: &str) -> Vec<String> {
         let document = Html::parse_document(html_content);
-        let mut links = Vec::new();
-
-        // Constant, known-valid selectors.
-        let base_selector = Selector::parse("base[href]").unwrap();
-        let selector = Selector::parse("a[href]").unwrap();
 
         // Only the first <base href> in the document has effect.
         let resolved_base = document
-            .select(&base_selector)
+            .select(&SELECTORS.base)
             .next()
             .and_then(|el| el.value().attr("href"))
             .and_then(|href| base_url.join(href).ok())
             .unwrap_or_else(|| base_url.clone());
 
-        // Extract and normalize links
-        for element in document.select(&selector) {
-            if let Some(href) = element.value().attr("href") {
-                if !Self::is_fetchable_href(href) {
-                    continue;
-                }
-                // Resolve relative URLs to absolute URLs
-                if let Ok(absolute_url) = resolved_base.join(href.trim()) {
-                    links.push(absolute_url.to_string());
-                }
+        let mut links = Vec::new();
+        let mut seen = HashSet::new();
+
+        for element in document.select(&SELECTORS.links) {
+            let Some(raw) = url_attribute(element.value()) else {
+                continue;
+            };
+            if !Self::is_fetchable_href(raw) {
+                continue;
+            }
+            // Resolve relative URLs to absolute URLs
+            let Ok(absolute_url) = resolved_base.join(raw.trim()) else {
+                continue;
+            };
+            let absolute_url = absolute_url.to_string();
+            if seen.insert(absolute_url.clone()) {
+                links.push(absolute_url);
             }
         }
 
@@ -372,6 +477,224 @@ mod tests {
         let html = "<a>No href</a>";
         let links = LinkExtractor::extract_links(&base_url, html);
         assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_every_url_bearing_tag_is_collected() {
+        // Regression: only `<a href>` was read, so script bundles, stylesheets,
+        // form endpoints, iframes and embedded objects — the URLs an OSINT
+        // sweep is actually after — were all dropped.
+        let base_url = Url::parse("https://example.com/dir/page.html").unwrap();
+
+        // One case per supported tag, checked alone so a failure names the tag
+        // that broke rather than a diff of ten URLs.
+        let cases = [
+            (r#"<a href="/anchor">x</a>"#, "https://example.com/anchor"),
+            (
+                r#"<script src="/app.js"></script>"#,
+                "https://example.com/app.js",
+            ),
+            (
+                r#"<link rel="stylesheet" href="/site.css">"#,
+                "https://example.com/site.css",
+            ),
+            (
+                r#"<form action="/search" method="get"></form>"#,
+                "https://example.com/search",
+            ),
+            (
+                r#"<iframe src="/frame.html"></iframe>"#,
+                "https://example.com/frame.html",
+            ),
+            // Relative, to prove resolution runs on every tag and not just <a>.
+            (
+                r#"<img src="logo.png">"#,
+                "https://example.com/dir/logo.png",
+            ),
+            (
+                r#"<video><source src="/clip.mp4"></video>"#,
+                "https://example.com/clip.mp4",
+            ),
+            (
+                r#"<object data="/legacy.swf"></object>"#,
+                "https://example.com/legacy.swf",
+            ),
+            (
+                r#"<embed src="/plugin.svg">"#,
+                "https://example.com/plugin.svg",
+            ),
+            (
+                r#"<meta http-equiv="refresh" content="0; url=/next">"#,
+                "https://example.com/next",
+            ),
+        ];
+
+        for (html, expected) in cases {
+            let links = LinkExtractor::extract_links(&base_url, html);
+            assert_eq!(links, vec![expected.to_string()], "markup: {html}");
+        }
+    }
+
+    #[test]
+    fn test_tags_are_collected_together_in_document_order() {
+        let base_url = Url::parse("https://example.com/").unwrap();
+        let html = r#"
+            <html>
+              <head>
+                <link rel="stylesheet" href="/a.css">
+                <script src="/b.js"></script>
+              </head>
+              <body>
+                <a href="/c">c</a>
+                <img src="/d.png">
+                <form action="/e"></form>
+              </body>
+            </html>
+        "#;
+
+        assert_eq!(
+            LinkExtractor::extract_links(&base_url, html),
+            vec![
+                "https://example.com/a.css".to_string(),
+                "https://example.com/b.js".to_string(),
+                "https://example.com/c".to_string(),
+                "https://example.com/d.png".to_string(),
+                "https://example.com/e".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_duplicate_links_are_reported_once() {
+        // A real page names its logo and its stylesheet from several places;
+        // each repeat used to come back as a separate discovery.
+        let base_url = Url::parse("https://example.com/").unwrap();
+        let html = r#"
+            <a href="/same">one</a>
+            <a href="/same">two</a>
+            <img src="/same">
+            <link rel="preload" href="https://example.com/same">
+            <a href="/other">other</a>
+        "#;
+
+        assert_eq!(
+            LinkExtractor::extract_links(&base_url, html),
+            vec![
+                "https://example.com/same".to_string(),
+                "https://example.com/other".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_meta_refresh_content_variants() {
+        let base_url = Url::parse("https://example.com/start").unwrap();
+
+        for html in [
+            r#"<meta http-equiv="refresh" content="0; url=/next">"#,
+            // No space after the delimiter.
+            r#"<meta http-equiv="refresh" content="5;url=/next">"#,
+            // Uppercase key and header name.
+            r#"<meta http-equiv="Refresh" content="0; URL=/next">"#,
+            // Quoted value.
+            r#"<meta http-equiv="refresh" content="0; url='/next'">"#,
+            // No delay at all.
+            r#"<meta http-equiv="refresh" content="url=/next">"#,
+        ] {
+            assert_eq!(
+                LinkExtractor::extract_links(&base_url, html),
+                vec!["https://example.com/next".to_string()],
+                "markup: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_meta_tags_that_name_no_url_are_ignored() {
+        let base_url = Url::parse("https://example.com/start").unwrap();
+
+        for html in [
+            // A refresh that only reloads the current page names no target.
+            r#"<meta http-equiv="refresh" content="30">"#,
+            // A different http-equiv entirely: its content is not a URL.
+            r#"<meta http-equiv="content-type" content="text/html; charset=utf-8">"#,
+            r#"<meta name="description" content="url=not-a-redirect">"#,
+        ] {
+            assert!(
+                LinkExtractor::extract_links(&base_url, html).is_empty(),
+                "markup: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_fetchable_sources_are_skipped_on_every_tag() {
+        // `is_fetchable_href` has to guard the new attributes too — inline
+        // `data:` images and `javascript:` targets are not URLs urx found.
+        let base_url = Url::parse("https://example.com/start").unwrap();
+        let html = r##"
+            <img src="data:image/gif;base64,R0lGOD">
+            <script src="javascript:void(0)"></script>
+            <form action="#"></form>
+            <iframe src="about:blank"></iframe>
+            <embed src="">
+            <link rel="icon" href="/favicon.ico">
+        "##;
+
+        assert_eq!(
+            LinkExtractor::extract_links(&base_url, html),
+            vec!["https://example.com/favicon.ico".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_base_href_applies_to_every_tag() {
+        let base_url = Url::parse("https://example.com/deep/page.html").unwrap();
+        let html = r#"
+            <head><base href="https://cdn.example.com/app/"></head>
+            <body><script src="bundle.js"></script><img src="hero.png"></body>
+        "#;
+
+        assert_eq!(
+            LinkExtractor::extract_links(&base_url, html),
+            vec![
+                "https://cdn.example.com/app/bundle.js".to_string(),
+                "https://cdn.example.com/app/hero.png".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetched_page_yields_more_than_anchors() {
+        // The same expansion, end to end through the HTTP path.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/index.html")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                r#"<script src="/static/app.js"></script>
+                   <form action="/api/search"></form>
+                   <a href="/about">about</a>"#,
+            )
+            .create_async()
+            .await;
+
+        let extractor = LinkExtractor::new();
+        let links = extractor
+            .test_url(&format!("{}/index.html", server.url()))
+            .await
+            .unwrap();
+
+        let base = server.url();
+        assert_eq!(
+            links,
+            vec![
+                format!("{base}/static/app.js"),
+                format!("{base}/api/search"),
+                format!("{base}/about"),
+            ]
+        );
     }
 
     #[test]
