@@ -155,6 +155,8 @@ pub fn build_test_args() -> Args {
         archive_mime: vec![],
         archive_exclude_mime: vec![],
         github_api_key: vec![],
+        completions: None,
+        manpage: false,
     }
 }
 

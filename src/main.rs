@@ -227,7 +227,15 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) {
 async fn main() -> Result<()> {
     let (mut args, provided) = cli::parse_args();
 
-    // Short-circuit: list providers and exit without doing any I/O.
+    // Short-circuits: emit the requested artifact and exit without touching the
+    // config layers, the network, or the domain list — these flags are useful
+    // on their own, with no target named.
+    if let Some(shell) = args.completions {
+        return app::shell::print_completions(shell);
+    }
+    if args.manpage {
+        return app::shell::print_man_page();
+    }
     if args.list_providers {
         print_provider_list();
         return Ok(());

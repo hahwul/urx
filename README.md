@@ -68,6 +68,32 @@ The compiled binary will be available at `target/release/urx`.
 
 [ghcr.io/hahwul/urx](https://github.com/hahwul/urx/pkgs/container/urx)
 
+### Shell Completions
+
+`urx` generates its own completion script, so it always matches the flags of
+the binary you actually have installed.
+
+```bash
+# zsh — any directory on your $fpath works
+urx --completions zsh > ~/.zfunc/_urx
+# (make sure ~/.zfunc is on the fpath, then `compinit`)
+
+# bash
+urx --completions bash > ~/.local/share/bash-completion/completions/urx
+
+# fish
+urx --completions fish > ~/.config/fish/completions/urx.fish
+```
+
+`powershell` and `elvish` are supported too. The flag needs no target domain.
+
+### Man Page
+
+```bash
+urx --manpage > ~/.local/share/man/man1/urx.1
+man urx
+```
+
 ## Usage
 
 ### Basic Usage
@@ -94,6 +120,8 @@ Arguments:
 Options:
   -c, --config <CONFIG>           Config file to load
       --provider-config <PATH>    Separate provider config file holding only API keys (default: $XDG_CONFIG_HOME/urx/provider-config.toml). CLI/env > provider-config > main config.
+      --completions <SHELL>       Print a shell completion script (bash, zsh, fish, powershell, elvish) to stdout and exit
+      --manpage                   Print the roff man page to stdout and exit
   -h, --help             Print help
   -V, --version          Print version
 

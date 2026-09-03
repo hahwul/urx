@@ -11,6 +11,7 @@
 //! - [`pipeline`] — filters, transformers, sinks, and testers
 //! - [`caching`] — the cache layer wrapped around a run
 //! - [`report`] — the header, stats table, and per-domain files
+//! - [`shell`] — the completion scripts and man page generated from the CLI
 
 pub mod caching;
 pub mod catalog;
@@ -18,3 +19,4 @@ pub mod keys;
 pub mod pipeline;
 pub mod report;
 pub mod selection;
+pub mod shell;
