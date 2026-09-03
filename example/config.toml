@@ -8,6 +8,7 @@ domains = ["example.com", "example.org"]
 output = "results.txt"
 format = "plain"       # Options: plain, json, jsonl, csv
 merge_endpoint = false
+dedup_similar = false  # Collapse URLs differing only in ids, hashes, dates, or query values
 stream = false         # Write URLs as providers report them (see README)
 
 # Provider options
@@ -42,6 +43,8 @@ extensions = ["js", "php", "aspx"]      # Include only these extensions
 exclude_extensions = ["html", "txt"]    # Exclude these extensions
 patterns = ["admin", "api"]             # Only include URLs with these patterns
 exclude_patterns = ["logout", "static"] # Exclude URLs with these patterns
+match_regex = ["/api/v[0-9]+/"]         # Keep only URLs matching these regexes (ORed, case-sensitive)
+filter_regex = ["/(assets|static)/"]    # Drop URLs matching any of these regexes
 show_only_host = false
 show_only_path = false
 show_only_param = false

@@ -70,6 +70,16 @@ pub struct Args {
     #[clap(long)]
     pub normalize_url: bool,
 
+    /// Collapse URLs that differ only in variable data: identifier-looking path
+    /// segments (numbers, UUIDs, hashes, dates) and query parameter *values*.
+    /// `/post/1`, `/post/2` and `/post/99999` become one line. The survivor is
+    /// the lexicographically smallest URL of each group, so runs are
+    /// reproducible. Independent of --normalize-url and --merge-endpoint, and
+    /// combines with either.
+    #[clap(help_heading = "Output Options")]
+    #[clap(long)]
+    pub dedup_similar: bool,
+
     /// Providers to use (comma-separated, e.g., "wayback,cc,otx,arquivo,vt,urlscan")
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
@@ -226,6 +236,9 @@ pub struct Args {
     /// "no-images", "no-fonts", "no-documents", "no-videos", "no-audio".
     /// Keep only a family: "only-js", "only-style", "only-fonts",
     /// "only-documents", "only-videos", "only-audio", "only-images".
+    /// Keep only a security-interesting family: "only-secrets", "only-backup",
+    /// "only-config", "only-api" — these match by path shape as well as by
+    /// extension, so `/.env` and `/index.php~` qualify.
     /// Singular spellings are accepted too. An unknown name is an error.
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
@@ -250,6 +263,22 @@ pub struct Args {
     #[clap(help_heading = "Filter Options")]
     #[clap(long, value_delimiter = ',')]
     pub exclude_patterns: Vec<String>,
+
+    /// Keep only URLs matching this regular expression. Repeat the flag for
+    /// several expressions; a URL survives if it matches any of them. Matched
+    /// against the whole URL and case-sensitively — unlike --patterns, which
+    /// lower-cases both sides. Use `(?i)` for a case-insensitive pattern. Not
+    /// comma-split, so a `{2,3}` quantifier stays intact.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "match-regex", value_name = "RE", action = clap::ArgAction::Append)]
+    pub match_regex: Vec<String>,
+
+    /// Drop URLs matching this regular expression. Repeat the flag for several
+    /// expressions; one match is enough to drop the URL. Same matching rules as
+    /// --match-regex, and applied before it.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "filter-regex", value_name = "RE", action = clap::ArgAction::Append)]
+    pub filter_regex: Vec<String>,
 
     /// Only show the host part of the URLs
     #[clap(help_heading = "Filter Options")]

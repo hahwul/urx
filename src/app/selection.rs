@@ -14,7 +14,7 @@ use crate::app::catalog::{
 };
 use crate::app::keys::{auto_enable_provider, ApiKeys, KEYED_PROVIDER_IDS};
 use crate::cli::Args;
-use crate::filters::validate_presets;
+use crate::filters::{compile_url_regexes, validate_presets};
 use crate::network::NetworkSettings;
 use crate::providers::{
     self, ArquivoProvider, CommonCrawlProvider, GitHubProvider, OTXProvider, Provider,
@@ -186,6 +186,11 @@ pub fn validate_selection_flags(args: &Args) -> Result<()> {
     // A misspelled preset used to be dropped in silence, producing an
     // unfiltered run that looked like the filter had matched everything.
     validate_presets(&args.preset)?;
+    // Compiled here and thrown away: the point is to fail on a malformed
+    // pattern now, at startup, rather than after minutes of fetching — or, on
+    // the batch path, to not fail at all and just match nothing.
+    compile_url_regexes(&args.match_regex, "--match-regex")?;
+    compile_url_regexes(&args.filter_regex, "--filter-regex")?;
     validate_provider_ids(&trimmed_ids(&args.exclude_providers), "--exclude-providers")?;
     validate_rate_limit_override_ids(args)
 }

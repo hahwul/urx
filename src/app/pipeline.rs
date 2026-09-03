@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::cli::{self, read_domains_from_file, read_domains_from_stdin, Args};
-use crate::filters::{HostValidator, UrlFilter};
+use crate::filters::{compile_url_regexes, HostValidator, UrlFilter};
 use crate::network::NetworkSettings;
 use crate::output;
 use crate::progress::ProgressManager;
@@ -134,7 +134,10 @@ pub fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
 ///
 /// Shared by the batch path, the streaming sink, and the extracted-link filter
 /// so a URL is judged identically no matter which one emits it.
-pub fn build_url_filter(args: &Args) -> UrlFilter {
+/// Fails when `--match-regex` or `--filter-regex` was given a pattern that does
+/// not compile, so a bad expression stops the run instead of quietly matching
+/// nothing on every URL.
+pub fn build_url_filter(args: &Args) -> Result<UrlFilter> {
     let mut url_filter = UrlFilter::new();
     // Presets seed the filter; the explicit flags below are combined with them.
     if !args.preset.is_empty() {
@@ -145,9 +148,11 @@ pub fn build_url_filter(args: &Args) -> UrlFilter {
         .with_exclude_extensions(args.exclude_extensions.clone())
         .with_patterns(args.patterns.clone())
         .with_exclude_patterns(args.exclude_patterns.clone())
+        .with_match_regex(compile_url_regexes(&args.match_regex, "--match-regex")?)
+        .with_filter_regex(compile_url_regexes(&args.filter_regex, "--filter-regex")?)
         .with_min_length(args.min_length)
         .with_max_length(args.max_length);
-    url_filter
+    Ok(url_filter)
 }
 
 /// Build the per-URL transformer used everywhere a URL must be decided on its
@@ -172,6 +177,8 @@ fn has_url_filters(args: &Args) -> bool {
         || !args.patterns.is_empty()
         || !args.exclude_extensions.is_empty()
         || !args.exclude_patterns.is_empty()
+        || !args.match_regex.is_empty()
+        || !args.filter_regex.is_empty()
         || args.min_length.is_some()
         || args.max_length.is_some()
 }
@@ -188,7 +195,7 @@ pub fn apply_url_filters(
         bar
     });
 
-    let mut sorted_urls = build_url_filter(args).apply_filters(urls);
+    let mut sorted_urls = build_url_filter(args)?.apply_filters(urls);
 
     // Host validation only applies to domain-driven runs: file input has no
     // queried domain to validate against.
@@ -241,23 +248,42 @@ pub fn apply_url_transformations(
     urls: Vec<String>,
     progress_manager: &ProgressManager,
 ) -> Vec<String> {
-    let reshapes_urls =
-        args.merge_endpoint || args.show_only_host || args.show_only_path || args.show_only_param;
+    let reshapes_urls = args.merge_endpoint
+        || args.dedup_similar
+        || args.show_only_host
+        || args.show_only_path
+        || args.show_only_param;
     let transform_bar = reshapes_urls.then(|| {
         let bar = progress_manager.create_transform_bar();
         bar.set_message("Applying URL transformations...");
         bar
     });
 
-    // The batch path is the one place that can honour --merge-endpoint, since
-    // it alone holds every URL at once.
+    // The batch path is the one place that can honour --merge-endpoint and
+    // --dedup-similar, since it alone holds every URL at once.
     let mut url_transformer = build_url_transformer(args);
-    url_transformer.with_merge_endpoint(args.merge_endpoint);
+    url_transformer
+        .with_merge_endpoint(args.merge_endpoint)
+        .with_dedup_similar(args.dedup_similar);
 
-    let transformed_urls = url_transformer.transform(urls);
+    let (transformed_urls, stats) = url_transformer.transform_with_stats(urls);
 
     if let Some(bar) = transform_bar {
         bar.finish_with_message(format!("Transformed to {} URLs", transformed_urls.len()));
+    }
+
+    // Worth saying out loud: --dedup-similar can drop most of a result set, and
+    // without a number the user cannot tell a well-collapsed run from a run
+    // that found little.
+    if args.dedup_similar {
+        verbose_print(
+            args,
+            format!(
+                "Collapsed {} near-duplicate URLs; {} distinct endpoints remain",
+                stats.similar_collapsed,
+                transformed_urls.len()
+            ),
+        );
     }
 
     transformed_urls
@@ -273,6 +299,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
         out.push((
             "--merge-endpoint",
             "it folds URLs sharing a path into one, which needs every URL first",
+        ));
+    }
+    if args.dedup_similar {
+        out.push((
+            "--dedup-similar",
+            "it keeps the lexicographically smallest URL of each group, which needs every URL first",
         ));
     }
     if args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty() {
@@ -353,7 +385,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     }
 
     Ok(Some(Arc::new(output::StreamSink::new(
-        build_url_filter(args),
+        build_url_filter(args)?,
         build_url_transformer(args),
         // Host validation mirrors the batch path: only meaningful when strict
         // mode is on and the targets came from the command line, not a file.
@@ -386,7 +418,7 @@ pub fn build_extracted_link_filter(
         None
     };
     Ok(Some(Arc::new(tester_manager::ExtractedLinkFilter::new(
-        build_url_filter(args),
+        build_url_filter(args)?,
         build_url_transformer(args),
         host_validator,
     ))))
@@ -457,6 +489,7 @@ mod tests {
         // shown to the user — so assert on the flag list, not just on failure.
         let cases = [
             (vec!["--merge-endpoint"], "--merge-endpoint"),
+            (vec!["--dedup-similar"], "--dedup-similar"),
             (vec!["--check-status"], "--check-status"),
             (vec!["--extract-links"], "--extract-links"),
             (vec!["--incremental"], "--incremental"),
@@ -480,6 +513,83 @@ mod tests {
             };
             assert!(err.contains(expected), "{err}");
         }
+    }
+
+    #[test]
+    fn test_build_url_filter_rejects_a_malformed_regex() {
+        // A bad pattern has to stop the run at startup. Compiling per URL would
+        // either fail once per URL or, worse, quietly match nothing.
+        for (flag, argv_flag) in [
+            ("--match-regex", "--match-regex"),
+            ("--filter-regex", "--filter-regex"),
+        ] {
+            let args = Args::parse_from(["urx", argv_flag, "(unclosed", "example.com"]);
+            let err = match build_url_filter(&args) {
+                Err(e) => format!("{e:#}"),
+                Ok(_) => panic!("{flag} should have rejected an invalid pattern"),
+            };
+            assert!(err.contains(flag), "{err}");
+            assert!(err.contains("(unclosed"), "{err}");
+        }
+
+        // ...and it is caught before any network work, by the same up-front
+        // check that rejects a misspelled --preset.
+        let args = Args::parse_from(["urx", "--match-regex", "(unclosed", "example.com"]);
+        let err = crate::app::selection::validate_selection_flags(&args)
+            .expect_err("a malformed regex must fail validation")
+            .to_string();
+        assert!(err.contains("--match-regex"), "{err}");
+    }
+
+    #[test]
+    fn test_regex_flags_are_repeatable_and_not_comma_split() {
+        // A regex can legitimately contain a comma (`\d{2,3}`), so unlike
+        // --patterns these flags never split on one.
+        let args = Args::parse_from([
+            "urx",
+            "--match-regex",
+            r"/id/\d{2,3}$",
+            "--match-regex",
+            "admin",
+            "--filter-regex",
+            r"\.(png|jpg)$",
+            "example.com",
+        ]);
+        assert_eq!(args.match_regex, vec![r"/id/\d{2,3}$", "admin"]);
+        assert_eq!(args.filter_regex, vec![r"\.(png|jpg)$"]);
+
+        let filter = build_url_filter(&args).unwrap();
+        assert!(filter.matches("https://example.com/id/123"));
+        assert!(filter.matches("https://example.com/admin/panel"));
+        assert!(!filter.matches("https://example.com/id/1"));
+        assert!(!filter.matches("https://example.com/admin/logo.png"));
+    }
+
+    #[test]
+    fn test_dedup_similar_is_applied_by_the_batch_transformations() {
+        let mut args = build_test_args();
+        args.dedup_similar = true;
+
+        let urls: Vec<String> = ["/post/1", "/post/2", "/post/3", "/about"]
+            .iter()
+            .map(|p| format!("https://example.com{p}"))
+            .collect();
+
+        let out = apply_url_transformations(&args, urls.clone(), &ProgressManager::new(true));
+        assert_eq!(
+            out,
+            vec![
+                "https://example.com/about".to_string(),
+                "https://example.com/post/1".to_string(),
+            ]
+        );
+
+        // ...and it stays off unless asked for.
+        args.dedup_similar = false;
+        assert_eq!(
+            apply_url_transformations(&args, urls.clone(), &ProgressManager::new(true)).len(),
+            urls.len()
+        );
     }
 
     #[test]
@@ -651,7 +761,7 @@ mod tests {
             "https://example.com/index.html".to_string(),
         ]);
 
-        let batch = build_url_filter(&args).apply_filters(&urls);
+        let batch = build_url_filter(&args).unwrap().apply_filters(&urls);
         assert_eq!(batch, vec!["https://example.com/app.js"]);
     }
 

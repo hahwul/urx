@@ -30,6 +30,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 redis = { version = "1.2", optional = true, features = ["aio", "tokio-comp"] }
 sha2 = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
+regex = "1.12"
 
 [dev-dependencies]
 mockito = "1.7.2"

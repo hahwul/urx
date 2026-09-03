@@ -30,6 +30,7 @@ Output Options:
       --stream                   Write URLs as providers report them (unsorted, bypasses cache)
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --normalize-url            Normalize URLs for better deduplication
+      --dedup-similar            Collapse URLs differing only in ids, hashes, dates, or query values
 
 Provider Options:
   --providers <PROVIDERS>                Providers to use (comma-separated) [default: wayback,cc,otx]
@@ -62,11 +63,13 @@ Display Options:
       --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
-  -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
+  -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,only-js,only-secrets,only-api")
   -e, --extensions <EXTENSIONS>              Filter by extensions (e.g., "js,php,aspx")
       --exclude-extensions <EXTENSIONS>      Exclude extensions (e.g., "html,txt")
       --patterns <PATTERNS>                  Include URLs containing patterns
       --exclude-patterns <PATTERNS>          Exclude URLs containing patterns
+      --match-regex <RE>                     Keep only URLs matching this regex (repeatable, ORed, case-sensitive)
+      --filter-regex <RE>                    Drop URLs matching this regex (repeatable; one match is enough)
       --show-only-host                       Only show the host part
       --show-only-path                       Only show the path part
       --show-only-param                      Only show the parameters part
@@ -140,3 +143,88 @@ preset. Singular spellings (e.g. `no-image`, `only-font`) are accepted too.
 | `only-videos` | Only video files |
 | `only-audio` | Only audio files |
 | `only-images` | Only image files |
+
+### Security Presets
+
+These four go beyond file extensions: a URL qualifies when it carries a listed
+extension **or** when its path has a listed shape. That is what lets
+`only-secrets` catch `/.env` (a dotfile with no extension at all) and
+`only-backup` catch `/index.php~` (an ordinary name with an editor suffix).
+
+| Preset | Description |
+|--------|-------------|
+| `only-secrets` | Leaked credentials and VCS metadata: `/.env`, `/.git/`, `/.svn/`, `/.aws/`, `/.ssh/`, `id_rsa`, `.htpasswd`, `credentials`, `*.pem`, `*.key`, `*.p12` |
+| `only-backup` | Backups and archived copies: `*.bak`, `*.old`, `*.orig`, `*.swp`, `*.sql`, `*.dump`, `*.zip`, `*.tar.gz`, `/backup/`, and paths ending in `~` |
+| `only-config` | Configuration files: `*.conf`, `*.config`, `*.ini`, `*.yaml`, `*.yml`, `*.toml`, `*.properties`, `web.config`, `.htaccess`, `.npmrc`, `Dockerfile` |
+| `only-api` | API surfaces: `/api/`, `/v1/`–`/v4/`, `/rest/`, `/graphql`, `/swagger`, `/openapi`, `/wp-json`, `*.wsdl` |
+
+Singular and plural spellings both work here too (`only-secret`, `only-backups`,
+`only-configs`, `only-apis`). Presets combine by OR, so
+`-p only-secrets,only-backup` keeps everything either one would.
+
+```bash
+urx example.com -p only-secrets
+urx example.com -p only-backup,only-config
+```
+
+## Regular-expression Filtering
+
+`--patterns` and `--exclude-patterns` are substring tests. `--match-regex` and
+`--filter-regex` are the [regex](https://docs.rs/regex/latest/regex/#syntax)
+equivalents and behave differently in three ways:
+
+| | `--patterns` | `--match-regex` |
+|---|---|---|
+| Matching | substring | full regex syntax |
+| Case | insensitive (both sides lower-cased) | **sensitive** — prefix `(?i)` to opt out |
+| Multiple values | one comma-separated flag | repeat the flag; commas are never split |
+
+The expression is applied to the whole URL string as collected — scheme, host,
+path, and query — so `^https://` and `\.js$` both work. Several
+`--match-regex` values are ORed; a single `--filter-regex` hit is enough to drop
+a URL, and exclusion beats inclusion. A malformed expression aborts the run at
+startup, before any archive is queried, rather than failing silently per URL.
+
+```bash
+# Versioned API paths only
+urx example.com --match-regex '/api/v[0-9]+/'
+
+# Two alternatives, one per flag (a comma inside a regex stays intact)
+urx example.com --match-regex '\.php$' --match-regex '/admin/[a-z]{3,8}$'
+
+# Drop build output, keep everything else
+urx example.com --filter-regex '/(assets|static|dist)/'
+```
+
+## Collapsing Near-duplicates
+
+`--dedup-similar` prints one line for a group of URLs that are the same endpoint
+carrying different data — the `/post/1` … `/post/99999` problem that turns a real
+run into an unreadable wall of output.
+
+A path segment counts as data, rather than as part of the route, when the whole
+segment is one of:
+
+* a run of digits — `/post/1`, `/page/42`
+* a UUID — `/u/550e8400-e29b-41d4-a716-446655440000`
+* a 32/40/64-character hex digest (md5, sha1, sha256)
+* a separated date — `/blog/2024-01-02/`
+* a long mixed-case token containing digits (session ids, signed blobs)
+
+A segment that merely contains digits is left alone, so `/api/v1/` and `/api/v2/`
+stay distinct, and a lower-case slug reads as prose rather than as a token.
+Query strings are grouped by parameter *names* only: `?q=cats&page=1` and
+`?q=dogs&page=7` collapse together, while `?q=cats` on its own does not.
+
+The URL kept from each group is the lexicographically smallest one, so repeated
+runs over the same data produce identical output. `--verbose` reports how many
+URLs were collapsed.
+
+`--dedup-similar`, `--normalize-url`, and `--merge-endpoint` are independent and
+can be combined; they run in that order of increasing aggressiveness. All three
+need the complete result set, so none of them can be used with `--stream`.
+
+```bash
+urx example.com --dedup-similar --verbose
+urx --files urls.txt --normalize-url --merge-endpoint --dedup-similar
+```
