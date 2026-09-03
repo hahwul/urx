@@ -2682,6 +2682,7 @@ dependencies = [
  "mockito",
  "rand 0.10.2",
  "redis",
+ "regex",
  "reqwest",
  "roxmltree",
  "rusqlite",

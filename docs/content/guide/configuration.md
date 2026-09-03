@@ -33,6 +33,7 @@ domains = ["example.com", "example.org"]
 output = "results.txt"
 format = "plain"           # plain, json, jsonl, csv
 merge_endpoint = false
+dedup_similar = false      # Collapse URLs differing only in ids, hashes, dates, or query values
 stream = false             # Write URLs as providers report them (unsorted, bypasses cache)
 
 # ─── Providers ───────────────────────────────────────────
@@ -60,6 +61,8 @@ extensions = ["js", "php", "aspx"]
 exclude_extensions = ["html", "txt"]
 patterns = ["admin", "api"]
 exclude_patterns = ["logout", "static"]
+match_regex = ["/api/v[0-9]+/"]   # Repeatable regexes, ORed, case-sensitive
+filter_regex = ["/(assets|static)/"]
 show_only_host = false
 show_only_path = false
 show_only_param = false

@@ -45,6 +45,7 @@ pub struct OutputConfig {
     pub output: Option<String>,
     pub format: Option<String>,
     pub merge_endpoint: Option<bool>,
+    pub dedup_similar: Option<bool>,
     pub stream: Option<bool>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
@@ -249,6 +250,8 @@ pub struct FilterConfig {
     pub exclude_extensions: Option<Vec<String>>,
     pub patterns: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
+    pub match_regex: Option<Vec<String>>,
+    pub filter_regex: Option<Vec<String>>,
     pub show_only_host: Option<bool>,
     pub show_only_path: Option<bool>,
     pub show_only_param: Option<bool>,
@@ -469,6 +472,10 @@ impl Config {
             args.merge_endpoint = true;
         }
 
+        if !args.dedup_similar && self.output.dedup_similar.unwrap_or(false) {
+            args.dedup_similar = true;
+        }
+
         if !args.stream && self.output.stream.unwrap_or(false) {
             args.stream = true;
         }
@@ -616,6 +623,18 @@ impl Config {
         if args.exclude_patterns.is_empty() {
             if let Some(exclude_patterns) = &self.filter.exclude_patterns {
                 args.exclude_patterns = exclude_patterns.clone();
+            }
+        }
+
+        if args.match_regex.is_empty() {
+            if let Some(match_regex) = &self.filter.match_regex {
+                args.match_regex = match_regex.clone();
+            }
+        }
+
+        if args.filter_regex.is_empty() {
+            if let Some(filter_regex) = &self.filter.filter_regex {
+                args.filter_regex = filter_regex.clone();
             }
         }
 

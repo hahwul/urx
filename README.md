@@ -21,9 +21,10 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX, Arquivo.pt)
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
-* Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
+* Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
+* Predefined presets, both by file family ("no-images", "only-js") and by security interest ("only-secrets", "only-backup", "only-config", "only-api")
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
-* URL normalization and deduplication: Sort query parameters, remove trailing slashes, and merge semantically identical URLs
+* URL normalization and deduplication: Sort query parameters, remove trailing slashes, merge semantically identical URLs, and collapse near-duplicates that differ only in ids, hashes, or dates (`--dedup-similar`)
 * Support for multiple output formats: plain text, JSON, JSON Lines, CSV
 * Streaming output (`--stream`): URLs are written as each provider reports them, so a pipeline starts working immediately instead of waiting for the slowest archive
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
@@ -136,6 +137,7 @@ Output Options:
       --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
+      --dedup-similar    Collapse URLs that differ only in variable data (numeric ids, UUIDs, hashes, dates, query values)
 
 Provider Options:
       --providers <PROVIDERS>
@@ -182,7 +184,7 @@ Display Options:
 
 Filter Options:
   -p, --preset <PRESET>
-          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
+          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style,only-secrets,only-backup,only-config,only-api")
   -e, --extensions <EXTENSIONS>
           Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
       --exclude-extensions <EXCLUDE_EXTENSIONS>
@@ -191,6 +193,10 @@ Filter Options:
           Filter URLs to only include those containing specific patterns (comma-separated)
       --exclude-patterns <EXCLUDE_PATTERNS>
           Filter URLs to exclude those containing specific patterns (comma-separated)
+      --match-regex <RE>
+          Keep only URLs matching this regular expression (repeatable, ORed; case-sensitive; never comma-split)
+      --filter-regex <RE>
+          Drop URLs matching this regular expression (repeatable; one match is enough)
       --show-only-host
           Only show the host part of the URLs
       --show-only-path
@@ -353,7 +359,67 @@ urx example.com --normalize-url --merge-endpoint
 
 # URL normalization with file input
 urx --files urls.txt --normalize-url
+
+# Collapse /post/1, /post/2, /post/99999 ... into a single representative line
+urx example.com --dedup-similar
+
+# Regular-expression filtering (repeat either flag; they are never comma-split)
+urx example.com --match-regex '/api/v[0-9]+/'
+urx example.com --match-regex '\.php$' --match-regex '\.aspx$'
+urx example.com --filter-regex '/(assets|static)/'
+
+# Regexes are case-sensitive; ask for insensitivity explicitly
+urx example.com --match-regex '(?i)admin'
+
+# Security presets: match by path shape as well as by extension
+urx example.com -p only-secrets   # /.env, /.git/config, id_rsa, *.pem
+urx example.com -p only-backup    # *.bak, *.sql, /backup/, index.php~
+urx example.com -p only-config    # *.yaml, web.config, .htaccess, Dockerfile
+urx example.com -p only-api       # /api/, /v1/, /graphql, /swagger, *.wsdl
 ```
+
+### Regular-expression Filtering
+
+`--patterns` / `--exclude-patterns` are plain substring tests: both sides are
+lower-cased, and every metacharacter is a literal. `--match-regex` /
+`--filter-regex` are the regex counterparts, and they differ in three ways worth
+remembering:
+
+| | `--patterns` | `--match-regex` |
+|---|---|---|
+| Matching | substring | full [regex syntax](https://docs.rs/regex/latest/regex/#syntax) |
+| Case | insensitive (both sides lower-cased) | **sensitive** — use `(?i)` to opt out |
+| Multiple values | one comma-separated flag | repeat the flag; commas are never split |
+
+Both regex flags are evaluated against the **whole URL string** as collected
+(scheme, host, path, and query), so `^https://` and `\.js$` both work.
+Exclusion wins: a URL matching `--filter-regex` is dropped even if
+`--match-regex` also matched it. A malformed expression fails the run at
+startup, before any archive is queried.
+
+### Collapsing Near-duplicates
+
+An archive will happily hand back `/post/1` through `/post/99999`. They are one
+endpoint, and `--dedup-similar` prints one line for them. A path segment is
+treated as data — not as part of the route — when it is entirely one of:
+
+* a run of digits (`/post/1`, `/page/42`)
+* a UUID (`/u/550e8400-e29b-41d4-a716-446655440000`)
+* a 32/40/64-character hex digest (md5, sha1, sha256)
+* a separated date (`/blog/2024-01-02/`)
+* a long mixed-case token with digits in it (session ids, signed blobs)
+
+Segments that merely *contain* digits stay put, so `/api/v1/` and `/api/v2/` are
+still two endpoints, and a lower-case slug is prose rather than a token. Query
+strings are grouped by parameter *names* only: `?q=cats&page=1` and
+`?q=dogs&page=7` collapse, while `?q=cats` alone does not — dropping a
+parameter changes the request.
+
+The survivor of each group is its lexicographically smallest URL, so two runs
+over the same data print the same thing. `--verbose` reports how many URLs were
+collapsed. The option is independent of `--normalize-url` and
+`--merge-endpoint` and combines with either; all three need the complete result
+set, so none of them works with `--stream`.
 
 ### Streaming Output
 
@@ -375,7 +441,8 @@ deduplicated. Two things differ:
 * **Order.** Results arrive in provider-completion order, so the output is
   unsorted. Pipe through `sort` if you need ordering.
 * **Scope.** Options that need the complete result set are rejected up front
-  (with a message naming each one): `--merge-endpoint`, `--check-status` /
+  (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
+  `--check-status` /
   `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
   `--show-sources`, `--output-dir`, and `--files`. Caching is bypassed, and
   `--format json` is refused in favour of `jsonl` because a JSON array has to

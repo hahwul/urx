@@ -74,12 +74,15 @@ pub fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         exclude_extensions: args.exclude_extensions.clone(),
         patterns: args.patterns.clone(),
         exclude_patterns: args.exclude_patterns.clone(),
+        match_regex: args.match_regex.clone(),
+        filter_regex: args.filter_regex.clone(),
         presets: args.preset.clone(),
         min_length: args.min_length,
         max_length: args.max_length,
         strict: args.strict_enabled(),
         normalize_url: args.normalize_url,
         merge_endpoint: args.merge_endpoint,
+        dedup_similar: args.dedup_similar,
         // Archive-side scope. These change what the index returns, so leaving
         // them out would serve a `--from 2020` run the answer cached for a
         // `--from 2024` one.
