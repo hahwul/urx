@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::OnceCell;
 
 use super::filters::{ArchiveFilters, CdxDialect};
-use super::Provider;
+use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
 use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -64,9 +64,33 @@ pub struct CommonCrawlProvider {
     base_url: String,
 }
 
+/// One CDXJ row of the index. Beyond the URL, the index server already reports
+/// the capture metadata for free — this is a pywb dialect, so the fields are
+/// named `status`/`mime` rather than the classic `statuscode`/`mimetype`. Every
+/// value arrives as a JSON string, including the status code.
 #[derive(Deserialize)]
 struct CCRecord {
     url: String,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default)]
+    mime: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+impl CCRecord {
+    fn into_record(self) -> UrlRecord {
+        let meta = CaptureMeta::capture(
+            self.timestamp.as_deref(),
+            self.mime.as_deref(),
+            self.status.as_deref(),
+            self.digest.as_deref(),
+        );
+        UrlRecord::new(self.url, meta)
+    }
 }
 
 /// Response shape of a `&showNumPages=true` probe — the index server reports
@@ -209,7 +233,7 @@ impl Provider for CommonCrawlProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -217,7 +241,7 @@ impl Provider for CommonCrawlProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             let index = self.effective_index().await?;
             let query_base = self.query_base(&index, domain);
@@ -255,7 +279,9 @@ impl Provider for CommonCrawlProvider {
             }
             let pages = pages.min(CC_MAX_PAGES);
 
-            let mut urls = Vec::new();
+            // The index is capture-level: a URL crawled repeatedly appears
+            // once per capture, so rows are folded per URL as they arrive.
+            let mut records = RecordSet::new();
             let mut consecutive_failures = 0usize;
             for page in 0..pages {
                 if let Some(rl) = &limiter {
@@ -286,11 +312,11 @@ impl Provider for CommonCrawlProvider {
                         // Common Crawl returns one JSON object per line.
                         for line in text.lines() {
                             if let Ok(record) = serde_json::from_str::<CCRecord>(line) {
-                                urls.push(record.url);
+                                records.insert(record.into_record());
                             }
                         }
                         if let Some(r) = &reporter {
-                            r.detail(format!("{} URLs…", urls.len()));
+                            r.detail(format!("{} URLs…", records.len()));
                             // The run asked us to stop (--max-time elapsed, or
                             // Ctrl-C). Hand back the pages already walked
                             // instead of losing them to the hard cancel after
@@ -330,11 +356,7 @@ impl Provider for CommonCrawlProvider {
                 }
             }
 
-            // Remove duplicates
-            urls.sort();
-            urls.dedup();
-
-            Ok(urls)
+            Ok(records.into_sorted())
         })
     }
 
@@ -406,9 +428,9 @@ impl Provider for MockCommonCrawlProvider {
     fn fetch_urls<'a>(
         &'a self,
         _domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         let urls = self.mock_urls.clone();
-        Box::pin(async move { Ok(urls) })
+        Box::pin(async move { Ok(urls.into_iter().map(UrlRecord::bare).collect()) })
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -428,6 +450,7 @@ impl Provider for MockCommonCrawlProvider {
 mod tests {
     use super::*;
     use crate::progress::StopSignal;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_new_provider() {
@@ -549,7 +572,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
 
-        let fetched_urls = result.unwrap();
+        let fetched_urls = urls_of(result.unwrap());
         assert_eq!(fetched_urls.len(), 2);
         assert_eq!(fetched_urls[0], "https://example.com/page1");
         assert_eq!(fetched_urls[1], "https://example.com/page2");
@@ -570,7 +593,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
 
-        let fetched_urls = result.unwrap();
+        let fetched_urls = urls_of(result.unwrap());
         assert_eq!(fetched_urls.len(), 2);
         assert_eq!(fetched_urls[0], "https://sub1.example.com/page1");
         assert_eq!(fetched_urls[1], "https://sub2.example.com/page2");
@@ -581,6 +604,30 @@ mod tests {
         let json = r#"{"url":"https://example.com/test"}"#;
         let record: CCRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.url, "https://example.com/test");
+    }
+
+    #[test]
+    fn test_cc_record_carries_the_capture_metadata() {
+        // A real CDXJ row, unused fields included, so the parse is exercised
+        // against the shape the index actually serves.
+        let json = r#"{"urlkey":"com,example)/","timestamp":"20250802232428",
+            "url":"http://www.example.com/","mime":"text/html",
+            "mime-detected":"text/html","status":"200",
+            "digest":"JI6OR3QR4CI526JD6TMMNZNV4QPMPQCH","length":"1219"}"#;
+        let record: CCRecord = serde_json::from_str(json).unwrap();
+        let meta = record.into_record().meta;
+
+        assert_eq!(meta.first_seen(), Some("20250802232428"));
+        assert_eq!(meta.last_seen(), Some("20250802232428"));
+        assert_eq!(meta.mime(), Some("text/html"));
+        assert_eq!(meta.archive_status(), Some("200"));
+        assert_eq!(meta.digest(), Some("JI6OR3QR4CI526JD6TMMNZNV4QPMPQCH"));
+    }
+
+    #[test]
+    fn test_cc_record_without_metadata_stays_empty() {
+        let record: CCRecord = serde_json::from_str(r#"{"url":"https://example.com/"}"#).unwrap();
+        assert!(record.into_record().meta.is_empty());
     }
 
     #[test]
@@ -628,7 +675,11 @@ mod tests {
                 mockito::Matcher::UrlEncoded("output".into(), "json".into()),
             ]))
             .with_status(200)
-            .with_body("{\"url\": \"https://example.com/page1\"}\n{\"url\": \"https://example.com/page2\"}\n{\"url\": \"https://example.com/page1\"}")
+            .with_body(
+                "{\"url\": \"https://example.com/page1\", \"timestamp\": \"20240101000000\", \"mime\": \"text/html\", \"status\": \"200\", \"digest\": \"NEW\"}\n\
+                 {\"url\": \"https://example.com/page2\"}\n\
+                 {\"url\": \"https://example.com/page1\", \"timestamp\": \"20200101000000\", \"mime\": \"text/plain\", \"status\": \"404\", \"digest\": \"OLD\"}",
+            )
             .create_async()
             .await;
 
@@ -639,11 +690,22 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
 
-        let urls = result.unwrap();
+        let records = result.unwrap();
         // Should be deduped and sorted
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0], "https://example.com/page1");
-        assert_eq!(urls[1], "https://example.com/page2");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].url, "https://example.com/page1");
+        assert_eq!(records[1].url, "https://example.com/page2");
+
+        // Both captures of page1 fold into one record; the newest one decides
+        // the MIME type and status.
+        let page1 = &records[0].meta;
+        assert_eq!(page1.first_seen(), Some("20200101000000"));
+        assert_eq!(page1.last_seen(), Some("20240101000000"));
+        assert_eq!(page1.mime(), Some("text/html"));
+        assert_eq!(page1.archive_status(), Some("200"));
+
+        // A row the index served without metadata gets none invented for it.
+        assert!(records[1].meta.is_empty());
     }
 
     #[tokio::test]
@@ -682,7 +744,7 @@ mod tests {
         let mut provider = CommonCrawlProvider::new();
         provider.base_url = server.url();
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
             urls,
             vec![
@@ -732,8 +794,8 @@ mod tests {
         provider.base_url = server.url();
 
         // First fetch triggers collinfo lookup; second reuses the cached value.
-        let first = provider.fetch_urls("example.com").await.unwrap();
-        let second = provider.fetch_urls("example.com").await.unwrap();
+        let first = urls_of(provider.fetch_urls("example.com").await.unwrap());
+        let second = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(first, vec!["https://example.com/a".to_string()]);
         assert_eq!(second, first);
@@ -910,10 +972,12 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
 
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(urls, vec!["https://example.com/a".to_string()]);
         // Pages 1 and 2 were never walked, so the crawl is incomplete.
@@ -970,10 +1034,12 @@ mod tests {
         provider.with_retries(0); // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         // Page 2 is still fetched even though page 1 failed.
         assert_eq!(
@@ -1030,10 +1096,12 @@ mod tests {
         provider.with_retries(0);
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(urls, vec!["https://example.com/a".to_string()]);
         assert!(reporter.is_partial());

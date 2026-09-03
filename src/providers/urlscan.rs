@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::ApiKeyRotator;
-use super::Provider;
+use super::{Provider, UrlRecord};
 use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -198,7 +198,7 @@ impl Provider for UrlscanProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -206,7 +206,7 @@ impl Provider for UrlscanProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             // urlscan.io's public search allows unauthenticated queries
             // (rate-limited to ~30 req/min per IP), so we always query. When no
@@ -312,7 +312,7 @@ impl Provider for UrlscanProvider {
                 }
             }
 
-            Ok(all_urls)
+            Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -352,6 +352,7 @@ impl Provider for UrlscanProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_sort_cursor_is_percent_encoded() {
@@ -581,7 +582,7 @@ mod tests {
         let mut provider = UrlscanProvider::new("".to_string());
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/anon".to_string()]);
         mock.assert();
     }
@@ -615,7 +616,7 @@ mod tests {
         let mut provider = UrlscanProvider::new_with_keys(vec!["key1".into(), "key2".into()]);
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/ok".to_string()]);
         k1.assert();
         k2.assert();
@@ -653,7 +654,7 @@ mod tests {
         let mut provider = UrlscanProvider::new("k".to_string());
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
             urls,
             vec![
@@ -697,10 +698,12 @@ mod tests {
         provider.with_retries(0); // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .expect("page one must survive the continuation's failure");
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .expect("page one must survive the continuation's failure"),
+        );
 
         assert_eq!(urls, vec!["https://example.com/p1".to_string()]);
         assert!(reporter.is_partial());
@@ -757,7 +760,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok(), "Expected success with mock API");
 
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page2");

@@ -22,6 +22,7 @@ use std::sync::Mutex;
 
 use super::{create_outputter, Outputter, UrlData};
 use crate::filters::{HostValidator, UrlFilter};
+use crate::providers::UrlRecord;
 use crate::utils::UrlTransformer;
 
 /// A sink that filters, deduplicates, and writes URLs as they arrive.
@@ -68,11 +69,11 @@ impl StreamSink {
             closed: AtomicBool::new(false),
         };
 
-        // CSV needs its header up front. A streamed run carries neither status
-        // nor sources (both require the batch path), so the layout is fixed and
-        // can be written before the first row.
+        // CSV needs its header up front. A streamed run carries no status, no
+        // sources and no capture metadata (all three require the batch path),
+        // so the layout is fixed and can be written before the first row.
         if format.eq_ignore_ascii_case("csv") {
-            let header = super::formatter::csv_header(false, false);
+            let header = super::formatter::csv_header(&super::formatter::CsvLayout::default());
             let mut w = sink.lock_writer();
             let wrote = w
                 .write_all(header.as_bytes())
@@ -99,13 +100,19 @@ impl StreamSink {
         self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Filter, transform, dedup and write a batch of freshly fetched URLs.
+    /// Filter, transform, dedup and write a batch of freshly fetched records.
     /// Returns how many were newly written.
+    ///
+    /// Capture metadata is deliberately dropped here. Streaming prints a URL on
+    /// first sighting, before the providers that would widen its
+    /// `first_seen`/`last_seen` range have answered, so any metadata written
+    /// now could be contradicted by a later batch — the same reason
+    /// `--show-sources` is rejected in streaming mode.
     ///
     /// Output is flushed before returning: when stdout is a pipe it is block
     /// buffered, so without an explicit flush a downstream `grep` would see
     /// nothing until the buffer filled — which would defeat the whole point.
-    pub fn emit(&self, urls: &[String]) -> Result<usize> {
+    pub fn emit(&self, records: &[UrlRecord]) -> Result<usize> {
         if self.closed.load(Ordering::Relaxed) {
             return Ok(0);
         }
@@ -114,7 +121,7 @@ impl StreamSink {
 
         {
             let mut seen = self.lock_seen();
-            for url in urls {
+            for url in records.iter().map(|r| &r.url) {
                 if !self.filter.matches(url) {
                     continue;
                 }
@@ -193,6 +200,14 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// The streaming path reads only the URL of each record, so tests feed it
+    /// bare ones.
+    fn records(urls: &[&str]) -> Vec<UrlRecord> {
+        urls.iter()
+            .map(|u| UrlRecord::bare((*u).to_string()))
+            .collect()
+    }
+
     /// A writer that keeps everything in memory so tests can assert on bytes.
     #[derive(Clone, Default)]
     struct SharedBuf(Arc<Mutex<Vec<u8>>>);
@@ -229,11 +244,11 @@ mod tests {
         let buf = SharedBuf::default();
         let sink = sink_with("plain", buf.clone());
 
-        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 1);
+        assert_eq!(sink.emit(&records(&["https://a.com/1"])).unwrap(), 1);
         // Written before any later batch arrives — that is the whole point.
         assert_eq!(buf.contents(), "https://a.com/1\n");
 
-        assert_eq!(sink.emit(&["https://a.com/2".to_string()]).unwrap(), 1);
+        assert_eq!(sink.emit(&records(&["https://a.com/2"])).unwrap(), 1);
         assert_eq!(buf.contents(), "https://a.com/1\nhttps://a.com/2\n");
         assert_eq!(sink.emitted(), 2);
     }
@@ -244,8 +259,8 @@ mod tests {
         let buf = SharedBuf::default();
         let sink = sink_with("plain", buf.clone());
 
-        sink.emit(&["https://a.com/x".to_string()]).unwrap();
-        let second = sink.emit(&["https://a.com/x".to_string()]).unwrap();
+        sink.emit(&records(&["https://a.com/x"])).unwrap();
+        let second = sink.emit(&records(&["https://a.com/x"])).unwrap();
 
         assert_eq!(second, 0);
         assert_eq!(buf.contents(), "https://a.com/x\n");
@@ -266,10 +281,10 @@ mod tests {
         )
         .unwrap();
 
-        sink.emit(&[
-            "https://a.com/app.js".to_string(),
-            "https://a.com/index.html".to_string(),
-        ])
+        sink.emit(&records(&[
+            "https://a.com/app.js",
+            "https://a.com/index.html",
+        ]))
         .unwrap();
 
         assert_eq!(buf.contents(), "https://a.com/app.js\n");
@@ -291,10 +306,8 @@ mod tests {
         )
         .unwrap();
 
-        sink.emit(&["https://a.com/p?b=2&a=1".to_string()]).unwrap();
-        let again = sink
-            .emit(&["https://a.com/p/?a=1&b=2".to_string()])
-            .unwrap();
+        sink.emit(&records(&["https://a.com/p?b=2&a=1"])).unwrap();
+        let again = sink.emit(&records(&["https://a.com/p/?a=1&b=2"])).unwrap();
 
         assert_eq!(again, 0);
         assert_eq!(buf.contents(), "https://a.com/p?a=1&b=2\n");
@@ -312,11 +325,8 @@ mod tests {
         )
         .unwrap();
 
-        sink.emit(&[
-            "https://a.com/keep".to_string(),
-            "https://evil.com/drop".to_string(),
-        ])
-        .unwrap();
+        sink.emit(&records(&["https://a.com/keep", "https://evil.com/drop"]))
+            .unwrap();
 
         assert_eq!(buf.contents(), "https://a.com/keep\n");
     }
@@ -326,7 +336,7 @@ mod tests {
         let buf = SharedBuf::default();
         let sink = sink_with("jsonl", buf.clone());
 
-        sink.emit(&["https://a.com/1".to_string(), "https://a.com/2".to_string()])
+        sink.emit(&records(&["https://a.com/1", "https://a.com/2"]))
             .unwrap();
 
         let out = buf.contents();
@@ -343,8 +353,8 @@ mod tests {
         let buf = SharedBuf::default();
         let sink = sink_with("csv", buf.clone());
 
-        sink.emit(&["https://a.com/1".to_string()]).unwrap();
-        sink.emit(&["https://a.com/2".to_string()]).unwrap();
+        sink.emit(&records(&["https://a.com/1"])).unwrap();
+        sink.emit(&records(&["https://a.com/2"])).unwrap();
 
         let out = buf.contents();
         assert_eq!(out.lines().next().unwrap(), "url");
@@ -407,9 +417,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
+        assert_eq!(sink.emit(&records(&["https://a.com/1"])).unwrap(), 0);
         // Later batches are dropped without retrying a write that cannot work.
-        assert_eq!(sink.emit(&["https://a.com/2".to_string()]).unwrap(), 0);
+        assert_eq!(sink.emit(&records(&["https://a.com/2"])).unwrap(), 0);
         assert_eq!(sink.emitted(), 0);
     }
 
@@ -427,8 +437,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
-        assert_eq!(sink.emit(&["https://a.com/2".to_string()]).unwrap(), 0);
+        assert_eq!(sink.emit(&records(&["https://a.com/1"])).unwrap(), 0);
+        assert_eq!(sink.emit(&records(&["https://a.com/2"])).unwrap(), 0);
         assert_eq!(sink.emitted(), 0);
     }
 
@@ -443,7 +453,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = sink.emit(&["https://a.com/1".to_string()]).unwrap_err();
+        let err = sink.emit(&records(&["https://a.com/1"])).unwrap_err();
         assert!(
             err.to_string().contains("Failed to write streamed output"),
             "{err}"
@@ -462,7 +472,7 @@ mod tests {
             Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),
         )
         .unwrap();
-        assert_eq!(sink.emit(&["https://a.com/1".to_string()]).unwrap(), 0);
+        assert_eq!(sink.emit(&records(&["https://a.com/1"])).unwrap(), 0);
     }
 
     #[test]

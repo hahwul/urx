@@ -220,12 +220,11 @@ impl CsvOutputter {
     /// trailing/extra comma the header doesn't, breaking strict CSV parsers) —
     /// which is also why both destinations must share this one function.
     fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
-        let has_status = urls.iter().any(|url| url.status.is_some());
-        let has_sources = urls.iter().any(|url| !url.sources.is_empty());
+        let layout = super::formatter::CsvLayout::for_rows(urls);
 
-        out.write_all(super::formatter::csv_header(has_status, has_sources).as_bytes())?;
+        out.write_all(super::formatter::csv_header(&layout).as_bytes())?;
         for url_data in urls {
-            let formatted = super::formatter::csv_row(url_data, has_status, has_sources);
+            let formatted = super::formatter::csv_row(url_data, &layout);
             out.write_all(formatted.as_bytes())?;
         }
         Ok(())

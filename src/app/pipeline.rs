@@ -299,6 +299,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "a URL is printed on first sighting, before later providers can report it too",
         ));
     }
+    if args.show_meta {
+        out.push((
+            "--show-meta",
+            "a URL is printed on first sighting, before later captures can widen its first/last seen range",
+        ));
+    }
     if args.output_dir.is_some() {
         out.push((
             "--output-dir",
@@ -461,6 +467,7 @@ mod tests {
             (vec!["--extract-links"], "--extract-links"),
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
+            (vec!["--show-meta"], "--show-meta"),
         ];
 
         for (flags, expected) in cases {

@@ -216,6 +216,15 @@ pub struct Args {
     #[clap(long)]
     pub show_sources: bool,
 
+    /// Annotate each plain-text URL with the archive capture metadata
+    /// (`first_seen`, `last_seen`, `mime`, `archive_status`, `digest`) the
+    /// providers reported. JSON/JSONL/CSV always carry these fields when they
+    /// have values, so this flag only affects plain output — which otherwise
+    /// stays one bare URL per line for piping.
+    #[clap(help_heading = "Display Options")]
+    #[clap(long)]
+    pub show_meta: bool,
+
     /// Print a per-provider summary (URLs found, errors, elapsed) to stderr
     /// when the run finishes.
     #[clap(help_heading = "Display Options")]
