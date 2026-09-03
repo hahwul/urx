@@ -61,6 +61,8 @@ pub struct ProviderConfig {
     pub providers: Option<Vec<String>>,
     pub subs: Option<bool>,
     pub cc_index: Option<String>,
+    pub cdx_endpoint: Option<Vec<String>>,
+    pub cdx_dialect: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub archive_status: Option<Vec<String>>,
@@ -71,6 +73,7 @@ pub struct ProviderConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    pub bevigil_api_key: Option<String>,
     pub include_robots: Option<bool>,
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
@@ -90,6 +93,7 @@ pub struct ProviderKeysConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    pub bevigil_api_key: Option<String>,
     /// Webhook URL(s) for `--notify`, comma-separated. Lives here as well as
     /// in `[notify].url` because the URL *is* the credential, and this file is
     /// the one meant to stay out of source control.
@@ -211,24 +215,16 @@ impl ProviderKeysConfig {
     /// these slots; this method then overwrites them when the provider-config
     /// has a value, so provider-config beats main config.
     ///
-    /// `cli_supplied_*` flags carry the original CLI state captured BEFORE
-    /// either config layer ran, so CLI input is preserved.
-    pub fn apply_to_args(
-        &self,
-        args: &mut Args,
-        cli_supplied_vt: bool,
-        cli_supplied_urlscan: bool,
-        cli_supplied_zoomeye: bool,
-        cli_supplied_github: bool,
-        cli_supplied_notify: bool,
-    ) {
+    /// `supplied` carries the original CLI state captured BEFORE either
+    /// config layer ran, so CLI input is preserved.
+    pub fn apply_to_args(&self, args: &mut Args, supplied: CliSuppliedKeys) {
         warn_about_unknown_keys(
             &self.unknown_keys(),
             "the provider-config file",
             args.silent,
         );
 
-        if !cli_supplied_notify {
+        if !supplied.notify {
             if let Some(urls) = &self.notify_url {
                 let urls = split_csv(urls);
                 if !urls.is_empty() {
@@ -237,27 +233,50 @@ impl ProviderKeysConfig {
             }
         }
 
-        if !cli_supplied_vt {
+        if !supplied.vt {
             if let Some(keys) = &self.vt_api_key {
                 args.vt_api_key = split_csv(keys);
             }
         }
-        if !cli_supplied_urlscan {
+        if !supplied.urlscan {
             if let Some(keys) = &self.urlscan_api_key {
                 args.urlscan_api_key = split_csv(keys);
             }
         }
-        if !cli_supplied_zoomeye {
+        if !supplied.zoomeye {
             if let Some(keys) = &self.zoomeye_api_key {
                 args.zoomeye_api_key = split_csv(keys);
             }
         }
-        if !cli_supplied_github {
+        if !supplied.github {
             if let Some(keys) = &self.github_api_key {
                 args.github_api_key = split_csv(keys);
             }
         }
+        if !supplied.bevigil {
+            if let Some(keys) = &self.bevigil_api_key {
+                args.bevigil_api_key = split_csv(keys);
+            }
+        }
     }
+}
+
+/// Which API-key (and webhook) slots the CLI or environment already filled,
+/// captured before either config layer runs. [`ProviderKeysConfig::apply_to_args`]
+/// only overwrites a slot when its flag here is `false` — otherwise CLI/env
+/// input would be silently replaced by the provider-config file.
+///
+/// A named struct instead of six positional bools: the six-argument form hit
+/// clippy's `too_many_arguments` the moment BeVigil support added a sixth key,
+/// and positional bools are error-prone at the call site regardless.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CliSuppliedKeys {
+    pub vt: bool,
+    pub urlscan: bool,
+    pub zoomeye: bool,
+    pub github: bool,
+    pub bevigil: bool,
+    pub notify: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -561,6 +580,26 @@ impl Config {
             }
         }
 
+        // Extra CDX index servers, and the dialect they speak.
+        if args.cdx_endpoint.is_empty() {
+            if let Some(endpoints) = &self.provider.cdx_endpoint {
+                args.cdx_endpoint = endpoints
+                    .iter()
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .collect();
+            }
+        }
+
+        // An empty string is the documented "unset" spelling, same as `from`.
+        if args.cdx_dialect.is_none() {
+            if let Some(dialect) = self.provider.cdx_dialect.as_deref().map(str::trim) {
+                if !dialect.is_empty() {
+                    args.cdx_dialect = Some(dialect.to_string());
+                }
+            }
+        }
+
         // Archive-side CDX predicates. Each applies only when the CLI left the
         // slot untouched, matching how every other provider option resolves.
         if args.from.is_none() && self.provider.from.is_some() {
@@ -621,6 +660,12 @@ impl Config {
         if args.github_api_key.is_empty() {
             if let Some(github_api_key) = &self.provider.github_api_key {
                 args.github_api_key = split_csv(github_api_key);
+            }
+        }
+
+        if args.bevigil_api_key.is_empty() {
+            if let Some(bevigil_api_key) = &self.provider.bevigil_api_key {
+                args.bevigil_api_key = split_csv(bevigil_api_key);
             }
         }
 
@@ -1138,6 +1183,43 @@ mod tests {
     }
 
     #[test]
+    fn test_config_supplies_cdx_endpoints_and_dialect() {
+        let toml_src = r#"
+            [provider]
+            cdx_endpoint = ["https://vefsafn.is/cdx", " http://localhost:8080/cdx ", ""]
+            cdx_dialect = "classic"
+        "#;
+        let config: Config = toml::from_str(toml_src).unwrap();
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(
+            args.cdx_endpoint,
+            vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
+        );
+        assert_eq!(args.cdx_dialect.as_deref(), Some("classic"));
+
+        // The CLI wins over the file.
+        let config: Config = toml::from_str(toml_src).unwrap();
+        let mut args = Args::parse_from([
+            "urx",
+            "--cdx-endpoint",
+            "https://example.org/cdx",
+            "--cdx-dialect",
+            "pywb",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.cdx_endpoint, vec!["https://example.org/cdx"]);
+        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+
+        // An empty dialect string, as in the documented template, is unset.
+        let config: Config = toml::from_str("[provider]\ncdx_dialect = \"\"").unwrap();
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert!(args.cdx_dialect.is_none());
+    }
+
+    #[test]
     fn test_main_config_supplies_github_key() {
         // `--all-providers` documents keyed providers as activating from "flag,
         // env, or config file", but github had no config field at all — so the
@@ -1172,14 +1254,21 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: Some("from-provider-config".to_string()),
+            bevigil_api_key: None,
             notify_url: None,
             unknown: Default::default(),
         };
-        keys.apply_to_args(&mut args, false, false, false, false, false);
+        keys.apply_to_args(&mut args, CliSuppliedKeys::default());
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
 
         // ...but a CLI-supplied key still wins.
-        keys.apply_to_args(&mut args, false, false, false, true, false);
+        keys.apply_to_args(
+            &mut args,
+            CliSuppliedKeys {
+                github: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
     }
 
@@ -1216,6 +1305,7 @@ mod tests {
             urlscan_api_key: Some("us-from-file".to_string()),
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
             notify_url: None,
             unknown: Default::default(),
         };
@@ -1224,7 +1314,13 @@ mod tests {
         // overwrite that.
         args.vt_api_key = vec!["cli-key".to_string()];
 
-        cfg.apply_to_args(&mut args, true, false, false, false, false);
+        cfg.apply_to_args(
+            &mut args,
+            CliSuppliedKeys {
+                vt: true,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(args.vt_api_key, vec!["cli-key".to_string()]);
         // urlscan was empty and not CLI-supplied -> file value applies and
@@ -1241,11 +1337,12 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
             notify_url: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        cfg.apply_to_args(&mut args, false, false, false, false, false);
+        cfg.apply_to_args(&mut args, CliSuppliedKeys::default());
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
     }
 
@@ -1647,6 +1744,7 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
             notify_url: Some("https://hooks.example/p1, https://hooks.example/p2".to_string()),
             unknown: Default::default(),
         };
@@ -1655,7 +1753,7 @@ mod tests {
         let mut args = Args::parse_from(["urx", "example.com"]);
         main.apply_to_args(&mut args, &CliProvided::default());
         assert_eq!(args.notify, vec!["https://hooks.example/main"]);
-        keys.apply_to_args(&mut args, false, false, false, false, false);
+        keys.apply_to_args(&mut args, CliSuppliedKeys::default());
         assert_eq!(
             args.notify,
             vec!["https://hooks.example/p1", "https://hooks.example/p2"]
@@ -1668,7 +1766,13 @@ mod tests {
             "https://hooks.example/cli",
             "example.com",
         ]);
-        keys.apply_to_args(&mut args, false, false, false, false, true);
+        keys.apply_to_args(
+            &mut args,
+            CliSuppliedKeys {
+                notify: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(args.notify, vec!["https://hooks.example/cli"]);
     }
 }

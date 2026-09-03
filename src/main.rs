@@ -52,11 +52,14 @@ fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
     // it, but still loses to anything supplied on the CLI or in the environment.
     config::ProviderKeysConfig::load(args)?.apply_to_args(
         args,
-        direct.vt,
-        direct.urlscan,
-        direct.zoomeye,
-        direct.github,
-        direct_notify,
+        config::CliSuppliedKeys {
+            vt: direct.vt,
+            urlscan: direct.urlscan,
+            zoomeye: direct.zoomeye,
+            github: direct.github,
+            bevigil: direct.bevigil,
+            notify: direct_notify,
+        },
     );
 
     Ok(())
@@ -302,7 +305,7 @@ async fn main() -> Result<()> {
         return app::shell::print_man_page();
     }
     if args.list_providers {
-        print_provider_list();
+        print_provider_list(&args);
         return Ok(());
     }
 

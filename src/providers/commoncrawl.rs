@@ -5,8 +5,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
+use super::cdx::{walk_block_pages, CdxSession};
 use super::filters::{ArchiveFilters, CdxDialect};
-use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
+use super::{Provider, UrlRecord};
 use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -14,17 +15,6 @@ use crate::progress::ProgressReporter;
 /// Sentinel value that asks the provider to resolve the most recent Common
 /// Crawl index at runtime via `collinfo.json`.
 pub(crate) const LATEST_INDEX_ALIAS: &str = "latest";
-
-/// Hard ceiling on the number of CDX index pages we will fetch for one domain,
-/// mirroring the Wayback guard. At the index server's default block size this
-/// covers far more captures than any real domain has.
-const CC_MAX_PAGES: usize = 10_000;
-
-/// How many pages in a row may fail before we give up on the whole walk.
-/// A single failed page is skipped (they are independently addressable), but a
-/// run of them means the index is unhealthy and continuing would only add
-/// requests and back-off delay to an already-doomed fetch.
-const MAX_CONSECUTIVE_PAGE_FAILURES: usize = 3;
 
 /// Validate that a Common Crawl index identifier matches the expected
 /// `CC-MAIN-YYYY-WW` shape before we splice it into a URL path. This guards
@@ -62,43 +52,6 @@ pub struct CommonCrawlProvider {
     filters: ArchiveFilters,
     #[cfg(test)]
     base_url: String,
-}
-
-/// One CDXJ row of the index. Beyond the URL, the index server already reports
-/// the capture metadata for free — this is a pywb dialect, so the fields are
-/// named `status`/`mime` rather than the classic `statuscode`/`mimetype`. Every
-/// value arrives as a JSON string, including the status code.
-#[derive(Deserialize)]
-struct CCRecord {
-    url: String,
-    #[serde(default)]
-    timestamp: Option<String>,
-    #[serde(default)]
-    mime: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    digest: Option<String>,
-}
-
-impl CCRecord {
-    fn into_record(self) -> UrlRecord {
-        let meta = CaptureMeta::capture(
-            self.timestamp.as_deref(),
-            self.mime.as_deref(),
-            self.status.as_deref(),
-            self.digest.as_deref(),
-        );
-        UrlRecord::new(self.url, meta)
-    }
-}
-
-/// Response shape of a `&showNumPages=true` probe — the index server reports
-/// how many block-paginated pages a query spans. Extra fields (pageSize,
-/// blocks) are ignored.
-#[derive(Deserialize)]
-struct CCPageInfo {
-    pages: usize,
 }
 
 #[derive(Deserialize)]
@@ -246,117 +199,21 @@ impl Provider for CommonCrawlProvider {
             let index = self.effective_index().await?;
             let query_base = self.query_base(&index, domain);
             let client = self.client_config().build_client()?;
-            let limiter = self.rate_limit.as_ref();
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
             }
 
-            // The Common Crawl index server block-paginates: a single request
-            // returns only the first block (historically ~15k records). We must
-            // ask how many pages the query spans via `&showNumPages=true` and
-            // then walk every page, or large domains are silently truncated to
-            // their first block.
-            if let Some(rl) = &limiter {
-                rl.acquire().await;
-            }
-            let count_url = format!("{query_base}&showNumPages=true");
-            let pages = match get_with_retry(&client, &count_url, self.retries).await {
-                Ok(body) => serde_json::from_str::<CCPageInfo>(body.trim())
-                    .map(|info| info.pages)
-                    // A 200 that isn't a page-count document: fall back to a
-                    // single page rather than giving up.
-                    .unwrap_or(1),
-                // The index returns 404 for a domain with no captures. Don't
-                // hard-fail the probe; fall through to a single page=0 fetch so
-                // genuine "no data" stays an empty/`Err` result exactly as the
-                // single-request implementation produced.
-                Err(_) => 1,
+            // The Common Crawl index server block-paginates; the shared pywb
+            // walk in `cdx` probes `showNumPages` and walks every page.
+            let session = CdxSession {
+                client: &client,
+                retries: self.retries,
+                limiter: self.rate_limit.as_ref(),
+                reporter: reporter.as_ref(),
+                endpoint: self.index_base_url(),
             };
-
-            if pages == 0 {
-                return Ok(Vec::new());
-            }
-            let pages = pages.min(CC_MAX_PAGES);
-
-            // The index is capture-level: a URL crawled repeatedly appears
-            // once per capture, so rows are folded per URL as they arrive.
-            let mut records = RecordSet::new();
-            let mut consecutive_failures = 0usize;
-            for page in 0..pages {
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                let page_url = format!("{query_base}&page={page}");
-                // Race the request against the stop signal so a deadline
-                // landing mid-page is noticed inside the runner's grace window
-                // rather than after the hard cancel has discarded the buffer.
-                let fetched = match &reporter {
-                    Some(r) => tokio::select! {
-                        biased;
-                        _ = r.stopped() => None,
-                        res = get_with_retry(&client, &page_url, self.retries) => Some(res),
-                    },
-                    None => Some(get_with_retry(&client, &page_url, self.retries).await),
-                };
-                let Some(result) = fetched else {
-                    // Stopped mid-request: keep the pages already walked.
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
-                    break;
-                };
-                match result {
-                    Ok(text) => {
-                        consecutive_failures = 0;
-                        // Common Crawl returns one JSON object per line.
-                        for line in text.lines() {
-                            if let Ok(record) = serde_json::from_str::<CCRecord>(line) {
-                                records.insert(record.into_record());
-                            }
-                        }
-                        if let Some(r) = &reporter {
-                            r.detail(format!("{} URLs…", records.len()));
-                            // The run asked us to stop (--max-time elapsed, or
-                            // Ctrl-C). Hand back the pages already walked
-                            // instead of losing them to the hard cancel after
-                            // the runner's grace window.
-                            if r.stop_requested() {
-                                if page + 1 < pages {
-                                    r.mark_partial();
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // A failure on the very first page (e.g. the 404 the
-                        // index returns for a domain it has no captures for) is
-                        // a hard failure, matching the old single-request
-                        // behaviour.
-                        if page == 0 {
-                            return Err(e);
-                        }
-                        // Later pages are *independently addressable* — `page=N`
-                        // is a direct block address, not a cursor — so one bad
-                        // page says nothing about the rest. Skipping it costs a
-                        // slice; abandoning the walk here used to throw away
-                        // every remaining page (on a 266-page domain, a single
-                        // hiccup on page 5 discarded 98% of the result).
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        consecutive_failures += 1;
-                        if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES {
-                            // The index itself is unhealthy rather than one page
-                            // being unlucky; stop hammering it.
-                            break;
-                        }
-                    }
-                }
-            }
-
-            Ok(records.into_sorted())
+            walk_block_pages(&session, &query_base).await
         })
     }
 
@@ -450,6 +307,7 @@ impl Provider for MockCommonCrawlProvider {
 mod tests {
     use super::*;
     use crate::progress::StopSignal;
+    use crate::providers::cdx::{PywbRow as CCRecord, MAX_CONSECUTIVE_PAGE_FAILURES};
     use crate::providers::urls_of;
 
     #[test]
@@ -775,7 +633,7 @@ mod tests {
             .create_async()
             .await;
 
-        // Each fetch now issues a showNumPages probe plus the page fetch, so two
+        // Each fetch issues a showNumPages probe plus the page fetch, so two
         // fetch_urls calls hit the index endpoint four times. The probe body
         // isn't a page-count document, so the provider falls back to one page.
         let index_mock = server

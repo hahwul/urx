@@ -116,8 +116,28 @@ pub struct Args {
     #[clap(long, default_value = "latest", value_delimiter = ',')]
     pub cc_index: Vec<String>,
 
+    /// Query an additional CDX index server — any pywb, OutbackCDX, or classic
+    /// Internet-Archive-style CDX API — by its full API URL, e.g.
+    /// `--cdx-endpoint https://vefsafn.is/cdx`. Repeatable. Each endpoint
+    /// becomes a provider with id `cdx:<host>` (usable in --exclude-providers,
+    /// --rate-limit-by and shown in --stats) and honours --subs, --from/--to
+    /// and the --archive-* filters exactly like wayback/cc/arquivo.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long = "cdx-endpoint", value_name = "URL", action = clap::ArgAction::Append)]
+    pub cdx_endpoint: Vec<String>,
+
+    /// Which CDX dialect the --cdx-endpoint servers speak: `pywb`
+    /// (status/mime fields, exact-match filters, NDJSON rows, page-block
+    /// pagination — Common Crawl, vefsafn.is, most pywb deployments) or
+    /// `classic` (statuscode/mimetype fields, regex filters, text rows,
+    /// resume-key pagination — web.archive.org, OutbackCDX). Unset: urx probes
+    /// each endpoint once and falls back to pywb when the answer is ambiguous.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long = "cdx-dialect", value_name = "DIALECT", value_parser = ["classic", "pywb"])]
+    pub cdx_dialect: Option<String>,
+
     /// Restrict results to captures at or after this date, on every CDX-backed
-    /// provider (wayback, cc, arquivo). Accepts YYYY, YYYYMM, YYYYMMDD, or the
+    /// provider (wayback, cc, arquivo, --cdx-endpoint). Accepts YYYY, YYYYMM, YYYYMMDD, or the
     /// full 14-digit CDX timestamp; partial dates pad toward the start of the
     /// range.
     #[clap(help_heading = "Provider Options")]
@@ -134,9 +154,10 @@ pub struct Args {
     /// Keep only captures the archive recorded with this HTTP status code
     /// (e.g. "200"). Applied by the CDX index itself, so unlike
     /// --include-status it costs no extra requests. CDX-backed providers only
-    /// (wayback, cc, arquivo). Wayback treats the value as a regex ("30." =
-    /// any 3xx); cc and arquivo match exactly and cannot take a multi-value
-    /// list here — urx warns and skips it for them.
+    /// (wayback, cc, arquivo, --cdx-endpoint). Wayback and classic-dialect
+    /// endpoints treat the value as a regex ("30." = any 3xx); cc, arquivo and
+    /// pywb endpoints match exactly and cannot take a multi-value list here —
+    /// urx warns and skips it for them.
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',')]
     pub archive_status: Vec<String>,
@@ -181,6 +202,13 @@ pub struct Args {
     /// comma-separated for rotation). Required for the `github` provider.
     #[clap(long, action = clap::ArgAction::Append)]
     pub github_api_key: Vec<String>,
+
+    #[clap(help_heading = "Provider Options")]
+    /// API key for BeVigil (URLs extracted from unpacked Android apps; also
+    /// reads URX_BEVIGIL_API_KEY, comma-separated for rotation). Required for
+    /// the `bevigil` provider.
+    #[clap(long, action = clap::ArgAction::Append)]
+    pub bevigil_api_key: Vec<String>,
 
     /// Include robots.txt discovery (default: true)
     #[clap(long, default_value = "true", hide = true)]
@@ -1082,6 +1110,33 @@ mod tests {
         assert_eq!(args.archive_exclude_status, vec!["404"]);
         assert_eq!(args.archive_mime, vec!["application/json"]);
         assert_eq!(args.archive_exclude_mime, vec!["text/html", "image/png"]);
+    }
+
+    #[test]
+    fn test_cdx_endpoint_flags_parsed() {
+        let args = Args::parse_from([
+            "urx",
+            "--cdx-endpoint",
+            "https://vefsafn.is/cdx",
+            "--cdx-endpoint",
+            "http://localhost:8080/cdx",
+            "--cdx-dialect",
+            "pywb",
+            "example.com",
+        ]);
+        assert_eq!(
+            args.cdx_endpoint,
+            vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
+        );
+        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+
+        // Unset by default: the dialect is detected.
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.cdx_endpoint.is_empty());
+        assert!(args.cdx_dialect.is_none());
+
+        // Only the two known dialects are accepted.
+        assert!(Args::try_parse_from(["urx", "--cdx-dialect", "wayback", "example.com"]).is_err());
     }
 
     #[test]

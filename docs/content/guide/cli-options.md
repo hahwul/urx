@@ -41,6 +41,8 @@ Provider Options:
   --list-providers                       List every supported provider then exit
   --subs                                 Include subdomains when searching
   --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: latest]
+  --cdx-endpoint <URL>                   Query an additional CDX index server (pywb / OutbackCDX / classic) by its API URL; repeatable; id `cdx:<host>`
+  --cdx-dialect <DIALECT>                Dialect of the --cdx-endpoint servers: `pywb` or `classic` (unset: probed once, pywb fallback)
   --from <DATE>                          Restrict CDX providers to captures >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
   --to <DATE>                            Restrict CDX providers to captures <= DATE (same format as --from)
   --archive-status <CODES>               Keep only captures the archive recorded with these status codes
@@ -51,6 +53,7 @@ Provider Options:
   --urlscan-api-key <URLSCAN_API_KEY>   Optional API key for Urlscan (also works anonymously)
   --zoomeye-api-key <ZOOMEYE_API_KEY>   API key for ZoomEye
   --github-api-key <GITHUB_API_KEY>     Personal access token for GitHub Code Search (URX_GITHUB_API_KEY)
+  --bevigil-api-key <BEVIGIL_API_KEY>   API key for BeVigil, URLs from unpacked Android apps (URX_BEVIGIL_API_KEY)
 
 Discovery Options:
   --exclude-robots   Exclude robots.txt discovery
@@ -205,7 +208,7 @@ run was given.
 
 ## Archive Capture Metadata
 
-The CDX-backed providers (`wayback`, `cc`, `arquivo`) index *captures*, not just
+The CDX-backed providers (`wayback`, `cc`, `arquivo`, and any `--cdx-endpoint`) index *captures*, not just
 URLs, so every row they return already carries when the capture was taken, what
 it served, and a digest of the body. urx keeps those fields and reports them
 alongside each URL.
@@ -259,10 +262,36 @@ urx example.com --providers wayback --show-meta
 | URLScan | `urlscan` | No (optional) | `URX_URLSCAN_API_KEY` |
 | ZoomEye | `zoomeye` | Yes | `URX_ZOOMEYE_API_KEY` |
 | GitHub Code Search | `github` | Yes | `URX_GITHUB_API_KEY` |
+| BeVigil | `bevigil` | Yes | `URX_BEVIGIL_API_KEY` |
+| Custom CDX server | `cdx:<host>` (via `--cdx-endpoint URL`) | No | - |
 
-Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`).
+Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`). `bevigil` returns URLs that [BeVigil](https://bevigil.com/osint-api) extracted from unpacked Android apps — a source no web archive covers — and requires an API key (`--bevigil-api-key` or `URX_BEVIGIL_API_KEY`).
 
 Run `urx --list-providers` to print the full catalog (id, API-key requirement, and a one-line summary) directly from the binary.
+
+### Custom CDX Endpoints
+
+Any archive built on pywb, OutbackCDX, or the Internet Archive's CDX server can
+be queried without a dedicated provider:
+
+```bash
+urx example.is --cdx-endpoint https://vefsafn.is/cdx
+urx example.is --cdx-endpoint https://vefsafn.is/cdx --providers cdx:vefsafn.is --rate-limit-by cdx:vefsafn.is=1
+```
+
+Each endpoint becomes a provider with id `cdx:<host>`, enabled by being named.
+It honours `--subs`, `--from`/`--to`, the `--archive-*` filters, pagination and
+rate limiting exactly like `wayback`/`cc`/`arquivo`, and reports capture
+metadata. `--cdx-dialect classic|pywb` fixes the server's dialect; unset, urx
+probes once and falls back to `pywb`.
+
+The only public endpoint verified to work is `https://vefsafn.is/cdx`
+(Iceland; pywb). It ignores pagination parameters and returns the whole result
+set, and may answer with an Anubis-style "Session Verification" page after a
+few requests — urx reports that as an error naming the endpoint, never as an
+empty result. The UK Web Archive, Library of Congress, Bibliotheca Alexandrina
+and the National Library of Australia CDX APIs are blocked by bot protection or
+redirects and do not work from urx.
 
 ## Shell Completions and the Man Page
 

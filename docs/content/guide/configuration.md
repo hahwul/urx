@@ -41,6 +41,8 @@ stream = false             # Write URLs as providers report them (unsorted, bypa
 providers = ["wayback", "cc", "otx"] # also available keyless: "arquivo", "urlscan" (anonymous)
 subs = false                          # Include subdomains
 cc_index = "CC-MAIN-2026-17"         # Common Crawl index (or "latest" to auto-resolve via collinfo.json)
+cdx_endpoint = []                     # Extra CDX index servers, e.g. ["https://vefsafn.is/cdx"] (ids: cdx:<host>)
+cdx_dialect = ""                      # "pywb" or "classic" for those servers; empty = probe once, pywb fallback
 from = ""                             # Restrict CDX providers to captures >= this date (YYYY/YYYYMM/YYYYMMDD)
 to = ""                               # Restrict CDX providers to captures <= this date
 archive_status = []                   # Keep only captures the archive recorded with these status codes
@@ -51,6 +53,7 @@ vt_api_key = ""                       # VirusTotal API key
 urlscan_api_key = ""                  # URLScan API key (optional; urlscan also works anonymously)
 zoomeye_api_key = ""                  # ZoomEye API key
 github_api_key = ""                   # GitHub Code Search personal access token
+bevigil_api_key = ""                  # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false                # Skip robots.txt discovery
 exclude_sitemap = false               # Skip sitemap.xml discovery
 
@@ -130,10 +133,11 @@ incremental = true
 
 ```toml
 [provider]
-providers = ["wayback", "cc", "otx", "vt", "urlscan", "zoomeye"]
+providers = ["wayback", "cc", "otx", "vt", "urlscan", "zoomeye", "bevigil"]
 vt_api_key = "YOUR_VT_KEY"
 urlscan_api_key = "YOUR_URLSCAN_KEY"
 zoomeye_api_key = "YOUR_ZOOMEYE_KEY"
+bevigil_api_key = "YOUR_BEVIGIL_KEY"
 subs = true
 
 [filter]
