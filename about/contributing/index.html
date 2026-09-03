@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="">
+  <meta name="theme-color" content="#08080a">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <title>Contributing - Urx</title>
+  <meta property="og:title" content="Contributing">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="/about/contributing/">
+  <meta property="og:description" content="Extracts URLs from OSINT Archives for Security Insights">
+  <meta property="og:image" content="/images/preview.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Contributing">
+  <meta name="twitter:description" content="Extracts URLs from OSINT Archives for Security Insights">
+  <meta name="twitter:image" content="/images/preview.jpg">
+  <meta name="twitter:site" content="@hahwul">
+  <meta name="twitter:creator" content="@hahwul">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("urx-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  
+</head>
+<body data-section="about">
+<header class="top-nav">
+  <div class="nav-left">
+    <button class="icon-btn menu-toggle" aria-label="Toggle menu" onclick="document.querySelector('.docs-sidebar').classList.toggle('open')">
+      <svg viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+    <a href="/" class="brand">
+      <img src="/images/urx.png" alt="" class="brand-rocket">
+      <span class="brand-word">urx</span>
+    </a>
+    <nav class="nav-links">
+      <a href="/getting-started/">Getting Started</a>
+      <a href="/guide/">Guide</a>
+      <a href="/about/">About</a>
+    </nav>
+  </div>
+  <div class="nav-right">
+    <button class="icon-btn theme-toggle" data-theme-toggle aria-label="Toggle theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a href="https://github.com/hahwul/urx" class="icon-btn" target="_blank" rel="noopener" aria-label="GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+    </a>
+  </div>
+</header>
+<div class="docs-shell">
+  <aside class="docs-sidebar">
+  <div class="sidebar-section">
+    <div class="sidebar-title">Getting Started</div>
+    <ul class="sidebar-links">
+      <li><a href="/getting-started/installation/">Installation</a></li>
+      <li><a href="/getting-started/quick-start/">Quick Start</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-title">Guide</div>
+    <ul class="sidebar-links">
+      <li><a href="/guide/cli-options/">CLI Options</a></li>
+      <li><a href="/guide/configuration/">Configuration</a></li>
+      <li><a href="/guide/examples/">Examples</a></li>
+      <li><a href="/guide/environment-variables/">Environment Variables</a></li>
+      <li><a href="/guide/caching/">Caching</a></li>
+      <li><a href="/guide/integration/">Integration</a></li>
+      <li><a href="/guide/performance/">Performance</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-title">About</div>
+    <ul class="sidebar-links">
+      <li><a href="/about/contributing/">Contributing</a></li>
+    </ul>
+  </div>
+</aside>
+  <main class="docs-main">
+    <h1>Contributing</h1>
+    <div class="docs-content"><h2 id="contributing-to-urx">Contributing to Urx</h2>
+<p>Urx is an open-source project, and we welcome contributions from the community!</p>
+<h2 id="how-to-contribute">How to Contribute</h2>
+<h3 id="reporting-issues">Reporting Issues</h3>
+<p>Found a bug or have a feature request?</p>
+<ol>
+<li><strong>Search existing issues</strong> to avoid duplicates</li>
+<li><strong>Create a new issue</strong> with a clear title and description</li>
+<li><strong>Provide details</strong>:
+<ul>
+<li>Urx version (<code>urx --version</code>)</li>
+<li>Operating system</li>
+<li>Command used</li>
+<li>Expected vs actual behavior</li>
+<li>Steps to reproduce</li>
+</ul>
+</li>
+</ol>
+<p><a href="https://github.com/hahwul/urx/issues/new">Report an issue on GitHub</a></p>
+<h3 id="contributing-code">Contributing Code</h3>
+<h4 id="prerequisites">Prerequisites</h4>
+<ul>
+<li>Rust (latest stable version)</li>
+<li>Git</li>
+<li>Familiarity with the Rust ecosystem</li>
+</ul>
+<h4 id="development-setup">Development Setup</h4>
+<ol>
+<li>
+<p><strong>Fork the repository</strong> on GitHub</p>
+</li>
+<li>
+<p><strong>Clone your fork</strong>:</p>
+<pre><code class="language-bash hljs">git clone https://github.com/YOUR_USERNAME/urx.git
+<span class="hljs-built_in">cd</span> urx
+</code></pre>
+</li>
+<li>
+<p><strong>Build the project</strong>:</p>
+<pre><code class="language-bash hljs">cargo build
+</code></pre>
+</li>
+<li>
+<p><strong>Run tests</strong>:</p>
+<pre><code class="language-bash hljs">cargo <span class="hljs-built_in">test</span>
+</code></pre>
+</li>
+<li>
+<p><strong>Create a feature branch</strong>:</p>
+<pre><code class="language-bash hljs">git checkout -b feature/your-feature-name
+</code></pre>
+</li>
+</ol>
+<h4 id="making-changes">Making Changes</h4>
+<ol>
+<li><strong>Write clean code</strong> following Rust best practices</li>
+<li><strong>Add tests</strong> for new functionality</li>
+<li><strong>Update documentation</strong> if needed</li>
+<li><strong>Run formatting</strong>:
+<pre><code class="language-bash hljs">cargo fmt
+</code></pre>
+</li>
+<li><strong>Run linting</strong>:
+<pre><code class="language-bash hljs">cargo clippy -- --deny warnings
+</code></pre>
+</li>
+</ol>
+<h4 id="submitting-changes">Submitting Changes</h4>
+<ol>
+<li>
+<p><strong>Commit your changes</strong>:</p>
+<pre><code class="language-bash hljs">git add .
+git commit -m <span class="hljs-string">&quot;Add feature: description&quot;</span>
+</code></pre>
+</li>
+<li>
+<p><strong>Push to your fork</strong>:</p>
+<pre><code class="language-bash hljs">git push origin feature/your-feature-name
+</code></pre>
+</li>
+<li>
+<p><strong>Create a Pull Request</strong> on GitHub:</p>
+<ul>
+<li>Clear title and description</li>
+<li>Reference related issues</li>
+<li>Describe changes made</li>
+<li>Include any breaking changes</li>
+</ul>
+</li>
+</ol>
+<h3 id="contributing-documentation">Contributing Documentation</h3>
+<p>Documentation improvements are always welcome!</p>
+<ul>
+<li>Fix typos or unclear explanations</li>
+<li>Add examples and use cases</li>
+<li>Improve existing guides</li>
+</ul>
+<p>Documentation is in the <code>docs/content/</code> directory using Markdown format with TOML front matter.</p>
+<h2 id="development-guidelines">Development Guidelines</h2>
+<h3 id="code-style">Code Style</h3>
+<ul>
+<li>Follow Rust standard formatting (use <code>cargo fmt</code>)</li>
+<li>Write clear, self-documenting code</li>
+<li>Add comments for complex logic</li>
+<li>Keep functions focused and small</li>
+</ul>
+<h3 id="testing">Testing</h3>
+<ul>
+<li>Add unit tests for new functions</li>
+<li>Add integration tests for features</li>
+<li>Ensure all tests pass before submitting</li>
+<li>Aim for high test coverage</li>
+</ul>
+<h3 id="commit-messages">Commit Messages</h3>
+<ul>
+<li>Use clear, descriptive commit messages</li>
+<li>Start with a verb (Add, Fix, Update, Remove)</li>
+<li>Reference issue numbers when applicable</li>
+<li>Keep the first line under 72 characters</li>
+</ul>
+<h3 id="pull-request-guidelines">Pull Request Guidelines</h3>
+<ul>
+<li>One feature/fix per pull request</li>
+<li>Keep changes focused and atomic</li>
+<li>Update CHANGELOG.md for significant changes</li>
+<li>Ensure CI passes before requesting review</li>
+</ul>
+<h2 id="project-structure">Project Structure</h2>
+<pre><code>urx/
+├── src/              # Source code
+│   ├── cli/         # CLI argument parsing
+│   ├── providers/   # URL data providers
+│   ├── filters/     # URL filtering logic
+│   ├── testers/     # HTTP testing
+│   └── network/     # Network configuration
+├── docs/            # Documentation (Hwaro site)
+├── example/         # Example configurations
+└── tests/           # Integration tests
+</code></pre>
+<h2 id="code-of-conduct">Code of Conduct</h2>
+<p>This project follows the <a href="https://github.com/hahwul/urx/blob/main/CODE_OF_CONDUCT.md">Contributor Covenant Code of Conduct</a>. By participating, you are expected to uphold this code.</p>
+<h2 id="need-help">Need Help?</h2>
+<ul>
+<li>Read the full <a href="https://github.com/hahwul/urx/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> guide</li>
+<li>Join <a href="https://github.com/hahwul/urx/discussions">GitHub Discussions</a></li>
+<li>Ask questions in issues</li>
+</ul>
+<h2 id="recognition">Recognition</h2>
+<p>All contributors are recognized in the project!</p>
+<p><a href="https://github.com/hahwul/urx/graphs/contributors"><img src="https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/CONTRIBUTORS.svg" alt="Contributors" /></a></p>
+<h2 id="license">License</h2>
+<p>By contributing to Urx, you agree that your contributions will be licensed under the project's <a href="https://github.com/hahwul/urx/blob/main/LICENSE">MIT License</a>.</p>
+</div>
+      <div class="docs-footer">
+        <div class="footer-mark">
+          <a href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul">
+            <span class="hahwul-img" role="img" aria-label="hahwul"></span>
+          </a>
+          <p class="footer-love">Built with Love</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+
+<script>
+(function () {
+  // active sidebar link
+  var path = window.location.pathname.replace(/\/$/, "") + "/";
+  document.querySelectorAll(".sidebar-links a").forEach(function (link) {
+    var href = link.getAttribute("href");
+    if (href && href.replace(/\/$/, "") + "/" === path) link.classList.add("active");
+  });
+
+  // theme toggle
+  function currentTheme() {
+    var explicit = document.documentElement.getAttribute("data-theme");
+    if (explicit) return explicit;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var next = currentTheme() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("urx-theme", next); } catch (e) {}
+    });
+  });
+
+  // scroll reveal
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var els = document.querySelectorAll(".reveal");
+  if (reduce || !("IntersectionObserver" in window)) {
+    els.forEach(function (el) { el.classList.add("is-visible"); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
+    els.forEach(function (el) { io.observe(el); });
+  }
+})();
+</script>
+</body>
+</html>
