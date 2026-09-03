@@ -70,6 +70,16 @@ pub struct Args {
     #[clap(long)]
     pub normalize_url: bool,
 
+    /// Collapse URLs that differ only in variable data: identifier-looking path
+    /// segments (numbers, UUIDs, hashes, dates) and query parameter *values*.
+    /// `/post/1`, `/post/2` and `/post/99999` become one line. The survivor is
+    /// the lexicographically smallest URL of each group, so runs are
+    /// reproducible. Independent of --normalize-url and --merge-endpoint, and
+    /// combines with either.
+    #[clap(help_heading = "Output Options")]
+    #[clap(long)]
+    pub dedup_similar: bool,
+
     /// Providers to use (comma-separated, e.g., "wayback,cc,otx,arquivo,vt,urlscan")
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',', default_value = "wayback,cc,otx")]
@@ -106,8 +116,28 @@ pub struct Args {
     #[clap(long, default_value = "latest", value_delimiter = ',')]
     pub cc_index: Vec<String>,
 
+    /// Query an additional CDX index server — any pywb, OutbackCDX, or classic
+    /// Internet-Archive-style CDX API — by its full API URL, e.g.
+    /// `--cdx-endpoint https://vefsafn.is/cdx`. Repeatable. Each endpoint
+    /// becomes a provider with id `cdx:<host>` (usable in --exclude-providers,
+    /// --rate-limit-by and shown in --stats) and honours --subs, --from/--to
+    /// and the --archive-* filters exactly like wayback/cc/arquivo.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long = "cdx-endpoint", value_name = "URL", action = clap::ArgAction::Append)]
+    pub cdx_endpoint: Vec<String>,
+
+    /// Which CDX dialect the --cdx-endpoint servers speak: `pywb`
+    /// (status/mime fields, exact-match filters, NDJSON rows, page-block
+    /// pagination — Common Crawl, vefsafn.is, most pywb deployments) or
+    /// `classic` (statuscode/mimetype fields, regex filters, text rows,
+    /// resume-key pagination — web.archive.org, OutbackCDX). Unset: urx probes
+    /// each endpoint once and falls back to pywb when the answer is ambiguous.
+    #[clap(help_heading = "Provider Options")]
+    #[clap(long = "cdx-dialect", value_name = "DIALECT", value_parser = ["classic", "pywb"])]
+    pub cdx_dialect: Option<String>,
+
     /// Restrict results to captures at or after this date, on every CDX-backed
-    /// provider (wayback, cc, arquivo). Accepts YYYY, YYYYMM, YYYYMMDD, or the
+    /// provider (wayback, cc, arquivo, --cdx-endpoint). Accepts YYYY, YYYYMM, YYYYMMDD, or the
     /// full 14-digit CDX timestamp; partial dates pad toward the start of the
     /// range.
     #[clap(help_heading = "Provider Options")]
@@ -124,9 +154,10 @@ pub struct Args {
     /// Keep only captures the archive recorded with this HTTP status code
     /// (e.g. "200"). Applied by the CDX index itself, so unlike
     /// --include-status it costs no extra requests. CDX-backed providers only
-    /// (wayback, cc, arquivo). Wayback treats the value as a regex ("30." =
-    /// any 3xx); cc and arquivo match exactly and cannot take a multi-value
-    /// list here — urx warns and skips it for them.
+    /// (wayback, cc, arquivo, --cdx-endpoint). Wayback and classic-dialect
+    /// endpoints treat the value as a regex ("30." = any 3xx); cc, arquivo and
+    /// pywb endpoints match exactly and cannot take a multi-value list here —
+    /// urx warns and skips it for them.
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',')]
     pub archive_status: Vec<String>,
@@ -172,6 +203,13 @@ pub struct Args {
     #[clap(long, action = clap::ArgAction::Append)]
     pub github_api_key: Vec<String>,
 
+    #[clap(help_heading = "Provider Options")]
+    /// API key for BeVigil (URLs extracted from unpacked Android apps; also
+    /// reads URX_BEVIGIL_API_KEY, comma-separated for rotation). Required for
+    /// the `bevigil` provider.
+    #[clap(long, action = clap::ArgAction::Append)]
+    pub bevigil_api_key: Vec<String>,
+
     /// Include robots.txt discovery (default: true)
     #[clap(long, default_value = "true", hide = true)]
     pub include_robots: bool,
@@ -187,6 +225,26 @@ pub struct Args {
     /// Exclude sitemap.xml discovery
     #[clap(long, help_heading = "Discovery Options")]
     pub exclude_sitemap: bool,
+
+    /// Also read the *archived* versions of robots.txt and sitemap.xml the
+    /// Wayback Machine holds — every distinct version, not just today's — so
+    /// paths a site once listed and has since removed are recovered. Obeys
+    /// --exclude-robots / --exclude-sitemap and --from / --to. Archived
+    /// results are attributed to "robots.txt (archived)" / "sitemap.xml
+    /// (archived)" under --show-sources and --stats.
+    #[clap(long, help_heading = "Discovery Options")]
+    pub archived_discovery: bool,
+
+    /// Maximum archived documents fetched per domain by each of the archived
+    /// robots.txt and sitemap providers (nested sitemaps count). The newest
+    /// versions are read first.
+    #[clap(
+        long,
+        help_heading = "Discovery Options",
+        value_name = "N",
+        default_value = "50"
+    )]
+    pub archived_discovery_limit: usize,
 
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
@@ -216,6 +274,15 @@ pub struct Args {
     #[clap(long)]
     pub show_sources: bool,
 
+    /// Annotate each plain-text URL with the archive capture metadata
+    /// (`first_seen`, `last_seen`, `mime`, `archive_status`, `digest`) the
+    /// providers reported. JSON/JSONL/CSV always carry these fields when they
+    /// have values, so this flag only affects plain output — which otherwise
+    /// stays one bare URL per line for piping.
+    #[clap(help_heading = "Display Options")]
+    #[clap(long)]
+    pub show_meta: bool,
+
     /// Print a per-provider summary (URLs found, errors, elapsed) to stderr
     /// when the run finishes.
     #[clap(help_heading = "Display Options")]
@@ -226,6 +293,9 @@ pub struct Args {
     /// "no-images", "no-fonts", "no-documents", "no-videos", "no-audio".
     /// Keep only a family: "only-js", "only-style", "only-fonts",
     /// "only-documents", "only-videos", "only-audio", "only-images".
+    /// Keep only a security-interesting family: "only-secrets", "only-backup",
+    /// "only-config", "only-api" — these match by path shape as well as by
+    /// extension, so `/.env` and `/index.php~` qualify.
     /// Singular spellings are accepted too. An unknown name is an error.
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
@@ -250,6 +320,22 @@ pub struct Args {
     #[clap(help_heading = "Filter Options")]
     #[clap(long, value_delimiter = ',')]
     pub exclude_patterns: Vec<String>,
+
+    /// Keep only URLs matching this regular expression. Repeat the flag for
+    /// several expressions; a URL survives if it matches any of them. Matched
+    /// against the whole URL and case-sensitively — unlike --patterns, which
+    /// lower-cases both sides. Use `(?i)` for a case-insensitive pattern. Not
+    /// comma-split, so a `{2,3}` quantifier stays intact.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "match-regex", value_name = "RE", action = clap::ArgAction::Append)]
+    pub match_regex: Vec<String>,
+
+    /// Drop URLs matching this regular expression. Repeat the flag for several
+    /// expressions; one match is enough to drop the URL. Same matching rules as
+    /// --match-regex, and applied before it.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "filter-regex", value_name = "RE", action = clap::ArgAction::Append)]
+    pub filter_regex: Vec<String>,
 
     /// Only show the host part of the URLs
     #[clap(help_heading = "Filter Options")]
@@ -369,6 +455,34 @@ pub struct Args {
     #[clap(long)]
     pub extract_links: bool,
 
+    /// Fetch collected JavaScript files and extract the endpoint paths and
+    /// URLs found in their string literals (requires HTTP requests)
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long)]
+    pub extract_js_endpoints: bool,
+
+    /// Maximum number of files --extract-js-endpoints will fetch (0 = unlimited)
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, default_value = "500", value_name = "N")]
+    pub max_js_files: usize,
+
+    /// Fetch the *archived* body of each collected URL from the Wayback
+    /// Machine and extract the links inside it. Unlike --extract-links this
+    /// works for pages that no longer exist. Only URLs with a capture
+    /// timestamp qualify (the CDX providers supply one; cached, --files and
+    /// non-CDX URLs have none). One request per distinct body: URLs whose
+    /// captures share a content digest are fetched once. Discovered links go
+    /// through the same filters and host validation as everything else.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long)]
+    pub archive_body: bool,
+
+    /// Maximum number of archived bodies --archive-body fetches per run. This
+    /// bounds distinct bodies, not URLs — duplicates never count against it.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, value_name = "N", default_value = "500")]
+    pub archive_body_limit: usize,
+
     /// Enable incremental scanning mode (only return new URLs compared to previous scans)
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]
@@ -398,6 +512,39 @@ pub struct Args {
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]
     pub no_cache: bool,
+
+    /// POST a run summary to this webhook URL when the run ends (repeatable).
+    /// Also read from URX_NOTIFY_URL (comma-separated), the provider-config
+    /// file (`notify_url`) and `[notify].url` in the config file. The URL is
+    /// treated as a secret: only its host is ever printed.
+    #[clap(help_heading = "Notification Options")]
+    #[clap(long, value_name = "URL")]
+    pub notify: Vec<String>,
+
+    /// When to send: `new` (only if the run produced URLs — pairs with
+    /// --incremental so a quiet cron run stays quiet), `always` (even with
+    /// zero URLs), or `never` (keep the configuration, send nothing).
+    #[clap(help_heading = "Notification Options")]
+    #[clap(long, value_enum, default_value_t = crate::notify::NotifyOn::New)]
+    pub notify_on: crate::notify::NotifyOn,
+
+    /// Payload shape: `json` (urx's summary: domains, counts, elapsed time,
+    /// per-provider stats, a URL sample), `slack` (`{"text": ...}`), or
+    /// `discord` (`{"content": ...}`). Chat messages are cut to the
+    /// service's length limit and say so.
+    #[clap(help_heading = "Notification Options")]
+    #[clap(long, value_enum, default_value_t = crate::notify::NotifyFormat::Json)]
+    pub notify_format: crate::notify::NotifyFormat,
+
+    /// Print a shell completion script to stdout and exit. Needs no DOMAINS,
+    /// so `urx --completions zsh > ~/.zfunc/_urx` works on its own.
+    #[clap(long, value_name = "SHELL", value_enum)]
+    pub completions: Option<clap_complete::Shell>,
+
+    /// Print the roff man page to stdout and exit, e.g.
+    /// `urx --manpage > ~/.local/share/man/man1/urx.1`. Needs no DOMAINS.
+    #[clap(long)]
+    pub manpage: bool,
 }
 
 /// The set of options the user actually named on the command line.
@@ -644,6 +791,10 @@ mod tests {
         assert_eq!(args.cc_index, vec!["latest"]);
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
+        assert!(!args.archive_body);
+        assert_eq!(args.archive_body_limit, 500);
+        assert!(!args.archived_discovery);
+        assert_eq!(args.archived_discovery_limit, 50);
         assert!(args.include_robots);
         assert!(args.include_sitemap);
         assert!(!args.exclude_robots);
@@ -1003,6 +1154,33 @@ mod tests {
     }
 
     #[test]
+    fn test_cdx_endpoint_flags_parsed() {
+        let args = Args::parse_from([
+            "urx",
+            "--cdx-endpoint",
+            "https://vefsafn.is/cdx",
+            "--cdx-endpoint",
+            "http://localhost:8080/cdx",
+            "--cdx-dialect",
+            "pywb",
+            "example.com",
+        ]);
+        assert_eq!(
+            args.cdx_endpoint,
+            vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
+        );
+        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+
+        // Unset by default: the dialect is detected.
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.cdx_endpoint.is_empty());
+        assert!(args.cdx_dialect.is_none());
+
+        // Only the two known dialects are accepted.
+        assert!(Args::try_parse_from(["urx", "--cdx-dialect", "wayback", "example.com"]).is_err());
+    }
+
+    #[test]
     fn test_output_dir_flag_parsed() {
         let args = Args::parse_from(["urx", "--output-dir", "out/", "example.com"]);
         assert_eq!(
@@ -1112,5 +1290,38 @@ mod tests {
         }
 
         assert_eq!(domains, vec!["example.com", "example.org"]);
+    }
+
+    #[test]
+    fn test_notify_flags_parse_with_defaults() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.notify.is_empty());
+        assert_eq!(args.notify_on, NotifyOn::New);
+        assert_eq!(args.notify_format, NotifyFormat::Json);
+
+        // Repeatable, so one run can fan out to several receivers.
+        let args = Args::parse_from([
+            "urx",
+            "--notify",
+            "https://hooks.example/a",
+            "--notify",
+            "https://hooks.example/b",
+            "--notify-on",
+            "always",
+            "--notify-format",
+            "slack",
+            "example.com",
+        ]);
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/a", "https://hooks.example/b"]
+        );
+        assert_eq!(args.notify_on, NotifyOn::Always);
+        assert_eq!(args.notify_format, NotifyFormat::Slack);
+
+        assert!(Args::try_parse_from(["urx", "--notify-on", "sometimes", "x.com"]).is_err());
+        assert!(Args::try_parse_from(["urx", "--notify-format", "teams", "x.com"]).is_err());
     }
 }

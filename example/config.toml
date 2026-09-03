@@ -8,6 +8,7 @@ domains = ["example.com", "example.org"]
 output = "results.txt"
 format = "plain"       # Options: plain, json, jsonl, csv
 merge_endpoint = false
+dedup_similar = false  # Collapse URLs differing only in ids, hashes, dates, or query values
 stream = false         # Write URLs as providers report them (see README)
 
 # Provider options
@@ -15,11 +16,14 @@ stream = false         # Write URLs as providers report them (see README)
 providers = ["wayback", "cc", "otx"]
 subs = false                         # Include subdomains when searching
 cc_index = "CC-MAIN-2026-17"         # Common Crawl index (use "latest" to auto-resolve via collinfo.json)
+# cdx_endpoint = ["https://vefsafn.is/cdx"]  # Extra CDX servers (any pywb/OutbackCDX/classic); ids cdx:<host>
+# cdx_dialect = "pywb"               # "pywb" or "classic"; unset = probe once, pywb fallback
 
 # Archive-side filters, evaluated by the CDX index itself (wayback, cc, arquivo
-# only). Unlike [testing].include_status these cost no extra HTTP requests.
-# Note: wayback treats values as regexes; cc and arquivo match exactly and
-# cannot express a multi-value positive list (see README).
+# and cdx_endpoint servers only). Unlike [testing].include_status these cost no
+# extra HTTP requests. Note: wayback (and classic endpoints) treat values as
+# regexes; cc, arquivo and pywb endpoints match exactly and cannot express a
+# multi-value positive list (see README).
 from = "2023"                        # Captures at or after this date
 to = "2024"                          # Captures at or before this date
 archive_exclude_status = ["404"]     # Skip what the archive recorded as missing
@@ -27,8 +31,11 @@ archive_exclude_mime = ["text/html"] # Leave assets and endpoints behind
 # archive_status = ["200"]           # Keep only these recorded status codes
 # archive_mime = ["application/json"] # Finds endpoints that carry no extension
 vt_api_key = ""                      # VirusTotal API key (If using VirusTotal)
+# bevigil_api_key = ""               # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false               # Exclude robots.txt URLs
 exclude_sitemap = false              # Exclude sitemap.xml URLs
+archived_discovery = false           # Also read every archived version of robots.txt / sitemap.xml
+archived_discovery_limit = 50        # Documents fetched per domain by each archived provider
 
 # Display options
 verbose = false
@@ -42,6 +49,8 @@ extensions = ["js", "php", "aspx"]      # Include only these extensions
 exclude_extensions = ["html", "txt"]    # Exclude these extensions
 patterns = ["admin", "api"]             # Only include URLs with these patterns
 exclude_patterns = ["logout", "static"] # Exclude URLs with these patterns
+match_regex = ["/api/v[0-9]+/"]         # Keep only URLs matching these regexes (ORed, case-sensitive)
+filter_regex = ["/(assets|static)/"]    # Drop URLs matching any of these regexes
 show_only_host = false
 show_only_path = false
 show_only_param = false
@@ -67,6 +76,10 @@ check_status = false            # Check HTTP status code of collected URLs
 include_status = ["200", "30x"] # Include URLs with these status codes
 exclude_status = ["404", "50x"] # Exclude URLs with these status codes
 extract_links = false           # Extract additional links from collected URLs
+extract_js_endpoints = false    # Fetch collected JavaScript and extract the endpoints in it
+max_js_files = 500              # Cap on files extract_js_endpoints fetches (0 = unlimited)
+archive_body = false            # Extract links from the *archived* bodies of collected URLs
+archive_body_limit = 500        # Distinct archived bodies fetched per run (duplicates never count)
 
 # Cache options
 [cache]
@@ -76,3 +89,13 @@ cache_path = "~/.urx/cache.db"  # Path for SQLite cache database
 redis_url = "redis://localhost:6379"  # Redis connection URL (for redis cache_type)
 cache_ttl = 86400              # Cache time-to-live in seconds (24 hours)
 no_cache = false               # Disable caching entirely
+
+# Notification options (--notify)
+[notify]
+# The webhook URL is a credential: prefer the URX_NOTIFY_URL environment
+# variable or `notify_url` in the provider-config file so it stays out of a
+# config that gets checked in. A single string or a list both work.
+# url = "https://hooks.slack.com/services/T000/B000/XXXX"
+# url = ["https://hooks.slack.com/services/...", "https://n8n.example/hook"]
+on = "new"                     # new (only when URLs were emitted), always, or never
+format = "json"                # json (urx summary), slack ({"text"}), or discord ({"content"})

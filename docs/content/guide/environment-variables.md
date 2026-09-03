@@ -68,6 +68,38 @@ export URX_GITHUB_API_KEY=token1,token2,token3
 urx example.com --providers github
 ```
 
+#### URX_BEVIGIL_API_KEY
+BeVigil API key for the `bevigil` provider, which returns URLs extracted from
+unpacked Android apps. Required; the provider does nothing without it. Get a
+key from the [BeVigil OSINT API](https://bevigil.com/osint-api).
+
+```bash
+export URX_BEVIGIL_API_KEY=your_key_here
+urx example.com --providers bevigil
+```
+
+**Multiple Keys (Rotation):**
+```bash
+export URX_BEVIGIL_API_KEY=key1,key2
+urx example.com --providers bevigil
+```
+
+### Notifications
+
+#### URX_NOTIFY_URL
+Webhook URL(s) for `--notify`. Comma-separate several to fan out. The URL is
+treated as a secret: urx never prints more than its host, so the environment
+is the recommended place for it.
+
+```bash
+export URX_NOTIFY_URL=https://hooks.slack.com/services/T000/B000/XXXX
+urx example.com --incremental --notify-format slack
+```
+
+`--notify` on the command line takes precedence over the variable; both take
+precedence over `notify_url` in the provider-config file and `[notify].url`
+in the main config.
+
 ### Summary
 
 | Variable | Provider | Description |
@@ -76,6 +108,8 @@ urx example.com --providers github
 | `URX_URLSCAN_API_KEY` | URLScan | Optional URLScan API key (the provider also works anonymously) |
 | `URX_ZOOMEYE_API_KEY` | ZoomEye | ZoomEye API key |
 | `URX_GITHUB_API_KEY` | GitHub | GitHub Code Search personal access token |
+| `URX_BEVIGIL_API_KEY` | BeVigil | BeVigil OSINT API key (URLs from unpacked Android apps) |
+| `URX_NOTIFY_URL` | — | Webhook URL(s) for `--notify`, comma-separated |
 
 ### Usage Notes
 
@@ -94,6 +128,7 @@ Add to your `~/.bashrc`, `~/.zshrc`, or `~/.profile`:
 export URX_VT_API_KEY=your_vt_key
 export URX_URLSCAN_API_KEY=your_urlscan_key
 export URX_ZOOMEYE_API_KEY=your_zoomeye_key
+export URX_NOTIFY_URL=https://hooks.slack.com/services/...
 ```
 
 #### Use .env Files

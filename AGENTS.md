@@ -111,6 +111,9 @@ Since URX fetches from external APIs, **manual validation should include**:
 URX supports these environment variables:
 - `URX_VT_API_KEY`: VirusTotal API key
 - `URX_URLSCAN_API_KEY`: URLScan API key
+- `URX_ZOOMEYE_API_KEY`: ZoomEye API key
+- `URX_GITHUB_API_KEY`: GitHub Code Search token
+- `URX_BEVIGIL_API_KEY`: BeVigil API key
 
 ### Development Tips
 - **Modular architecture**: Each provider/filter/tester is a separate module

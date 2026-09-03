@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::cli::Args;
-use crate::providers::Provider;
+use crate::providers::{Provider, UrlRecord};
 use crate::testers::Tester;
 
 /// Strip ANSI escapes so layout assertions hold regardless of the ambient
@@ -92,6 +92,7 @@ pub fn build_test_args() -> Args {
         format: "plain".to_string(),
         merge_endpoint: false,
         normalize_url: false,
+        dedup_similar: false,
         stream: false,
         providers: vec!["mock".to_string()],
         subs: false,
@@ -108,6 +109,8 @@ pub fn build_test_args() -> Args {
         exclude_extensions: vec![],
         patterns: vec![],
         exclude_patterns: vec![],
+        match_regex: vec![],
+        filter_regex: vec![],
         show_only_host: false,
         show_only_path: false,
         show_only_param: false,
@@ -128,10 +131,16 @@ pub fn build_test_args() -> Args {
         include_status: vec![],
         exclude_status: vec![],
         extract_links: false,
+        extract_js_endpoints: false,
+        max_js_files: 500,
+        archive_body: false,
+        archive_body_limit: 500,
         include_robots: false,
         include_sitemap: false,
         exclude_robots: true,
         exclude_sitemap: true,
+        archived_discovery: false,
+        archived_discovery_limit: 50,
         incremental: false,
         cache_type: "sqlite".to_string(),
         cache_path: None,
@@ -142,12 +151,15 @@ pub fn build_test_args() -> Args {
         all_providers: false,
         list_providers: false,
         show_sources: false,
+        show_meta: false,
         stats: false,
         domain_list: vec![],
         max_time: 0,
         rate_limit_by: vec![],
         provider_config: None,
         output_dir: None,
+        cdx_endpoint: vec![],
+        cdx_dialect: None,
         from: None,
         to: None,
         archive_status: vec![],
@@ -155,6 +167,12 @@ pub fn build_test_args() -> Args {
         archive_mime: vec![],
         archive_exclude_mime: vec![],
         github_api_key: vec![],
+        bevigil_api_key: vec![],
+        completions: None,
+        manpage: false,
+        notify: vec![],
+        notify_on: crate::notify::NotifyOn::New,
+        notify_format: crate::notify::NotifyFormat::Json,
     }
 }
 
@@ -195,7 +213,7 @@ impl Provider for MockProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         let urls = self.urls.clone();
         let should_fail = self.should_fail;
         let calls = self.calls.clone();
@@ -211,7 +229,7 @@ impl Provider for MockProvider {
             if should_fail {
                 Err(anyhow::anyhow!("Mock provider failure"))
             } else {
-                Ok(urls)
+                Ok(urls.into_iter().map(UrlRecord::bare).collect())
             }
         })
     }

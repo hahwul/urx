@@ -65,21 +65,34 @@ pub fn print_provider_stats(stats: &[ProviderStats]) {
 
 /// The per-provider summary table, as text.
 fn render_provider_stats(stats: &[ProviderStats]) -> String {
+    // The name column grows to the longest label rather than staying fixed:
+    // "Robots.txt (archived)" overflowed the old 18-column slot and pushed
+    // its numbers out of line with every other row.
+    let width = stats
+        .iter()
+        .map(|s| s.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(18);
     let mut out = String::from("\nProvider stats:\n");
     out.push_str(&format!(
-        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}\n",
+        "  {:<width$}  {:>8}  {:>8}  {:>7}  {:>10}\n",
         "provider", "urls", "partial", "errors", "elapsed"
     ));
     out.push_str(&format!(
-        "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}\n",
-        "------------------", "--------", "--------", "-------", "----------"
+        "  {:<width$}  {:>8}  {:>8}  {:>7}  {:>10}\n",
+        "-".repeat(width),
+        "--------",
+        "--------",
+        "-------",
+        "----------"
     ));
     for s in stats {
         // A provider cut off by --max-time / Ctrl-C is called out: every count
         // on its row is a floor, not a total, and without the marker a run that
         // was stopped mid-fetch reads exactly like one that finished.
         out.push_str(&format!(
-            "  {:<18}  {:>8}  {:>8}  {:>7}  {:>10}{}\n",
+            "  {:<width$}  {:>8}  {:>8}  {:>7}  {:>10}{}\n",
             s.name,
             s.url_count,
             s.partial_count,

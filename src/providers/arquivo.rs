@@ -1,12 +1,11 @@
 use anyhow::Result;
-use serde::Deserialize;
-use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
+use super::cdx::{parse_pywb_rows, CdxSession, PYWB_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
-use super::Provider;
-use crate::network::client::{get_with_retry, HttpClientConfig};
+use super::{Provider, RecordSet, UrlRecord};
+use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -28,32 +27,12 @@ const MAX_PAGES: usize = 1_000;
 /// that a 300-second request delivered only 59k rows before timing out.
 const ROW_LIMIT: usize = 100_000;
 
-/// One row of Arquivo.pt's CDX `output=json` response. Each line of the body is
-/// a standalone JSON object (CDXJ / NDJSON); we only need the captured URL.
-#[derive(Debug, Deserialize)]
-struct ArquivoRecord {
-    #[serde(default)]
-    url: String,
-}
-
-/// Parse Arquivo's NDJSON CDX body into the captured URLs. Each non-empty line
-/// is an independent JSON object, so a single malformed line (e.g. a stray
-/// error message) is skipped rather than aborting the whole page. Rows without
-/// a `url` are dropped.
-fn parse_records(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                return None;
-            }
-            serde_json::from_str::<ArquivoRecord>(line)
-                .ok()
-                .map(|r| r.url)
-                .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
-        })
-        .collect()
-}
+/// The CDX columns we ask for. Restricting `fl` matters here: the full row set
+/// for a large domain is ~25 MB where `fl=url` alone is ~6 MB, and the whole
+/// body is buffered before parsing. These four extra columns are the capture
+/// metadata the index already holds, and they cost a fraction of the fields
+/// (`offset`, `filename`, `length`, `urlkey`, …) an unrestricted row carries.
+const FIELDS: &str = PYWB_FIELDS;
 
 #[derive(Clone)]
 pub struct ArquivoProvider {
@@ -155,10 +134,10 @@ impl ArquivoProvider {
     /// `/*` matches the host and all of its paths — the same wildcard forms the
     /// Wayback provider uses, which Arquivo's CDX server honours as well.
     ///
-    /// `fl=url` asks for just the captured URL, which is the only field
-    /// [`parse_records`] reads. It matters at this scale: a full-record page of
-    /// a large domain is ~25 MB where the same rows as `fl=url` are ~6 MB, and
-    /// that whole body is buffered in memory before parsing.
+    /// `fl=` is restricted to [`FIELDS`], the columns [`parse_pywb_rows`] reads.
+    /// It matters at this scale: a full-record page of a large domain is ~25 MB
+    /// where the same rows narrowed to a field list are a few MB, and that
+    /// whole body is buffered in memory before parsing.
     ///
     /// `collapse=urlkey` is sent because it is the correct request for a
     /// capture-level index — Arquivo returns one row per *capture*, so popular
@@ -172,7 +151,7 @@ impl ArquivoProvider {
             domain.to_string()
         };
         let mut url = format!(
-            "{}/wayback/cdx?url={host}/*&output=json&fl=url&collapse=urlkey",
+            "{}/wayback/cdx?url={host}/*&output=json&fl={FIELDS}&collapse=urlkey",
             self.base_url()
         );
         url.push_str(&self.filters.query_params(CdxDialect::Pywb));
@@ -188,7 +167,7 @@ impl Provider for ArquivoProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -196,11 +175,17 @@ impl Provider for ArquivoProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.client_config().build_client()?;
             let query_base = self.query_base(domain);
-            let limiter = self.rate_limit.as_ref();
+            let session = CdxSession {
+                client: &client,
+                retries: self.retries,
+                limiter: self.rate_limit.as_ref(),
+                reporter: reporter.as_ref(),
+                endpoint: self.base_url(),
+            };
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -218,7 +203,10 @@ impl Provider for ArquivoProvider {
             // `seen` is the single source of truth: it dedups across pages and
             // its growth drives the no-progress stop condition.
             let row_limit = self.row_limit();
-            let mut seen: HashSet<String> = HashSet::new();
+            // Arquivo returns one row per *capture* (its `collapse=urlkey` is
+            // ignored), so this is where thousands of rows for one URL become
+            // one record — and what keeps a page's rows from accumulating.
+            let mut seen = RecordSet::new();
             let mut page = 0usize;
             let mut truncated = false;
 
@@ -232,23 +220,12 @@ impl Provider for ArquivoProvider {
 
                 let url = format!("{query_base}&limit={row_limit}&page={page}");
 
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                // Race the request against the stop signal, for the same
-                // reason wayback does: one page is large enough that a deadline
-                // landing mid-request would otherwise go unnoticed until after
-                // the runner's grace window had closed and thrown the buffer
-                // away.
-                let fetched = match &reporter {
-                    Some(r) => tokio::select! {
-                        biased;
-                        _ = r.stopped() => None,
-                        res = get_with_retry(&client, &url, self.retries) => Some(res),
-                    },
-                    None => Some(get_with_retry(&client, &url, self.retries).await),
-                };
-                let Some(result) = fetched else {
+                // The session races the request against the stop signal, for
+                // the same reason wayback does: one page is large enough that a
+                // deadline landing mid-request would otherwise go unnoticed
+                // until after the runner's grace window had closed and thrown
+                // the buffer away.
+                let Some(result) = session.get(&url).await else {
                     // Stopped mid-request: keep the pages already walked.
                     truncated = true;
                     break;
@@ -278,7 +255,7 @@ impl Provider for ArquivoProvider {
                 // whether the server truncated us.
                 let rows = text.lines().filter(|l| !l.trim().is_empty()).count();
                 let before = seen.len();
-                seen.extend(parse_records(&text));
+                seen.extend(parse_pywb_rows(&text));
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", seen.len()));
@@ -313,10 +290,7 @@ impl Provider for ArquivoProvider {
                 }
             }
 
-            let mut urls: Vec<String> = seen.into_iter().collect();
-            urls.sort();
-
-            Ok(urls)
+            Ok(seen.into_sorted())
         })
     }
 
@@ -357,6 +331,7 @@ impl Provider for ArquivoProvider {
 mod tests {
     use super::*;
     use crate::progress::StopSignal;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_new_provider() {
@@ -458,7 +433,7 @@ mod tests {
         let provider = ArquivoProvider::new();
         assert_eq!(
             provider.query_base("example.com"),
-            "https://arquivo.pt/wayback/cdx?url=example.com/*&output=json&fl=url&collapse=urlkey"
+            "https://arquivo.pt/wayback/cdx?url=example.com/*&output=json&fl=url,timestamp,mime,status,digest&collapse=urlkey"
         );
     }
 
@@ -468,12 +443,12 @@ mod tests {
         provider.with_subdomains(true);
         assert_eq!(
             provider.query_base("example.com"),
-            "https://arquivo.pt/wayback/cdx?url=*.example.com/*&output=json&fl=url&collapse=urlkey"
+            "https://arquivo.pt/wayback/cdx?url=*.example.com/*&output=json&fl=url,timestamp,mime,status,digest&collapse=urlkey"
         );
     }
 
     #[test]
-    fn test_parse_records_extracts_urls_and_skips_junk() {
+    fn test_parse_rows_extracts_urls_and_skips_junk() {
         let body =
             "{\"urlkey\":\"com,example)/\",\"url\":\"http://example.com/a\",\"status\":\"200\"}\n\
                     \n\
@@ -481,14 +456,15 @@ mod tests {
                     {\"url\":\"https://example.com/b\"}\n\
                     {\"timestamp\":\"20200101\"}\n\
                     {\"url\":\"ftp://example.com/skip\"}\n";
-        let urls = parse_records(body);
+        let records = parse_pywb_rows(body);
         assert_eq!(
-            urls,
-            vec![
-                "http://example.com/a".to_string(),
-                "https://example.com/b".to_string(),
-            ]
+            records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+            vec!["http://example.com/a", "https://example.com/b"]
         );
+        // The row that had a status keeps it; the one that didn't stays empty
+        // rather than inheriting a neighbour's value.
+        assert_eq!(records[0].meta.archive_status(), Some("200"));
+        assert!(records[1].meta.is_empty());
     }
 
     #[tokio::test]
@@ -502,7 +478,7 @@ mod tests {
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
                 mockito::Matcher::UrlEncoded("output".into(), "json".into()),
-                mockito::Matcher::UrlEncoded("fl".into(), "url".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), FIELDS.into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
                 mockito::Matcher::UrlEncoded("limit".into(), ROW_LIMIT.to_string()),
                 mockito::Matcher::UrlEncoded("page".into(), "0".into()),
@@ -510,9 +486,12 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "text/x-ndjson")
             .with_body(
-                "{\"url\":\"http://example.com/page1\"}\n\
-                 {\"url\":\"http://example.com/page2\"}\n\
-                 {\"url\":\"http://example.com/page1\"}\n",
+                "{\"url\":\"http://example.com/page1\",\"timestamp\":\"20050101000000\",\
+                 \"mime\":\"text/plain\",\"status\":\"404\",\"digest\":\"OLD\"}\n\
+                 {\"url\":\"http://example.com/page2\",\"timestamp\":\"20100101000000\",\
+                 \"mime\":\"text/html\",\"status\":\"200\",\"digest\":\"TWO\"}\n\
+                 {\"url\":\"http://example.com/page1\",\"timestamp\":\"20240101000000\",\
+                 \"mime\":\"text/html\",\"status\":\"200\",\"digest\":\"NEW\"}\n",
             )
             .expect(1)
             .create_async()
@@ -530,14 +509,25 @@ mod tests {
         provider.with_base_url(server.url());
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
+        let records = provider
             .fetch_urls_with_progress("example.com", Some(reporter.clone()))
             .await
             .unwrap();
 
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0], "http://example.com/page1");
-        assert_eq!(urls[1], "http://example.com/page2");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].url, "http://example.com/page1");
+        assert_eq!(records[1].url, "http://example.com/page2");
+
+        // The two captures of page1 collapse into one record spanning both:
+        // the oldest timestamp, the newest timestamp, and the newest capture's
+        // MIME type and status.
+        let page1_meta = &records[0].meta;
+        assert_eq!(page1_meta.first_seen(), Some("20050101000000"));
+        assert_eq!(page1_meta.last_seen(), Some("20240101000000"));
+        assert_eq!(page1_meta.mime(), Some("text/html"));
+        assert_eq!(page1_meta.archive_status(), Some("200"));
+        assert_eq!(page1_meta.digests().collect::<Vec<_>>(), vec!["NEW", "OLD"]);
+
         assert!(!reporter.is_partial());
 
         page0.assert();
@@ -572,7 +562,7 @@ mod tests {
         provider.with_base_url(server.url());
         provider.with_subdomains(true);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(urls, vec!["http://sub.example.com/page1".to_string()]);
         page0.assert();
@@ -615,10 +605,12 @@ mod tests {
         provider.with_row_limit(2);
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(
             urls,
@@ -657,10 +649,12 @@ mod tests {
         provider.with_row_limit(2); // both pages come back full ⇒ truncated
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(
             urls,
@@ -713,10 +707,12 @@ mod tests {
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(
             urls,
@@ -752,10 +748,12 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop);
 
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter))
+                .await
+                .unwrap(),
+        );
 
         assert!(urls.is_empty());
         mock.assert();
@@ -782,10 +780,12 @@ mod tests {
         provider.with_row_limit(10); // 2 rows < 10 ⇒ that was everything
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(urls.len(), 2);
         assert!(!reporter.is_partial());
@@ -825,7 +825,7 @@ mod tests {
         provider.with_base_url(server.url());
         provider.with_row_limit(3);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(
             urls,
@@ -853,7 +853,7 @@ mod tests {
         let mut provider = ArquivoProvider::new();
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(urls.len(), 0);
         mock.assert();
@@ -903,10 +903,12 @@ mod tests {
         provider.with_row_limit(2); // page 0 comes back full ⇒ page 1 is fetched
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
         assert_eq!(
             urls,
             vec![
@@ -956,7 +958,7 @@ mod tests {
         provider.with_rate_limit(Some(5.0));
 
         let start = Instant::now();
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls.len(), 2);
         assert!(
             start.elapsed() >= Duration::from_millis(150),

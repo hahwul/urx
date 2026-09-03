@@ -51,13 +51,31 @@ Combine with other URL collection tools:
 
 ### Notification Integration
 
+#### Built-in Webhook (`--notify`)
+urx can POST a run summary itself — no extra tool in the pipe. Paired with
+`--incremental` the webhook fires only when the run finds new URLs:
+```bash
+# Slack
+urx target.com --incremental --silent \
+  --notify https://hooks.slack.com/services/T000/B000/XXXX --notify-format slack
+
+# Discord
+urx target.com --incremental --silent --notify "$DISCORD_HOOK" --notify-format discord
+
+# Anything that takes JSON (n8n, ntfy, a Lambda, your own receiver)
+export URX_NOTIFY_URL=https://n8n.example/webhook/urx
+urx target.com --incremental --silent
+```
+See [CLI Options → Webhook Notifications](@/guide/cli-options.md#webhook-notifications)
+for the payload schema, `--notify-on`, and the length limits.
+
 #### Notify
-Send new URLs to various notification channels:
+Send the new URLs themselves, one per message, through an external notifier:
 ```bash
 urx target.com --incremental --silent | notify -silent
 ```
 
-#### Discord Webhook
+#### Discord Webhook (per URL)
 ```bash
 urx example.com | while read url; do
   curl -X POST "webhook_url" -d "{\"content\":\"$url\"}"

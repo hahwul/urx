@@ -146,6 +146,12 @@ pub struct ProgressReporter {
     /// reporter in can read it back after the fetch resolves and avoid
     /// presenting a truncated result as a clean success.
     partial: Arc<AtomicBool>,
+    /// Where a provider's `--verbose`-only remarks go, when the run wants them.
+    /// `None` outside verbose mode, so a provider can call [`note`] freely
+    /// without checking the flag itself.
+    ///
+    /// [`note`]: ProgressReporter::note
+    notes: Option<Notifier>,
 }
 
 impl ProgressReporter {
@@ -157,6 +163,28 @@ impl ProgressReporter {
             prefix: prefix.into(),
             partial: Arc::new(AtomicBool::new(false)),
             stop: StopSignal::default(),
+            notes: None,
+        }
+    }
+
+    /// Route the provider's verbose remarks through `notifier`. Only attached
+    /// when the run is verbose; otherwise [`note`] is a no-op.
+    ///
+    /// A provider that skips something on purpose — a robots.txt capture the
+    /// archive recorded as a 401 — has to be able to say so somewhere: a
+    /// detail on the progress line is overwritten by the next update, and a
+    /// provider has no other channel to the operator.
+    ///
+    /// [`note`]: ProgressReporter::note
+    pub fn with_notifier(mut self, notifier: Notifier) -> Self {
+        self.notes = Some(notifier);
+        self
+    }
+
+    /// Write one operator-facing line, if the run asked for verbose output.
+    pub fn note(&self, msg: impl AsRef<str>) {
+        if let Some(n) = &self.notes {
+            n.note(msg);
         }
     }
 

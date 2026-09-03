@@ -12,7 +12,7 @@ use crate::cli::Args;
 /// The flag and environment-variable names are derived from the id
 /// (`--<id>-api-key`, `URX_<ID>_API_KEY`), which is what keeps a new keyed
 /// provider from needing three more hardcoded strings.
-pub const KEYED_PROVIDER_IDS: [&str; 4] = ["vt", "urlscan", "zoomeye", "github"];
+pub const KEYED_PROVIDER_IDS: [&str; 5] = ["vt", "urlscan", "zoomeye", "github", "bevigil"];
 
 /// The environment variable urx reads keys for `id` from.
 pub fn api_key_env_var(id: &str) -> String {
@@ -31,6 +31,7 @@ pub struct ApiKeys {
     pub urlscan: Vec<String>,
     pub zoomeye: Vec<String>,
     pub github: Vec<String>,
+    pub bevigil: Vec<String>,
 }
 
 impl ApiKeys {
@@ -45,6 +46,7 @@ impl ApiKeys {
             urlscan: parse_api_keys(args.urlscan_api_key.clone(), &api_key_env_var("urlscan")),
             zoomeye: parse_api_keys(args.zoomeye_api_key.clone(), &api_key_env_var("zoomeye")),
             github: parse_api_keys(args.github_api_key.clone(), &api_key_env_var("github")),
+            bevigil: parse_api_keys(args.bevigil_api_key.clone(), &api_key_env_var("bevigil")),
         }
     }
 
@@ -55,6 +57,7 @@ impl ApiKeys {
             "urlscan" => &self.urlscan,
             "zoomeye" => &self.zoomeye,
             "github" => &self.github,
+            "bevigil" => &self.bevigil,
             _ => &[],
         }
     }
@@ -100,6 +103,7 @@ pub struct DirectKeySources {
     pub urlscan: bool,
     pub zoomeye: bool,
     pub github: bool,
+    pub bevigil: bool,
 }
 
 /// Fill empty API-key args from their environment variables, and report which
@@ -121,6 +125,7 @@ pub fn seed_api_keys_from_env(args: &mut Args) -> DirectKeySources {
         urlscan: seed(&mut args.urlscan_api_key, "urlscan"),
         zoomeye: seed(&mut args.zoomeye_api_key, "zoomeye"),
         github: seed(&mut args.github_api_key, "github"),
+        bevigil: seed(&mut args.bevigil_api_key, "bevigil"),
     }
 }
 
@@ -278,6 +283,7 @@ mod tests {
             urlscan: vec!["u".to_string()],
             zoomeye: vec!["z".to_string()],
             github: vec!["g".to_string()],
+            bevigil: vec!["b".to_string()],
         };
         for id in KEYED_PROVIDER_IDS {
             assert_eq!(
@@ -297,12 +303,13 @@ mod tests {
             ("URX_URLSCAN_API_KEY", "env-urlscan"),
             ("URX_ZOOMEYE_API_KEY", "env-zoomeye"),
         ]);
-        let _github_guard = EnvGuard::unset(&["URX_GITHUB_API_KEY"]);
+        let _github_guard = EnvGuard::unset(&["URX_GITHUB_API_KEY", "URX_BEVIGIL_API_KEY"]);
 
         let mut args = Args::parse_from(["urx", "example.com"]);
         let direct = seed_api_keys_from_env(&mut args);
         assert!(direct.vt && direct.urlscan && direct.zoomeye);
         assert!(!direct.github, "no GITHUB key was supplied");
+        assert!(!direct.bevigil, "no BEVIGIL key was supplied");
 
         let mut config = Config::default();
         config.provider.vt_api_key = Some("config-vt".to_string());
@@ -315,14 +322,20 @@ mod tests {
             urlscan_api_key: Some("provider-urlscan".to_string()),
             zoomeye_api_key: Some("provider-zoomeye".to_string()),
             github_api_key: None,
+            bevigil_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
         provider_keys.apply_to_args(
             &mut args,
-            direct.vt,
-            direct.urlscan,
-            direct.zoomeye,
-            direct.github,
+            config::CliSuppliedKeys {
+                vt: direct.vt,
+                urlscan: direct.urlscan,
+                zoomeye: direct.zoomeye,
+                github: direct.github,
+                bevigil: direct.bevigil,
+                notify: false,
+            },
         );
 
         assert_eq!(args.vt_api_key, vec!["env-vt-1", "env-vt-2"]);
@@ -351,11 +364,14 @@ mod tests {
             "URX_URLSCAN_API_KEY",
             "URX_ZOOMEYE_API_KEY",
             "URX_GITHUB_API_KEY",
+            "URX_BEVIGIL_API_KEY",
         ]);
 
         let mut args = Args::parse_from(["urx", "example.com"]);
         let direct = seed_api_keys_from_env(&mut args);
 
-        assert!(!direct.vt && !direct.urlscan && !direct.zoomeye && !direct.github);
+        assert!(
+            !direct.vt && !direct.urlscan && !direct.zoomeye && !direct.github && !direct.bevigil
+        );
     }
 }

@@ -15,7 +15,7 @@ use crate::cli::Args;
 use crate::filters::HostValidator;
 use crate::progress::ProgressManager;
 use crate::providers::Provider;
-use crate::runner::{process_domains, ProviderRunResult};
+use crate::runner::{process_domains, ProviderRunResult, UrlEntry};
 use crate::utils::verbose_print;
 
 /// Create the cache manager `--cache-type` asks for, or `None` under
@@ -74,12 +74,15 @@ pub fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         exclude_extensions: args.exclude_extensions.clone(),
         patterns: args.patterns.clone(),
         exclude_patterns: args.exclude_patterns.clone(),
+        match_regex: args.match_regex.clone(),
+        filter_regex: args.filter_regex.clone(),
         presets: args.preset.clone(),
         min_length: args.min_length,
         max_length: args.max_length,
         strict: args.strict_enabled(),
         normalize_url: args.normalize_url,
         merge_endpoint: args.merge_endpoint,
+        dedup_similar: args.dedup_similar,
         // Archive-side scope. These change what the index returns, so leaving
         // them out would serve a `--from 2020` run the answer cached for a
         // `--from 2024` one.
@@ -90,6 +93,7 @@ pub fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         archive_exclude_status: args.archive_exclude_status.clone(),
         archive_mime: args.archive_mime.clone(),
         archive_exclude_mime: args.archive_exclude_mime.clone(),
+        archived_discovery: args.archived_discovery,
     };
 
     CacheKey::new(domain, &effective_provider_ids(args), &filters)
@@ -99,7 +103,7 @@ pub fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
 /// substring matching so cache entries don't bleed across similar domains or
 /// query strings.
 pub fn collect_domain_urls(
-    urls: &HashMap<String, HashSet<String>>,
+    urls: &HashMap<String, UrlEntry>,
     domain: &str,
     include_subdomains: bool,
 ) -> HashSet<String> {
@@ -110,15 +114,20 @@ pub fn collect_domain_urls(
         .collect()
 }
 
-/// Merge `sources` into `target`, creating the entry when the URL is new.
+/// Merge one URL's providers and capture metadata into `target`, creating the
+/// entry when the URL is new.
 ///
-/// Cached URLs carry no attribution (the cache stores URLs only), so they land
-/// with an empty provider set rather than a wrong one.
-fn merge_urls<I>(target: &mut HashMap<String, HashSet<String>>, url: String, sources: I)
-where
-    I: IntoIterator<Item = String>,
-{
-    target.entry(url).or_default().extend(sources);
+/// Cached URLs carry neither attribution nor metadata (the cache stores URLs
+/// only), so they land with an empty entry rather than a wrong one.
+fn merge_entry(target: &mut HashMap<String, UrlEntry>, url: String, entry: &UrlEntry) {
+    let slot = target.entry(url).or_default();
+    slot.sources.extend(entry.sources.iter().cloned());
+    slot.meta.merge(&entry.meta);
+}
+
+/// Record a URL the cache returned: no provider, no metadata, just the URL.
+fn merge_cached_url(target: &mut HashMap<String, UrlEntry>, url: String) {
+    target.entry(url).or_default();
 }
 
 /// Run every domain, consulting and updating the cache.
@@ -154,7 +163,7 @@ pub async fn process_domains_with_cache(
             if let Some(cached_entry) = cache.get_cached_urls(&cache_key).await? {
                 verbose_print(args, format!("Using cached results for domain: {domain}"));
                 for url in cached_entry.urls {
-                    merge_urls(&mut final_result.urls, url, []);
+                    merge_cached_url(&mut final_result.urls, url);
                 }
                 continue;
             }
@@ -204,8 +213,11 @@ pub async fn process_domains_with_cache(
                     format!("Found {} new URLs for domain: {domain}", new_urls.len()),
                 );
                 for url in new_urls {
-                    let sources = fresh_run.urls.get(&url).cloned().unwrap_or_default();
-                    merge_urls(&mut final_result.urls, url, sources);
+                    // A URL the diff reported as new always came from the fresh
+                    // run, so the lookup hits; defaulting keeps the entry
+                    // present rather than dropping the URL if it ever misses.
+                    let entry = fresh_run.urls.get(&url).cloned().unwrap_or_default();
+                    merge_entry(&mut final_result.urls, url, &entry);
                 }
             }
 
@@ -214,8 +226,8 @@ pub async fn process_domains_with_cache(
             cache.store_urls(&cache_key, &entry).await?;
         }
     } else {
-        for (url, sources) in &fresh_run.urls {
-            merge_urls(&mut final_result.urls, url.clone(), sources.iter().cloned());
+        for (url, entry) in &fresh_run.urls {
+            merge_entry(&mut final_result.urls, url.clone(), entry);
         }
 
         for domain in &domains_to_process {
@@ -350,6 +362,7 @@ mod tests {
             "URX_URLSCAN_API_KEY",
             "URX_ZOOMEYE_API_KEY",
             "URX_GITHUB_API_KEY",
+            "URX_BEVIGIL_API_KEY",
         ]);
 
         let mut args = build_test_args();
@@ -373,6 +386,7 @@ mod tests {
             "URX_URLSCAN_API_KEY",
             "URX_ZOOMEYE_API_KEY",
             "URX_GITHUB_API_KEY",
+            "URX_BEVIGIL_API_KEY",
         ]);
 
         let mut args = build_test_args();
@@ -495,16 +509,19 @@ mod tests {
     #[test]
     fn test_collect_domain_urls_matches_host_only() {
         let urls = HashMap::from([
-            ("https://example.com/path".to_string(), HashSet::new()),
+            ("https://example.com/path".to_string(), UrlEntry::default()),
             (
                 "https://notexample.com/redirect?next=example.com".to_string(),
-                HashSet::new(),
+                UrlEntry::default(),
             ),
             (
                 "https://example.com.evil.test/path".to_string(),
-                HashSet::new(),
+                UrlEntry::default(),
             ),
-            ("https://api.example.com/path".to_string(), HashSet::new()),
+            (
+                "https://api.example.com/path".to_string(),
+                UrlEntry::default(),
+            ),
         ]);
 
         let exact = collect_domain_urls(&urls, "example.com", false);

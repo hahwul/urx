@@ -5,19 +5,23 @@
 //! three must apply the same rules. That is why the filter and transformer are
 //! built by shared constructors here rather than assembled at each call site.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
 use crate::cli::{self, read_domains_from_file, read_domains_from_stdin, Args};
-use crate::filters::{HostValidator, UrlFilter};
-use crate::network::NetworkSettings;
+use crate::filters::{compile_url_regexes, HostValidator, UrlFilter};
+use crate::network::{NetworkScope, NetworkSettings};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::readers::read_urls_from_file;
+use crate::runner::ProviderRunResult;
 use crate::tester_manager::{self, apply_network_settings_to_tester};
-use crate::testers::{LinkExtractor, StatusChecker, Tester};
+use crate::testers::{
+    ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, JsEndpointExtractor, LinkExtractor,
+    StatusChecker, Tester,
+};
 use crate::utils::{verbose_print, UrlTransformer};
 
 /// Raw targets named directly on the command line: positional args plus every
@@ -134,7 +138,10 @@ pub fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
 ///
 /// Shared by the batch path, the streaming sink, and the extracted-link filter
 /// so a URL is judged identically no matter which one emits it.
-pub fn build_url_filter(args: &Args) -> UrlFilter {
+/// Fails when `--match-regex` or `--filter-regex` was given a pattern that does
+/// not compile, so a bad expression stops the run instead of quietly matching
+/// nothing on every URL.
+pub fn build_url_filter(args: &Args) -> Result<UrlFilter> {
     let mut url_filter = UrlFilter::new();
     // Presets seed the filter; the explicit flags below are combined with them.
     if !args.preset.is_empty() {
@@ -145,9 +152,11 @@ pub fn build_url_filter(args: &Args) -> UrlFilter {
         .with_exclude_extensions(args.exclude_extensions.clone())
         .with_patterns(args.patterns.clone())
         .with_exclude_patterns(args.exclude_patterns.clone())
+        .with_match_regex(compile_url_regexes(&args.match_regex, "--match-regex")?)
+        .with_filter_regex(compile_url_regexes(&args.filter_regex, "--filter-regex")?)
         .with_min_length(args.min_length)
         .with_max_length(args.max_length);
-    url_filter
+    Ok(url_filter)
 }
 
 /// Build the per-URL transformer used everywhere a URL must be decided on its
@@ -172,6 +181,8 @@ fn has_url_filters(args: &Args) -> bool {
         || !args.patterns.is_empty()
         || !args.exclude_extensions.is_empty()
         || !args.exclude_patterns.is_empty()
+        || !args.match_regex.is_empty()
+        || !args.filter_regex.is_empty()
         || args.min_length.is_some()
         || args.max_length.is_some()
 }
@@ -188,7 +199,7 @@ pub fn apply_url_filters(
         bar
     });
 
-    let mut sorted_urls = build_url_filter(args).apply_filters(urls);
+    let mut sorted_urls = build_url_filter(args)?.apply_filters(urls);
 
     // Host validation only applies to domain-driven runs: file input has no
     // queried domain to validate against.
@@ -241,23 +252,42 @@ pub fn apply_url_transformations(
     urls: Vec<String>,
     progress_manager: &ProgressManager,
 ) -> Vec<String> {
-    let reshapes_urls =
-        args.merge_endpoint || args.show_only_host || args.show_only_path || args.show_only_param;
+    let reshapes_urls = args.merge_endpoint
+        || args.dedup_similar
+        || args.show_only_host
+        || args.show_only_path
+        || args.show_only_param;
     let transform_bar = reshapes_urls.then(|| {
         let bar = progress_manager.create_transform_bar();
         bar.set_message("Applying URL transformations...");
         bar
     });
 
-    // The batch path is the one place that can honour --merge-endpoint, since
-    // it alone holds every URL at once.
+    // The batch path is the one place that can honour --merge-endpoint and
+    // --dedup-similar, since it alone holds every URL at once.
     let mut url_transformer = build_url_transformer(args);
-    url_transformer.with_merge_endpoint(args.merge_endpoint);
+    url_transformer
+        .with_merge_endpoint(args.merge_endpoint)
+        .with_dedup_similar(args.dedup_similar);
 
-    let transformed_urls = url_transformer.transform(urls);
+    let (transformed_urls, stats) = url_transformer.transform_with_stats(urls);
 
     if let Some(bar) = transform_bar {
         bar.finish_with_message(format!("Transformed to {} URLs", transformed_urls.len()));
+    }
+
+    // Worth saying out loud: --dedup-similar can drop most of a result set, and
+    // without a number the user cannot tell a well-collapsed run from a run
+    // that found little.
+    if args.dedup_similar {
+        verbose_print(
+            args,
+            format!(
+                "Collapsed {} near-duplicate URLs; {} distinct endpoints remain",
+                stats.similar_collapsed,
+                transformed_urls.len()
+            ),
+        );
     }
 
     transformed_urls
@@ -275,6 +305,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it folds URLs sharing a path into one, which needs every URL first",
         ));
     }
+    if args.dedup_similar {
+        out.push((
+            "--dedup-similar",
+            "it keeps the lexicographically smallest URL of each group, which needs every URL first",
+        ));
+    }
     if args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty() {
         out.push((
             "--check-status / --include-status / --exclude-status",
@@ -287,6 +323,18 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it fetches collected URLs after collection finishes",
         ));
     }
+    if args.extract_js_endpoints {
+        out.push((
+            "--extract-js-endpoints",
+            "it fetches collected scripts after collection finishes",
+        ));
+    }
+    if args.archive_body {
+        out.push((
+            "--archive-body",
+            "it replays collected URLs from the archive after collection finishes",
+        ));
+    }
     if args.incremental {
         out.push((
             "--incremental",
@@ -297,6 +345,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
         out.push((
             "--show-sources",
             "a URL is printed on first sighting, before later providers can report it too",
+        ));
+    }
+    if args.show_meta {
+        out.push((
+            "--show-meta",
+            "a URL is printed on first sighting, before later captures can widen its first/last seen range",
         ));
     }
     if args.output_dir.is_some() {
@@ -353,7 +407,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     }
 
     Ok(Some(Arc::new(output::StreamSink::new(
-        build_url_filter(args),
+        build_url_filter(args)?,
         build_url_transformer(args),
         // Host validation mirrors the batch path: only meaningful when strict
         // mode is on and the targets came from the command line, not a file.
@@ -363,8 +417,9 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     )?)))
 }
 
-/// The filter applied to links `--extract-links` discovers, or `None` when the
-/// extractor isn't running.
+/// The filter applied to links `--extract-links`, `--extract-js-endpoints` and
+/// `--archive-body` discover, or `None` when none of the extractors is
+/// running.
 ///
 /// Links found *inside* pages come into existence after
 /// [`apply_url_filters`]/[`apply_url_transformations`] have already run over the
@@ -375,7 +430,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
 pub fn build_extracted_link_filter(
     args: &Args,
 ) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
-    if !args.extract_links {
+    if !args.extract_links && !args.extract_js_endpoints && !args.archive_body {
         return Ok(None);
     }
     // File input has no queried domain to validate against, which is why the
@@ -386,7 +441,7 @@ pub fn build_extracted_link_filter(
         None
     };
     Ok(Some(Arc::new(tester_manager::ExtractedLinkFilter::new(
-        build_url_filter(args),
+        build_url_filter(args)?,
         build_url_transformer(args),
         host_validator,
     ))))
@@ -442,7 +497,82 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         testers.push(Box::new(link_extractor));
     }
 
+    if args.extract_js_endpoints {
+        verbose_print(args, "Extracting endpoints from JavaScript content");
+
+        let mut js_extractor = JsEndpointExtractor::new();
+        apply_network_settings_to_tester(&mut js_extractor, network_settings);
+        js_extractor.with_max_files(args.max_js_files);
+        // Providers pace themselves with --rate-limit; this tester re-requests
+        // a large slice of the result set from the target, so it must too.
+        if network_settings.scope != NetworkScope::Providers {
+            js_extractor.with_rate_limit(network_settings.rate_limit);
+        }
+        testers.push(Box::new(js_extractor));
+    }
+
     testers
+}
+
+/// URL → the capture `--archive-body` should replay, for every URL the run
+/// reported with a digest-bearing capture.
+///
+/// Built from the run result rather than the output list on purpose: the
+/// output may have been reshaped by `--show-only-*`, and a URL that no longer
+/// matches what the providers reported has no capture to look up.
+pub fn archive_captures(run_result: &ProviderRunResult) -> HashMap<String, ArchiveCapture> {
+    run_result
+        .urls
+        .iter()
+        .filter_map(|(url, entry)| {
+            let (timestamp, digest) = match entry.meta.newest_capture() {
+                Some((ts, digest)) => (ts, Some(digest.to_string())),
+                // A capture with a timestamp but no digest can still be
+                // replayed; it just cannot be deduplicated against others.
+                None => (entry.meta.last_seen()?, None),
+            };
+            Some((
+                url.clone(),
+                ArchiveCapture {
+                    timestamp: timestamp.to_string(),
+                    digest,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Build the `--archive-body` tester over the run result, or `None` when the
+/// flag is off. The returned stats handle stays readable after the tester has
+/// been boxed away and cloned per worker.
+pub fn build_archive_body_extractor(
+    args: &Args,
+    network_settings: &NetworkSettings,
+    run_result: &ProviderRunResult,
+) -> Option<(ArchiveBodyExtractor, Arc<ArchiveBodyStats>)> {
+    if !args.archive_body {
+        return None;
+    }
+    verbose_print(args, "Extracting links from archived response bodies");
+
+    let mut extractor =
+        ArchiveBodyExtractor::new(archive_captures(run_result), args.archive_body_limit);
+    apply_network_settings_to_tester(&mut extractor, network_settings);
+    // Every replay request goes to the Wayback Machine, so the rate that
+    // applies is the one the user set for it — `--rate-limit-by wayback=N`
+    // first, the global `--rate-limit` otherwise. The tester scope rule is
+    // honoured the way it is for the other settings.
+    if network_settings.scope != crate::network::NetworkScope::Providers {
+        let rate = args
+            .rate_limit_overrides()
+            .get("wayback")
+            .copied()
+            .or(network_settings.rate_limit);
+        extractor.with_rate_limit(rate);
+    }
+
+    let stats = extractor.stats();
+    Some((extractor, stats))
 }
 
 #[cfg(test)]
@@ -457,10 +587,14 @@ mod tests {
         // shown to the user — so assert on the flag list, not just on failure.
         let cases = [
             (vec!["--merge-endpoint"], "--merge-endpoint"),
+            (vec!["--dedup-similar"], "--dedup-similar"),
             (vec!["--check-status"], "--check-status"),
             (vec!["--extract-links"], "--extract-links"),
+            (vec!["--extract-js-endpoints"], "--extract-js-endpoints"),
+            (vec!["--archive-body"], "--archive-body"),
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
+            (vec!["--show-meta"], "--show-meta"),
         ];
 
         for (flags, expected) in cases {
@@ -480,6 +614,83 @@ mod tests {
             };
             assert!(err.contains(expected), "{err}");
         }
+    }
+
+    #[test]
+    fn test_build_url_filter_rejects_a_malformed_regex() {
+        // A bad pattern has to stop the run at startup. Compiling per URL would
+        // either fail once per URL or, worse, quietly match nothing.
+        for (flag, argv_flag) in [
+            ("--match-regex", "--match-regex"),
+            ("--filter-regex", "--filter-regex"),
+        ] {
+            let args = Args::parse_from(["urx", argv_flag, "(unclosed", "example.com"]);
+            let err = match build_url_filter(&args) {
+                Err(e) => format!("{e:#}"),
+                Ok(_) => panic!("{flag} should have rejected an invalid pattern"),
+            };
+            assert!(err.contains(flag), "{err}");
+            assert!(err.contains("(unclosed"), "{err}");
+        }
+
+        // ...and it is caught before any network work, by the same up-front
+        // check that rejects a misspelled --preset.
+        let args = Args::parse_from(["urx", "--match-regex", "(unclosed", "example.com"]);
+        let err = crate::app::selection::validate_selection_flags(&args)
+            .expect_err("a malformed regex must fail validation")
+            .to_string();
+        assert!(err.contains("--match-regex"), "{err}");
+    }
+
+    #[test]
+    fn test_regex_flags_are_repeatable_and_not_comma_split() {
+        // A regex can legitimately contain a comma (`\d{2,3}`), so unlike
+        // --patterns these flags never split on one.
+        let args = Args::parse_from([
+            "urx",
+            "--match-regex",
+            r"/id/\d{2,3}$",
+            "--match-regex",
+            "admin",
+            "--filter-regex",
+            r"\.(png|jpg)$",
+            "example.com",
+        ]);
+        assert_eq!(args.match_regex, vec![r"/id/\d{2,3}$", "admin"]);
+        assert_eq!(args.filter_regex, vec![r"\.(png|jpg)$"]);
+
+        let filter = build_url_filter(&args).unwrap();
+        assert!(filter.matches("https://example.com/id/123"));
+        assert!(filter.matches("https://example.com/admin/panel"));
+        assert!(!filter.matches("https://example.com/id/1"));
+        assert!(!filter.matches("https://example.com/admin/logo.png"));
+    }
+
+    #[test]
+    fn test_dedup_similar_is_applied_by_the_batch_transformations() {
+        let mut args = build_test_args();
+        args.dedup_similar = true;
+
+        let urls: Vec<String> = ["/post/1", "/post/2", "/post/3", "/about"]
+            .iter()
+            .map(|p| format!("https://example.com{p}"))
+            .collect();
+
+        let out = apply_url_transformations(&args, urls.clone(), &ProgressManager::new(true));
+        assert_eq!(
+            out,
+            vec![
+                "https://example.com/about".to_string(),
+                "https://example.com/post/1".to_string(),
+            ]
+        );
+
+        // ...and it stays off unless asked for.
+        args.dedup_similar = false;
+        assert_eq!(
+            apply_url_transformations(&args, urls.clone(), &ProgressManager::new(true)).len(),
+            urls.len()
+        );
     }
 
     #[test]
@@ -584,6 +795,96 @@ mod tests {
     }
 
     #[test]
+    fn test_archive_body_links_get_the_same_filter_as_extracted_links() {
+        // The archived-body path discovers links after filtering has run over
+        // the primary list, exactly like --extract-links, so it must be given
+        // the same filter — or `-e js` and strict host validation are silently
+        // bypassed for everything it finds.
+        let args = Args::parse_from([
+            "urx",
+            "--archive-body",
+            "-e",
+            "js",
+            "--silent",
+            "example.com",
+        ]);
+        let filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--archive-body must build a filter");
+        assert!(filter.accept("https://example.com/app.js").is_some());
+        assert!(filter.accept("https://example.com/index.html").is_none());
+        assert!(filter.accept("https://cdn.other.net/a.js").is_none());
+    }
+
+    #[test]
+    fn test_archive_captures_pair_each_url_with_its_newest_capture() {
+        use crate::providers::CaptureMeta;
+        use crate::runner::UrlEntry;
+
+        let mut run_result = ProviderRunResult::default();
+        let mut with_two = UrlEntry::default();
+        with_two.absorb(
+            "wayback",
+            &CaptureMeta::capture(Some("20050101000000"), None, None, Some("OLD")),
+        );
+        with_two.absorb(
+            "cc",
+            &CaptureMeta::capture(Some("20240101000000"), None, None, Some("NEW")),
+        );
+        run_result
+            .urls
+            .insert("https://example.com/a".to_string(), with_two);
+
+        let mut undigested = UrlEntry::default();
+        undigested.absorb(
+            "arquivo",
+            &CaptureMeta::capture(Some("20200101000000"), None, None, None),
+        );
+        run_result
+            .urls
+            .insert("https://example.com/b".to_string(), undigested);
+
+        // A URL from a provider without a capture index has nothing to replay.
+        run_result
+            .urls
+            .insert("https://example.com/c".to_string(), UrlEntry::default());
+
+        let captures = archive_captures(&run_result);
+        assert_eq!(
+            captures["https://example.com/a"],
+            ArchiveCapture {
+                timestamp: "20240101000000".to_string(),
+                digest: Some("NEW".to_string()),
+            }
+        );
+        assert_eq!(
+            captures["https://example.com/b"],
+            ArchiveCapture {
+                timestamp: "20200101000000".to_string(),
+                digest: None,
+            }
+        );
+        assert!(!captures.contains_key("https://example.com/c"));
+    }
+
+    #[test]
+    fn test_build_archive_body_extractor_follows_the_flag_and_the_wayback_rate() {
+        let settings = NetworkSettings::default();
+        let run_result = ProviderRunResult::default();
+
+        let args = build_test_args();
+        assert!(build_archive_body_extractor(&args, &settings, &run_result).is_none());
+
+        let mut args = build_test_args();
+        args.archive_body = true;
+        args.archive_body_limit = 7;
+        let (extractor, stats) =
+            build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        assert_eq!(extractor.candidate_count(), 0);
+        assert_eq!(stats.fetched(), 0);
+    }
+
+    #[test]
     fn test_extract_links_filter_skips_host_validation_for_file_input() {
         // With --files there is no queried domain to validate against, matching
         // how the batch path treats file input.
@@ -651,7 +952,7 @@ mod tests {
             "https://example.com/index.html".to_string(),
         ]);
 
-        let batch = build_url_filter(&args).apply_filters(&urls);
+        let batch = build_url_filter(&args).unwrap().apply_filters(&urls);
         assert_eq!(batch, vec!["https://example.com/app.js"]);
     }
 
@@ -761,5 +1062,35 @@ mod tests {
         args.extract_links = true;
         assert!(should_check_status(&args));
         assert_eq!(build_testers(&args, &settings).len(), 2);
+
+        // --extract-js-endpoints is a third tester, independent of the others.
+        let mut args = build_test_args();
+        args.extract_js_endpoints = true;
+        assert_eq!(build_testers(&args, &settings).len(), 1);
+
+        let mut args = build_test_args();
+        args.check_status = true;
+        args.extract_links = true;
+        args.extract_js_endpoints = true;
+        assert_eq!(build_testers(&args, &settings).len(), 3);
+    }
+
+    #[test]
+    fn test_extract_js_endpoints_filter_is_wired_up() {
+        // Endpoints mined from scripts come into existence after the filters
+        // ran over the primary list, exactly like extracted links — so the
+        // same filter must be built for them, including strict host
+        // validation (on by default).
+        let args = Args::parse_from(["urx", "--extract-js-endpoints", "--silent", "example.com"]);
+        let filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--extract-js-endpoints must build a filter");
+        assert_eq!(
+            filter.accept("https://example.com/api/v1/users").as_deref(),
+            Some("https://example.com/api/v1/users")
+        );
+        assert!(filter
+            .accept("https://api.thirdparty.net/v1/track")
+            .is_none());
     }
 }

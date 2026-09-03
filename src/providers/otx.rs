@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 
-use super::Provider;
+use super::{Provider, UrlRecord};
 use crate::network::client::{read_body_capped, HttpClientConfig, MAX_RESPONSE_BYTES};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -160,7 +160,7 @@ impl Provider for OTXProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -168,7 +168,7 @@ impl Provider for OTXProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             let mut all_urls = Vec::new();
             let mut page = 0;
@@ -352,7 +352,7 @@ impl Provider for OTXProvider {
                 }
             }
 
-            Ok(all_urls)
+            Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -393,6 +393,7 @@ impl Provider for OTXProvider {
 mod tests {
     use super::*;
     use crate::progress::StopSignal;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_preview_text_multibyte_boundary() {
@@ -683,7 +684,7 @@ mod tests {
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok(), "Failed to fetch URLs: {:?}", result.err());
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
 
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"http://example.com/1".to_string()));
@@ -715,7 +716,7 @@ mod tests {
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
 
         assert!(urls.is_empty());
     }
@@ -794,10 +795,12 @@ mod tests {
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .expect("page one must survive the deadline");
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .expect("page one must survive the deadline"),
+        );
 
         assert_eq!(urls.len(), OTX_RESULTS_LIMIT as usize);
         assert!(!urls.contains(&"http://example.com/late".to_string()));
@@ -845,10 +848,12 @@ mod tests {
         provider.with_retries(0); // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .expect("page one must survive a later page's failure");
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .expect("page one must survive a later page's failure"),
+        );
 
         assert_eq!(urls.len(), OTX_RESULTS_LIMIT as usize);
         assert!(urls.contains(&"http://example.com/0".to_string()));
@@ -897,7 +902,7 @@ mod tests {
         let mut provider = OTXProvider::new();
         provider.with_base_url(url);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["http://example.com/real".to_string()]);
     }
 

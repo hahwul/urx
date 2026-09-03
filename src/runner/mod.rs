@@ -13,7 +13,9 @@ use crate::progress::{
     provider_error_style, provider_partial_style, provider_running_style, provider_success_style,
     Notifier, ProgressManager, ProgressReporter, StopSignal,
 };
-use crate::providers::Provider;
+#[cfg(test)]
+use crate::providers::UrlRecord;
+use crate::providers::{CaptureMeta, Provider};
 use crate::utils::verbose_print;
 
 /// How long a fetch gets, after the run has asked it to stop, to come back
@@ -241,11 +243,33 @@ pub struct ProviderStats {
     pub aborted: bool,
 }
 
-/// Result of a provider run: URLs mapped to the providers that reported them,
+/// Everything the run learned about one URL: which providers reported it, and
+/// the archive metadata they carried, folded together across every provider.
+#[derive(Debug, Default, Clone)]
+pub struct UrlEntry {
+    /// Provider names that reported this URL.
+    pub sources: HashSet<String>,
+    /// Capture metadata merged over every provider that reported it. Empty for
+    /// providers that have no capture index, and for cache hits (the cache
+    /// stores URLs only).
+    pub meta: CaptureMeta,
+}
+
+impl UrlEntry {
+    /// Fold one provider's view of this URL in: record the provider, and merge
+    /// whatever capture metadata it carried (nothing, for a provider with no
+    /// capture index).
+    pub fn absorb(&mut self, source: &str, meta: &CaptureMeta) {
+        self.sources.insert(source.to_string());
+        self.meta.merge(meta);
+    }
+}
+
+/// Result of a provider run: URLs mapped to what the run learned about them,
 /// plus per-provider stats indexed in the same order as `provider_names`.
 #[derive(Debug, Default)]
 pub struct ProviderRunResult {
-    pub urls: HashMap<String, HashSet<String>>,
+    pub urls: HashMap<String, UrlEntry>,
     pub stats: Vec<ProviderStats>,
 }
 
@@ -265,9 +289,8 @@ pub async fn process_domains(
     provider_names: &[String],
     stream: Option<Arc<StreamSink>>,
 ) -> ProviderRunResult {
-    // Map URL -> set of provider names that reported it.
-    let all_urls: Arc<Mutex<HashMap<String, HashSet<String>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    // Map URL -> the providers that reported it plus their capture metadata.
+    let all_urls: Arc<Mutex<HashMap<String, UrlEntry>>> = Arc::new(Mutex::new(HashMap::new()));
     let total_domains = domains.len();
     let total_providers = providers.len();
 
@@ -443,7 +466,11 @@ pub async fn process_domains(
                         } else {
                             ProgressReporter::new(ProgressBar::hidden(), prefix.clone())
                         };
-                        let reporter = Some(reporter.with_stop_signal(stop_signal.clone()));
+                        let mut reporter = reporter.with_stop_signal(stop_signal.clone());
+                        if verbose && !silent {
+                            reporter = reporter.with_notifier(notifier.clone());
+                        }
+                        let reporter = Some(reporter);
 
                         // Fetch URLs for this domain using this provider.
                         let fetch_start = std::time::Instant::now();
@@ -452,8 +479,8 @@ pub async fn process_domains(
                             .await;
                         let fetch_elapsed = fetch_start.elapsed();
                         match fetch_result {
-                            Ok(urls) => {
-                                let url_count = urls.len();
+                            Ok(records) => {
+                                let url_count = records.len();
                                 url_total.fetch_add(url_count, Ordering::Relaxed);
 
                                 // A *partial* result (e.g. a page failed
@@ -476,7 +503,7 @@ pub async fn process_domains(
                                 // providers that reported it).
                                 match &stream {
                                     Some(sink) => {
-                                        if let Err(e) = sink.emit(&urls) {
+                                        if let Err(e) = sink.emit(&records) {
                                             if !silent {
                                                 notifier.note(format!(
                                                     "Error writing streamed output: {e}"
@@ -486,11 +513,11 @@ pub async fn process_domains(
                                     }
                                     None => {
                                         let mut url_map = lock_ignore_poison(&all_urls);
-                                        for url in urls {
+                                        for record in records {
                                             url_map
-                                                .entry(url)
+                                                .entry(record.url)
                                                 .or_default()
-                                                .insert(provider_name.clone());
+                                                .absorb(&provider_name, &record.meta);
                                         }
                                     }
                                 }
@@ -811,7 +838,7 @@ mod tests {
         fn fetch_urls<'a>(
             &'a self,
             domain: &'a str,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
             self.fetch_urls_with_progress(domain, None)
         }
 
@@ -819,7 +846,7 @@ mod tests {
             &'a self,
             domain: &'a str,
             reporter: Option<ProgressReporter>,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
             let step = self.step;
             let pages = self.pages;
             let domain = domain.to_string();
@@ -827,7 +854,7 @@ mod tests {
                 let mut urls = Vec::new();
                 for page in 0..pages {
                     tokio::time::sleep(step).await;
-                    urls.push(format!("https://{domain}/page{page}"));
+                    urls.push(UrlRecord::bare(format!("https://{domain}/page{page}")));
                     if let Some(r) = &reporter {
                         if r.stop_requested() {
                             r.mark_partial();
@@ -863,7 +890,7 @@ mod tests {
         fn fetch_urls<'a>(
             &'a self,
             _domain: &'a str,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
             Box::pin(async move { Ok(vec![]) })
         }
 
@@ -877,6 +904,117 @@ mod tests {
         fn with_random_agent(&mut self, _enabled: bool) {}
         fn with_insecure(&mut self, _enabled: bool) {}
         fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    }
+
+    /// A provider returning canned records, so a test can hand two providers
+    /// different capture metadata for the same URL.
+    #[derive(Clone)]
+    struct RecordingProvider {
+        records: Vec<UrlRecord>,
+    }
+
+    impl Provider for RecordingProvider {
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+
+        fn fetch_urls<'a>(
+            &'a self,
+            _domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
+            let records = self.records.clone();
+            Box::pin(async move { Ok(records) })
+        }
+
+        fn with_subdomains(&mut self, _include: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    }
+
+    /// Two providers reporting the same URL must produce one entry whose
+    /// metadata spans both — the archive with the oldest capture supplies
+    /// `first_seen`, the one with the newest supplies `last_seen` and the
+    /// single-valued fields.
+    #[tokio::test]
+    async fn test_metadata_merges_across_providers() {
+        let url = "https://example.com/page";
+        let old = RecordingProvider {
+            records: vec![UrlRecord::new(
+                url.to_string(),
+                CaptureMeta::capture(
+                    Some("19990101000000"),
+                    Some("text/plain"),
+                    Some("404"),
+                    Some("OLD"),
+                ),
+            )],
+        };
+        let new = RecordingProvider {
+            records: vec![UrlRecord::new(
+                url.to_string(),
+                CaptureMeta::capture(
+                    Some("20240101000000"),
+                    Some("text/html"),
+                    Some("200"),
+                    Some("NEW"),
+                ),
+            )],
+        };
+
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(old), Box::new(new)];
+        let provider_names = vec!["arquivo".to_string(), "wayback".to_string()];
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &build_test_args(),
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.urls.len(), 1);
+        let entry = &result.urls[url];
+        assert_eq!(
+            entry
+                .sources
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["arquivo".to_string(), "wayback".to_string()].into()
+        );
+        assert_eq!(entry.meta.first_seen(), Some("19990101000000"));
+        assert_eq!(entry.meta.last_seen(), Some("20240101000000"));
+        assert_eq!(entry.meta.mime(), Some("text/html"));
+        assert_eq!(entry.meta.archive_status(), Some("200"));
+    }
+
+    /// A provider with no capture index must not leave metadata behind: the
+    /// entry has sources but nothing to report about captures.
+    #[tokio::test]
+    async fn test_providers_without_metadata_produce_empty_entries() {
+        let provider = MockProvider::new(vec!["https://example.com/a".to_string()], false);
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(provider)];
+
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &build_test_args(),
+            &ProgressManager::new(true),
+            &providers,
+            &["otx".to_string()],
+            None,
+        )
+        .await;
+
+        let entry = &result.urls["https://example.com/a"];
+        assert!(entry.sources.contains("otx"));
+        assert!(entry.meta.is_empty());
     }
 
     #[tokio::test]
@@ -911,7 +1049,9 @@ mod tests {
         assert_eq!(result.urls.len(), 2);
         assert!(result.urls.contains_key("https://example.com/page1"));
         assert!(result.urls.contains_key("https://example.com/page2"));
-        assert!(result.urls["https://example.com/page1"].contains("MockProvider"));
+        assert!(result.urls["https://example.com/page1"]
+            .sources
+            .contains("MockProvider"));
 
         assert_eq!(result.stats.len(), 1);
         assert_eq!(result.stats[0].name, "MockProvider");

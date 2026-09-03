@@ -112,10 +112,13 @@ urx example.com --providers wayback,otx
 urx example.com --providers wayback,cc,otx,arquivo,urlscan
 
 # All available providers (with API keys)
-urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github
+urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github,bevigil
 
 # Or enable everything at once (keyed providers activate only when a key is present)
 urx example.com --all-providers
+
+# Add any other CDX index server (here the Icelandic web archive) — id cdx:vefsafn.is
+urx example.is --cdx-endpoint https://vefsafn.is/cdx --rate-limit-by cdx:vefsafn.is=1
 ```
 
 ### With API Keys
@@ -170,6 +173,21 @@ urx example.com --exclude-sitemap
 urx example.com --exclude-robots --exclude-sitemap
 ```
 
+### Archived robots.txt and sitemap.xml
+```bash
+# Every distinct archived version, alongside the live files
+urx example.com --archived-discovery
+
+# See which URLs came from an old version
+urx example.com --archived-discovery --show-sources
+
+# Only the versions captured in a given era, robots.txt only
+urx example.com --archived-discovery --from 2014 --to 2016 --exclude-sitemap
+
+# Cap the documents fetched per domain (newest versions first)
+urx example.com --archived-discovery --archived-discovery-limit 10
+```
+
 ## Testing & Validation
 
 ### Include Subdomains
@@ -185,6 +203,66 @@ urx example.com --check-status
 ### Extract Links
 ```bash
 urx example.com --extract-links
+```
+
+`--extract-links` re-fetches every surviving URL and mines the HTML for more.
+It reads every URL-bearing tag, not just anchors: `<a href>`, `<script src>`,
+`<link href>`, `<form action>`, `<iframe src>`, `<img src>`, `<source src>`,
+`<object data>`, `<embed src>`, and `<meta http-equiv="refresh">` targets.
+Relative URLs resolve against the page (honouring `<base href>`), duplicates
+are collapsed, and the discovered links go through exactly the same filters,
+host validation, and output transforms as the rest of the run:
+
+```bash
+# Only the JavaScript the pages reference
+urx example.com --extract-links -e js
+```
+
+### Extract Endpoints from JavaScript
+```bash
+urx example.com --extract-js-endpoints
+```
+
+`--extract-js-endpoints` fetches every collected URL that looks like a script
+and mines its string literals for the paths and URLs the app calls:
+`fetch("/api/v2/users")`, `axios.post("/graphql")`, the static prefix of
+`` `/api/orders/${id}` ``, ES-module chunk imports. These are the endpoints
+that never appear in HTML. Output is heavily de-noised (MIME types, module
+specifiers, base64 payloads, CSS values, regex fragments and the like are
+dropped — see the [CLI options guide](/guide/cli-options/#javascript-endpoint-extraction)
+for the full policy), bodies are capped at 10 MiB, the number of files fetched
+is bounded by `--max-js-files`, and the discovered endpoints go through the
+same filters and host validation as the rest of the run.
+
+```bash
+# Collect the site's bundles with --extract-links, then mine them
+urx example.com --extract-links --extract-js-endpoints --max-js-files 100
+
+# Keep the API-looking paths and probe them
+urx example.com --extract-js-endpoints --patterns api,graphql --check-status --include-status 200,401,403
+```
+
+Leave `-e js` off when using this option: discovered endpoints pass through
+your filters too, so `-e js` would keep only the `.js` files it found rather
+than the API paths.
+
+### Mine Archived Bodies
+```bash
+urx example.com --archive-body
+```
+
+`--archive-body` runs the same extraction over the bodies the Wayback Machine
+*stored*, so pages that no longer exist still give up the links they contained.
+URLs whose captures share a content digest are fetched once, so the run costs
+one request per distinct body rather than one per URL; `--archive-body-limit`
+(default 500) bounds those distinct bodies:
+
+```bash
+# Bounded and paced
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only what the archived pages referenced as JavaScript
+urx example.com --archive-body -e js --no-cache
 ```
 
 ### Status Filtering

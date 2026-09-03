@@ -2,11 +2,13 @@
 use super::UrlData;
 use colored::*;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::fmt;
 
 /// Helper struct for JSON serialization with guaranteed field order
-/// (url, status, sources). `sources` is omitted when empty so the output
-/// stays backward-compatible with callers that don't ask for attribution.
+/// (url, status, sources, then the archive metadata). Every optional field is
+/// omitted when absent rather than emitted as `null`, so a run that collected
+/// no metadata produces byte-identical output to before it existed.
 #[derive(Serialize)]
 struct JsonUrlEntry<'a> {
     url: &'a str,
@@ -14,6 +16,31 @@ struct JsonUrlEntry<'a> {
     status: Option<&'a str>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     sources: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_seen: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_status: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    digest: Option<&'a str>,
+}
+
+impl<'a> JsonUrlEntry<'a> {
+    fn from_data(url_data: &'a UrlData) -> Self {
+        JsonUrlEntry {
+            url: &url_data.url,
+            status: url_data.status.as_deref(),
+            sources: &url_data.sources,
+            first_seen: url_data.first_seen.as_deref(),
+            last_seen: url_data.last_seen.as_deref(),
+            mime: url_data.mime.as_deref(),
+            archive_status: url_data.archive_status.as_deref(),
+            digest: url_data.digest.as_deref(),
+        }
+    }
 }
 
 /// Formatter trait for converting URL data to different output formats
@@ -67,6 +94,13 @@ impl Formatter for PlainFormatter {
         if !url_data.sources.is_empty() {
             line.push_str(&format!(" [{}]", url_data.sources.join(",").cyan()));
         }
+        // Only reached when `--show-meta` asked for it: the caller leaves these
+        // fields empty otherwise, so plain output stays a stable pipeline
+        // contract by default.
+        let meta = plain_meta(url_data);
+        if !meta.is_empty() {
+            line.push_str(&format!(" [{}]", meta.blue()));
+        }
         line.push('\n');
         line
     }
@@ -89,12 +123,7 @@ impl JsonFormatter {
 
 impl Formatter for JsonFormatter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        let entry = JsonUrlEntry {
-            url: &url_data.url,
-            status: url_data.status.as_deref(),
-            sources: &url_data.sources,
-        };
-        let json = serde_json::to_string(&entry).unwrap_or_default();
+        let json = serde_json::to_string(&JsonUrlEntry::from_data(url_data)).unwrap_or_default();
 
         if is_last {
             format!("{json}\n")
@@ -126,12 +155,7 @@ impl JsonLinesFormatter {
 
 impl Formatter for JsonLinesFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        let entry = JsonUrlEntry {
-            url: &url_data.url,
-            status: url_data.status.as_deref(),
-            sources: &url_data.sources,
-        };
-        let json = serde_json::to_string(&entry).unwrap_or_default();
+        let json = serde_json::to_string(&JsonUrlEntry::from_data(url_data)).unwrap_or_default();
         format!("{json}\n")
     }
 
@@ -155,11 +179,7 @@ impl Formatter for CsvFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
         // Standalone row: include only the columns this entry actually has,
         // so a single formatted row is self-consistent (no dangling commas).
-        csv_row(
-            url_data,
-            url_data.status.is_some(),
-            !url_data.sources.is_empty(),
-        )
+        csv_row(url_data, &CsvLayout::for_row(url_data))
     }
 
     fn clone_box(&self) -> Box<dyn Formatter> {
@@ -167,44 +187,100 @@ impl Formatter for CsvFormatter {
     }
 }
 
+/// Render the archive metadata of one entry as a compact `key=value` list for
+/// plain-text output. Empty when the entry carries none.
+fn plain_meta(url_data: &UrlData) -> String {
+    let fields = [
+        ("first_seen", url_data.first_seen.as_deref()),
+        ("last_seen", url_data.last_seen.as_deref()),
+        ("mime", url_data.mime.as_deref()),
+        ("archive_status", url_data.archive_status.as_deref()),
+        ("digest", url_data.digest.as_deref()),
+    ];
+    fields
+        .iter()
+        .filter_map(|(name, value)| value.map(|v| format!("{name}={v}")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The optional CSV columns, in output order. `url` is always first and is not
+/// listed here. [`csv_optional_values`] returns one value per entry in exactly
+/// this order, which is what keeps header and rows aligned.
+const CSV_OPTIONAL_COLUMNS: [&str; 7] = [
+    "status",
+    "sources",
+    "first_seen",
+    "last_seen",
+    "mime",
+    "archive_status",
+    "digest",
+];
+
+/// This entry's value for each optional column, `None` where it has none.
+fn csv_optional_values(url_data: &UrlData) -> [Option<Cow<'_, str>>; 7] {
+    [
+        url_data.status.as_deref().map(Cow::Borrowed),
+        (!url_data.sources.is_empty()).then(|| Cow::Owned(url_data.sources.join("|"))),
+        url_data.first_seen.as_deref().map(Cow::Borrowed),
+        url_data.last_seen.as_deref().map(Cow::Borrowed),
+        url_data.mime.as_deref().map(Cow::Borrowed),
+        url_data.archive_status.as_deref().map(Cow::Borrowed),
+        url_data.digest.as_deref().map(Cow::Borrowed),
+    ]
+}
+
+/// Which optional CSV columns a result set needs.
+///
+/// A column is emitted only when at least one row has a value for it, which is
+/// what keeps a plain URL run's CSV a single `url` column. Header and row are
+/// built from the same layout, so every line has an identical column count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CsvLayout([bool; CSV_OPTIONAL_COLUMNS.len()]);
+
+impl CsvLayout {
+    /// The layout covering every column at least one of `urls` populates.
+    pub(crate) fn for_rows(urls: &[UrlData]) -> Self {
+        let mut on = [false; CSV_OPTIONAL_COLUMNS.len()];
+        for url_data in urls {
+            for (slot, value) in on.iter_mut().zip(csv_optional_values(url_data)) {
+                *slot |= value.is_some();
+            }
+        }
+        CsvLayout(on)
+    }
+
+    /// The layout for a single standalone row, so a row formatted on its own is
+    /// self-consistent (no dangling commas).
+    fn for_row(url_data: &UrlData) -> Self {
+        CsvLayout::for_rows(std::slice::from_ref(url_data))
+    }
+}
+
 /// Build the CSV header line for the given column layout. The `url` column is
-/// always present; `status` / `sources` are included only when the run carries
-/// that data, and the row formatter mirrors exactly the same layout so every
-/// line has an identical column count.
-pub(crate) fn csv_header(has_status: bool, has_sources: bool) -> String {
-    let mut cols = vec!["url"];
-    if has_status {
-        cols.push("status");
+/// always present; the rest follow [`CsvLayout`].
+pub(crate) fn csv_header(layout: &CsvLayout) -> String {
+    let mut line = String::from("url");
+    for (name, on) in CSV_OPTIONAL_COLUMNS.iter().zip(layout.0) {
+        if on {
+            line.push(',');
+            line.push_str(name);
+        }
     }
-    if has_sources {
-        cols.push("sources");
-    }
-    let mut line = cols.join(",");
     line.push('\n');
     line
 }
 
 /// Format one CSV data row for the given column layout. Must agree with
 /// [`csv_header`] on which columns are emitted so header and body stay aligned.
-pub(crate) fn csv_row(url_data: &UrlData, has_status: bool, has_sources: bool) -> String {
-    let mut fields = vec![csv_escape(&url_data.url)];
-    if has_status {
-        fields.push(
-            url_data
-                .status
-                .as_deref()
-                .map(csv_escape)
-                .unwrap_or_default(),
-        );
+pub(crate) fn csv_row(url_data: &UrlData, layout: &CsvLayout) -> String {
+    let mut line = csv_escape(&url_data.url);
+    for (value, on) in csv_optional_values(url_data).into_iter().zip(layout.0) {
+        if on {
+            line.push(',');
+            line.push_str(&value.map(|v| csv_escape(&v)).unwrap_or_default());
+        }
     }
-    if has_sources {
-        fields.push(if url_data.sources.is_empty() {
-            String::new()
-        } else {
-            csv_escape(&url_data.sources.join("|"))
-        });
-    }
-    let mut line = fields.join(",");
     line.push('\n');
     line
 }
@@ -531,5 +607,118 @@ mod tests {
             plain_formatter.format(&url_data, false),
             cloned_formatter.format(&url_data, false)
         );
+    }
+
+    /// A record carrying every archive metadata field.
+    fn with_meta(url: &str) -> UrlData {
+        let mut data = UrlData::new(url.to_string());
+        data.first_seen = Some("20050101000000".to_string());
+        data.last_seen = Some("20240101000000".to_string());
+        data.mime = Some("text/html".to_string());
+        data.archive_status = Some("200".to_string());
+        data.digest = Some("ABCDEF".to_string());
+        data
+    }
+
+    #[test]
+    fn test_json_omits_metadata_keys_when_absent() {
+        // The contract that keeps existing consumers working: a run that
+        // collected no metadata is byte-identical to before the fields existed.
+        let formatter = JsonFormatter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "{\"url\":\"https://example.com\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_json_emits_every_metadata_field_it_has() {
+        let formatter = JsonFormatter::new();
+        assert_eq!(
+            formatter.format(&with_meta("https://example.com"), true),
+            "{\"url\":\"https://example.com\",\
+             \"first_seen\":\"20050101000000\",\
+             \"last_seen\":\"20240101000000\",\
+             \"mime\":\"text/html\",\
+             \"archive_status\":\"200\",\
+             \"digest\":\"ABCDEF\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_json_emits_only_the_metadata_fields_present() {
+        let formatter = JsonLinesFormatter::new();
+        let mut url_data = UrlData::new("https://example.com".to_string());
+        url_data.first_seen = Some("20050101000000".to_string());
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "{\"url\":\"https://example.com\",\"first_seen\":\"20050101000000\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_csv_layout_adds_a_column_only_when_some_row_uses_it() {
+        let rows = vec![UrlData::new("https://example.com/a".to_string()), {
+            let mut d = UrlData::new("https://example.com/b".to_string());
+            d.mime = Some("text/html".to_string());
+            d
+        }];
+        let layout = CsvLayout::for_rows(&rows);
+
+        assert_eq!(csv_header(&layout), "url,mime\n");
+        // The row without a MIME type still emits the column, empty, so every
+        // line has the same number of fields.
+        assert_eq!(csv_row(&rows[0], &layout), "https://example.com/a,\n");
+        assert_eq!(
+            csv_row(&rows[1], &layout),
+            "https://example.com/b,text/html\n"
+        );
+    }
+
+    #[test]
+    fn test_csv_header_is_url_only_without_any_metadata() {
+        let rows = vec![UrlData::new("https://example.com".to_string())];
+        assert_eq!(csv_header(&CsvLayout::for_rows(&rows)), "url\n");
+    }
+
+    #[test]
+    fn test_csv_columns_follow_the_documented_order() {
+        let mut row = with_meta("https://example.com");
+        row.status = Some("200 OK".to_string());
+        row.sources = vec!["wayback".to_string()];
+        let rows = vec![row];
+        let layout = CsvLayout::for_rows(&rows);
+
+        assert_eq!(
+            csv_header(&layout),
+            "url,status,sources,first_seen,last_seen,mime,archive_status,digest\n"
+        );
+        assert_eq!(
+            csv_row(&rows[0], &layout),
+            "https://example.com,200 OK,wayback,20050101000000,20240101000000,text/html,200,ABCDEF\n"
+        );
+    }
+
+    #[test]
+    fn test_plain_output_is_unchanged_without_metadata() {
+        // The pipeline contract: `urx target.com | httpx` must keep seeing one
+        // bare URL per line.
+        let formatter = PlainFormatter::new();
+        let url_data = UrlData::new("https://example.com".to_string());
+        assert_eq!(formatter.format(&url_data, true), "https://example.com\n");
+    }
+
+    #[test]
+    fn test_plain_appends_metadata_when_the_entry_carries_it() {
+        let formatter = PlainFormatter::new();
+        let out = formatter.format(&with_meta("https://example.com"), true);
+        assert!(out.starts_with("https://example.com "));
+        assert!(out.contains("first_seen=20050101000000"));
+        assert!(out.contains("last_seen=20240101000000"));
+        assert!(out.contains("mime=text/html"));
+        assert!(out.contains("archive_status=200"));
+        assert!(out.contains("digest=ABCDEF"));
+        assert!(out.ends_with('\n'));
     }
 }

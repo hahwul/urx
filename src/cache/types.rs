@@ -78,12 +78,17 @@ pub struct CacheFilters {
     pub exclude_extensions: Vec<String>,
     pub patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
+    /// `--match-regex` / `--filter-regex`: stored as the source patterns, which
+    /// is what distinguishes two runs.
+    pub match_regex: Vec<String>,
+    pub filter_regex: Vec<String>,
     pub presets: Vec<String>,
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
     pub strict: bool,
     pub normalize_url: bool,
     pub merge_endpoint: bool,
+    pub dedup_similar: bool,
     /// `--cc-index`: distinct Common Crawl indexes are distinct corpora.
     pub cc_index: Vec<String>,
     /// `--from` / `--to`: the CDX date window.
@@ -94,6 +99,9 @@ pub struct CacheFilters {
     pub archive_exclude_status: Vec<String>,
     pub archive_mime: Vec<String>,
     pub archive_exclude_mime: Vec<String>,
+    /// `--archived-discovery`: adds URLs from archived robots.txt / sitemap
+    /// versions, so a run with it asks a different question from one without.
+    pub archived_discovery: bool,
 }
 
 impl CacheFilters {
@@ -111,6 +119,8 @@ impl CacheFilters {
         feed_list(&mut hasher, &self.exclude_extensions);
         feed_list(&mut hasher, &self.patterns);
         feed_list(&mut hasher, &self.exclude_patterns);
+        feed_list(&mut hasher, &self.match_regex);
+        feed_list(&mut hasher, &self.filter_regex);
         feed_list(&mut hasher, &self.presets);
         feed(
             &mut hasher,
@@ -129,6 +139,7 @@ impl CacheFilters {
         hasher.update([self.strict as u8]);
         hasher.update([self.normalize_url as u8]);
         hasher.update([self.merge_endpoint as u8]);
+        hasher.update([self.dedup_similar as u8]);
         feed_list(&mut hasher, &self.cc_index);
         feed(
             &mut hasher,
@@ -142,6 +153,7 @@ impl CacheFilters {
         feed_list(&mut hasher, &self.archive_exclude_status);
         feed_list(&mut hasher, &self.archive_mime);
         feed_list(&mut hasher, &self.archive_exclude_mime);
+        hasher.update([self.archived_discovery as u8]);
 
         hasher
             .finalize()

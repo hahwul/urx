@@ -35,6 +35,9 @@ pub struct Config {
     #[serde(default)]
     pub cache: CacheConfig,
 
+    #[serde(default)]
+    pub notify: NotifyConfig,
+
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
@@ -45,6 +48,7 @@ pub struct OutputConfig {
     pub output: Option<String>,
     pub format: Option<String>,
     pub merge_endpoint: Option<bool>,
+    pub dedup_similar: Option<bool>,
     pub stream: Option<bool>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
@@ -57,6 +61,8 @@ pub struct ProviderConfig {
     pub providers: Option<Vec<String>>,
     pub subs: Option<bool>,
     pub cc_index: Option<String>,
+    pub cdx_endpoint: Option<Vec<String>>,
+    pub cdx_dialect: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub archive_status: Option<Vec<String>>,
@@ -67,10 +73,13 @@ pub struct ProviderConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    pub bevigil_api_key: Option<String>,
     pub include_robots: Option<bool>,
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
     pub exclude_sitemap: Option<bool>,
+    pub archived_discovery: Option<bool>,
+    pub archived_discovery_limit: Option<usize>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -86,6 +95,11 @@ pub struct ProviderKeysConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    pub bevigil_api_key: Option<String>,
+    /// Webhook URL(s) for `--notify`, comma-separated. Lives here as well as
+    /// in `[notify].url` because the URL *is* the credential, and this file is
+    /// the one meant to stay out of source control.
+    pub notify_url: Option<String>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -203,43 +217,68 @@ impl ProviderKeysConfig {
     /// these slots; this method then overwrites them when the provider-config
     /// has a value, so provider-config beats main config.
     ///
-    /// `cli_supplied_*` flags carry the original CLI state captured BEFORE
-    /// either config layer ran, so CLI input is preserved.
-    pub fn apply_to_args(
-        &self,
-        args: &mut Args,
-        cli_supplied_vt: bool,
-        cli_supplied_urlscan: bool,
-        cli_supplied_zoomeye: bool,
-        cli_supplied_github: bool,
-    ) {
+    /// `supplied` carries the original CLI state captured BEFORE either
+    /// config layer ran, so CLI input is preserved.
+    pub fn apply_to_args(&self, args: &mut Args, supplied: CliSuppliedKeys) {
         warn_about_unknown_keys(
             &self.unknown_keys(),
             "the provider-config file",
             args.silent,
         );
 
-        if !cli_supplied_vt {
+        if !supplied.notify {
+            if let Some(urls) = &self.notify_url {
+                let urls = split_csv(urls);
+                if !urls.is_empty() {
+                    args.notify = urls;
+                }
+            }
+        }
+
+        if !supplied.vt {
             if let Some(keys) = &self.vt_api_key {
                 args.vt_api_key = split_csv(keys);
             }
         }
-        if !cli_supplied_urlscan {
+        if !supplied.urlscan {
             if let Some(keys) = &self.urlscan_api_key {
                 args.urlscan_api_key = split_csv(keys);
             }
         }
-        if !cli_supplied_zoomeye {
+        if !supplied.zoomeye {
             if let Some(keys) = &self.zoomeye_api_key {
                 args.zoomeye_api_key = split_csv(keys);
             }
         }
-        if !cli_supplied_github {
+        if !supplied.github {
             if let Some(keys) = &self.github_api_key {
                 args.github_api_key = split_csv(keys);
             }
         }
+        if !supplied.bevigil {
+            if let Some(keys) = &self.bevigil_api_key {
+                args.bevigil_api_key = split_csv(keys);
+            }
+        }
     }
+}
+
+/// Which API-key (and webhook) slots the CLI or environment already filled,
+/// captured before either config layer runs. [`ProviderKeysConfig::apply_to_args`]
+/// only overwrites a slot when its flag here is `false` — otherwise CLI/env
+/// input would be silently replaced by the provider-config file.
+///
+/// A named struct instead of six positional bools: the six-argument form hit
+/// clippy's `too_many_arguments` the moment BeVigil support added a sixth key,
+/// and positional bools are error-prone at the call site regardless.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CliSuppliedKeys {
+    pub vt: bool,
+    pub urlscan: bool,
+    pub zoomeye: bool,
+    pub github: bool,
+    pub bevigil: bool,
+    pub notify: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -249,6 +288,8 @@ pub struct FilterConfig {
     pub exclude_extensions: Option<Vec<String>>,
     pub patterns: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
+    pub match_regex: Option<Vec<String>>,
+    pub filter_regex: Option<Vec<String>>,
     pub show_only_host: Option<bool>,
     pub show_only_path: Option<bool>,
     pub show_only_param: Option<bool>,
@@ -283,6 +324,10 @@ pub struct TestingConfig {
     pub include_status: Option<Vec<String>>,
     pub exclude_status: Option<Vec<String>>,
     pub extract_links: Option<bool>,
+    pub extract_js_endpoints: Option<bool>,
+    pub max_js_files: Option<usize>,
+    pub archive_body: Option<bool>,
+    pub archive_body_limit: Option<usize>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -311,6 +356,38 @@ fn normalize_output_format(format: &str) -> Option<String> {
         "csv" => Some("csv".to_string()),
         _ => None,
     }
+}
+
+/// A single string or a list of them, so `url = "..."` and `url = ["..."]`
+/// both read naturally.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s],
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct NotifyConfig {
+    /// Webhook URL or list of URLs (`--notify`).
+    pub url: Option<OneOrMany>,
+    /// `always`, `new`, or `never` (`--notify-on`).
+    pub on: Option<String>,
+    /// `slack`, `discord`, or `json` (`--notify-format`).
+    pub format: Option<String>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 fn normalize_network_scope(scope: &str) -> Option<String> {
@@ -417,6 +494,7 @@ impl Config {
             ("network", &self.network.unknown),
             ("testing", &self.testing.unknown),
             ("cache", &self.cache.unknown),
+            ("notify", &self.notify.unknown),
         ] {
             out.extend(
                 unknown
@@ -441,8 +519,9 @@ impl Config {
         self.apply_provider_config(args, provided);
         self.apply_filter_config(args);
         self.apply_network_config(args, provided);
-        self.apply_testing_config(args);
+        self.apply_testing_config(args, provided);
         self.apply_cache_config(args, provided);
+        self.apply_notify_config(args, provided);
     }
 
     fn apply_output_config(&self, args: &mut Args, provided: &CliProvided) {
@@ -467,6 +546,10 @@ impl Config {
 
         if !args.merge_endpoint && self.output.merge_endpoint.unwrap_or(false) {
             args.merge_endpoint = true;
+        }
+
+        if !args.dedup_similar && self.output.dedup_similar.unwrap_or(false) {
+            args.dedup_similar = true;
         }
 
         if !args.stream && self.output.stream.unwrap_or(false) {
@@ -497,6 +580,26 @@ impl Config {
                     .collect();
                 if !split.is_empty() {
                     args.cc_index = split;
+                }
+            }
+        }
+
+        // Extra CDX index servers, and the dialect they speak.
+        if args.cdx_endpoint.is_empty() {
+            if let Some(endpoints) = &self.provider.cdx_endpoint {
+                args.cdx_endpoint = endpoints
+                    .iter()
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .collect();
+            }
+        }
+
+        // An empty string is the documented "unset" spelling, same as `from`.
+        if args.cdx_dialect.is_none() {
+            if let Some(dialect) = self.provider.cdx_dialect.as_deref().map(str::trim) {
+                if !dialect.is_empty() {
+                    args.cdx_dialect = Some(dialect.to_string());
                 }
             }
         }
@@ -564,6 +667,12 @@ impl Config {
             }
         }
 
+        if args.bevigil_api_key.is_empty() {
+            if let Some(bevigil_api_key) = &self.provider.bevigil_api_key {
+                args.bevigil_api_key = split_csv(bevigil_api_key);
+            }
+        }
+
         // Handle robots.txt and sitemap.xml discovery options
         if !args.exclude_robots && self.provider.exclude_robots.unwrap_or(false) {
             args.exclude_robots = true;
@@ -583,6 +692,16 @@ impl Config {
         if !args.exclude_sitemap && args.include_sitemap {
             if let Some(include_sitemap) = self.provider.include_sitemap {
                 args.include_sitemap = include_sitemap;
+            }
+        }
+
+        if !args.archived_discovery && self.provider.archived_discovery.unwrap_or(false) {
+            args.archived_discovery = true;
+        }
+
+        if !provided.has("archived_discovery_limit") {
+            if let Some(limit) = self.provider.archived_discovery_limit {
+                args.archived_discovery_limit = limit;
             }
         }
     }
@@ -616,6 +735,18 @@ impl Config {
         if args.exclude_patterns.is_empty() {
             if let Some(exclude_patterns) = &self.filter.exclude_patterns {
                 args.exclude_patterns = exclude_patterns.clone();
+            }
+        }
+
+        if args.match_regex.is_empty() {
+            if let Some(match_regex) = &self.filter.match_regex {
+                args.match_regex = match_regex.clone();
+            }
+        }
+
+        if args.filter_regex.is_empty() {
+            if let Some(filter_regex) = &self.filter.filter_regex {
+                args.filter_regex = filter_regex.clone();
             }
         }
 
@@ -703,7 +834,7 @@ impl Config {
         }
     }
 
-    fn apply_testing_config(&self, args: &mut Args) {
+    fn apply_testing_config(&self, args: &mut Args, provided: &CliProvided) {
         // Testing options
         if !args.check_status && self.testing.check_status.unwrap_or(false) {
             args.check_status = true;
@@ -723,6 +854,26 @@ impl Config {
 
         if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
             args.extract_links = true;
+        }
+
+        if !args.extract_js_endpoints && self.testing.extract_js_endpoints.unwrap_or(false) {
+            args.extract_js_endpoints = true;
+        }
+
+        if !provided.has("max_js_files") {
+            if let Some(max) = self.testing.max_js_files {
+                args.max_js_files = max;
+            }
+        }
+
+        if !args.archive_body && self.testing.archive_body.unwrap_or(false) {
+            args.archive_body = true;
+        }
+
+        if !provided.has("archive_body_limit") {
+            if let Some(limit) = self.testing.archive_body_limit {
+                args.archive_body_limit = limit;
+            }
         }
     }
 
@@ -771,6 +922,59 @@ impl Config {
             args.no_cache = true;
         }
     }
+
+    fn apply_notify_config(&self, args: &mut Args, provided: &CliProvided) {
+        // The URL list is filled from the CLI *or* URX_NOTIFY_URL before the
+        // config layers run, and the two are indistinguishable afterwards —
+        // so "still empty" is the test, not `provided.has`.
+        if args.notify.is_empty() {
+            if let Some(urls) = &self.notify.url {
+                let urls: Vec<String> = urls
+                    .clone()
+                    .into_vec()
+                    .into_iter()
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect();
+                if !urls.is_empty() {
+                    args.notify = urls;
+                }
+            }
+        }
+
+        if !provided.has("notify_on") {
+            if let Some(on) = &self.notify.on {
+                match <crate::notify::NotifyOn as clap::ValueEnum>::from_str(on.trim(), true) {
+                    Ok(value) => args.notify_on = value,
+                    Err(_) => {
+                        if !args.silent {
+                            eprintln!(
+                                "Ignoring [notify].on={on:?} in config: expected always, new, or never"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if !provided.has("notify_format") {
+            if let Some(format) = &self.notify.format {
+                match <crate::notify::NotifyFormat as clap::ValueEnum>::from_str(
+                    format.trim(),
+                    true,
+                ) {
+                    Ok(value) => args.notify_format = value,
+                    Err(_) => {
+                        if !args.silent {
+                            eprintln!(
+                                "Ignoring [notify].format={format:?} in config: expected slack, discord, or json"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg_attr(windows, allow(dead_code))]
@@ -802,6 +1006,7 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::parse_args_from;
     use clap::Parser;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -1002,6 +1207,43 @@ mod tests {
     }
 
     #[test]
+    fn test_config_supplies_cdx_endpoints_and_dialect() {
+        let toml_src = r#"
+            [provider]
+            cdx_endpoint = ["https://vefsafn.is/cdx", " http://localhost:8080/cdx ", ""]
+            cdx_dialect = "classic"
+        "#;
+        let config: Config = toml::from_str(toml_src).unwrap();
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(
+            args.cdx_endpoint,
+            vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
+        );
+        assert_eq!(args.cdx_dialect.as_deref(), Some("classic"));
+
+        // The CLI wins over the file.
+        let config: Config = toml::from_str(toml_src).unwrap();
+        let mut args = Args::parse_from([
+            "urx",
+            "--cdx-endpoint",
+            "https://example.org/cdx",
+            "--cdx-dialect",
+            "pywb",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.cdx_endpoint, vec!["https://example.org/cdx"]);
+        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+
+        // An empty dialect string, as in the documented template, is unset.
+        let config: Config = toml::from_str("[provider]\ncdx_dialect = \"\"").unwrap();
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert!(args.cdx_dialect.is_none());
+    }
+
+    #[test]
     fn test_main_config_supplies_github_key() {
         // `--all-providers` documents keyed providers as activating from "flag,
         // env, or config file", but github had no config field at all — so the
@@ -1036,13 +1278,21 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: Some("from-provider-config".to_string()),
+            bevigil_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
-        keys.apply_to_args(&mut args, false, false, false, false);
+        keys.apply_to_args(&mut args, CliSuppliedKeys::default());
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
 
         // ...but a CLI-supplied key still wins.
-        keys.apply_to_args(&mut args, false, false, false, true);
+        keys.apply_to_args(
+            &mut args,
+            CliSuppliedKeys {
+                github: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
     }
 
@@ -1079,6 +1329,8 @@ mod tests {
             urlscan_api_key: Some("us-from-file".to_string()),
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
@@ -1086,7 +1338,13 @@ mod tests {
         // overwrite that.
         args.vt_api_key = vec!["cli-key".to_string()];
 
-        cfg.apply_to_args(&mut args, true, false, false, false);
+        cfg.apply_to_args(
+            &mut args,
+            CliSuppliedKeys {
+                vt: true,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(args.vt_api_key, vec!["cli-key".to_string()]);
         // urlscan was empty and not CLI-supplied -> file value applies and
@@ -1103,10 +1361,12 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        cfg.apply_to_args(&mut args, false, false, false, false);
+        cfg.apply_to_args(&mut args, CliSuppliedKeys::default());
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
     }
 
@@ -1293,6 +1553,8 @@ mod tests {
             to = "2021"
             vt_api_key = "k"
             include_robots = false
+            archived_discovery = true
+            archived_discovery_limit = 20
 
             [filter]
             preset = ["no-images"]
@@ -1312,6 +1574,10 @@ mod tests {
             [testing]
             check_status = true
             include_status = ["200"]
+            extract_js_endpoints = true
+            max_js_files = 42
+            archive_body = true
+            archive_body_limit = 100
 
             [cache]
             incremental = true
@@ -1348,6 +1614,80 @@ mod tests {
     }
 
     #[test]
+    fn test_js_endpoint_options_apply_from_config_unless_given_on_the_cli() {
+        let content = r#"
+            [testing]
+            extract_js_endpoints = true
+            max_js_files = 42
+        "#;
+        let file = create_temp_config_file(content);
+
+        // Nothing on the CLI: both keys come from the file.
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &provided);
+        assert!(args.extract_js_endpoints);
+        assert_eq!(args.max_js_files, 42);
+
+        // An explicit --max-js-files wins even when it equals the default.
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "--max-js-files", "500", "example.com"]);
+        config.apply_to_args(&mut args, &provided);
+        assert_eq!(args.max_js_files, 500);
+    }
+
+    #[test]
+    fn test_archive_body_settings_load_from_config_and_yield_to_the_cli() {
+        let content = r#"
+            [testing]
+            archive_body = true
+            archive_body_limit = 42
+        "#;
+        let file = create_temp_config_file(content);
+
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert!(args.archive_body);
+        assert_eq!(args.archive_body_limit, 42);
+
+        // An explicit limit on the command line wins even when it equals the
+        // clap default.
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "--archive-body-limit", "500", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert_eq!(args.archive_body_limit, 500);
+    }
+
+    #[test]
+    fn test_archived_discovery_settings_load_from_config_and_yield_to_the_cli() {
+        let content = r#"
+            [provider]
+            archived_discovery = true
+            archived_discovery_limit = 7
+        "#;
+        let file = create_temp_config_file(content);
+
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert!(args.archived_discovery);
+        assert_eq!(args.archived_discovery_limit, 7);
+
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "--archived-discovery-limit", "50", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert_eq!(args.archived_discovery_limit, 50);
+    }
+
+    #[test]
     fn test_cli_archive_filters_beat_config_file() {
         let content = r#"
             [provider]
@@ -1369,5 +1709,148 @@ mod tests {
 
         assert_eq!(args.from.as_deref(), Some("2015"));
         assert_eq!(args.archive_status, vec!["404"]);
+    }
+
+    #[test]
+    fn test_notify_section_loads_and_applies() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let content = r#"
+            [notify]
+            url = ["https://hooks.example/a", " https://hooks.example/b "]
+            on = "Always"
+            format = "discord"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+        assert!(
+            config.unknown_keys().is_empty(),
+            "{:?}",
+            config.unknown_keys()
+        );
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/a", "https://hooks.example/b"]
+        );
+        assert_eq!(args.notify_on, NotifyOn::Always);
+        assert_eq!(args.notify_format, NotifyFormat::Discord);
+    }
+
+    #[test]
+    fn test_notify_url_accepts_a_single_string() {
+        let content = r#"
+            [notify]
+            url = "https://hooks.example/one"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.notify, vec!["https://hooks.example/one"]);
+    }
+
+    #[test]
+    fn test_notify_cli_beats_config() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let content = r#"
+            [notify]
+            url = "https://hooks.example/from-config"
+            on = "always"
+            format = "slack"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+
+        // Explicit flags — including ones that spell the clap default back —
+        // survive the config layer.
+        let (mut args, provided) = parse_args_from([
+            "urx",
+            "--notify",
+            "https://hooks.example/from-cli",
+            "--notify-on",
+            "new",
+            "--notify-format",
+            "json",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &provided);
+
+        assert_eq!(args.notify, vec!["https://hooks.example/from-cli"]);
+        assert_eq!(args.notify_on, NotifyOn::New);
+        assert_eq!(args.notify_format, NotifyFormat::Json);
+    }
+
+    #[test]
+    fn test_notify_invalid_values_are_ignored_not_fatal() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let mut config = Config::default();
+        config.notify.on = Some("sometimes".to_string());
+        config.notify.format = Some("teams".to_string());
+
+        let mut args = Args::parse_from(["urx", "--silent", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+
+        assert_eq!(args.notify_on, NotifyOn::New);
+        assert_eq!(args.notify_format, NotifyFormat::Json);
+    }
+
+    #[test]
+    fn test_notify_unknown_key_is_reported() {
+        let content = r#"
+            [notify]
+            urls = "https://hooks.example/typo"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+        assert_eq!(config.unknown_keys(), vec!["notify.urls"]);
+    }
+
+    #[test]
+    fn test_provider_config_notify_url_beats_main_config_but_not_cli() {
+        let mut main = Config::default();
+        main.notify.url = Some(OneOrMany::One("https://hooks.example/main".to_string()));
+
+        let keys = ProviderKeysConfig {
+            vt_api_key: None,
+            urlscan_api_key: None,
+            zoomeye_api_key: None,
+            github_api_key: None,
+            bevigil_api_key: None,
+            notify_url: Some("https://hooks.example/p1, https://hooks.example/p2".to_string()),
+            unknown: Default::default(),
+        };
+
+        // Nothing on the CLI: provider-config overrides the main config.
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        main.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.notify, vec!["https://hooks.example/main"]);
+        keys.apply_to_args(&mut args, CliSuppliedKeys::default());
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/p1", "https://hooks.example/p2"]
+        );
+
+        // CLI (or env) supplied: provider-config yields.
+        let mut args = Args::parse_from([
+            "urx",
+            "--notify",
+            "https://hooks.example/cli",
+            "example.com",
+        ]);
+        keys.apply_to_args(
+            &mut args,
+            CliSuppliedKeys {
+                notify: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(args.notify, vec!["https://hooks.example/cli"]);
     }
 }

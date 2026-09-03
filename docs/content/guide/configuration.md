@@ -33,6 +33,7 @@ domains = ["example.com", "example.org"]
 output = "results.txt"
 format = "plain"           # plain, json, jsonl, csv
 merge_endpoint = false
+dedup_similar = false      # Collapse URLs differing only in ids, hashes, dates, or query values
 stream = false             # Write URLs as providers report them (unsorted, bypasses cache)
 
 # ─── Providers ───────────────────────────────────────────
@@ -40,6 +41,8 @@ stream = false             # Write URLs as providers report them (unsorted, bypa
 providers = ["wayback", "cc", "otx"] # also available keyless: "arquivo", "urlscan" (anonymous)
 subs = false                          # Include subdomains
 cc_index = "CC-MAIN-2026-17"         # Common Crawl index (or "latest" to auto-resolve via collinfo.json)
+cdx_endpoint = []                     # Extra CDX index servers, e.g. ["https://vefsafn.is/cdx"] (ids: cdx:<host>)
+cdx_dialect = ""                      # "pywb" or "classic" for those servers; empty = probe once, pywb fallback
 from = ""                             # Restrict CDX providers to captures >= this date (YYYY/YYYYMM/YYYYMMDD)
 to = ""                               # Restrict CDX providers to captures <= this date
 archive_status = []                   # Keep only captures the archive recorded with these status codes
@@ -50,8 +53,11 @@ vt_api_key = ""                       # VirusTotal API key
 urlscan_api_key = ""                  # URLScan API key (optional; urlscan also works anonymously)
 zoomeye_api_key = ""                  # ZoomEye API key
 github_api_key = ""                   # GitHub Code Search personal access token
+bevigil_api_key = ""                  # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false                # Skip robots.txt discovery
 exclude_sitemap = false               # Skip sitemap.xml discovery
+archived_discovery = false            # Also read archived robots.txt / sitemap versions
+archived_discovery_limit = 50         # Documents fetched per domain by each archived provider
 
 # ─── Filters ─────────────────────────────────────────────
 [filter]
@@ -60,6 +66,8 @@ extensions = ["js", "php", "aspx"]
 exclude_extensions = ["html", "txt"]
 patterns = ["admin", "api"]
 exclude_patterns = ["logout", "static"]
+match_regex = ["/api/v[0-9]+/"]   # Repeatable regexes, ORed, case-sensitive
+filter_regex = ["/(assets|static)/"]
 show_only_host = false
 show_only_path = false
 show_only_param = false
@@ -84,6 +92,10 @@ check_status = false
 include_status = ["200", "30x"]
 exclude_status = ["404", "50x"]
 extract_links = false
+extract_js_endpoints = false   # Mine collected JavaScript for endpoints
+max_js_files = 500             # Cap on files --extract-js-endpoints fetches (0 = unlimited)
+archive_body = false                   # Mine the archived bodies of collected URLs
+archive_body_limit = 500               # Distinct bodies fetched per run (duplicates never count)
 
 # ─── Cache ────────────────────────────────────────────────
 [cache]
@@ -93,6 +105,14 @@ cache_path = "~/.urx/cache.db"
 redis_url = "redis://localhost:6379"
 cache_ttl = 86400                      # 24 hours
 no_cache = false
+
+# ─── Notify ──────────────────────────────────────────────
+[notify]
+# url = "https://hooks.slack.com/services/..."   # or a list; the URL is a secret —
+#                                                 # prefer URX_NOTIFY_URL or the
+#                                                 # provider-config file's notify_url
+on = "new"                             # new, always, or never
+format = "json"                        # json, slack, or discord
 ```
 
 ### Minimal Config Examples
@@ -117,10 +137,11 @@ incremental = true
 
 ```toml
 [provider]
-providers = ["wayback", "cc", "otx", "vt", "urlscan", "zoomeye"]
+providers = ["wayback", "cc", "otx", "vt", "urlscan", "zoomeye", "bevigil"]
 vt_api_key = "YOUR_VT_KEY"
 urlscan_api_key = "YOUR_URLSCAN_KEY"
 zoomeye_api_key = "YOUR_ZOOMEYE_KEY"
+bevigil_api_key = "YOUR_BEVIGIL_KEY"
 subs = true
 
 [filter]

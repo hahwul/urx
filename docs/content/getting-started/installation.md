@@ -59,6 +59,28 @@ urx --version
 
 You should see the version number displayed.
 
+## Shell Completions and Man Page
+
+Urx generates both from the binary, so they always match the version you have
+installed:
+
+```bash
+# zsh (any directory on your $fpath)
+urx --completions zsh > ~/.zfunc/_urx
+
+# bash
+urx --completions bash > ~/.local/share/bash-completion/completions/urx
+
+# fish
+urx --completions fish > ~/.config/fish/completions/urx.fish
+
+# man page
+urx --manpage > ~/.local/share/man/man1/urx.1
+```
+
+`powershell` and `elvish` are supported too. See
+[CLI Options](/guide/cli-options/) for details.
+
 ## Next Steps
 
 Once installed, proceed to the [Quick Start](/getting-started/quick-start/) guide to learn basic usage.

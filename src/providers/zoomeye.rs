@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::ApiKeyRotator;
-use super::Provider;
+use super::{Provider, UrlRecord};
 use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -127,7 +127,7 @@ impl Provider for ZoomEyeProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -135,7 +135,7 @@ impl Provider for ZoomEyeProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
@@ -307,7 +307,7 @@ impl Provider for ZoomEyeProvider {
                 page += 1;
             }
 
-            Ok(all_urls)
+            Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -347,6 +347,7 @@ impl Provider for ZoomEyeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_new_provider() {
@@ -555,7 +556,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
 
         assert!(result.is_ok(), "Expected success with empty API key");
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
     }
 
@@ -623,7 +624,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok(), "Expected success with mock API");
 
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page2");
@@ -668,10 +669,12 @@ mod tests {
         provider.with_retries(0); // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .expect("page one must survive a later page's failure");
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .expect("page one must survive a later page's failure"),
+        );
 
         assert_eq!(urls.len(), 100);
         assert!(urls.contains(&"https://example.com/0".to_string()));
@@ -732,7 +735,7 @@ mod tests {
         let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
         provider.with_base_url(mock_server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls.len(), 25, "walk stopped early: {}", urls.len());
         assert!(urls.contains(&"https://example.com/24".to_string()));
     }
@@ -781,7 +784,7 @@ mod tests {
         let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
         provider.with_base_url(mock_server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
     }
 
@@ -832,7 +835,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
 
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page3");

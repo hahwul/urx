@@ -26,6 +26,49 @@ pub enum FilterPreset {
     OnlyAudio,
     /// Only includes image files
     OnlyImages,
+    /// Only includes URLs that look like leaked secrets or VCS metadata
+    OnlySecrets,
+    /// Only includes URLs that look like backups or archived copies
+    OnlyBackup,
+    /// Only includes URLs that look like configuration files
+    OnlyConfig,
+    /// Only includes URLs that look like API surfaces
+    OnlyApi,
+}
+
+/// One "does this URL look interesting?" rule that is *not* expressible as a
+/// file extension.
+///
+/// The security presets need this because the things they hunt for are named
+/// by their path, not by an extension `Path::extension()` can see: `/.env`
+/// has no extension at all (it is a dotfile), `/.git/config` is a directory
+/// marker, and a backup is often just an ordinary name with a `~` glued on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathRule {
+    /// Matches when the lower-cased URL contains this (lower-case) substring.
+    Contains(String),
+    /// Matches when the lower-cased URL *path* ends with this (lower-case)
+    /// suffix. Anchored at the end of the path rather than the end of the
+    /// whole URL so a query string (`/index.php~?v=1`) does not defeat it.
+    PathEndsWith(String),
+}
+
+impl PathRule {
+    fn contains(s: &str) -> Self {
+        PathRule::Contains(s.to_string())
+    }
+
+    fn ends_with(s: &str) -> Self {
+        PathRule::PathEndsWith(s.to_string())
+    }
+}
+
+fn rules(contains: &[&str], ends_with: &[&str]) -> Vec<PathRule> {
+    contains
+        .iter()
+        .map(|s| PathRule::contains(s))
+        .chain(ends_with.iter().map(|s| PathRule::ends_with(s)))
+        .collect()
 }
 
 /// Common file extensions for various resource types
@@ -71,9 +114,172 @@ const STYLE_EXTENSIONS: &[&str] = &[
     "css", "scss", "sass", "less", "stylus", "postcss", "pcss", "cssm", "cssx", "cssb",
 ];
 
+/// Extensions that only ever name key material or a credential store.
+///
+/// Deliberately narrow: `only-secrets` is a hunting preset, and a false
+/// positive here costs a manual review of every certificate on the target.
+const SECRET_EXTENSIONS: &[&str] = &[
+    "pem", "key", "p12", "pfx", "jks", "keystore", "kdbx", "ppk", "asc", "gpg", "pgp", "kdb",
+    "der", "csr",
+];
+
+/// Path shapes that mean "a secret was published", none of which an extension
+/// can express — `/.env` and `/.git/config` are the canonical examples.
+fn secret_path_rules() -> Vec<PathRule> {
+    rules(
+        &[
+            "/.env",
+            "/.git/",
+            "/.gitconfig",
+            "/.git-credentials",
+            "/.svn/",
+            "/.hg/",
+            "/.bzr/",
+            "/.ds_store",
+            "/.aws/",
+            "/.ssh/",
+            "/.netrc",
+            "/.npmrc",
+            "/.pypirc",
+            "/.docker/config.json",
+            "/.htpasswd",
+            "id_rsa",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ed25519",
+            "credentials",
+            "secrets",
+            "/.bash_history",
+            "/.zsh_history",
+            "/.kube/config",
+        ],
+        &["/.env", "/.git", "/.svn", "/secrets"],
+    )
+}
+
+/// Extensions that name a copy of something rather than the thing itself.
+const BACKUP_EXTENSIONS: &[&str] = &[
+    "bak", "bkp", "bck", "old", "orig", "save", "backup", "swp", "swo", "swn", "tmp", "temp",
+    "copy", "sql", "dump", "dmp", "tar", "tgz", "tbz", "tbz2", "txz", "gz", "bz2", "xz", "zip",
+    "rar", "7z", "war", "sav",
+];
+
+/// Backup markers that live in the name rather than the extension.
+///
+/// The trailing `~` — the editor convention that produced `index.php~` — is a
+/// *suffix* rule on purpose. As a substring it would also flag every
+/// `/~user/` home directory, which is not a backup at all.
+fn backup_path_rules() -> Vec<PathRule> {
+    rules(
+        &[
+            ".bak",
+            ".old",
+            ".orig",
+            ".save",
+            ".backup",
+            ".tar.gz",
+            ".sql.gz",
+            "/backup",
+            "backup/",
+            "backup.",
+            "_backup",
+            "-backup",
+            "/.well-known/backup",
+            "/old/",
+            "_old.",
+            "-old.",
+            ".swp",
+        ],
+        &["~", ".bak", ".old", "/backup", "/backups", ".orig", ".save"],
+    )
+}
+
+/// Extensions that name a configuration file.
+const CONFIG_EXTENSIONS: &[&str] = &[
+    "conf",
+    "config",
+    "cfg",
+    "ini",
+    "yaml",
+    "yml",
+    "toml",
+    "properties",
+    "env",
+    "plist",
+    "hcl",
+    "tfvars",
+    "nomad",
+    "cnf",
+    "rc",
+];
+
+/// Configuration files that are recognised by name, not by extension.
+fn config_path_rules() -> Vec<PathRule> {
+    rules(
+        &[
+            "web.config",
+            "app.config",
+            "/.htaccess",
+            "/.editorconfig",
+            "/.babelrc",
+            "/.eslintrc",
+            "/.prettierrc",
+            "/.dockerignore",
+            "/dockerfile",
+            "docker-compose",
+            "/.npmrc",
+            "/settings.py",
+            "/wp-config",
+            "/appsettings",
+            "/.well-known/security.txt",
+        ],
+        &["/dockerfile", "/makefile", "/procfile", "/config", "/.env"],
+    )
+}
+
+/// Extensions that describe a machine interface.
+const API_EXTENSIONS: &[&str] = &["wsdl", "wadl", "asmx", "svc"];
+
+/// The API surface is almost entirely a path shape, so this is where the
+/// preset does its real work.
+fn api_path_rules() -> Vec<PathRule> {
+    rules(
+        &[
+            "/api/",
+            "/api.",
+            "/api?",
+            "/apis/",
+            "/rest/",
+            "/restapi",
+            "/rpc/",
+            "/jsonrpc",
+            "/soap",
+            "/graphql",
+            "/gql",
+            "/v1/",
+            "/v2/",
+            "/v3/",
+            "/v4/",
+            "/swagger",
+            "swagger.json",
+            "swagger.yaml",
+            "/openapi",
+            "openapi.json",
+            "openapi.yaml",
+            "api-docs",
+            "/wp-json",
+            "/graphiql",
+            "/.well-known/openapi",
+        ],
+        &[
+            "/api", "/graphql", "/gql", "/rest", "/v1", "/v2", "/v3", "/v4", "/rpc",
+        ],
+    )
+}
+
 /// Canonical preset name for each variant, in the order `--help` should list
 /// them. Used to validate `--preset` and to name the alternatives in the error.
-pub const PRESET_IDS: [&str; 13] = [
+pub const PRESET_IDS: [&str; 17] = [
     "no-resources",
     "no-images",
     "no-fonts",
@@ -87,6 +293,10 @@ pub const PRESET_IDS: [&str; 13] = [
     "only-videos",
     "only-audio",
     "only-images",
+    "only-secrets",
+    "only-backup",
+    "only-config",
+    "only-api",
 ];
 
 /// Reject `--preset` values that name nothing.
@@ -134,6 +344,10 @@ impl FilterPreset {
             "only-video" | "only-videos" => Some(FilterPreset::OnlyVideos),
             "only-audio" | "only-audios" => Some(FilterPreset::OnlyAudio),
             "only-image" | "only-images" => Some(FilterPreset::OnlyImages),
+            "only-secret" | "only-secrets" => Some(FilterPreset::OnlySecrets),
+            "only-backup" | "only-backups" => Some(FilterPreset::OnlyBackup),
+            "only-config" | "only-configs" => Some(FilterPreset::OnlyConfig),
+            "only-api" | "only-apis" => Some(FilterPreset::OnlyApi),
             _ => None,
         }
     }
@@ -167,7 +381,11 @@ impl FilterPreset {
             | FilterPreset::OnlyDocuments
             | FilterPreset::OnlyVideos
             | FilterPreset::OnlyAudio
-            | FilterPreset::OnlyImages => vec![],
+            | FilterPreset::OnlyImages
+            | FilterPreset::OnlySecrets
+            | FilterPreset::OnlyBackup
+            | FilterPreset::OnlyConfig
+            | FilterPreset::OnlyApi => vec![],
         }
     }
 
@@ -188,6 +406,10 @@ impl FilterPreset {
             FilterPreset::OnlyVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::OnlyImages => IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::OnlySecrets => SECRET_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::OnlyBackup => BACKUP_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::OnlyConfig => CONFIG_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
+            FilterPreset::OnlyApi => API_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
             FilterPreset::NoResources
             | FilterPreset::NoImages
             | FilterPreset::NoFonts
@@ -198,13 +420,52 @@ impl FilterPreset {
     }
 
     /// Get excluded patterns for this preset
+    ///
+    /// These are merged into the filter's `--exclude-patterns` list, so a URL
+    /// containing any of them is dropped outright.
     pub fn get_exclude_patterns(&self) -> Vec<String> {
         vec![]
     }
 
     /// Get included patterns for this preset
+    ///
+    /// These land in the filter's `--patterns` list, which is *ANDed* with the
+    /// extension list — a URL has to satisfy both. That is the wrong shape for
+    /// the security presets (a backup is `report.bak` **or** `index.php~`), so
+    /// they express their path matching through [`FilterPreset::get_path_rules`]
+    /// instead and this stays empty for every preset.
     pub fn get_patterns(&self) -> Vec<String> {
         vec![]
+    }
+
+    /// Path shapes this preset accepts, ORed with [`FilterPreset::get_extensions`].
+    ///
+    /// A URL qualifies for an `only-*` preset when it matches the extension
+    /// list *or* one of these rules. The two have to be alternatives rather
+    /// than requirements: `only-backup` must keep both `db.sql` (extension)
+    /// and `index.php~` (path shape), and neither carries the other's marker.
+    pub fn get_path_rules(&self) -> Vec<PathRule> {
+        match self {
+            FilterPreset::OnlySecrets => secret_path_rules(),
+            FilterPreset::OnlyBackup => backup_path_rules(),
+            FilterPreset::OnlyConfig => config_path_rules(),
+            FilterPreset::OnlyApi => api_path_rules(),
+            // The extension-family presets predate path rules and must keep
+            // behaving exactly as they did.
+            FilterPreset::NoResources
+            | FilterPreset::NoImages
+            | FilterPreset::NoFonts
+            | FilterPreset::NoDocuments
+            | FilterPreset::NoVideos
+            | FilterPreset::NoAudio
+            | FilterPreset::OnlyJs
+            | FilterPreset::OnlyStyle
+            | FilterPreset::OnlyFonts
+            | FilterPreset::OnlyDocuments
+            | FilterPreset::OnlyVideos
+            | FilterPreset::OnlyAudio
+            | FilterPreset::OnlyImages => vec![],
+        }
     }
 }
 
@@ -455,6 +716,147 @@ mod tests {
                 "{id} is listed but not parseable"
             );
         }
+    }
+
+    #[test]
+    fn test_security_presets_parse_including_singular_aliases() {
+        for (name, alias) in [
+            ("only-secrets", "only-secret"),
+            ("only-backup", "only-backups"),
+            ("only-config", "only-configs"),
+            ("only-api", "only-apis"),
+        ] {
+            let a = FilterPreset::from_str(name).unwrap_or_else(|| panic!("{name}"));
+            let b = FilterPreset::from_str(alias).unwrap_or_else(|| panic!("{alias}"));
+            assert_eq!(a.get_extensions(), b.get_extensions(), "{name}");
+            assert_eq!(a.get_path_rules(), b.get_path_rules(), "{name}");
+        }
+        // Case insensitivity works for the new names too.
+        assert!(matches!(
+            FilterPreset::from_str("Only-Secrets"),
+            Some(FilterPreset::OnlySecrets)
+        ));
+    }
+
+    #[test]
+    fn test_security_presets_only_include() {
+        // They are `only-*` presets: like every other one, they narrow with an
+        // inclusion list and exclude nothing.
+        for preset in [
+            FilterPreset::OnlySecrets,
+            FilterPreset::OnlyBackup,
+            FilterPreset::OnlyConfig,
+            FilterPreset::OnlyApi,
+        ] {
+            assert!(preset.get_exclude_extensions().is_empty());
+            assert!(preset.get_exclude_patterns().is_empty());
+            assert!(!preset.get_path_rules().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_only_the_security_presets_define_path_rules() {
+        // Regression guard: the 13 original presets predate path rules, and
+        // adding one to any of them would change what it matches.
+        for id in PRESET_IDS {
+            let preset = FilterPreset::from_str(id).expect(id);
+            let is_new = matches!(
+                preset,
+                FilterPreset::OnlySecrets
+                    | FilterPreset::OnlyBackup
+                    | FilterPreset::OnlyConfig
+                    | FilterPreset::OnlyApi
+            );
+            assert_eq!(!preset.get_path_rules().is_empty(), is_new, "{id}");
+        }
+    }
+
+    #[test]
+    fn test_path_rules_are_lower_case() {
+        // They are compared against a lower-cased URL, so an upper-case
+        // character in a rule could never match anything.
+        for id in PRESET_IDS {
+            for rule in FilterPreset::from_str(id).expect(id).get_path_rules() {
+                let literal = match &rule {
+                    PathRule::Contains(s) | PathRule::PathEndsWith(s) => s.clone(),
+                };
+                assert_eq!(literal, literal.to_lowercase(), "{id}: {literal}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_preset_extension_lists_have_no_leading_dots() {
+        // `Path::extension()` never reports the dot, so ".bak" in a table
+        // would be a token that can never match.
+        for id in PRESET_IDS {
+            let preset = FilterPreset::from_str(id).expect(id);
+            for ext in preset
+                .get_extensions()
+                .into_iter()
+                .chain(preset.get_exclude_extensions())
+            {
+                assert!(!ext.starts_with('.'), "{id}: {ext}");
+                assert!(!ext.is_empty(), "{id}: empty extension");
+            }
+        }
+    }
+
+    #[test]
+    fn test_security_presets_cover_the_documented_families() {
+        let secrets = FilterPreset::OnlySecrets;
+        assert!(secrets.get_extensions().contains(&"pem".to_string()));
+        assert!(secrets
+            .get_path_rules()
+            .contains(&PathRule::Contains("/.git/".to_string())));
+
+        let backup = FilterPreset::OnlyBackup;
+        for ext in [
+            "bak", "old", "swp", "orig", "save", "backup", "zip", "sql", "dump",
+        ] {
+            assert!(
+                backup.get_extensions().contains(&ext.to_string()),
+                "only-backup is missing {ext}"
+            );
+        }
+        assert!(backup
+            .get_path_rules()
+            .contains(&PathRule::PathEndsWith("~".to_string())));
+
+        let config = FilterPreset::OnlyConfig;
+        for ext in ["conf", "config", "ini", "yaml", "yml", "toml", "properties"] {
+            assert!(
+                config.get_extensions().contains(&ext.to_string()),
+                "only-config is missing {ext}"
+            );
+        }
+
+        let api = FilterPreset::OnlyApi;
+        assert!(api.get_extensions().contains(&"wsdl".to_string()));
+        for needle in ["/api/", "/v1/", "/graphql", "/swagger", "/openapi"] {
+            assert!(
+                api.get_path_rules()
+                    .contains(&PathRule::Contains(needle.to_string())),
+                "only-api is missing {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_presets_accepts_the_security_names() {
+        assert!(validate_presets(&[
+            "only-secrets".to_string(),
+            "only-backup".to_string(),
+            "only-config".to_string(),
+            "only-api".to_string(),
+        ])
+        .is_ok());
+
+        // ...and an unknown name is still an error that names the alternatives.
+        let err = validate_presets(&["only-secretz".to_string()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only-secrets"), "{err}");
     }
 
     #[test]

@@ -19,18 +19,24 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 ## Features
 
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX, Arquivo.pt)
+* Plug in any other CDX index server — national web archives, a private pywb, OutbackCDX — with `--cdx-endpoint URL`, no code change needed
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
+* BeVigil provider: URLs extracted from unpacked Android apps — endpoints no web archive ever crawled
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
-* Filter results by file extensions, patterns, or predefined presets (e.g., "no-image" to exclude images)
+* Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
+* Predefined presets, both by file family ("no-images", "only-js") and by security interest ("only-secrets", "only-backup", "only-config", "only-api")
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
-* URL normalization and deduplication: Sort query parameters, remove trailing slashes, and merge semantically identical URLs
+* URL normalization and deduplication: Sort query parameters, remove trailing slashes, merge semantically identical URLs, and collapse near-duplicates that differ only in ids, hashes, or dates (`--dedup-similar`)
 * Support for multiple output formats: plain text, JSON, JSON Lines, CSV
+* Archive capture metadata: `first_seen`, `last_seen`, `mime`, `archive_status`, and `digest` come back with every URL a CDX archive reported, at no extra network cost
 * Streaming output (`--stream`): URLs are written as each provider reports them, so a pipeline starts working immediately instead of waiting for the slowest archive
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
 * Output results to the console or a file, or stream via stdin for pipeline integration
 * URL Testing:
   * Filter and validate URLs based on HTTP status codes and patterns.
-  * Extract additional links from collected URLs
+  * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
+  * Mine the *archived* response bodies of collected URLs (`--archive-body`), so pages that no longer exist still give up the links they contained — one request per distinct body, thanks to CDX digest deduplication
+* Archived robots.txt and sitemap.xml discovery (`--archived-discovery`): every distinct version the Wayback Machine holds, so a `Disallow:` from 2015 still names the paths the site has since stopped mentioning
 * Caching and Incremental Scanning:
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
@@ -68,6 +74,32 @@ The compiled binary will be available at `target/release/urx`.
 
 [ghcr.io/hahwul/urx](https://github.com/hahwul/urx/pkgs/container/urx)
 
+### Shell Completions
+
+`urx` generates its own completion script, so it always matches the flags of
+the binary you actually have installed.
+
+```bash
+# zsh — any directory on your $fpath works
+urx --completions zsh > ~/.zfunc/_urx
+# (make sure ~/.zfunc is on the fpath, then `compinit`)
+
+# bash
+urx --completions bash > ~/.local/share/bash-completion/completions/urx
+
+# fish
+urx --completions fish > ~/.config/fish/completions/urx.fish
+```
+
+`powershell` and `elvish` are supported too. The flag needs no target domain.
+
+### Man Page
+
+```bash
+urx --manpage > ~/.local/share/man/man1/urx.1
+man urx
+```
+
 ## Usage
 
 ### Basic Usage
@@ -94,6 +126,8 @@ Arguments:
 Options:
   -c, --config <CONFIG>           Config file to load
       --provider-config <PATH>    Separate provider config file holding only API keys (default: $XDG_CONFIG_HOME/urx/provider-config.toml). CLI/env > provider-config > main config.
+      --completions <SHELL>       Print a shell completion script (bash, zsh, fish, powershell, elvish) to stdout and exit
+      --manpage                   Print the roff man page to stdout and exit
   -h, --help             Print help
   -V, --version          Print version
 
@@ -108,6 +142,7 @@ Output Options:
       --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
+      --dedup-similar    Collapse URLs that differ only in variable data (numeric ids, UUIDs, hashes, dates, query values)
 
 Provider Options:
       --providers <PROVIDERS>
@@ -122,8 +157,12 @@ Provider Options:
           Include subdomains when searching
       --cc-index <CC_INDEX>
           Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` (the default) resolves the newest via collinfo.json. [default: latest]
+      --cdx-endpoint <URL>
+          Query an additional CDX index server (any pywb, OutbackCDX, or classic Internet-Archive-style CDX API) by its full API URL, e.g. https://vefsafn.is/cdx. Repeatable. Each endpoint becomes a provider with id `cdx:<host>` and honours --subs, --from/--to and the --archive-* filters. See "Custom CDX Endpoints" below
+      --cdx-dialect <DIALECT>
+          Which CDX dialect the --cdx-endpoint servers speak: `pywb` or `classic`. Unset: urx probes each endpoint once and falls back to pywb when the answer is ambiguous
       --from <DATE>
-          Restrict every CDX-backed provider (wayback, cc, arquivo) to captures at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss). Alias: --wayback-from
+          Restrict every CDX-backed provider (wayback, cc, arquivo, --cdx-endpoint) to captures at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss). Alias: --wayback-from
       --to <DATE>
           Restrict every CDX-backed provider to captures at or before DATE (same format as --from). Alias: --wayback-to
       --archive-status <CODE>
@@ -140,21 +179,30 @@ Provider Options:
           Optional API key for Urlscan; the provider also works anonymously (rate-limited ~30 req/min per IP). Can be used multiple times for rotation, or via URX_URLSCAN_API_KEY (comma-separated keys)
       --github-api-key <GITHUB_API_KEY>
           Personal access token for the GitHub Code Search provider (also reads URX_GITHUB_API_KEY, comma-separated for rotation)
+      --bevigil-api-key <BEVIGIL_API_KEY>
+          API key for BeVigil, which returns URLs extracted from unpacked Android apps (also reads URX_BEVIGIL_API_KEY, comma-separated for rotation). Required for the `bevigil` provider
 
 Discovery Options:
-      --exclude-robots   Exclude robots.txt discovery
-      --exclude-sitemap  Exclude sitemap.xml discovery
+      --exclude-robots
+          Exclude robots.txt discovery
+      --exclude-sitemap
+          Exclude sitemap.xml discovery
+      --archived-discovery
+          Also read every distinct archived version of robots.txt and sitemap.xml the Wayback Machine holds
+      --archived-discovery-limit <N>
+          Maximum archived documents fetched per domain by each archived provider (nested sitemaps count) [default: 50]
 
 Display Options:
   -v, --verbose       Show verbose output
       --silent        Silent mode (no output)
       --no-progress   No progress bar
       --show-sources  Annotate output URLs with the providers that returned them
+      --show-meta     Annotate plain-text URLs with the archive capture metadata
       --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
   -p, --preset <PRESET>
-          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style")
+          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style,only-secrets,only-backup,only-config,only-api")
   -e, --extensions <EXTENSIONS>
           Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
       --exclude-extensions <EXCLUDE_EXTENSIONS>
@@ -163,6 +211,10 @@ Filter Options:
           Filter URLs to only include those containing specific patterns (comma-separated)
       --exclude-patterns <EXCLUDE_PATTERNS>
           Filter URLs to exclude those containing specific patterns (comma-separated)
+      --match-regex <RE>
+          Keep only URLs matching this regular expression (repeatable, ORed; case-sensitive; never comma-split)
+      --filter-regex <RE>
+          Drop URLs matching this regular expression (repeatable; one match is enough)
       --show-only-host
           Only show the host part of the URLs
       --show-only-path
@@ -198,7 +250,46 @@ Testing Options:
           Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: ----es]
       --extract-links
           Extract additional links from collected URLs (requires HTTP requests)
+      --extract-js-endpoints
+          Fetch collected JavaScript files and extract the endpoint paths and URLs found in their string literals (requires HTTP requests)
+      --max-js-files <N>
+          Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
+      --archive-body
+          Fetch the archived body of each collected URL from the Wayback Machine and extract the links inside it (works for pages that no longer exist)
+      --archive-body-limit <N>
+          Maximum number of archived bodies --archive-body fetches per run; bounds distinct bodies, not URLs [default: 500]
+
+Notification Options:
+      --notify <URL>                   POST a run summary to this webhook when the run ends (repeatable; also URX_NOTIFY_URL, provider-config `notify_url`, or `[notify].url`)
+      --notify-on <NOTIFY_ON>          When to send: new (only if URLs were emitted), always, or never [default: new]
+      --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
+
+`--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
+`<script src>`, `<link href>`, `<form action>`, `<iframe src>`, `<img src>`,
+`<source src>`, `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">`
+targets. Relative URLs resolve against the page (honouring `<base href>`),
+duplicates are collapsed, and discovered links pass through the same filters
+and host validation as the rest of the run. See
+[docs/content/guide/cli-options.md](docs/content/guide/cli-options.md) for the
+full table.
+
+`--extract-js-endpoints` goes one step further and reads the JavaScript
+itself: every collected URL that looks like a script is fetched and its
+string literals are mined for the paths and URLs the app calls —
+`fetch("/api/v2/users")`, `axios.post("/graphql")`, the static prefix of
+`` `/api/orders/${id}` ``. These are the endpoints that never appear in HTML.
+Output is aggressively de-noised (MIME types, module specifiers, base64,
+CSS values, regex fragments and more are dropped), each body is capped at
+10 MiB, the number of files fetched is bounded by `--max-js-files`, and the
+discovered endpoints pass the same filters and host validation as everything
+else. The full extraction and noise-suppression policy is in
+[docs/content/guide/cli-options.md](docs/content/guide/cli-options.md#javascript-endpoint-extraction).
+
+`--archive-body` does the same extraction over the bodies the Wayback Machine
+*stored* rather than over the live site, so a page that was deleted years ago
+still yields the links it contained. See
+[Mining Archived Response Bodies](#mining-archived-response-bodies).
 
 ### Examples
 
@@ -230,8 +321,18 @@ urx example.com --providers wayback,otx
 # Add the keyless Arquivo.pt (Portuguese web archive) provider
 urx example.com --providers wayback,cc,otx,arquivo
 
+# Query another CDX index server alongside the defaults (id: cdx:vefsafn.is)
+urx example.is --cdx-endpoint https://vefsafn.is/cdx
+
+# ...or on its own, rate-limited, with the archive-side filters it shares with wayback/cc
+urx example.is --cdx-endpoint https://vefsafn.is/cdx --providers cdx:vefsafn.is \
+  --rate-limit-by cdx:vefsafn.is=1 --from 2020 --archive-status 200
+
 # URLScan works without a key (anonymous, rate-limited); a key just raises limits
 urx example.com --providers urlscan
+
+# BeVigil: endpoints pulled out of unpacked Android apps (key required; auto-enables the provider)
+URX_BEVIGIL_API_KEY=*** urx example.com
 
 # Using VirusTotal and URLScan providers
 # 1. Explicitly add to providers (with API keys via command line)
@@ -261,6 +362,13 @@ urx example.com --exclude-robots
 # Exclude URLs from sitemap
 urx example.com --exclude-sitemap
 
+# Also read every archived version of robots.txt and sitemap.xml, so paths the
+# site once listed and has since removed come back
+urx example.com --archived-discovery
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016 --exclude-sitemap
+
 # Include subdomains
 urx example.com --subs
 
@@ -274,7 +382,23 @@ urx --files urls.txt
 urx --files urls.txt --patterns api,admin -f json
 
 # Extract additional links from collected URLs
+# (anchors, scripts, stylesheets, form actions, iframes, images, media
+#  sources, objects, embeds, and meta-refresh targets)
 urx example.com --extract-links
+
+# Discovered links go through the same filters as everything else, so this
+# keeps only the JavaScript the pages reference
+urx example.com --extract-links -e js
+
+# Read the collected JavaScript and pull out the API paths it calls
+urx example.com --extract-js-endpoints --patterns api
+
+# Chain them: collect the site's bundles, then mine those for endpoints
+urx example.com --extract-links --extract-js-endpoints --max-js-files 100
+
+# Mine the links inside the *archived* bodies instead — dead pages included.
+# One request per distinct body; the limit bounds bodies, not URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
 # Network configuration
 urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insecure
@@ -295,7 +419,7 @@ urx example.com --archive-mime application/json
 # Drop HTML to leave assets and endpoints behind
 urx example.com --archive-exclude-mime text/html
 
-# Restrict the crawl window across wayback, cc, and arquivo alike
+# Restrict the crawl window across wayback, cc, arquivo, and any --cdx-endpoint alike
 urx example.com --from 2023 --to 2024
 
 # Disable host validation
@@ -310,7 +434,67 @@ urx example.com --normalize-url --merge-endpoint
 
 # URL normalization with file input
 urx --files urls.txt --normalize-url
+
+# Collapse /post/1, /post/2, /post/99999 ... into a single representative line
+urx example.com --dedup-similar
+
+# Regular-expression filtering (repeat either flag; they are never comma-split)
+urx example.com --match-regex '/api/v[0-9]+/'
+urx example.com --match-regex '\.php$' --match-regex '\.aspx$'
+urx example.com --filter-regex '/(assets|static)/'
+
+# Regexes are case-sensitive; ask for insensitivity explicitly
+urx example.com --match-regex '(?i)admin'
+
+# Security presets: match by path shape as well as by extension
+urx example.com -p only-secrets   # /.env, /.git/config, id_rsa, *.pem
+urx example.com -p only-backup    # *.bak, *.sql, /backup/, index.php~
+urx example.com -p only-config    # *.yaml, web.config, .htaccess, Dockerfile
+urx example.com -p only-api       # /api/, /v1/, /graphql, /swagger, *.wsdl
 ```
+
+### Regular-expression Filtering
+
+`--patterns` / `--exclude-patterns` are plain substring tests: both sides are
+lower-cased, and every metacharacter is a literal. `--match-regex` /
+`--filter-regex` are the regex counterparts, and they differ in three ways worth
+remembering:
+
+| | `--patterns` | `--match-regex` |
+|---|---|---|
+| Matching | substring | full [regex syntax](https://docs.rs/regex/latest/regex/#syntax) |
+| Case | insensitive (both sides lower-cased) | **sensitive** — use `(?i)` to opt out |
+| Multiple values | one comma-separated flag | repeat the flag; commas are never split |
+
+Both regex flags are evaluated against the **whole URL string** as collected
+(scheme, host, path, and query), so `^https://` and `\.js$` both work.
+Exclusion wins: a URL matching `--filter-regex` is dropped even if
+`--match-regex` also matched it. A malformed expression fails the run at
+startup, before any archive is queried.
+
+### Collapsing Near-duplicates
+
+An archive will happily hand back `/post/1` through `/post/99999`. They are one
+endpoint, and `--dedup-similar` prints one line for them. A path segment is
+treated as data — not as part of the route — when it is entirely one of:
+
+* a run of digits (`/post/1`, `/page/42`)
+* a UUID (`/u/550e8400-e29b-41d4-a716-446655440000`)
+* a 32/40/64-character hex digest (md5, sha1, sha256)
+* a separated date (`/blog/2024-01-02/`)
+* a long mixed-case token with digits in it (session ids, signed blobs)
+
+Segments that merely *contain* digits stay put, so `/api/v1/` and `/api/v2/` are
+still two endpoints, and a lower-case slug is prose rather than a token. Query
+strings are grouped by parameter *names* only: `?q=cats&page=1` and
+`?q=dogs&page=7` collapse, while `?q=cats` alone does not — dropping a
+parameter changes the request.
+
+The survivor of each group is its lexicographically smallest URL, so two runs
+over the same data print the same thing. `--verbose` reports how many URLs were
+collapsed. The option is independent of `--normalize-url` and
+`--merge-endpoint` and combines with either; all three need the complete result
+set, so none of them works with `--stream`.
 
 ### Streaming Output
 
@@ -332,33 +516,244 @@ deduplicated. Two things differ:
 * **Order.** Results arrive in provider-completion order, so the output is
   unsorted. Pipe through `sort` if you need ordering.
 * **Scope.** Options that need the complete result set are rejected up front
-  (with a message naming each one): `--merge-endpoint`, `--check-status` /
-  `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
-  `--show-sources`, `--output-dir`, and `--files`. Caching is bypassed, and
+  (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
+  `--check-status` /
+  `--include-status` / `--exclude-status`, `--extract-links`,
+  `--extract-js-endpoints`, `--archive-body`, `--incremental`,
+  `--show-sources`, `--show-meta`, `--output-dir`, and `--files`. Caching is
+  bypassed, and
   `--format json` is refused in favour of `jsonl` because a JSON array has to
   know which entry is last.
 
 Because the batch result map is never populated in this mode, a streamed run
 also holds far less in memory — only the dedup set of URLs already written.
 
+### Archive Capture Metadata
+
+A CDX index records more than the URL: every capture carries a timestamp, the
+MIME type and HTTP status the archive saw, and a digest of the body. urx keeps
+all of it, so the CDX-backed providers — `wayback`, `cc`, `arquivo`, and any
+`--cdx-endpoint` — report each URL together with:
+
+| Field | Meaning |
+|---|---|
+| `first_seen` | Oldest capture timestamp, 14-digit CDX form (`YYYYMMDDhhmmss`) |
+| `last_seen` | Newest capture timestamp |
+| `mime` | MIME type of the most recent capture that recorded one |
+| `archive_status` | HTTP status the *archive* recorded at capture time |
+| `digest` | A representative content digest across the captures |
+
+`archive_status` is not `status`: `status` only appears under `--check-status`,
+which re-requests the URL live now, whereas `archive_status` is what the crawler
+got when it captured the page. A URL can perfectly well be `archive_status`
+`200` and dead today.
+
+Where the same URL comes from several captures or several archives, the values
+are merged: `first_seen` is the oldest timestamp anyone reported, `last_seen`
+the newest, and `mime`/`archive_status` come from the most recent capture that
+had them. Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`,
+`github`, `bevigil`, `robots`, `sitemap`, and `--files` input) report the URL
+alone — no values are invented for them.
+
+How the metadata surfaces depends on the format:
+
+* **`json` / `jsonl`** — each field appears as a key when it has a value and is
+  omitted entirely when it does not, exactly like `sources`.
+* **`csv`** — a column is added only when at least one row has a value for it,
+  so a run with no metadata still produces a single `url` column.
+* **plain text** — unchanged by default, one bare URL per line, so existing
+  pipelines keep working. Pass `--show-meta` to append the fields.
+
+```bash
+# Rich records: when the URL was alive, and what it served
+urx example.com --providers wayback -f jsonl
+# {"url":"https://example.com/old.php","first_seen":"20040112093000",
+#  "last_seen":"20180722140311","mime":"text/html","archive_status":"200",
+#  "digest":"HT2DYGA5UKZCPBSFVCV3JOBXGW2G5UUA"}
+
+# Triage by age: everything last captured before 2010
+urx example.com -f jsonl | jq -r 'select(.last_seen < "20100101000000") | .url'
+
+# Opt plain output into the metadata
+urx example.com --providers wayback --show-meta
+```
+
+Streaming (`--stream`) reports URLs only. A URL is printed on first sighting,
+before the captures that would widen its `first_seen`/`last_seen` range have
+arrived, so `--show-meta` is rejected there for the same reason
+`--show-sources` is.
+
+A cache hit also carries no metadata: the cache stores URLs, so a domain served
+from cache reports its URLs without capture fields. Use `--no-cache` (or wait
+for the TTL) for a run that repopulates them.
+
+### Mining Archived Response Bodies
+
+`--extract-links` fetches every collected URL from the live site, which is
+exactly the wrong place to look for the pages an OSINT sweep cares about most:
+the ones that no longer exist. `--archive-body` fetches the bodies the Wayback
+Machine stored instead. For every collected URL that carries a capture
+timestamp, urx replays that capture in its raw form
+(`https://web.archive.org/web/<timestamp>id_/<url>` — the `id_` flag turns off
+the Wayback toolbar and link rewriting, so the body is the original bytes) and
+runs the same link extraction `--extract-links` uses over it.
+
+```bash
+# Links from the archived bodies of everything the CDX providers found
+urx example.com --archive-body
+
+# Bound the run and pace it; the archive is one host no matter how many URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only the JavaScript those pages referenced back then
+urx example.com --archive-body -e js
+```
+
+**Why this needs far fewer requests than waymore.** Every CDX row carries a
+content digest, and two captures with the same digest are byte-for-byte the
+same body. Archives are full of them: every `?utm_source=` variant of a page,
+every `/index.html` next to its `/`, every tracking-parameter permutation
+serves identical bytes, so a list of tens of thousands of URLs routinely
+collapses to a few thousand distinct bodies. waymore has no notion of this — it
+downloads one response per URL and copes with the volume through a blunt
+`-l 5000` cap, which both hammers the archive and truncates coverage. urx
+claims each digest the first time it is seen and skips every later URL that
+would replay the same bytes, so the same coverage costs one request per
+*distinct body*. `--archive-body-limit` (default 500) bounds distinct bodies,
+not URLs; duplicates never count against it, and `--verbose` reports how many
+were skipped.
+
+Details worth knowing:
+
+- Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
+  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  results (the cache stores URLs only) have none. urx says so when there is
+  nothing to replay — pass `--no-cache` to get fresh captures.
+- The newest capture of each URL is replayed. A timestamp reported by another
+  archive lands on the nearest Wayback capture; a URL the Wayback Machine never
+  saw answers 404 and is skipped. Captures the archive recorded as errors are
+  not mined, exactly as `--extract-links` ignores live error pages.
+- Discovered links go through the same filters, host validation, and output
+  transforms as everything else, and each body is capped at 10 MiB.
+- `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
+  `--timeout`, and `--retries` all apply to the replay requests.
+- Incompatible with `--stream`, like every option that runs after collection.
+
+### Archived robots.txt and sitemap.xml
+
+The `robots` and `sitemap` providers read the *live* files, which only say what
+a site hides or lists today. `--archived-discovery` also reads every distinct
+version of those files the Wayback Machine has stored. A `Disallow:` from 2015
+names paths the site has since stopped mentioning — often because they were
+meant to be forgotten, not because they are gone — and an old sitemap lists
+everything the site once wanted crawled.
+
+```bash
+# Every archived version of robots.txt and sitemap.xml, alongside the live ones
+urx example.com --archived-discovery
+
+# Bound it and pace it; both archived providers answer to --rate-limit-by
+urx example.com --archived-discovery --archived-discovery-limit 20 --rate-limit-by robots=2,sitemap=2
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016
+```
+
+How it works, and why it is cheap:
+
+- The versions of a document are listed with one CDX query per file
+  (`robots.txt`, `sitemap.xml`, `sitemap_index.xml`, `sitemap.txt`), using
+  `collapse=digest` so consecutive captures that served the same bytes fold
+  into one row. Only rows recorded as a success are asked for: the index folds
+  `www.` and the apex into one listing, and their interleaved `301`/`200` rows
+  otherwise defeat the collapse — for github.com/robots.txt that is 325k rows
+  without the filter and 14k with it, for the same 107 distinct versions.
+- Each distinct version is replayed in raw form (`/web/<timestamp>id_/…`) and
+  handed to the **same parser as the live file**. No second parser: a 2015
+  robots.txt is read by exactly the rules the current one is, including the
+  absolute-path and pattern-skipping guards. An archived `<sitemapindex>` is
+  followed into its children as they were at that same moment.
+- Captures the archive recorded as errors (github.com's robots.txt was a 401
+  for part of 2007) are skipped without a request and reported under
+  `--verbose` only.
+- `--archived-discovery-limit` (default 50) caps the documents fetched per
+  domain by each archived provider, newest versions first; nested sitemaps
+  count. `--verbose` says when the cap cut the list short.
+- The archived variants run as their own provider instances — "Robots.txt
+  (archived)" and "Sitemap (archived)" in `--stats` and `--show-sources` — but
+  under the existing `robots` / `sitemap` ids, so `--exclude-robots`,
+  `--exclude-sitemap`, and `--rate-limit-by robots=N` govern both the live and
+  archived reads. `--from` / `--to` narrow which versions are considered.
+- Works with `--stream`; it is a provider like any other.
+
 ### Archive-side Filtering
 
 `--archive-status`, `--archive-mime`, `--from`, and `--to` are evaluated by the
 archive's CDX index rather than by urx. Two consequences are worth knowing:
 
-* They apply only to CDX-backed providers — `wayback`, `cc`, and `arquivo`.
-  Other providers ignore them; urx warns when none of the three is enabled.
-* The archives do not share one filter dialect. Wayback Machine treats values as
-  **regular expressions**, so `--archive-status "30."` matches any 3xx. Common
-  Crawl and Arquivo.pt match **exactly**, and their index ANDs repeated filters
-  together — so a multi-value positive list like `--archive-status 200,301` is
-  unsatisfiable there. urx skips that filter for those two providers (with a
+* They apply only to CDX-backed providers — `wayback`, `cc`, `arquivo`, and
+  any `--cdx-endpoint`. Other providers ignore them; urx warns when none is
+  enabled.
+* The archives do not share one filter dialect. Wayback Machine (and any
+  `--cdx-dialect classic` endpoint) treats values as **regular expressions**, so
+  `--archive-status "30."` matches any 3xx. Common Crawl, Arquivo.pt and pywb
+  endpoints match **exactly**, and their index ANDs repeated filters together —
+  so a multi-value positive list like `--archive-status 200,301` is
+  unsatisfiable there. urx skips that filter for those providers (with a
   warning) instead of sending a query that would come back empty. Multi-value
   *exclusions* mean "not this and not that" and work everywhere.
 
 Use `--archive-status` when you want what the archive recorded at crawl time and
 `--check-status` / `--include-status` when you want the target's status *now*;
 the latter re-requests every URL.
+
+### Custom CDX Endpoints
+
+Every web archive built on pywb, OutbackCDX, or the Internet Archive's CDX
+server exposes the same query API. Rather than hardcoding a provider per
+archive, `--cdx-endpoint URL` turns any such server into a provider on the
+spot:
+
+```bash
+# The Icelandic web archive, alongside the default providers
+urx example.is --cdx-endpoint https://vefsafn.is/cdx
+
+# Several at once; each gets its own progress line, stats row and rate limit
+urx example.com --cdx-endpoint https://vefsafn.is/cdx --cdx-endpoint http://localhost:8080/cdx \
+  --rate-limit-by cdx:vefsafn.is=1
+```
+
+* The provider id is `cdx:<host>` (`cdx:vefsafn.is`), which is what
+  `--exclude-providers`, `--rate-limit-by`, `--stats` and `--show-sources` use.
+  Naming an endpoint enables it; no `--providers` entry is needed, and
+  `--providers cdx:vefsafn.is` runs it alone. `--list-providers` shows the
+  endpoints named on the same command line with the ids they will run as.
+* Everything the built-in CDX providers honour applies here too: `--subs`,
+  `--from`/`--to`, the `--archive-*` filters, pagination, `--rate-limit`, and
+  the capture metadata described above.
+* `--cdx-dialect classic|pywb` names the server's dialect (field names, filter
+  semantics, row format and pagination scheme all follow from it — see
+  "Archive-side Filtering"). Left unset, urx probes the endpoint once per run
+  and falls back to `pywb`, the more common dialect; set it explicitly when the
+  probe cannot tell (an empty answer for an unknown domain, for instance).
+* Can also be set in the config file (`cdx_endpoint = [...]`, `cdx_dialect`).
+
+**Verified endpoints.** As of this writing, the only public endpoint confirmed
+to work end to end is `https://vefsafn.is/cdx` (Landsbókasafn's Icelandic web
+archive, pywb dialect). Two things to know about it: it ignores `limit`, `page`
+and `showNumPages` and returns the complete result set for every query, which
+urx handles; and after a handful of requests it may start answering with an
+Anubis-style bot-protection page ("Session Verification"). urx detects an HTML
+answer in place of CDX rows and reports it as a provider error naming the
+endpoint — it is never counted as "no URLs". If you hit it, slow down with
+`--rate-limit-by cdx:vefsafn.is=1` or retry later.
+
+**Known not to work.** The UK Web Archive (`webarchive.org.uk`), the Library of
+Congress web archive (`webarchive.loc.gov`), Bibliotheca Alexandrina, and the
+National Library of Australia (`web.archive.org.au`) all sit behind bot
+protection or redirects that block their CDX APIs from a command-line client.
+urx does not attempt to work around that, so pointing `--cdx-endpoint` at them
+yields the HTML-answer error above.
 
 ### Caching and Incremental Scanning
 
@@ -390,7 +785,10 @@ urx -c example/config.toml example.com
 #### Caching Use Cases
 
 ```bash
-# Daily monitoring - only alert on new URLs
+# Daily monitoring - only alert on new URLs (built-in webhook, see below)
+urx target.com --incremental --silent --notify https://hooks.slack.com/services/... --notify-format slack
+
+# ...or hand the new URLs to an external notifier
 urx target.com --incremental --silent | notify-tool
 
 # Efficient domain lists processing
@@ -402,6 +800,52 @@ urx example.com --cache-type redis --redis-url redis://shared-cache:6379
 # Fast re-scans during development
 urx test-domain.com --cache-ttl 300  # 5-minute cache for rapid iterations
 ```
+
+### Webhook Notifications
+
+`--notify <URL>` POSTs a summary of the run to a webhook when the run ends,
+which turns `--incremental` into a monitor: put it in cron and the webhook
+fires only when something new shows up.
+
+```bash
+# Slack incoming webhook, only when the run finds new URLs (the default)
+urx target.com --incremental --silent \
+  --notify https://hooks.slack.com/services/T000/B000/XXXX --notify-format slack
+
+# Discord, and send even when nothing is new
+urx target.com --incremental --notify "$DISCORD_HOOK" --notify-format discord --notify-on always
+
+# Several receivers, urx's own JSON schema (the default format)
+urx target.com --incremental --notify https://n8n.example/hook --notify https://ntfy.example/urx
+
+# Keep the webhook out of the shell history
+export URX_NOTIFY_URL=https://hooks.slack.com/services/...
+urx target.com --incremental --notify-format slack
+```
+
+- `--notify-on` is `new` by default: nothing is sent when the run emits zero
+  URLs, so a quiet cron run stays quiet. `always` sends regardless; `never`
+  keeps the configuration but disables sending.
+- `--notify-format json` (default) sends urx's schema: `domains`,
+  `incremental`, `url_count`, `new_url_count`, `elapsed_ms`, a per-provider
+  `providers` list (the same numbers `--stats` prints), and a `sample` of up to
+  20 emitted URLs with `sample_truncated` set when more were found.
+  `slack` sends `{"text": ...}` and `discord` sends `{"content": ...}` with a
+  short human-readable message; messages longer than the service allows are
+  cut on a line boundary and end with `[truncated: N lines cut ...]`.
+- Delivery never changes the exit code. The URLs are already on stdout or in
+  `--output` by the time the webhook is called, so a dead webhook is a warning
+  on stderr and the run still exits 0. `--verbose` shows the response status.
+- The webhook URL is a credential. urx never prints more than its scheme and
+  host — not in `--verbose`, not in warnings, not in `--stats`. To keep it out
+  of a config that is checked in, put it in `URX_NOTIFY_URL` or as
+  `notify_url` in the provider-config file; `[notify].url` in the main config
+  works too. Precedence is CLI/env > provider-config > main config.
+- The request honours `--proxy`, `--proxy-auth`, `--timeout` and `--insecure`.
+  `--network-scope` does not apply: it partitions traffic aimed at the target
+  and the archives, and the webhook is your own endpoint.
+- `--silent` still sends (that is the main use case); it only hides the
+  diagnostics.
 
 ## Integration with Other Tools
 

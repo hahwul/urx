@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::ApiKeyRotator;
-use super::Provider;
+use super::{Provider, UrlRecord};
 use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -139,7 +139,7 @@ impl Provider for GitHubProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -147,7 +147,7 @@ impl Provider for GitHubProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             if !self.api_key_rotator.has_keys() {
                 return Ok(Vec::new());
@@ -293,7 +293,7 @@ impl Provider for GitHubProvider {
 
             let mut out: Vec<String> = urls.into_iter().collect();
             out.sort();
-            Ok(out)
+            Ok(out.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -326,6 +326,7 @@ impl Provider for GitHubProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_extract_urls_exact_host() {
@@ -391,7 +392,7 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_urls_returns_empty_without_keys() {
         let p = GitHubProvider::new_with_keys(vec![]);
-        let urls = p.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(p.fetch_urls("example.com").await.unwrap());
         assert!(urls.is_empty());
     }
 
@@ -427,10 +428,12 @@ mod tests {
 
         let reporter =
             ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ".to_string());
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         // The page-1 URL is kept...
         assert_eq!(urls, vec!["https://example.com/login".to_string()]);
@@ -476,7 +479,7 @@ mod tests {
         provider.with_base_url(server.url());
         provider.with_retries(0);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/login".to_string()]);
 
         // With subdomains enabled the api.example.com URL also surfaces.
