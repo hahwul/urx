@@ -58,6 +58,8 @@ pub struct ProviderConfig {
     pub providers: Option<Vec<String>>,
     pub subs: Option<bool>,
     pub cc_index: Option<String>,
+    pub cdx_endpoint: Option<Vec<String>>,
+    pub cdx_dialect: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub archive_status: Option<Vec<String>>,
@@ -504,6 +506,26 @@ impl Config {
                     .collect();
                 if !split.is_empty() {
                     args.cc_index = split;
+                }
+            }
+        }
+
+        // Extra CDX index servers, and the dialect they speak.
+        if args.cdx_endpoint.is_empty() {
+            if let Some(endpoints) = &self.provider.cdx_endpoint {
+                args.cdx_endpoint = endpoints
+                    .iter()
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .collect();
+            }
+        }
+
+        // An empty string is the documented "unset" spelling, same as `from`.
+        if args.cdx_dialect.is_none() {
+            if let Some(dialect) = self.provider.cdx_dialect.as_deref().map(str::trim) {
+                if !dialect.is_empty() {
+                    args.cdx_dialect = Some(dialect.to_string());
                 }
             }
         }
@@ -1018,6 +1040,43 @@ mod tests {
         assert_eq!(args.urlscan_api_key, vec!["us1", "us2"]);
         assert_eq!(args.zoomeye_api_key, vec!["ze1"]);
         assert_eq!(args.github_api_key, vec!["gh1", "gh2"]);
+    }
+
+    #[test]
+    fn test_config_supplies_cdx_endpoints_and_dialect() {
+        let toml_src = r#"
+            [provider]
+            cdx_endpoint = ["https://vefsafn.is/cdx", " http://localhost:8080/cdx ", ""]
+            cdx_dialect = "classic"
+        "#;
+        let config: Config = toml::from_str(toml_src).unwrap();
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(
+            args.cdx_endpoint,
+            vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
+        );
+        assert_eq!(args.cdx_dialect.as_deref(), Some("classic"));
+
+        // The CLI wins over the file.
+        let config: Config = toml::from_str(toml_src).unwrap();
+        let mut args = Args::parse_from([
+            "urx",
+            "--cdx-endpoint",
+            "https://example.org/cdx",
+            "--cdx-dialect",
+            "pywb",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.cdx_endpoint, vec!["https://example.org/cdx"]);
+        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+
+        // An empty dialect string, as in the documented template, is unset.
+        let config: Config = toml::from_str("[provider]\ncdx_dialect = \"\"").unwrap();
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert!(args.cdx_dialect.is_none());
     }
 
     #[test]

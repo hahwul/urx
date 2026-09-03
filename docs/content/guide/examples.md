@@ -116,6 +116,9 @@ urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github
 
 # Or enable everything at once (keyed providers activate only when a key is present)
 urx example.com --all-providers
+
+# Add any other CDX index server (here the Icelandic web archive) — id cdx:vefsafn.is
+urx example.is --cdx-endpoint https://vefsafn.is/cdx --rate-limit-by cdx:vefsafn.is=1
 ```
 
 ### With API Keys

@@ -41,6 +41,8 @@ stream = false             # Write URLs as providers report them (unsorted, bypa
 providers = ["wayback", "cc", "otx"] # also available keyless: "arquivo", "urlscan" (anonymous)
 subs = false                          # Include subdomains
 cc_index = "CC-MAIN-2026-17"         # Common Crawl index (or "latest" to auto-resolve via collinfo.json)
+cdx_endpoint = []                     # Extra CDX index servers, e.g. ["https://vefsafn.is/cdx"] (ids: cdx:<host>)
+cdx_dialect = ""                      # "pywb" or "classic" for those servers; empty = probe once, pywb fallback
 from = ""                             # Restrict CDX providers to captures >= this date (YYYY/YYYYMM/YYYYMMDD)
 to = ""                               # Restrict CDX providers to captures <= this date
 archive_status = []                   # Keep only captures the archive recorded with these status codes

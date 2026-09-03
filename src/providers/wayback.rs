@@ -1,25 +1,13 @@
 use anyhow::Result;
-use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
+use super::cdx::{walk_resume_key, CdxSession, CLASSIC_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
-use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
-use crate::network::client::{get_with_retry, HttpClientConfig};
+use super::{CaptureMeta, Provider, UrlRecord};
+use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
-
-/// How many rows to ask the CDX server for per request. A bounded `limit` is
-/// what keeps large domains from failing: an unbounded query makes the server
-/// compute and buffer the *entire* result set (it then routinely times out),
-/// whereas a capped request streams a slice and returns promptly. Most domains
-/// fit in a single page; only the large ones the user cares about paginate.
-const PAGE_LIMIT: usize = 50_000;
-
-/// Hard ceiling on the number of pages we will follow, so a misbehaving cursor
-/// can never spin forever. At `PAGE_LIMIT` rows each, this covers domains with
-/// up to ~500M captured URLs — far beyond anything real.
-const MAX_PAGES: usize = 10_000;
 
 /// The CDX fields we request, in order. `original` stays first so a data row
 /// still starts with the URL — [`split_page`] tells rows from the trailing
@@ -30,7 +18,7 @@ const MAX_PAGES: usize = 10_000;
 /// widen a row (roughly 5x over `fl=original` alone), but that is the cheap
 /// side of the trade: deriving any one of them locally would mean re-requesting
 /// every URL over the network, which is what `--check-status` costs.
-const FIELDS: &str = "original,timestamp,mimetype,statuscode,digest";
+const FIELDS: &str = CLASSIC_FIELDS;
 
 /// Parse one `FIELDS` row into a record.
 ///
@@ -86,7 +74,7 @@ fn parse_row(line: &str) -> Option<UrlRecord> {
 /// cursor. Requiring the blank separator is what stops stray non-URL junk in a
 /// malformed/error body from being mistaken for a key (which would trigger a
 /// spurious follow-up request). No such trailing token ⇒ this was the last page.
-fn split_page(text: &str) -> (Vec<UrlRecord>, Option<String>) {
+pub(crate) fn split_page(text: &str) -> (Vec<UrlRecord>, Option<String>) {
     let lines: Vec<&str> = text.lines().collect();
 
     let mut resume_key = None;
@@ -107,12 +95,6 @@ fn split_page(text: &str) -> (Vec<UrlRecord>, Option<String>) {
         .collect();
 
     (records, resume_key)
-}
-
-/// Percent-encode a resume key so opaque cursor bytes (`+`, `/`, `=` in some
-/// base64 variants) survive being spliced back into the query string.
-fn encode_resume_key(key: &str) -> String {
-    url::form_urlencoded::byte_serialize(key.as_bytes()).collect()
 }
 
 #[derive(Clone)]
@@ -226,126 +208,22 @@ impl Provider for WaybackMachineProvider {
         Box::pin(async move {
             let client = self.client_config().build_client()?;
             let query_base = self.query_base(domain);
-            let limiter = self.rate_limit.as_ref();
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
             }
 
-            // Walk the CDX cursor: each request returns at most PAGE_LIMIT rows
-            // plus a resume key pointing at the next slice. Following the key
-            // lets arbitrarily large domains complete as a series of bounded,
-            // fast requests instead of one unbounded request that times out.
-            // Rows are folded per URL as they arrive: `collapse=urlkey` only
-            // collapses *adjacent* rows, so the same URL still shows up on
-            // several pages, each time with a different capture.
-            let mut records = RecordSet::new();
-            let mut resume_key: Option<String> = None;
-            // Every cursor position we have already requested. A key we have
-            // seen before means the cursor is stuck or cycling, which is the
-            // only way this walk can fail to terminate — comparing against just
-            // the previous key misses cycles of length two or more.
-            let mut seen_keys: HashSet<String> = HashSet::new();
-            let mut pages = 0usize;
-            // Set when we stop while the server was still advertising more
-            // results, so a truncated crawl is never reported as a clean one.
-            let mut truncated = false;
-
-            loop {
-                pages += 1;
-                if pages > MAX_PAGES {
-                    // We only get here holding a resume key, i.e. with results
-                    // left on the server.
-                    truncated = true;
-                    break;
-                }
-
-                let mut url = format!("{query_base}&limit={PAGE_LIMIT}&showResumeKey=true");
-                if let Some(key) = &resume_key {
-                    url.push_str("&resumeKey=");
-                    url.push_str(&encode_resume_key(key));
-                }
-
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                // Race the request against the stop signal. Checking only
-                // between pages is not enough: one CDX slice takes tens of
-                // seconds, so a deadline landing mid-page went unnoticed until
-                // long after the runner's grace window had closed and the hard
-                // cancel had thrown the buffer away.
-                let fetched = match &reporter {
-                    Some(r) => tokio::select! {
-                        biased;
-                        _ = r.stopped() => None,
-                        res = get_with_retry(&client, &url, self.retries) => Some(res),
-                    },
-                    None => Some(get_with_retry(&client, &url, self.retries).await),
-                };
-                let Some(result) = fetched else {
-                    // Stopped mid-request: keep the pages already walked.
-                    truncated = true;
-                    break;
-                };
-                let text = match result {
-                    Ok(text) => text,
-                    Err(e) => {
-                        // Best effort: a mid-cursor failure shouldn't discard
-                        // the pages we already pulled. Only a failure on the
-                        // very first request (nothing collected) is fatal.
-                        if records.is_empty() {
-                            return Err(e);
-                        }
-                        // We're returning a truncated result. Flag it so the
-                        // caller can mark the line partial and warn rather than
-                        // present an incomplete crawl as a clean success.
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        break;
-                    }
-                };
-
-                let (page_records, next_key) = split_page(&text);
-                records.extend(page_records);
-
-                if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", records.len()));
-                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
-                    // Hand back the pages already walked instead of losing them
-                    // to the hard cancel after the runner's grace window.
-                    if r.stop_requested() {
-                        truncated = true;
-                        break;
-                    }
-                }
-
-                // No resume key ⇒ the server said this was the last slice, so
-                // the walk is complete. A key means more results remain: follow
-                // it whenever it is one we have not used yet. A *new* key is
-                // progress even when the page carried no rows — a server-side
-                // `filter=` can empty an entire slice — while a key we have
-                // already requested means the cursor is not advancing, and
-                // continuing would just re-fetch the same slices forever.
-                match next_key {
-                    None => break,
-                    Some(key) => {
-                        if !seen_keys.insert(key.clone()) {
-                            truncated = true;
-                            break;
-                        }
-                        resume_key = Some(key);
-                    }
-                }
-            }
-
-            if truncated {
-                if let Some(r) = &reporter {
-                    r.mark_partial();
-                }
-            }
-
-            Ok(records.into_sorted())
+            // web.archive.org is the reference classic CDX server: the shared
+            // resume-key walk in `cdx` was written against it and is reused
+            // verbatim for any other classic endpoint the user plugs in.
+            let session = CdxSession {
+                client: &client,
+                retries: self.retries,
+                limiter: self.rate_limit.as_ref(),
+                reporter: reporter.as_ref(),
+                endpoint: self.base_url(),
+            };
+            walk_resume_key(&session, &query_base).await
         })
     }
 
@@ -388,8 +266,8 @@ impl Provider for WaybackMachineProvider {
 mod tests {
     use super::*;
     use crate::progress::StopSignal;
+    use crate::providers::cdx::encode_resume_key;
     use crate::providers::urls_of;
-    // Removed unused import: std::time::Duration
 
     #[test]
     fn test_new_provider() {
@@ -1017,9 +895,8 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::Any)
             .with_status(200)
-            .with_header("content-type", "text/html")
             .with_body(
-                "<html><body>Service temporarily unavailable</body></html>\n\
+                "Service temporarily unavailable\n\
                  http://example.com/real 20200101000000 text/html 200 DIGEST\n\
                  not-a-url\n",
             )
@@ -1032,6 +909,34 @@ mod tests {
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(urls, vec!["http://example.com/real".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_an_html_body_is_an_error_not_an_empty_page() {
+        // An HTML document in place of CDX rows is what a bot-protection
+        // proxy (or a maintenance page) serves. Skipping its lines used to turn
+        // that into "no captures for this domain"; it is now reported.
+        use mockito;
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body("<html><body>Service temporarily unavailable</body></html>\n")
+            .create_async()
+            .await;
+
+        let mut provider = WaybackMachineProvider::new();
+        provider.with_base_url(server.url());
+
+        let err = provider
+            .fetch_urls("example.com")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HTML page instead of CDX rows"), "{err}");
     }
 
     #[tokio::test]

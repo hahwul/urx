@@ -16,11 +16,14 @@ stream = false         # Write URLs as providers report them (see README)
 providers = ["wayback", "cc", "otx"]
 subs = false                         # Include subdomains when searching
 cc_index = "CC-MAIN-2026-17"         # Common Crawl index (use "latest" to auto-resolve via collinfo.json)
+# cdx_endpoint = ["https://vefsafn.is/cdx"]  # Extra CDX servers (any pywb/OutbackCDX/classic); ids cdx:<host>
+# cdx_dialect = "pywb"               # "pywb" or "classic"; unset = probe once, pywb fallback
 
 # Archive-side filters, evaluated by the CDX index itself (wayback, cc, arquivo
-# only). Unlike [testing].include_status these cost no extra HTTP requests.
-# Note: wayback treats values as regexes; cc and arquivo match exactly and
-# cannot express a multi-value positive list (see README).
+# and cdx_endpoint servers only). Unlike [testing].include_status these cost no
+# extra HTTP requests. Note: wayback (and classic endpoints) treat values as
+# regexes; cc, arquivo and pywb endpoints match exactly and cannot express a
+# multi-value positive list (see README).
 from = "2023"                        # Captures at or after this date
 to = "2024"                          # Captures at or before this date
 archive_exclude_status = ["404"]     # Skip what the archive recorded as missing

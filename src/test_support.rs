@@ -152,6 +152,8 @@ pub fn build_test_args() -> Args {
         rate_limit_by: vec![],
         provider_config: None,
         output_dir: None,
+        cdx_endpoint: vec![],
+        cdx_dialect: None,
         from: None,
         to: None,
         archive_status: vec![],

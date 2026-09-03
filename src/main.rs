@@ -271,7 +271,7 @@ async fn main() -> Result<()> {
         return app::shell::print_man_page();
     }
     if args.list_providers {
-        print_provider_list();
+        print_provider_list(&args);
         return Ok(());
     }
 

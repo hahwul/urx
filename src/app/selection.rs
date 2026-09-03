@@ -9,17 +9,17 @@ use std::collections::HashSet;
 use anyhow::Result;
 
 use crate::app::catalog::{
-    missing_api_key_message, provider_catalog, valid_provider_ids, validate_provider_ids,
-    validate_rate_limit_override_ids,
+    cdx_endpoint_ids, cdx_endpoints, is_cdx_endpoint_id, missing_api_key_message, provider_catalog,
+    valid_provider_ids, validate_provider_ids, validate_rate_limit_override_ids,
 };
 use crate::app::keys::{auto_enable_provider, ApiKeys, KEYED_PROVIDER_IDS};
 use crate::cli::Args;
 use crate::filters::{compile_url_regexes, validate_presets};
 use crate::network::NetworkSettings;
 use crate::providers::{
-    self, ArquivoProvider, CommonCrawlProvider, GitHubProvider, OTXProvider, Provider,
-    RobotsProvider, SitemapProvider, UrlscanProvider, VirusTotalProvider, WaybackMachineProvider,
-    ZoomEyeProvider,
+    self, ArquivoProvider, CdxDialect, CdxProvider, CommonCrawlProvider, GitHubProvider,
+    OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider, VirusTotalProvider,
+    WaybackMachineProvider, ZoomEyeProvider,
 };
 use crate::runner::add_provider;
 
@@ -29,11 +29,35 @@ pub type ProviderList = (Vec<Box<dyn Provider>>, Vec<String>);
 /// Providers that speak a CDX API and can therefore honour `--from/--to` and
 /// the `--archive-*` predicates. Everything else silently ignores them, so we
 /// warn when the user asked for filters no selected provider can apply.
+/// `--cdx-endpoint` providers (`cdx:<host>`) belong here too; see [`is_cdx_provider`].
 const CDX_PROVIDERS: [&str; 3] = ["wayback", "cc", "arquivo"];
 
 /// Providers whose index server is pywb-derived, and therefore cannot express
 /// a multi-value positive filter (see [`providers::ArchiveFilters`]).
 const PYWB_PROVIDERS: [&str; 2] = ["cc", "arquivo"];
+
+/// Whether `id` honours the archive-side filters.
+fn is_cdx_provider(id: &str) -> bool {
+    CDX_PROVIDERS.contains(&id) || is_cdx_endpoint_id(id)
+}
+
+/// The dialect `--cdx-dialect` named, if any. Validated by clap, so a value
+/// that fails to parse here is a programming error rather than user input.
+fn requested_cdx_dialect(args: &Args) -> Result<Option<CdxDialect>> {
+    args.cdx_dialect
+        .as_deref()
+        .map(|d| d.parse::<CdxDialect>().map_err(anyhow::Error::msg))
+        .transpose()
+}
+
+/// Whether `id` matches filter values exactly (pywb semantics). A
+/// `--cdx-endpoint` provider counts unless the user named the classic dialect:
+/// undeclared, it is probed at fetch time and defaults to pywb, so the warning
+/// errs toward telling the user their positive list may be skipped.
+fn is_pywb_provider(id: &str, requested_dialect: Option<CdxDialect>) -> bool {
+    PYWB_PROVIDERS.contains(&id)
+        || (is_cdx_endpoint_id(id) && requested_dialect != Some(CdxDialect::Classic))
+}
 
 /// Trim the ids named by a provider-selecting flag.
 ///
@@ -73,6 +97,15 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
         // the same thing a second time would be noise.
         for id in KEYED_PROVIDER_IDS {
             auto_enable_provider(&mut providers_list, keys.for_provider(id), id, false, true);
+        }
+    }
+
+    // Naming an endpoint is the whole of the intent to use it — there is no
+    // catalog id to put on --providers. Malformed URLs are reported by
+    // `validate_selection_flags`; here they simply contribute no id.
+    for id in cdx_endpoint_ids(args).unwrap_or_default() {
+        if !providers_list.contains(&id) {
+            providers_list.push(id);
         }
     }
 
@@ -139,25 +172,23 @@ fn warn_about_inert_archive_filters(
         return;
     }
 
-    if !providers_list
-        .iter()
-        .any(|p| CDX_PROVIDERS.contains(&p.as_str()))
-    {
+    if !providers_list.iter().any(|p| is_cdx_provider(p)) {
         eprintln!(
-            "Warning: --from/--to/--archive-* apply only to CDX-backed providers ({}); none are enabled, so they will have no effect.",
+            "Warning: --from/--to/--archive-* apply only to CDX-backed providers ({}, --cdx-endpoint); none are enabled, so they will have no effect.",
             CDX_PROVIDERS.join(", ")
         );
         return;
     }
 
-    // Common Crawl and Arquivo.pt match filter values exactly and AND repeated
-    // filters together, so "200 or 301" is unsatisfiable there. urx drops such
-    // a filter for those providers instead of sending a query that would come
-    // back empty and read as "the archive has nothing".
+    // Common Crawl, Arquivo.pt and pywb endpoints match filter values exactly
+    // and AND repeated filters together, so "200 or 301" is unsatisfiable
+    // there. urx drops such a filter for those providers instead of sending a
+    // query that would come back empty and read as "the archive has nothing".
+    let requested_dialect = requested_cdx_dialect(args).ok().flatten();
     let affected: Vec<&str> = providers_list
         .iter()
         .map(String::as_str)
-        .filter(|p| PYWB_PROVIDERS.contains(p))
+        .filter(|p| is_pywb_provider(p, requested_dialect))
         .collect();
     if affected.is_empty() {
         return;
@@ -182,7 +213,10 @@ fn warn_about_inert_archive_filters(
 /// checks cover every input mode. Running it twice on the provider path is
 /// harmless — it only reads `args`.
 pub fn validate_selection_flags(args: &Args) -> Result<()> {
-    validate_provider_ids(&trimmed_ids(&args.providers), "--providers")?;
+    // A malformed --cdx-endpoint URL is reported here, once, before anything
+    // else — and the well-formed ones become ids the other flags may name.
+    let dynamic_ids = cdx_endpoint_ids(args)?;
+    validate_provider_ids(&trimmed_ids(&args.providers), "--providers", &dynamic_ids)?;
     // A misspelled preset used to be dropped in silence, producing an
     // unfiltered run that looked like the filter had matched everything.
     validate_presets(&args.preset)?;
@@ -191,8 +225,12 @@ pub fn validate_selection_flags(args: &Args) -> Result<()> {
     // the batch path, to not fail at all and just match nothing.
     compile_url_regexes(&args.match_regex, "--match-regex")?;
     compile_url_regexes(&args.filter_regex, "--filter-regex")?;
-    validate_provider_ids(&trimmed_ids(&args.exclude_providers), "--exclude-providers")?;
-    validate_rate_limit_override_ids(args)
+    validate_provider_ids(
+        &trimmed_ids(&args.exclude_providers),
+        "--exclude-providers",
+        &dynamic_ids,
+    )?;
+    validate_rate_limit_override_ids(args, &dynamic_ids)
 }
 
 /// Build every provider this run selected, in catalog order.
@@ -217,7 +255,7 @@ pub fn initialize_providers(
     // Every provider is registered the same way; the macro keeps the shared
     // `args`/`network_settings`/accumulator arguments out of ten call sites.
     macro_rules! register {
-        ($id:literal, $label:expr, $builder:expr) => {
+        ($id:expr, $label:expr, $builder:expr) => {
             add_provider(
                 args,
                 network_settings,
@@ -270,6 +308,23 @@ pub fn initialize_providers(
         let filters = archive_filters.clone();
         register!("arquivo", "Arquivo.pt".to_string(), move || {
             let mut p = ArquivoProvider::new();
+            p.with_filters(filters);
+            p
+        });
+    }
+
+    // User-supplied CDX servers run right after the built-in archives. Each
+    // endpoint is its own instance (its own stats row, rate limit and dialect
+    // probe), labelled by the `cdx:<host>` id it answers to on the flags.
+    let cdx_dialect = requested_cdx_dialect(args)?;
+    for (id, endpoint) in cdx_endpoints(args)? {
+        if !enabled.contains(id.as_str()) {
+            continue;
+        }
+        let filters = archive_filters.clone();
+        let label = id.clone();
+        register!(id.as_str(), label, move || {
+            let mut p = CdxProvider::new(endpoint, cdx_dialect);
             p.with_filters(filters);
             p
         });
@@ -644,6 +699,79 @@ mod tests {
             err.contains("wayback"),
             "the allowed ids must travel with the error: {err}"
         );
+    }
+
+    #[test]
+    fn test_cdx_endpoints_join_the_selection_by_being_named() {
+        let _env_lock = env_mutex().lock().unwrap();
+        let _guard = EnvGuard::unset(&KEYED_ENV);
+
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.cdx_endpoint = vec![
+            "https://vefsafn.is/cdx".to_string(),
+            "http://localhost:8080/cdx".to_string(),
+        ];
+        assert_eq!(
+            effective_provider_ids(&args),
+            vec!["wayback", "cdx:vefsafn.is", "cdx:localhost:8080"]
+        );
+
+        // The id works on the other flags like any catalog id.
+        args.exclude_providers = vec!["cdx:localhost:8080".to_string()];
+        args.rate_limit_by = vec!["cdx:vefsafn.is=2".to_string()];
+        assert_eq!(
+            effective_provider_ids(&args),
+            vec!["wayback", "cdx:vefsafn.is"]
+        );
+
+        let (providers, names) = initialize_providers(&args, &NetworkSettings::default()).unwrap();
+        assert_eq!(providers.len(), 2);
+        assert_eq!(names, vec!["Wayback Machine", "cdx:vefsafn.is"]);
+
+        // --all-providers includes them as well.
+        args.all_providers = true;
+        assert!(effective_provider_ids(&args)
+            .iter()
+            .any(|p| p == "cdx:vefsafn.is"));
+    }
+
+    #[test]
+    fn test_a_malformed_cdx_endpoint_fails_at_startup() {
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.cdx_endpoint = vec!["vefsafn.is/cdx".to_string()];
+
+        let err = selection_error(&args);
+        assert!(err.contains("Invalid --cdx-endpoint"), "{err}");
+        assert!(err.contains("vefsafn.is/cdx"), "{err}");
+    }
+
+    #[test]
+    fn test_cdx_dialect_flag_is_parsed_for_endpoints() {
+        let args = Args::parse_from([
+            "urx",
+            "--cdx-endpoint",
+            "https://vefsafn.is/cdx",
+            "--cdx-dialect",
+            "classic",
+            "example.com",
+        ]);
+        assert_eq!(
+            requested_cdx_dialect(&args).unwrap(),
+            Some(CdxDialect::Classic)
+        );
+        // Classic endpoints take a regex OR list; only pywb ones are warned
+        // about.
+        assert!(!is_pywb_provider(
+            "cdx:vefsafn.is",
+            Some(CdxDialect::Classic)
+        ));
+        assert!(is_pywb_provider("cdx:vefsafn.is", Some(CdxDialect::Pywb)));
+        assert!(is_pywb_provider("cdx:vefsafn.is", None));
+        assert!(is_cdx_provider("cdx:vefsafn.is"));
+        assert!(is_cdx_provider("wayback"));
+        assert!(!is_cdx_provider("otx"));
     }
 
     #[test]

@@ -1,11 +1,11 @@
 use anyhow::Result;
-use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
 
+use super::cdx::{parse_pywb_rows, CdxSession, PYWB_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
-use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
-use crate::network::client::{get_with_retry, HttpClientConfig};
+use super::{Provider, RecordSet, UrlRecord};
+use crate::network::client::HttpClientConfig;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -32,51 +32,7 @@ const ROW_LIMIT: usize = 100_000;
 /// body is buffered before parsing. These four extra columns are the capture
 /// metadata the index already holds, and they cost a fraction of the fields
 /// (`offset`, `filename`, `length`, `urlkey`, …) an unrestricted row carries.
-const FIELDS: &str = "url,timestamp,mime,status,digest";
-
-/// One row of Arquivo.pt's CDX `output=json` response. Each line of the body is
-/// a standalone JSON object (CDXJ / NDJSON). Arquivo speaks the pywb dialect,
-/// so the capture metadata is named `status`/`mime`, and every value — the
-/// status code included — arrives as a JSON string.
-#[derive(Debug, Deserialize)]
-struct ArquivoRecord {
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    timestamp: Option<String>,
-    #[serde(default)]
-    mime: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    digest: Option<String>,
-}
-
-/// Parse Arquivo's NDJSON CDX body into capture records. Each non-empty line
-/// is an independent JSON object, so a single malformed line (e.g. a stray
-/// error message) is skipped rather than aborting the whole page. Rows without
-/// a `url` are dropped.
-fn parse_records(text: &str) -> Vec<UrlRecord> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                return None;
-            }
-            let row: ArquivoRecord = serde_json::from_str(line).ok()?;
-            if !row.url.starts_with("http://") && !row.url.starts_with("https://") {
-                return None;
-            }
-            let meta = CaptureMeta::capture(
-                row.timestamp.as_deref(),
-                row.mime.as_deref(),
-                row.status.as_deref(),
-                row.digest.as_deref(),
-            );
-            Some(UrlRecord::new(row.url, meta))
-        })
-        .collect()
-}
+const FIELDS: &str = PYWB_FIELDS;
 
 #[derive(Clone)]
 pub struct ArquivoProvider {
@@ -178,7 +134,7 @@ impl ArquivoProvider {
     /// `/*` matches the host and all of its paths — the same wildcard forms the
     /// Wayback provider uses, which Arquivo's CDX server honours as well.
     ///
-    /// `fl=` is restricted to [`FIELDS`], the columns [`parse_records`] reads.
+    /// `fl=` is restricted to [`FIELDS`], the columns [`parse_pywb_rows`] reads.
     /// It matters at this scale: a full-record page of a large domain is ~25 MB
     /// where the same rows narrowed to a field list are a few MB, and that
     /// whole body is buffered in memory before parsing.
@@ -223,7 +179,13 @@ impl Provider for ArquivoProvider {
         Box::pin(async move {
             let client = self.client_config().build_client()?;
             let query_base = self.query_base(domain);
-            let limiter = self.rate_limit.as_ref();
+            let session = CdxSession {
+                client: &client,
+                retries: self.retries,
+                limiter: self.rate_limit.as_ref(),
+                reporter: reporter.as_ref(),
+                endpoint: self.base_url(),
+            };
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -258,23 +220,12 @@ impl Provider for ArquivoProvider {
 
                 let url = format!("{query_base}&limit={row_limit}&page={page}");
 
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                // Race the request against the stop signal, for the same
-                // reason wayback does: one page is large enough that a deadline
-                // landing mid-request would otherwise go unnoticed until after
-                // the runner's grace window had closed and thrown the buffer
-                // away.
-                let fetched = match &reporter {
-                    Some(r) => tokio::select! {
-                        biased;
-                        _ = r.stopped() => None,
-                        res = get_with_retry(&client, &url, self.retries) => Some(res),
-                    },
-                    None => Some(get_with_retry(&client, &url, self.retries).await),
-                };
-                let Some(result) = fetched else {
+                // The session races the request against the stop signal, for
+                // the same reason wayback does: one page is large enough that a
+                // deadline landing mid-request would otherwise go unnoticed
+                // until after the runner's grace window had closed and thrown
+                // the buffer away.
+                let Some(result) = session.get(&url).await else {
                     // Stopped mid-request: keep the pages already walked.
                     truncated = true;
                     break;
@@ -304,7 +255,7 @@ impl Provider for ArquivoProvider {
                 // whether the server truncated us.
                 let rows = text.lines().filter(|l| !l.trim().is_empty()).count();
                 let before = seen.len();
-                seen.extend(parse_records(&text));
+                seen.extend(parse_pywb_rows(&text));
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", seen.len()));
@@ -497,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_records_extracts_urls_and_skips_junk() {
+    fn test_parse_rows_extracts_urls_and_skips_junk() {
         let body =
             "{\"urlkey\":\"com,example)/\",\"url\":\"http://example.com/a\",\"status\":\"200\"}\n\
                     \n\
@@ -505,7 +456,7 @@ mod tests {
                     {\"url\":\"https://example.com/b\"}\n\
                     {\"timestamp\":\"20200101\"}\n\
                     {\"url\":\"ftp://example.com/skip\"}\n";
-        let records = parse_records(body);
+        let records = parse_pywb_rows(body);
         assert_eq!(
             records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
             vec!["http://example.com/a", "https://example.com/b"]

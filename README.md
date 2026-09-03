@@ -19,6 +19,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 ## Features
 
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX, Arquivo.pt)
+* Plug in any other CDX index server — national web archives, a private pywb, OutbackCDX — with `--cdx-endpoint URL`, no code change needed
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
 * Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
@@ -153,8 +154,12 @@ Provider Options:
           Include subdomains when searching
       --cc-index <CC_INDEX>
           Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` (the default) resolves the newest via collinfo.json. [default: latest]
+      --cdx-endpoint <URL>
+          Query an additional CDX index server (any pywb, OutbackCDX, or classic Internet-Archive-style CDX API) by its full API URL, e.g. https://vefsafn.is/cdx. Repeatable. Each endpoint becomes a provider with id `cdx:<host>` and honours --subs, --from/--to and the --archive-* filters. See "Custom CDX Endpoints" below
+      --cdx-dialect <DIALECT>
+          Which CDX dialect the --cdx-endpoint servers speak: `pywb` or `classic`. Unset: urx probes each endpoint once and falls back to pywb when the answer is ambiguous
       --from <DATE>
-          Restrict every CDX-backed provider (wayback, cc, arquivo) to captures at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss). Alias: --wayback-from
+          Restrict every CDX-backed provider (wayback, cc, arquivo, --cdx-endpoint) to captures at or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss). Alias: --wayback-from
       --to <DATE>
           Restrict every CDX-backed provider to captures at or before DATE (same format as --from). Alias: --wayback-to
       --archive-status <CODE>
@@ -275,6 +280,13 @@ urx example.com --providers wayback,otx
 # Add the keyless Arquivo.pt (Portuguese web archive) provider
 urx example.com --providers wayback,cc,otx,arquivo
 
+# Query another CDX index server alongside the defaults (id: cdx:vefsafn.is)
+urx example.is --cdx-endpoint https://vefsafn.is/cdx
+
+# ...or on its own, rate-limited, with the archive-side filters it shares with wayback/cc
+urx example.is --cdx-endpoint https://vefsafn.is/cdx --providers cdx:vefsafn.is \
+  --rate-limit-by cdx:vefsafn.is=1 --from 2020 --archive-status 200
+
 # URLScan works without a key (anonymous, rate-limited); a key just raises limits
 urx example.com --providers urlscan
 
@@ -346,7 +358,7 @@ urx example.com --archive-mime application/json
 # Drop HTML to leave assets and endpoints behind
 urx example.com --archive-exclude-mime text/html
 
-# Restrict the crawl window across wayback, cc, and arquivo alike
+# Restrict the crawl window across wayback, cc, arquivo, and any --cdx-endpoint alike
 urx example.com --from 2023 --to 2024
 
 # Disable host validation
@@ -458,8 +470,8 @@ also holds far less in memory — only the dedup set of URLs already written.
 
 A CDX index records more than the URL: every capture carries a timestamp, the
 MIME type and HTTP status the archive saw, and a digest of the body. urx keeps
-all of it, so the three CDX-backed providers — `wayback`, `cc`, and `arquivo` —
-report each URL together with:
+all of it, so the CDX-backed providers — `wayback`, `cc`, `arquivo`, and any
+`--cdx-endpoint` — report each URL together with:
 
 | Field | Meaning |
 |---|---|
@@ -518,19 +530,69 @@ for the TTL) for a run that repopulates them.
 `--archive-status`, `--archive-mime`, `--from`, and `--to` are evaluated by the
 archive's CDX index rather than by urx. Two consequences are worth knowing:
 
-* They apply only to CDX-backed providers — `wayback`, `cc`, and `arquivo`.
-  Other providers ignore them; urx warns when none of the three is enabled.
-* The archives do not share one filter dialect. Wayback Machine treats values as
-  **regular expressions**, so `--archive-status "30."` matches any 3xx. Common
-  Crawl and Arquivo.pt match **exactly**, and their index ANDs repeated filters
-  together — so a multi-value positive list like `--archive-status 200,301` is
-  unsatisfiable there. urx skips that filter for those two providers (with a
+* They apply only to CDX-backed providers — `wayback`, `cc`, `arquivo`, and
+  any `--cdx-endpoint`. Other providers ignore them; urx warns when none is
+  enabled.
+* The archives do not share one filter dialect. Wayback Machine (and any
+  `--cdx-dialect classic` endpoint) treats values as **regular expressions**, so
+  `--archive-status "30."` matches any 3xx. Common Crawl, Arquivo.pt and pywb
+  endpoints match **exactly**, and their index ANDs repeated filters together —
+  so a multi-value positive list like `--archive-status 200,301` is
+  unsatisfiable there. urx skips that filter for those providers (with a
   warning) instead of sending a query that would come back empty. Multi-value
   *exclusions* mean "not this and not that" and work everywhere.
 
 Use `--archive-status` when you want what the archive recorded at crawl time and
 `--check-status` / `--include-status` when you want the target's status *now*;
 the latter re-requests every URL.
+
+### Custom CDX Endpoints
+
+Every web archive built on pywb, OutbackCDX, or the Internet Archive's CDX
+server exposes the same query API. Rather than hardcoding a provider per
+archive, `--cdx-endpoint URL` turns any such server into a provider on the
+spot:
+
+```bash
+# The Icelandic web archive, alongside the default providers
+urx example.is --cdx-endpoint https://vefsafn.is/cdx
+
+# Several at once; each gets its own progress line, stats row and rate limit
+urx example.com --cdx-endpoint https://vefsafn.is/cdx --cdx-endpoint http://localhost:8080/cdx \
+  --rate-limit-by cdx:vefsafn.is=1
+```
+
+* The provider id is `cdx:<host>` (`cdx:vefsafn.is`), which is what
+  `--exclude-providers`, `--rate-limit-by`, `--stats` and `--show-sources` use.
+  Naming an endpoint enables it; no `--providers` entry is needed, and
+  `--providers cdx:vefsafn.is` runs it alone. `--list-providers` shows the
+  endpoints named on the same command line with the ids they will run as.
+* Everything the built-in CDX providers honour applies here too: `--subs`,
+  `--from`/`--to`, the `--archive-*` filters, pagination, `--rate-limit`, and
+  the capture metadata described above.
+* `--cdx-dialect classic|pywb` names the server's dialect (field names, filter
+  semantics, row format and pagination scheme all follow from it — see
+  "Archive-side Filtering"). Left unset, urx probes the endpoint once per run
+  and falls back to `pywb`, the more common dialect; set it explicitly when the
+  probe cannot tell (an empty answer for an unknown domain, for instance).
+* Can also be set in the config file (`cdx_endpoint = [...]`, `cdx_dialect`).
+
+**Verified endpoints.** As of this writing, the only public endpoint confirmed
+to work end to end is `https://vefsafn.is/cdx` (Landsbókasafn's Icelandic web
+archive, pywb dialect). Two things to know about it: it ignores `limit`, `page`
+and `showNumPages` and returns the complete result set for every query, which
+urx handles; and after a handful of requests it may start answering with an
+Anubis-style bot-protection page ("Session Verification"). urx detects an HTML
+answer in place of CDX rows and reports it as a provider error naming the
+endpoint — it is never counted as "no URLs". If you hit it, slow down with
+`--rate-limit-by cdx:vefsafn.is=1` or retry later.
+
+**Known not to work.** The UK Web Archive (`webarchive.org.uk`), the Library of
+Congress web archive (`webarchive.loc.gov`), Bibliotheca Alexandrina, and the
+National Library of Australia (`web.archive.org.au`) all sit behind bot
+protection or redirects that block their CDX APIs from a command-line client.
+urx does not attempt to work around that, so pointing `--cdx-endpoint` at them
+yields the HTML-answer error above.
 
 ### Caching and Incremental Scanning
 
