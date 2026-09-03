@@ -315,6 +315,7 @@ mod tests {
             urlscan_api_key: Some("provider-urlscan".to_string()),
             zoomeye_api_key: Some("provider-zoomeye".to_string()),
             github_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
         provider_keys.apply_to_args(
@@ -323,6 +324,7 @@ mod tests {
             direct.urlscan,
             direct.zoomeye,
             direct.github,
+            false,
         );
 
         assert_eq!(args.vt_api_key, vec!["env-vt-1", "env-vt-2"]);

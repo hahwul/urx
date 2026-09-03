@@ -35,6 +35,9 @@ pub struct Config {
     #[serde(default)]
     pub cache: CacheConfig,
 
+    #[serde(default)]
+    pub notify: NotifyConfig,
+
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
@@ -87,6 +90,10 @@ pub struct ProviderKeysConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    /// Webhook URL(s) for `--notify`, comma-separated. Lives here as well as
+    /// in `[notify].url` because the URL *is* the credential, and this file is
+    /// the one meant to stay out of source control.
+    pub notify_url: Option<String>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -213,12 +220,22 @@ impl ProviderKeysConfig {
         cli_supplied_urlscan: bool,
         cli_supplied_zoomeye: bool,
         cli_supplied_github: bool,
+        cli_supplied_notify: bool,
     ) {
         warn_about_unknown_keys(
             &self.unknown_keys(),
             "the provider-config file",
             args.silent,
         );
+
+        if !cli_supplied_notify {
+            if let Some(urls) = &self.notify_url {
+                let urls = split_csv(urls);
+                if !urls.is_empty() {
+                    args.notify = urls;
+                }
+            }
+        }
 
         if !cli_supplied_vt {
             if let Some(keys) = &self.vt_api_key {
@@ -314,6 +331,38 @@ fn normalize_output_format(format: &str) -> Option<String> {
         "csv" => Some("csv".to_string()),
         _ => None,
     }
+}
+
+/// A single string or a list of them, so `url = "..."` and `url = ["..."]`
+/// both read naturally.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s],
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct NotifyConfig {
+    /// Webhook URL or list of URLs (`--notify`).
+    pub url: Option<OneOrMany>,
+    /// `always`, `new`, or `never` (`--notify-on`).
+    pub on: Option<String>,
+    /// `slack`, `discord`, or `json` (`--notify-format`).
+    pub format: Option<String>,
+
+    /// Anything in this section urx does not know about. See [`UnknownKeys`].
+    #[serde(flatten)]
+    pub unknown: UnknownKeys,
 }
 
 fn normalize_network_scope(scope: &str) -> Option<String> {
@@ -420,6 +469,7 @@ impl Config {
             ("network", &self.network.unknown),
             ("testing", &self.testing.unknown),
             ("cache", &self.cache.unknown),
+            ("notify", &self.notify.unknown),
         ] {
             out.extend(
                 unknown
@@ -446,6 +496,7 @@ impl Config {
         self.apply_network_config(args, provided);
         self.apply_testing_config(args);
         self.apply_cache_config(args, provided);
+        self.apply_notify_config(args, provided);
     }
 
     fn apply_output_config(&self, args: &mut Args, provided: &CliProvided) {
@@ -790,6 +841,59 @@ impl Config {
             args.no_cache = true;
         }
     }
+
+    fn apply_notify_config(&self, args: &mut Args, provided: &CliProvided) {
+        // The URL list is filled from the CLI *or* URX_NOTIFY_URL before the
+        // config layers run, and the two are indistinguishable afterwards —
+        // so "still empty" is the test, not `provided.has`.
+        if args.notify.is_empty() {
+            if let Some(urls) = &self.notify.url {
+                let urls: Vec<String> = urls
+                    .clone()
+                    .into_vec()
+                    .into_iter()
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect();
+                if !urls.is_empty() {
+                    args.notify = urls;
+                }
+            }
+        }
+
+        if !provided.has("notify_on") {
+            if let Some(on) = &self.notify.on {
+                match <crate::notify::NotifyOn as clap::ValueEnum>::from_str(on.trim(), true) {
+                    Ok(value) => args.notify_on = value,
+                    Err(_) => {
+                        if !args.silent {
+                            eprintln!(
+                                "Ignoring [notify].on={on:?} in config: expected always, new, or never"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if !provided.has("notify_format") {
+            if let Some(format) = &self.notify.format {
+                match <crate::notify::NotifyFormat as clap::ValueEnum>::from_str(
+                    format.trim(),
+                    true,
+                ) {
+                    Ok(value) => args.notify_format = value,
+                    Err(_) => {
+                        if !args.silent {
+                            eprintln!(
+                                "Ignoring [notify].format={format:?} in config: expected slack, discord, or json"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg_attr(windows, allow(dead_code))]
@@ -821,6 +925,7 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::parse_args_from;
     use clap::Parser;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -1055,13 +1160,14 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: Some("from-provider-config".to_string()),
+            notify_url: None,
             unknown: Default::default(),
         };
-        keys.apply_to_args(&mut args, false, false, false, false);
+        keys.apply_to_args(&mut args, false, false, false, false, false);
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
 
         // ...but a CLI-supplied key still wins.
-        keys.apply_to_args(&mut args, false, false, false, true);
+        keys.apply_to_args(&mut args, false, false, false, true, false);
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
     }
 
@@ -1098,6 +1204,7 @@ mod tests {
             urlscan_api_key: Some("us-from-file".to_string()),
             zoomeye_api_key: None,
             github_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
@@ -1105,7 +1212,7 @@ mod tests {
         // overwrite that.
         args.vt_api_key = vec!["cli-key".to_string()];
 
-        cfg.apply_to_args(&mut args, true, false, false, false);
+        cfg.apply_to_args(&mut args, true, false, false, false, false);
 
         assert_eq!(args.vt_api_key, vec!["cli-key".to_string()]);
         // urlscan was empty and not CLI-supplied -> file value applies and
@@ -1122,10 +1229,11 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: None,
+            notify_url: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        cfg.apply_to_args(&mut args, false, false, false, false);
+        cfg.apply_to_args(&mut args, false, false, false, false, false);
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
     }
 
@@ -1388,5 +1496,141 @@ mod tests {
 
         assert_eq!(args.from.as_deref(), Some("2015"));
         assert_eq!(args.archive_status, vec!["404"]);
+    }
+
+    #[test]
+    fn test_notify_section_loads_and_applies() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let content = r#"
+            [notify]
+            url = ["https://hooks.example/a", " https://hooks.example/b "]
+            on = "Always"
+            format = "discord"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+        assert!(
+            config.unknown_keys().is_empty(),
+            "{:?}",
+            config.unknown_keys()
+        );
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/a", "https://hooks.example/b"]
+        );
+        assert_eq!(args.notify_on, NotifyOn::Always);
+        assert_eq!(args.notify_format, NotifyFormat::Discord);
+    }
+
+    #[test]
+    fn test_notify_url_accepts_a_single_string() {
+        let content = r#"
+            [notify]
+            url = "https://hooks.example/one"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.notify, vec!["https://hooks.example/one"]);
+    }
+
+    #[test]
+    fn test_notify_cli_beats_config() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let content = r#"
+            [notify]
+            url = "https://hooks.example/from-config"
+            on = "always"
+            format = "slack"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+
+        // Explicit flags — including ones that spell the clap default back —
+        // survive the config layer.
+        let (mut args, provided) = parse_args_from([
+            "urx",
+            "--notify",
+            "https://hooks.example/from-cli",
+            "--notify-on",
+            "new",
+            "--notify-format",
+            "json",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &provided);
+
+        assert_eq!(args.notify, vec!["https://hooks.example/from-cli"]);
+        assert_eq!(args.notify_on, NotifyOn::New);
+        assert_eq!(args.notify_format, NotifyFormat::Json);
+    }
+
+    #[test]
+    fn test_notify_invalid_values_are_ignored_not_fatal() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let mut config = Config::default();
+        config.notify.on = Some("sometimes".to_string());
+        config.notify.format = Some("teams".to_string());
+
+        let mut args = Args::parse_from(["urx", "--silent", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+
+        assert_eq!(args.notify_on, NotifyOn::New);
+        assert_eq!(args.notify_format, NotifyFormat::Json);
+    }
+
+    #[test]
+    fn test_notify_unknown_key_is_reported() {
+        let content = r#"
+            [notify]
+            urls = "https://hooks.example/typo"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+        assert_eq!(config.unknown_keys(), vec!["notify.urls"]);
+    }
+
+    #[test]
+    fn test_provider_config_notify_url_beats_main_config_but_not_cli() {
+        let mut main = Config::default();
+        main.notify.url = Some(OneOrMany::One("https://hooks.example/main".to_string()));
+
+        let keys = ProviderKeysConfig {
+            vt_api_key: None,
+            urlscan_api_key: None,
+            zoomeye_api_key: None,
+            github_api_key: None,
+            notify_url: Some("https://hooks.example/p1, https://hooks.example/p2".to_string()),
+            unknown: Default::default(),
+        };
+
+        // Nothing on the CLI: provider-config overrides the main config.
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        main.apply_to_args(&mut args, &CliProvided::default());
+        assert_eq!(args.notify, vec!["https://hooks.example/main"]);
+        keys.apply_to_args(&mut args, false, false, false, false, false);
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/p1", "https://hooks.example/p2"]
+        );
+
+        // CLI (or env) supplied: provider-config yields.
+        let mut args = Args::parse_from([
+            "urx",
+            "--notify",
+            "https://hooks.example/cli",
+            "example.com",
+        ]);
+        keys.apply_to_args(&mut args, false, false, false, false, true);
+        assert_eq!(args.notify, vec!["https://hooks.example/cli"]);
     }
 }

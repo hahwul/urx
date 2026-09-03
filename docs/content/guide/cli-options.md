@@ -107,7 +107,99 @@ Cache Options:
   --redis-url <REDIS_URL>    Redis connection URL
   --cache-ttl <CACHE_TTL>    Cache TTL in seconds [default: 86400]
   --no-cache                 Disable caching entirely
+
+Notification Options:
+  --notify <URL>                   POST a run summary to this webhook when the run ends (repeatable; also URX_NOTIFY_URL, provider-config `notify_url`, or `[notify].url`)
+  --notify-on <NOTIFY_ON>          When to send: new (only if URLs were emitted), always, or never [default: new]
+  --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
+
+## Webhook Notifications
+
+`--notify <URL>` POSTs a summary of the run to a webhook once the run ends.
+Combined with `--incremental` it turns urx into a monitor: run it from cron
+and the webhook fires only when the archives have something new.
+
+```bash
+# Slack, only when new URLs turned up (the default --notify-on new)
+urx target.com --incremental --silent \
+  --notify https://hooks.slack.com/services/T000/B000/XXXX --notify-format slack
+
+# Discord, every run
+urx target.com --incremental --notify "$DISCORD_HOOK" --notify-format discord --notify-on always
+
+# Fan out to several receivers with urx's JSON schema
+urx target.com --incremental --notify https://n8n.example/hook --notify https://ntfy.example/urx
+```
+
+### When it sends
+
+| `--notify-on` | Behaviour |
+|---------------|-----------|
+| `new` (default) | Only when the run emitted at least one URL. Under `--incremental` that means "at least one URL the previous run had not seen". |
+| `always` | After every run, including one with zero URLs. |
+| `never` | Keeps the configuration in place but sends nothing. |
+
+### Payload formats
+
+**`json`** (default) — urx's own schema:
+
+```json
+{
+  "tool": "urx",
+  "version": "0.10.0",
+  "domains": ["example.com"],
+  "incremental": true,
+  "url_count": 12,
+  "new_url_count": 12,
+  "elapsed_ms": 3210,
+  "providers": [
+    {"name": "Wayback Machine", "urls": 1200, "errors": 0, "partial": 0, "elapsed_ms": 2500, "aborted": false}
+  ],
+  "sample": ["https://example.com/api/v2/users", "..."],
+  "sample_truncated": false
+}
+```
+
+`providers` carries the same numbers `--stats` prints. `sample` holds at most
+20 emitted URLs, in output order; `sample_truncated` is `true` when the run
+found more. Under `--stream` the URLs were written as they arrived, so the
+payload carries the count and an empty sample.
+
+**`slack`** sends `{"text": "..."}`, **`discord`** sends `{"content": "..."}`.
+Both carry a short message: a header line with the count, the targets and the
+elapsed time, one line of provider totals, then the URL sample. Discord caps a
+message at 2000 characters and Slack messages become unreadable past 4000, so
+the text is cut at that limit on a line boundary and ends with
+`[truncated: N lines cut to fit the message limit]`. A URL is never sliced in
+the middle.
+
+### Failure handling
+
+Delivery never changes the exit code. By the time the webhook is called the
+URLs are already on stdout or in `--output`, so a webhook that is down, slow,
+or answering 4xx/5xx produces a warning on stderr and the run still exits 0.
+`--verbose` prints the HTTP status of each delivery. `--silent` hides those
+lines but still sends. Each URL is tried exactly once — chat webhooks are not
+idempotent, and a retry after a slow-but-delivered request posts twice.
+
+### The URL is a secret
+
+A Slack or Discord webhook URL *is* the credential. urx prints only its scheme
+and host (`https://hooks.slack.com`) anywhere it mentions the destination —
+verbose output, warnings, error text — and the payload never contains it. To
+keep it out of a config you check in, use the `URX_NOTIFY_URL` environment
+variable or `notify_url` in the provider-config file; `[notify].url` in the
+main config works as well. Precedence is CLI/env > provider-config > main
+config, the same order the API keys follow.
+
+### Network settings
+
+The request honours `--proxy`, `--proxy-auth`, `--timeout` and `--insecure`.
+`--network-scope` is not consulted: that flag partitions the traffic urx sends
+at the archives (providers) and at the target (testers), and the webhook is
+neither — it is your own endpoint, reached with whatever egress settings the
+run was given.
 
 ## Archive Capture Metadata
 

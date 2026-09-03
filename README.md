@@ -234,6 +234,11 @@ Testing Options:
           Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: ----es]
       --extract-links
           Extract additional links from collected URLs (requires HTTP requests)
+
+Notification Options:
+      --notify <URL>                   POST a run summary to this webhook when the run ends (repeatable; also URX_NOTIFY_URL, provider-config `notify_url`, or `[notify].url`)
+      --notify-on <NOTIFY_ON>          When to send: new (only if URLs were emitted), always, or never [default: new]
+      --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
 
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
@@ -562,7 +567,10 @@ urx -c example/config.toml example.com
 #### Caching Use Cases
 
 ```bash
-# Daily monitoring - only alert on new URLs
+# Daily monitoring - only alert on new URLs (built-in webhook, see below)
+urx target.com --incremental --silent --notify https://hooks.slack.com/services/... --notify-format slack
+
+# ...or hand the new URLs to an external notifier
 urx target.com --incremental --silent | notify-tool
 
 # Efficient domain lists processing
@@ -574,6 +582,52 @@ urx example.com --cache-type redis --redis-url redis://shared-cache:6379
 # Fast re-scans during development
 urx test-domain.com --cache-ttl 300  # 5-minute cache for rapid iterations
 ```
+
+### Webhook Notifications
+
+`--notify <URL>` POSTs a summary of the run to a webhook when the run ends,
+which turns `--incremental` into a monitor: put it in cron and the webhook
+fires only when something new shows up.
+
+```bash
+# Slack incoming webhook, only when the run finds new URLs (the default)
+urx target.com --incremental --silent \
+  --notify https://hooks.slack.com/services/T000/B000/XXXX --notify-format slack
+
+# Discord, and send even when nothing is new
+urx target.com --incremental --notify "$DISCORD_HOOK" --notify-format discord --notify-on always
+
+# Several receivers, urx's own JSON schema (the default format)
+urx target.com --incremental --notify https://n8n.example/hook --notify https://ntfy.example/urx
+
+# Keep the webhook out of the shell history
+export URX_NOTIFY_URL=https://hooks.slack.com/services/...
+urx target.com --incremental --notify-format slack
+```
+
+- `--notify-on` is `new` by default: nothing is sent when the run emits zero
+  URLs, so a quiet cron run stays quiet. `always` sends regardless; `never`
+  keeps the configuration but disables sending.
+- `--notify-format json` (default) sends urx's schema: `domains`,
+  `incremental`, `url_count`, `new_url_count`, `elapsed_ms`, a per-provider
+  `providers` list (the same numbers `--stats` prints), and a `sample` of up to
+  20 emitted URLs with `sample_truncated` set when more were found.
+  `slack` sends `{"text": ...}` and `discord` sends `{"content": ...}` with a
+  short human-readable message; messages longer than the service allows are
+  cut on a line boundary and end with `[truncated: N lines cut ...]`.
+- Delivery never changes the exit code. The URLs are already on stdout or in
+  `--output` by the time the webhook is called, so a dead webhook is a warning
+  on stderr and the run still exits 0. `--verbose` shows the response status.
+- The webhook URL is a credential. urx never prints more than its scheme and
+  host — not in `--verbose`, not in warnings, not in `--stats`. To keep it out
+  of a config that is checked in, put it in `URX_NOTIFY_URL` or as
+  `notify_url` in the provider-config file; `[notify].url` in the main config
+  works too. Precedence is CLI/env > provider-config > main config.
+- The request honours `--proxy`, `--proxy-auth`, `--timeout` and `--insecure`.
+  `--network-scope` does not apply: it partitions traffic aimed at the target
+  and the archives, and the webhook is your own endpoint.
+- `--silent` still sends (that is the main use case); it only hides the
+  diagnostics.
 
 ## Integration with Other Tools
 

@@ -161,6 +161,9 @@ pub fn build_test_args() -> Args {
         github_api_key: vec![],
         completions: None,
         manpage: false,
+        notify: vec![],
+        notify_on: crate::notify::NotifyOn::New,
+        notify_format: crate::notify::NotifyFormat::Json,
     }
 }
 
