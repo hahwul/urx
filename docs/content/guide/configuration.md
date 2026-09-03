@@ -96,6 +96,14 @@ cache_path = "~/.urx/cache.db"
 redis_url = "redis://localhost:6379"
 cache_ttl = 86400                      # 24 hours
 no_cache = false
+
+# ─── Notify ──────────────────────────────────────────────
+[notify]
+# url = "https://hooks.slack.com/services/..."   # or a list; the URL is a secret —
+#                                                 # prefer URX_NOTIFY_URL or the
+#                                                 # provider-config file's notify_url
+on = "new"                             # new, always, or never
+format = "json"                        # json, slack, or discord
 ```
 
 ### Minimal Config Examples

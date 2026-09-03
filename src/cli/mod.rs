@@ -437,6 +437,29 @@ pub struct Args {
     #[clap(long)]
     pub no_cache: bool,
 
+    /// POST a run summary to this webhook URL when the run ends (repeatable).
+    /// Also read from URX_NOTIFY_URL (comma-separated), the provider-config
+    /// file (`notify_url`) and `[notify].url` in the config file. The URL is
+    /// treated as a secret: only its host is ever printed.
+    #[clap(help_heading = "Notification Options")]
+    #[clap(long, value_name = "URL")]
+    pub notify: Vec<String>,
+
+    /// When to send: `new` (only if the run produced URLs — pairs with
+    /// --incremental so a quiet cron run stays quiet), `always` (even with
+    /// zero URLs), or `never` (keep the configuration, send nothing).
+    #[clap(help_heading = "Notification Options")]
+    #[clap(long, value_enum, default_value_t = crate::notify::NotifyOn::New)]
+    pub notify_on: crate::notify::NotifyOn,
+
+    /// Payload shape: `json` (urx's summary: domains, counts, elapsed time,
+    /// per-provider stats, a URL sample), `slack` (`{"text": ...}`), or
+    /// `discord` (`{"content": ...}`). Chat messages are cut to the
+    /// service's length limit and say so.
+    #[clap(help_heading = "Notification Options")]
+    #[clap(long, value_enum, default_value_t = crate::notify::NotifyFormat::Json)]
+    pub notify_format: crate::notify::NotifyFormat,
+
     /// Print a shell completion script to stdout and exit. Needs no DOMAINS,
     /// so `urx --completions zsh > ~/.zfunc/_urx` works on its own.
     #[clap(long, value_name = "SHELL", value_enum)]
@@ -1160,5 +1183,38 @@ mod tests {
         }
 
         assert_eq!(domains, vec!["example.com", "example.org"]);
+    }
+
+    #[test]
+    fn test_notify_flags_parse_with_defaults() {
+        use crate::notify::{NotifyFormat, NotifyOn};
+
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.notify.is_empty());
+        assert_eq!(args.notify_on, NotifyOn::New);
+        assert_eq!(args.notify_format, NotifyFormat::Json);
+
+        // Repeatable, so one run can fan out to several receivers.
+        let args = Args::parse_from([
+            "urx",
+            "--notify",
+            "https://hooks.example/a",
+            "--notify",
+            "https://hooks.example/b",
+            "--notify-on",
+            "always",
+            "--notify-format",
+            "slack",
+            "example.com",
+        ]);
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/a", "https://hooks.example/b"]
+        );
+        assert_eq!(args.notify_on, NotifyOn::Always);
+        assert_eq!(args.notify_format, NotifyFormat::Slack);
+
+        assert!(Args::try_parse_from(["urx", "--notify-on", "sometimes", "x.com"]).is_err());
+        assert!(Args::try_parse_from(["urx", "--notify-format", "teams", "x.com"]).is_err());
     }
 }

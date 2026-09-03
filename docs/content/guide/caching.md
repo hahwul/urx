@@ -97,6 +97,10 @@ redis-cli FLUSHDB
 ### Combined Examples
 
 ```bash
+# Daily monitoring with incremental updates, alerting a webhook only when
+# something new turned up (see --notify in CLI Options)
+urx example.com --incremental --silent --notify "$URX_HOOK" --notify-format slack
+
 # Daily monitoring with incremental updates
 urx target.com --incremental --silent | notify-tool
 

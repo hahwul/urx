@@ -79,3 +79,13 @@ cache_path = "~/.urx/cache.db"  # Path for SQLite cache database
 redis_url = "redis://localhost:6379"  # Redis connection URL (for redis cache_type)
 cache_ttl = 86400              # Cache time-to-live in seconds (24 hours)
 no_cache = false               # Disable caching entirely
+
+# Notification options (--notify)
+[notify]
+# The webhook URL is a credential: prefer the URX_NOTIFY_URL environment
+# variable or `notify_url` in the provider-config file so it stays out of a
+# config that gets checked in. A single string or a list both work.
+# url = "https://hooks.slack.com/services/T000/B000/XXXX"
+# url = ["https://hooks.slack.com/services/...", "https://n8n.example/hook"]
+on = "new"                     # new (only when URLs were emitted), always, or never
+format = "json"                # json (urx summary), slack ({"text"}), or discord ({"content"})

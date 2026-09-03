@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod filters;
 mod network;
+mod notify;
 mod output;
 mod progress;
 mod providers;
@@ -43,6 +44,7 @@ fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
     // Must run before either config layer: afterwards there is no way to tell a
     // key the user supplied from one a config file filled in.
     let direct = seed_api_keys_from_env(args);
+    let direct_notify = seed_notify_urls_from_env(args);
 
     Config::load(args)?.apply_to_args(args, provided);
 
@@ -54,9 +56,28 @@ fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
         direct.urlscan,
         direct.zoomeye,
         direct.github,
+        direct_notify,
     );
 
     Ok(())
+}
+
+/// Fill `--notify` from `URX_NOTIFY_URL` when the flag was not given, so the
+/// env var sits at the same precedence level as the flag — above both config
+/// files. Returns whether the URL list came from the CLI or the environment,
+/// which the provider-config layer needs in order to yield to it.
+fn seed_notify_urls_from_env(args: &mut Args) -> bool {
+    if args.notify.is_empty() {
+        if let Ok(raw) = std::env::var("URX_NOTIFY_URL") {
+            args.notify = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    !args.notify.is_empty()
 }
 
 /// Fetch URLs, either from `--files` or by running the selected providers.
@@ -70,7 +91,7 @@ async fn collect_urls(
     progress_manager: &ProgressManager,
     stream_sink: Option<&Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
-) -> Result<ProviderRunResult> {
+) -> Result<(ProviderRunResult, Vec<String>)> {
     // Ahead of the `--files` short-circuit below, which never reaches
     // `initialize_providers`. `--preset` is applied to file input just like
     // provider output, so a misspelled preset used to be dropped in silence
@@ -94,24 +115,30 @@ async fn collect_urls(
                 .or_default()
                 .absorb("file", &providers::CaptureMeta::default());
         }
-        return Ok(ProviderRunResult {
-            urls: url_map,
-            // `--stats` must not fall silent just because the URLs came from a
-            // file rather than a provider: an explicit flag printing nothing at
-            // all reads as "the run collected nothing". Labelled "file", the
-            // same source name `--show-sources` gives these URLs. `error_count`
-            // is honestly 0 — `read_urls_from_files` propagates the first
-            // failure, so reaching here means every file was read.
-            stats: vec![ProviderStats {
-                name: "file".to_string(),
-                url_count,
-                error_count: 0,
-                partial_count: 0,
-                elapsed,
-                // Reading local files has no deadline to be cut off by.
-                aborted: false,
-            }],
-        });
+        // No domains: the URLs came from files, and the notification names
+        // "file input" instead of a target list.
+        let domains = Vec::new();
+        return Ok((
+            ProviderRunResult {
+                urls: url_map,
+                // `--stats` must not fall silent just because the URLs came from a
+                // file rather than a provider: an explicit flag printing nothing at
+                // all reads as "the run collected nothing". Labelled "file", the
+                // same source name `--show-sources` gives these URLs. `error_count`
+                // is honestly 0 — `read_urls_from_files` propagates the first
+                // failure, so reaching here means every file was read.
+                stats: vec![ProviderStats {
+                    name: "file".to_string(),
+                    url_count,
+                    error_count: 0,
+                    partial_count: 0,
+                    elapsed,
+                    // Reading local files has no deadline to be cut off by.
+                    aborted: false,
+                }],
+            },
+            domains,
+        ));
     }
 
     let domains = collect_domains(args)?;
@@ -134,27 +161,29 @@ async fn collect_urls(
     // Streaming writes as it goes and bypasses the cache entirely (the cache
     // both reads whole domains and writes whole result sets).
     if let Some(sink) = stream_sink {
-        return Ok(process_domains(
-            domains,
+        let result = process_domains(
+            domains.clone(),
             args,
             progress_manager,
             &providers,
             &provider_names,
             Some(Arc::clone(sink)),
         )
-        .await);
+        .await;
+        return Ok((result, domains));
     }
 
     let cache_manager = create_cache_manager(args).await?;
-    process_domains_with_cache(
-        domains,
+    let result = process_domains_with_cache(
+        domains.clone(),
         args,
         progress_manager,
         &providers,
         &provider_names,
         cache_manager.as_ref(),
     )
-    .await
+    .await?;
+    Ok((result, domains))
 }
 
 /// Re-request the surviving URLs when `--check-status` or `--extract-links`
@@ -259,6 +288,8 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Wall-clock for the whole run, reported in the notification.
+    let started = std::time::Instant::now();
     let (mut args, provided) = cli::parse_args();
 
     // Short-circuits: emit the requested artifact and exit without touching the
@@ -288,7 +319,7 @@ async fn main() -> Result<()> {
     let stream_sink = build_stream_sink(&args)?;
 
     let mut header = None;
-    let run_result = collect_urls(
+    let (run_result, domains) = collect_urls(
         &args,
         &network_settings,
         &progress_manager,
@@ -306,6 +337,17 @@ async fn main() -> Result<()> {
         if args.stats && !args.silent {
             print_provider_stats(&run_result.stats);
         }
+        // The URLs were written as they arrived and not retained, so the
+        // notification carries the count and no sample.
+        let summary = notify::RunSummary::from_counts(
+            &args,
+            domains,
+            sink.emitted(),
+            &[],
+            &run_result.stats,
+            started.elapsed(),
+        );
+        notify::send_notifications(&args, &network_settings, &summary).await;
         return Ok(());
     }
 
@@ -339,6 +381,18 @@ async fn main() -> Result<()> {
     if args.stats && !args.silent {
         print_provider_stats(&run_result.stats);
     }
+
+    // Last, and never fatal: the result is already on stdout / in --output,
+    // so a dead webhook is a warning, not a failed run.
+    let emitted: Vec<String> = final_urls.iter().map(|u| u.url.clone()).collect();
+    let summary = notify::RunSummary::new(
+        &args,
+        domains,
+        &emitted,
+        &run_result.stats,
+        started.elapsed(),
+    );
+    notify::send_notifications(&args, &network_settings, &summary).await;
 
     Ok(())
 }
@@ -460,6 +514,7 @@ mod tests {
             &mut None,
         )
         .await
+        .map(|(result, _domains)| result)
     }
 
     /// Regression: `--files` short-circuits before `initialize_providers`, so
@@ -524,5 +579,34 @@ mod tests {
             .urls
             .values()
             .all(|entry| entry.sources.contains("file")));
+    }
+
+    /// `URX_NOTIFY_URL` sits at the CLI's precedence level: it fills an empty
+    /// `--notify`, never replaces a given one, and is split on commas like
+    /// the API-key variables.
+    #[test]
+    fn notify_url_env_var_fills_only_an_empty_flag() {
+        use crate::test_support::{env_mutex, EnvGuard};
+        let _lock = env_mutex().lock().unwrap();
+        let _guard = EnvGuard::set(&[(
+            "URX_NOTIFY_URL",
+            "https://hooks.example/env1, https://hooks.example/env2,",
+        )]);
+
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        assert!(seed_notify_urls_from_env(&mut args));
+        assert_eq!(
+            args.notify,
+            vec!["https://hooks.example/env1", "https://hooks.example/env2"]
+        );
+
+        let mut args = Args::parse_from(["urx", "--notify", "https://hooks.example/cli", "x.com"]);
+        assert!(seed_notify_urls_from_env(&mut args));
+        assert_eq!(args.notify, vec!["https://hooks.example/cli"]);
+
+        let _unset = EnvGuard::unset(&["URX_NOTIFY_URL"]);
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        assert!(!seed_notify_urls_from_env(&mut args));
+        assert!(args.notify.is_empty());
     }
 }
