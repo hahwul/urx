@@ -30,7 +30,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Output results to the console or a file, or stream via stdin for pipeline integration
 * URL Testing:
   * Filter and validate URLs based on HTTP status codes and patterns.
-  * Extract additional links from collected URLs
+  * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
 * Caching and Incremental Scanning:
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
@@ -228,6 +228,15 @@ Testing Options:
           Extract additional links from collected URLs (requires HTTP requests)
 ```
 
+`--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
+`<script src>`, `<link href>`, `<form action>`, `<iframe src>`, `<img src>`,
+`<source src>`, `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">`
+targets. Relative URLs resolve against the page (honouring `<base href>`),
+duplicates are collapsed, and discovered links pass through the same filters
+and host validation as the rest of the run. See
+[docs/content/guide/cli-options.md](docs/content/guide/cli-options.md) for the
+full table.
+
 ### Examples
 
 ```bash
@@ -302,7 +311,13 @@ urx --files urls.txt
 urx --files urls.txt --patterns api,admin -f json
 
 # Extract additional links from collected URLs
+# (anchors, scripts, stylesheets, form actions, iframes, images, media
+#  sources, objects, embeds, and meta-refresh targets)
 urx example.com --extract-links
+
+# Discovered links go through the same filters as everything else, so this
+# keeps only the JavaScript the pages reference
+urx example.com --extract-links -e js
 
 # Network configuration
 urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insecure

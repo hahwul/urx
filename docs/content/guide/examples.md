@@ -187,6 +187,19 @@ urx example.com --check-status
 urx example.com --extract-links
 ```
 
+`--extract-links` re-fetches every surviving URL and mines the HTML for more.
+It reads every URL-bearing tag, not just anchors: `<a href>`, `<script src>`,
+`<link href>`, `<form action>`, `<iframe src>`, `<img src>`, `<source src>`,
+`<object data>`, `<embed src>`, and `<meta http-equiv="refresh">` targets.
+Relative URLs resolve against the page (honouring `<base href>`), duplicates
+are collapsed, and the discovered links go through exactly the same filters,
+host validation, and output transforms as the rest of the run:
+
+```bash
+# Only the JavaScript the pages reference
+urx example.com --extract-links -e js
+```
+
 ### Status Filtering
 ```bash
 # Include only successful responses

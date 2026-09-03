@@ -94,7 +94,7 @@ Testing Options:
   --check-status                     Check HTTP status code of collected URLs
   --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x)
   --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x)
-  --extract-links                    Extract additional links from collected URLs
+  --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
 
 Cache Options:
   --incremental              Only return new URLs compared to previous scans
@@ -173,3 +173,43 @@ preset. Singular spellings (e.g. `no-image`, `only-font`) are accepted too.
 | `only-videos` | Only video files |
 | `only-audio` | Only audio files |
 | `only-images` | Only image files |
+
+## Link Extraction
+
+`--extract-links` re-fetches every URL that survived filtering and mines the
+response HTML for more. It reads every URL-bearing tag, not only anchors:
+
+| Tag | Attribute | Typically finds |
+|-----|-----------|-----------------|
+| `<a>` | `href` | Navigation |
+| `<script>` | `src` | JavaScript bundles |
+| `<link>` | `href` | Stylesheets, icons, preloads, canonical/alternate URLs |
+| `<form>` | `action` | Endpoints that are never linked |
+| `<iframe>` | `src` | Embedded apps and widgets |
+| `<img>` | `src` | Images, including CDN hosts |
+| `<source>` | `src` | Media alternatives inside `<video>` / `<audio>` |
+| `<object>` | `data` | Legacy embedded objects |
+| `<embed>` | `src` | Legacy plugin content |
+| `<meta http-equiv="refresh">` | `content` | Markup redirects (`0; url=...`) |
+
+Details worth knowing:
+
+- Relative URLs resolve against the page, honouring a `<base href>` when the
+  document declares one.
+- Non-fetchable targets are skipped: `javascript:`, `mailto:`, `tel:`, `data:`,
+  `about:`, `blob:`, and bare `#fragment` references.
+- Duplicates are collapsed, so a logo referenced from a dozen places is
+  reported once.
+- Discovered links go through the same filters, host validation, and output
+  transforms as URLs that came from a provider — `--extract-links -e js`
+  returns only JavaScript.
+- Only responses that succeeded and look like markup are parsed, and each body
+  is capped at 10 MiB.
+
+```bash
+# Crawl one hop deeper and keep only JavaScript
+urx example.com --extract-links -e js
+
+# Extraction obeys the network settings too
+urx example.com --extract-links --proxy http://localhost:8080 --timeout 20
+```
