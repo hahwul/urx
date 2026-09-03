@@ -70,6 +70,8 @@ check_status = false            # Check HTTP status code of collected URLs
 include_status = ["200", "30x"] # Include URLs with these status codes
 exclude_status = ["404", "50x"] # Exclude URLs with these status codes
 extract_links = false           # Extract additional links from collected URLs
+archive_body = false            # Extract links from the *archived* bodies of collected URLs
+archive_body_limit = 500        # Distinct archived bodies fetched per run (duplicates never count)
 
 # Cache options
 [cache]

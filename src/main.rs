@@ -23,8 +23,9 @@ use app::caching::{create_cache_manager, process_domains_with_cache};
 use app::catalog::print_provider_list;
 use app::keys::seed_api_keys_from_env;
 use app::pipeline::{
-    apply_url_filters, apply_url_transformations, build_extracted_link_filter, build_stream_sink,
-    build_testers, collect_domains, read_urls_from_files, should_check_status,
+    apply_url_filters, apply_url_transformations, build_archive_body_extractor,
+    build_extracted_link_filter, build_stream_sink, build_testers, collect_domains,
+    read_urls_from_files, should_check_status,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::{initialize_providers, validate_selection_flags};
@@ -157,20 +158,41 @@ async fn collect_urls(
     .await
 }
 
-/// Re-request the surviving URLs when `--check-status` or `--extract-links`
-/// asked for it; otherwise wrap them unchanged.
+/// Re-request the surviving URLs when `--check-status`, `--extract-links` or
+/// `--archive-body` asked for it; otherwise wrap them unchanged.
 async fn run_testers(
     args: &Args,
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
+    run_result: &ProviderRunResult,
     urls: Vec<String>,
 ) -> Result<Vec<output::UrlData>> {
-    let testers = build_testers(args, network_settings);
+    let mut testers = build_testers(args, network_settings);
+
+    // The archived-body extractor needs the run result (for each URL's
+    // capture), which the other testers do not, so it is built separately and
+    // appended last: link-producing testers must follow the status checker.
+    let mut archive_stats = None;
+    if let Some((extractor, stats)) =
+        build_archive_body_extractor(args, network_settings, run_result)
+    {
+        // Nothing to replay is worth saying even without -v. The usual cause
+        // is a cache hit — the cache stores URLs only — and a silent no-op
+        // reads as "the archive had nothing", which is the opposite of true.
+        if extractor.candidate_count() == 0 && !urls.is_empty() && !args.silent {
+            progress_manager.note(
+                "[urx] --archive-body: none of the collected URLs carry a capture timestamp, so there is nothing to replay.                  Cached results and --files input have none; a CDX provider (wayback, cc, arquivo) run with --no-cache does.",
+            );
+        }
+        testers.push(Box::new(extractor));
+        archive_stats = Some(stats);
+    }
+
     if testers.is_empty() {
         return Ok(urls.into_iter().map(output::UrlData::new).collect());
     }
 
-    Ok(process_urls_with_testers(
+    let tested = process_urls_with_testers(
         urls,
         args,
         progress_manager,
@@ -178,7 +200,31 @@ async fn run_testers(
         should_check_status(args),
         build_extracted_link_filter(args)?,
     )
-    .await)
+    .await;
+
+    if let Some(stats) = archive_stats {
+        // The number that justifies the feature: how many requests the digest
+        // deduplication saved, relative to fetching one body per URL.
+        verbose_print(
+            args,
+            format!(
+                "Archived bodies: fetched {} distinct bodies; skipped {} URLs sharing an already-fetched digest, {} over --archive-body-limit, {} without a capture",
+                stats.fetched(),
+                stats.duplicate_bodies(),
+                stats.over_limit(),
+                stats.no_capture()
+            ),
+        );
+        if stats.over_limit() > 0 && !args.silent {
+            progress_manager.note(format!(
+                "[urx] --archive-body stopped at {} bodies ({} more distinct bodies were available); raise --archive-body-limit to fetch them",
+                stats.fetched(),
+                stats.over_limit()
+            ));
+        }
+    }
+
+    Ok(tested)
 }
 
 /// Attach provider attribution to each surviving record when `--show-sources`
@@ -318,6 +364,7 @@ async fn main() -> Result<()> {
         &args,
         &network_settings,
         &progress_manager,
+        &run_result,
         transformed_urls,
     )
     .await?;

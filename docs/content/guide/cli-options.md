@@ -99,6 +99,8 @@ Testing Options:
   --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x)
   --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x)
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
+  --archive-body                     Extract links from the *archived* body of each collected URL (see "Archived Response Bodies" below)
+  --archive-body-limit <N>           Maximum archived bodies fetched per run; bounds distinct bodies, not URLs [default: 500]
 
 Cache Options:
   --incremental              Only return new URLs compared to previous scans
@@ -346,3 +348,73 @@ urx example.com --extract-links -e js
 # Extraction obeys the network settings too
 urx example.com --extract-links --proxy http://localhost:8080 --timeout 20
 ```
+
+## Archived Response Bodies
+
+`--extract-links` fetches every collected URL from the live site, which is the
+wrong place to look for the pages an OSINT sweep cares about most: the ones
+that no longer exist. `--archive-body` fetches the bodies the Wayback Machine
+*stored* instead, and runs exactly the link extraction described above over
+them.
+
+For every collected URL that carries a capture timestamp, urx replays that
+capture in its raw form:
+
+```text
+https://web.archive.org/web/<timestamp>id_/<url>
+```
+
+The `id_` flag after the timestamp switches off the Wayback toolbar and link
+rewriting, so the response is the original bytes with the original
+`Content-Type`. Relative links inside the body resolve against the captured
+URL, not the replay URL.
+
+```bash
+# Links from the archived bodies of everything the CDX providers found
+urx example.com --archive-body
+
+# Bound the run and pace it; the archive is one host no matter how many URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only the JavaScript those pages referenced back then
+urx example.com --archive-body -e js
+```
+
+### Why this needs far fewer requests than waymore
+
+Every CDX row carries a content digest, and two captures with the same digest
+are byte-for-byte the same body. Archives are full of such duplicates: every
+`?utm_source=` variant of a page, every `/index.html` next to its `/`, every
+tracking-parameter permutation serves identical bytes, so a list of tens of
+thousands of URLs routinely collapses to a few thousand distinct bodies.
+
+waymore has no notion of this. It downloads one response per URL and copes with
+the volume through a blunt `-l 5000` cap, which both hammers the archive and
+truncates coverage. urx claims each digest the first time it is seen and skips
+every later URL that would replay the same bytes, so the same coverage costs
+one request per *distinct body* rather than one per URL. `--archive-body-limit`
+(default 500) bounds distinct bodies, not URLs: duplicates never count against
+it, and `--verbose` reports how many URLs were skipped as duplicates, how many
+fell past the limit, and how many had no capture to replay.
+
+### Details
+
+- Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
+  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  results (the cache stores URLs only) have none. urx says so when there is
+  nothing to replay; pass `--no-cache` to get fresh captures.
+- The newest capture of each URL is replayed, and the digest of *that* capture
+  is what deduplication keys on. A timestamp reported by another archive lands
+  on the nearest Wayback capture; a URL the Wayback Machine never saw answers
+  404 and is skipped quietly.
+- Captures the archive recorded as errors are not mined, exactly as
+  `--extract-links` ignores live error pages, and non-markup bodies are skipped
+  without being parsed.
+- Discovered links go through the same filters, host validation, and output
+  transforms as URLs that came from a provider.
+- Each body is capped at 10 MiB, the same guard `--extract-links` uses.
+- `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
+  `--timeout`, and `--retries` apply to the replay requests. Under
+  `--network-scope providers` the replay requests, being part of the testing
+  stage, are left unconfigured like the other testers.
+- Incompatible with `--stream`, like every option that runs after collection.

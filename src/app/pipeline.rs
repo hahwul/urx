@@ -5,7 +5,7 @@
 //! three must apply the same rules. That is why the filter and transformer are
 //! built by shared constructors here rather than assembled at each call site.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -16,8 +16,11 @@ use crate::network::NetworkSettings;
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::readers::read_urls_from_file;
+use crate::runner::ProviderRunResult;
 use crate::tester_manager::{self, apply_network_settings_to_tester};
-use crate::testers::{LinkExtractor, StatusChecker, Tester};
+use crate::testers::{
+    ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, LinkExtractor, StatusChecker, Tester,
+};
 use crate::utils::{verbose_print, UrlTransformer};
 
 /// Raw targets named directly on the command line: positional args plus every
@@ -319,6 +322,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it fetches collected URLs after collection finishes",
         ));
     }
+    if args.archive_body {
+        out.push((
+            "--archive-body",
+            "it replays collected URLs from the archive after collection finishes",
+        ));
+    }
     if args.incremental {
         out.push((
             "--incremental",
@@ -401,8 +410,8 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     )?)))
 }
 
-/// The filter applied to links `--extract-links` discovers, or `None` when the
-/// extractor isn't running.
+/// The filter applied to links `--extract-links` and `--archive-body`
+/// discover, or `None` when neither extractor is running.
 ///
 /// Links found *inside* pages come into existence after
 /// [`apply_url_filters`]/[`apply_url_transformations`] have already run over the
@@ -413,7 +422,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
 pub fn build_extracted_link_filter(
     args: &Args,
 ) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
-    if !args.extract_links {
+    if !args.extract_links && !args.archive_body {
         return Ok(None);
     }
     // File input has no queried domain to validate against, which is why the
@@ -483,6 +492,67 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
     testers
 }
 
+/// URL → the capture `--archive-body` should replay, for every URL the run
+/// reported with a digest-bearing capture.
+///
+/// Built from the run result rather than the output list on purpose: the
+/// output may have been reshaped by `--show-only-*`, and a URL that no longer
+/// matches what the providers reported has no capture to look up.
+pub fn archive_captures(run_result: &ProviderRunResult) -> HashMap<String, ArchiveCapture> {
+    run_result
+        .urls
+        .iter()
+        .filter_map(|(url, entry)| {
+            let (timestamp, digest) = match entry.meta.newest_capture() {
+                Some((ts, digest)) => (ts, Some(digest.to_string())),
+                // A capture with a timestamp but no digest can still be
+                // replayed; it just cannot be deduplicated against others.
+                None => (entry.meta.last_seen()?, None),
+            };
+            Some((
+                url.clone(),
+                ArchiveCapture {
+                    timestamp: timestamp.to_string(),
+                    digest,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Build the `--archive-body` tester over the run result, or `None` when the
+/// flag is off. The returned stats handle stays readable after the tester has
+/// been boxed away and cloned per worker.
+pub fn build_archive_body_extractor(
+    args: &Args,
+    network_settings: &NetworkSettings,
+    run_result: &ProviderRunResult,
+) -> Option<(ArchiveBodyExtractor, Arc<ArchiveBodyStats>)> {
+    if !args.archive_body {
+        return None;
+    }
+    verbose_print(args, "Extracting links from archived response bodies");
+
+    let mut extractor =
+        ArchiveBodyExtractor::new(archive_captures(run_result), args.archive_body_limit);
+    apply_network_settings_to_tester(&mut extractor, network_settings);
+    // Every replay request goes to the Wayback Machine, so the rate that
+    // applies is the one the user set for it — `--rate-limit-by wayback=N`
+    // first, the global `--rate-limit` otherwise. The tester scope rule is
+    // honoured the way it is for the other settings.
+    if network_settings.scope != crate::network::NetworkScope::Providers {
+        let rate = args
+            .rate_limit_overrides()
+            .get("wayback")
+            .copied()
+            .or(network_settings.rate_limit);
+        extractor.with_rate_limit(rate);
+    }
+
+    let stats = extractor.stats();
+    Some((extractor, stats))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,6 +568,7 @@ mod tests {
             (vec!["--dedup-similar"], "--dedup-similar"),
             (vec!["--check-status"], "--check-status"),
             (vec!["--extract-links"], "--extract-links"),
+            (vec!["--archive-body"], "--archive-body"),
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
             (vec!["--show-meta"], "--show-meta"),
@@ -698,6 +769,96 @@ mod tests {
     fn test_no_extract_links_builds_no_filter() {
         let args = Args::parse_from(["urx", "example.com"]);
         assert!(build_extracted_link_filter(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_archive_body_links_get_the_same_filter_as_extracted_links() {
+        // The archived-body path discovers links after filtering has run over
+        // the primary list, exactly like --extract-links, so it must be given
+        // the same filter — or `-e js` and strict host validation are silently
+        // bypassed for everything it finds.
+        let args = Args::parse_from([
+            "urx",
+            "--archive-body",
+            "-e",
+            "js",
+            "--silent",
+            "example.com",
+        ]);
+        let filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--archive-body must build a filter");
+        assert!(filter.accept("https://example.com/app.js").is_some());
+        assert!(filter.accept("https://example.com/index.html").is_none());
+        assert!(filter.accept("https://cdn.other.net/a.js").is_none());
+    }
+
+    #[test]
+    fn test_archive_captures_pair_each_url_with_its_newest_capture() {
+        use crate::providers::CaptureMeta;
+        use crate::runner::UrlEntry;
+
+        let mut run_result = ProviderRunResult::default();
+        let mut with_two = UrlEntry::default();
+        with_two.absorb(
+            "wayback",
+            &CaptureMeta::capture(Some("20050101000000"), None, None, Some("OLD")),
+        );
+        with_two.absorb(
+            "cc",
+            &CaptureMeta::capture(Some("20240101000000"), None, None, Some("NEW")),
+        );
+        run_result
+            .urls
+            .insert("https://example.com/a".to_string(), with_two);
+
+        let mut undigested = UrlEntry::default();
+        undigested.absorb(
+            "arquivo",
+            &CaptureMeta::capture(Some("20200101000000"), None, None, None),
+        );
+        run_result
+            .urls
+            .insert("https://example.com/b".to_string(), undigested);
+
+        // A URL from a provider without a capture index has nothing to replay.
+        run_result
+            .urls
+            .insert("https://example.com/c".to_string(), UrlEntry::default());
+
+        let captures = archive_captures(&run_result);
+        assert_eq!(
+            captures["https://example.com/a"],
+            ArchiveCapture {
+                timestamp: "20240101000000".to_string(),
+                digest: Some("NEW".to_string()),
+            }
+        );
+        assert_eq!(
+            captures["https://example.com/b"],
+            ArchiveCapture {
+                timestamp: "20200101000000".to_string(),
+                digest: None,
+            }
+        );
+        assert!(!captures.contains_key("https://example.com/c"));
+    }
+
+    #[test]
+    fn test_build_archive_body_extractor_follows_the_flag_and_the_wayback_rate() {
+        let settings = NetworkSettings::default();
+        let run_result = ProviderRunResult::default();
+
+        let args = build_test_args();
+        assert!(build_archive_body_extractor(&args, &settings, &run_result).is_none());
+
+        let mut args = build_test_args();
+        args.archive_body = true;
+        args.archive_body_limit = 7;
+        let (extractor, stats) =
+            build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        assert_eq!(extractor.candidate_count(), 0);
+        assert_eq!(stats.fetched(), 0);
     }
 
     #[test]

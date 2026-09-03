@@ -33,6 +33,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * URL Testing:
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
+  * Mine the *archived* response bodies of collected URLs (`--archive-body`), so pages that no longer exist still give up the links they contained — one request per distinct body, thanks to CDX digest deduplication
 * Caching and Incremental Scanning:
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
@@ -234,6 +235,10 @@ Testing Options:
           Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: ----es]
       --extract-links
           Extract additional links from collected URLs (requires HTTP requests)
+      --archive-body
+          Fetch the archived body of each collected URL from the Wayback Machine and extract the links inside it (works for pages that no longer exist)
+      --archive-body-limit <N>
+          Maximum number of archived bodies --archive-body fetches per run; bounds distinct bodies, not URLs [default: 500]
 ```
 
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
@@ -244,6 +249,11 @@ duplicates are collapsed, and discovered links pass through the same filters
 and host validation as the rest of the run. See
 [docs/content/guide/cli-options.md](docs/content/guide/cli-options.md) for the
 full table.
+
+`--archive-body` does the same extraction over the bodies the Wayback Machine
+*stored* rather than over the live site, so a page that was deleted years ago
+still yields the links it contained. See
+[Mining Archived Response Bodies](#mining-archived-response-bodies).
 
 ### Examples
 
@@ -326,6 +336,10 @@ urx example.com --extract-links
 # Discovered links go through the same filters as everything else, so this
 # keeps only the JavaScript the pages reference
 urx example.com --extract-links -e js
+
+# Mine the links inside the *archived* bodies instead — dead pages included.
+# One request per distinct body; the limit bounds bodies, not URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
 # Network configuration
 urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insecure
@@ -445,8 +459,9 @@ deduplicated. Two things differ:
 * **Scope.** Options that need the complete result set are rejected up front
   (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
   `--check-status` /
-  `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
-  `--show-sources`, `--show-meta`, `--output-dir`, and `--files`. Caching is
+  `--include-status` / `--exclude-status`, `--extract-links`, `--archive-body`,
+  `--incremental`, `--show-sources`, `--show-meta`, `--output-dir`, and
+  `--files`. Caching is
   bypassed, and
   `--format json` is refused in favour of `jsonl` because a JSON array has to
   know which entry is last.
@@ -512,6 +527,58 @@ arrived, so `--show-meta` is rejected there for the same reason
 A cache hit also carries no metadata: the cache stores URLs, so a domain served
 from cache reports its URLs without capture fields. Use `--no-cache` (or wait
 for the TTL) for a run that repopulates them.
+
+### Mining Archived Response Bodies
+
+`--extract-links` fetches every collected URL from the live site, which is
+exactly the wrong place to look for the pages an OSINT sweep cares about most:
+the ones that no longer exist. `--archive-body` fetches the bodies the Wayback
+Machine stored instead. For every collected URL that carries a capture
+timestamp, urx replays that capture in its raw form
+(`https://web.archive.org/web/<timestamp>id_/<url>` — the `id_` flag turns off
+the Wayback toolbar and link rewriting, so the body is the original bytes) and
+runs the same link extraction `--extract-links` uses over it.
+
+```bash
+# Links from the archived bodies of everything the CDX providers found
+urx example.com --archive-body
+
+# Bound the run and pace it; the archive is one host no matter how many URLs
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only the JavaScript those pages referenced back then
+urx example.com --archive-body -e js
+```
+
+**Why this needs far fewer requests than waymore.** Every CDX row carries a
+content digest, and two captures with the same digest are byte-for-byte the
+same body. Archives are full of them: every `?utm_source=` variant of a page,
+every `/index.html` next to its `/`, every tracking-parameter permutation
+serves identical bytes, so a list of tens of thousands of URLs routinely
+collapses to a few thousand distinct bodies. waymore has no notion of this — it
+downloads one response per URL and copes with the volume through a blunt
+`-l 5000` cap, which both hammers the archive and truncates coverage. urx
+claims each digest the first time it is seen and skips every later URL that
+would replay the same bytes, so the same coverage costs one request per
+*distinct body*. `--archive-body-limit` (default 500) bounds distinct bodies,
+not URLs; duplicates never count against it, and `--verbose` reports how many
+were skipped.
+
+Details worth knowing:
+
+- Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
+  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  results (the cache stores URLs only) have none. urx says so when there is
+  nothing to replay — pass `--no-cache` to get fresh captures.
+- The newest capture of each URL is replayed. A timestamp reported by another
+  archive lands on the nearest Wayback capture; a URL the Wayback Machine never
+  saw answers 404 and is skipped. Captures the archive recorded as errors are
+  not mined, exactly as `--extract-links` ignores live error pages.
+- Discovered links go through the same filters, host validation, and output
+  transforms as everything else, and each body is capped at 10 MiB.
+- `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
+  `--timeout`, and `--retries` all apply to the replay requests.
+- Incompatible with `--stream`, like every option that runs after collection.
 
 ### Archive-side Filtering
 

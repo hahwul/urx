@@ -407,6 +407,23 @@ pub struct Args {
     #[clap(long)]
     pub extract_links: bool,
 
+    /// Fetch the *archived* body of each collected URL from the Wayback
+    /// Machine and extract the links inside it. Unlike --extract-links this
+    /// works for pages that no longer exist. Only URLs with a capture
+    /// timestamp qualify (the CDX providers supply one; cached, --files and
+    /// non-CDX URLs have none). One request per distinct body: URLs whose
+    /// captures share a content digest are fetched once. Discovered links go
+    /// through the same filters and host validation as everything else.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long)]
+    pub archive_body: bool,
+
+    /// Maximum number of archived bodies --archive-body fetches per run. This
+    /// bounds distinct bodies, not URLs — duplicates never count against it.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, value_name = "N", default_value = "500")]
+    pub archive_body_limit: usize,
+
     /// Enable incremental scanning mode (only return new URLs compared to previous scans)
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]
@@ -692,6 +709,8 @@ mod tests {
         assert_eq!(args.cc_index, vec!["latest"]);
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
+        assert!(!args.archive_body);
+        assert_eq!(args.archive_body_limit, 500);
         assert!(args.include_robots);
         assert!(args.include_sitemap);
         assert!(!args.exclude_robots);

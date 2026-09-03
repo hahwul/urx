@@ -20,7 +20,7 @@ use crate::network::client::{read_body_capped, HttpClientConfig};
 /// exhaust memory. The sitemap provider already caps its documents this way;
 /// this is the same guard for the same reason. 10 MiB is far more than any real
 /// HTML page.
-const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 /// Whether a response body is worth handing to the HTML parser.
 ///
@@ -28,7 +28,7 @@ const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 /// of servers omit it; an explicitly non-HTML type (an image, a video, a zip) is
 /// skipped — running an HTML parser over binary yields nothing but the bytes are
 /// downloaded either way.
-fn is_html_like(headers: &reqwest::header::HeaderMap) -> bool {
+pub(crate) fn is_html_like(headers: &reqwest::header::HeaderMap) -> bool {
     match headers
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -225,7 +225,7 @@ impl LinkExtractor {
     /// The result is deduplicated in document order: a single page names the
     /// same stylesheet or logo from a dozen places, and reporting each of them
     /// as a separate discovery is noise.
-    fn extract_links(base_url: &Url, html_content: &str) -> Vec<String> {
+    pub(crate) fn extract_links(base_url: &Url, html_content: &str) -> Vec<String> {
         let document = Html::parse_document(html_content);
 
         // Only the first <base href> in the document has effect.

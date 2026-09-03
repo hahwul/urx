@@ -87,6 +87,8 @@ check_status = false
 include_status = ["200", "30x"]
 exclude_status = ["404", "50x"]
 extract_links = false
+archive_body = false                   # Mine the archived bodies of collected URLs
+archive_body_limit = 500               # Distinct bodies fetched per run (duplicates never count)
 
 # ─── Cache ────────────────────────────────────────────────
 [cache]

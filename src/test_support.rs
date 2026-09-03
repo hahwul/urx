@@ -131,6 +131,8 @@ pub fn build_test_args() -> Args {
         include_status: vec![],
         exclude_status: vec![],
         extract_links: false,
+        archive_body: false,
+        archive_body_limit: 500,
         include_robots: false,
         include_sitemap: false,
         exclude_robots: true,

@@ -200,6 +200,25 @@ host validation, and output transforms as the rest of the run:
 urx example.com --extract-links -e js
 ```
 
+### Mine Archived Bodies
+```bash
+urx example.com --archive-body
+```
+
+`--archive-body` runs the same extraction over the bodies the Wayback Machine
+*stored*, so pages that no longer exist still give up the links they contained.
+URLs whose captures share a content digest are fetched once, so the run costs
+one request per distinct body rather than one per URL; `--archive-body-limit`
+(default 500) bounds those distinct bodies:
+
+```bash
+# Bounded and paced
+urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
+
+# Only what the archived pages referenced as JavaScript
+urx example.com --archive-body -e js --no-cache
+```
+
 ### Status Filtering
 ```bash
 # Include only successful responses

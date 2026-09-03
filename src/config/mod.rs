@@ -286,6 +286,8 @@ pub struct TestingConfig {
     pub include_status: Option<Vec<String>>,
     pub exclude_status: Option<Vec<String>>,
     pub extract_links: Option<bool>,
+    pub archive_body: Option<bool>,
+    pub archive_body_limit: Option<usize>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -444,7 +446,7 @@ impl Config {
         self.apply_provider_config(args, provided);
         self.apply_filter_config(args);
         self.apply_network_config(args, provided);
-        self.apply_testing_config(args);
+        self.apply_testing_config(args, provided);
         self.apply_cache_config(args, provided);
     }
 
@@ -722,7 +724,7 @@ impl Config {
         }
     }
 
-    fn apply_testing_config(&self, args: &mut Args) {
+    fn apply_testing_config(&self, args: &mut Args, provided: &CliProvided) {
         // Testing options
         if !args.check_status && self.testing.check_status.unwrap_or(false) {
             args.check_status = true;
@@ -742,6 +744,16 @@ impl Config {
 
         if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
             args.extract_links = true;
+        }
+
+        if !args.archive_body && self.testing.archive_body.unwrap_or(false) {
+            args.archive_body = true;
+        }
+
+        if !provided.has("archive_body_limit") {
+            if let Some(limit) = self.testing.archive_body_limit {
+                args.archive_body_limit = limit;
+            }
         }
     }
 
@@ -1331,6 +1343,8 @@ mod tests {
             [testing]
             check_status = true
             include_status = ["200"]
+            archive_body = true
+            archive_body_limit = 100
 
             [cache]
             incremental = true
@@ -1364,6 +1378,32 @@ mod tests {
             unknown,
             vec!["[provider]".to_string(), "vt_apikey".to_string()]
         );
+    }
+
+    #[test]
+    fn test_archive_body_settings_load_from_config_and_yield_to_the_cli() {
+        let content = r#"
+            [testing]
+            archive_body = true
+            archive_body_limit = 42
+        "#;
+        let file = create_temp_config_file(content);
+
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert!(args.archive_body);
+        assert_eq!(args.archive_body_limit, 42);
+
+        // An explicit limit on the command line wins even when it equals the
+        // clap default.
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "--archive-body-limit", "500", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert_eq!(args.archive_body_limit, 500);
     }
 
     #[test]

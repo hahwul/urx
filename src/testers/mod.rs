@@ -2,9 +2,11 @@ use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 
+mod archive_body;
 mod link_extractor;
 mod status_checker;
 
+pub use archive_body::{ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture};
 pub use link_extractor::LinkExtractor;
 pub use status_checker::StatusChecker;
 
