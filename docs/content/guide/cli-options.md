@@ -53,8 +53,10 @@ Provider Options:
   --github-api-key <GITHUB_API_KEY>     Personal access token for GitHub Code Search (URX_GITHUB_API_KEY)
 
 Discovery Options:
-  --exclude-robots   Exclude robots.txt discovery
-  --exclude-sitemap  Exclude sitemap.xml discovery
+  --exclude-robots                   Exclude robots.txt discovery
+  --exclude-sitemap                  Exclude sitemap.xml discovery
+  --archived-discovery               Also read every distinct archived version of robots.txt and sitemap.xml (see "Archived robots.txt and sitemap.xml" below)
+  --archived-discovery-limit <N>     Maximum archived documents fetched per domain by each archived provider; nested sitemaps count [default: 50]
 
 Display Options:
   -v, --verbose       Show verbose output
@@ -418,3 +420,75 @@ fell past the limit, and how many had no capture to replay.
   `--network-scope providers` the replay requests, being part of the testing
   stage, are left unconfigured like the other testers.
 - Incompatible with `--stream`, like every option that runs after collection.
+
+## Archived robots.txt and sitemap.xml
+
+The `robots` and `sitemap` providers read the *live* files, which only say
+what a site hides or lists today. `--archived-discovery` also reads every
+distinct version of those files the Wayback Machine has stored. A `Disallow:`
+from 2015 names paths the site has since stopped mentioning — often because
+they were meant to be forgotten, not because they are gone — and an old
+sitemap lists everything the site once wanted crawled.
+
+```bash
+# Every archived version of robots.txt and sitemap.xml, alongside the live ones
+urx example.com --archived-discovery
+
+# Bound it and pace it; both archived providers answer to --rate-limit-by
+urx example.com --archived-discovery --archived-discovery-limit 20 --rate-limit-by robots=2,sitemap=2
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016
+
+# Just the robots.txt history
+urx example.com --archived-discovery --exclude-sitemap --show-sources
+```
+
+### How it works
+
+1. The versions of each document are listed with one CDX query per file name
+   (`robots.txt`, `sitemap.xml`, `sitemap_index.xml`, `sitemap.txt`):
+
+   ```text
+   /cdx/search/cdx?url=<domain>/robots.txt&fl=original,timestamp,statuscode,digest
+       &collapse=digest&filter=statuscode:2..
+   ```
+
+   `collapse=digest` folds consecutive captures that served the same bytes into
+   one row, so a file crawled daily but edited yearly comes back as one row per
+   *change*. The status filter is what keeps that cheap: the CDX urlkey folds
+   `www.` and the apex into one listing, and their interleaved `301`/`200` rows
+   otherwise defeat the collapse. Measured on github.com/robots.txt: 325,036
+   rows without the filter, 13,909 with it, for the same 107 distinct versions.
+   Any duplicate digest that survives is dropped client-side.
+2. Each distinct version is replayed in raw form
+   (`/web/<timestamp>id_/<original url>`) and handed to the **same parser as
+   the live file**. There is no second parser: a 2015 robots.txt is read by
+   exactly the rules the current one is, including the absolute-path and
+   pattern-skipping guards, and its paths land on the host that actually
+   served it. An archived `<sitemapindex>` is followed into its children at
+   that same timestamp, with the same same-host rule as the live walk.
+3. Captures the archive recorded as anything but a success (github.com's
+   robots.txt was a 401 for part of 2007) are never requested. They are
+   counted and reported under `--verbose` only, as is any version the replay
+   endpoint refuses.
+
+### Details
+
+- `--archived-discovery-limit` (default 50) caps the documents fetched per
+  domain by each archived provider. The newest versions are read first — the
+  live provider already covers the present, and recently-removed paths are the
+  ones most likely to still exist — and nested sitemaps count against the
+  cap. `--verbose` says when the cap cut the list short.
+- The archived reads run as their own provider instances, labelled
+  "Robots.txt (archived)" and "Sitemap (archived)" in `--stats` and
+  `--show-sources`, but they are registered under the existing `robots` and
+  `sitemap` ids rather than as new providers. `--exclude-robots`,
+  `--exclude-sitemap`, and `--rate-limit-by robots=N` / `sitemap=N` therefore
+  govern the live and archived reads together.
+- `--from` / `--to` narrow which versions are considered; the other
+  `--archive-*` predicates do not apply to a version history.
+- Bodies are capped exactly as the live files are (1 MiB for robots.txt,
+  50 MiB per sitemap document).
+- Because it is a provider, it works with `--stream` and its results are
+  cached like any other provider's (the cache key includes the flag).

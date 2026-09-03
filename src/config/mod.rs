@@ -72,6 +72,8 @@ pub struct ProviderConfig {
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
     pub exclude_sitemap: Option<bool>,
+    pub archived_discovery: Option<bool>,
+    pub archived_discovery_limit: Option<usize>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -592,6 +594,16 @@ impl Config {
         if !args.exclude_sitemap && args.include_sitemap {
             if let Some(include_sitemap) = self.provider.include_sitemap {
                 args.include_sitemap = include_sitemap;
+            }
+        }
+
+        if !args.archived_discovery && self.provider.archived_discovery.unwrap_or(false) {
+            args.archived_discovery = true;
+        }
+
+        if !provided.has("archived_discovery_limit") {
+            if let Some(limit) = self.provider.archived_discovery_limit {
+                args.archived_discovery_limit = limit;
             }
         }
     }
@@ -1324,6 +1336,8 @@ mod tests {
             to = "2021"
             vt_api_key = "k"
             include_robots = false
+            archived_discovery = true
+            archived_discovery_limit = 20
 
             [filter]
             preset = ["no-images"]
@@ -1404,6 +1418,30 @@ mod tests {
             .unwrap()
             .apply_to_args(&mut args, &provided);
         assert_eq!(args.archive_body_limit, 500);
+    }
+
+    #[test]
+    fn test_archived_discovery_settings_load_from_config_and_yield_to_the_cli() {
+        let content = r#"
+            [provider]
+            archived_discovery = true
+            archived_discovery_limit = 7
+        "#;
+        let file = create_temp_config_file(content);
+
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert!(args.archived_discovery);
+        assert_eq!(args.archived_discovery_limit, 7);
+
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "--archived-discovery-limit", "50", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert_eq!(args.archived_discovery_limit, 50);
     }
 
     #[test]

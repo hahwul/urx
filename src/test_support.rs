@@ -137,6 +137,8 @@ pub fn build_test_args() -> Args {
         include_sitemap: false,
         exclude_robots: true,
         exclude_sitemap: true,
+        archived_discovery: false,
+        archived_discovery_limit: 50,
         incremental: false,
         cache_type: "sqlite".to_string(),
         cache_path: None,

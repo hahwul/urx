@@ -170,6 +170,21 @@ urx example.com --exclude-sitemap
 urx example.com --exclude-robots --exclude-sitemap
 ```
 
+### Archived robots.txt and sitemap.xml
+```bash
+# Every distinct archived version, alongside the live files
+urx example.com --archived-discovery
+
+# See which URLs came from an old version
+urx example.com --archived-discovery --show-sources
+
+# Only the versions captured in a given era, robots.txt only
+urx example.com --archived-discovery --from 2014 --to 2016 --exclude-sitemap
+
+# Cap the documents fetched per domain (newest versions first)
+urx example.com --archived-discovery --archived-discovery-limit 10
+```
+
 ## Testing & Validation
 
 ### Include Subdomains

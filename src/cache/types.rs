@@ -99,6 +99,9 @@ pub struct CacheFilters {
     pub archive_exclude_status: Vec<String>,
     pub archive_mime: Vec<String>,
     pub archive_exclude_mime: Vec<String>,
+    /// `--archived-discovery`: adds URLs from archived robots.txt / sitemap
+    /// versions, so a run with it asks a different question from one without.
+    pub archived_discovery: bool,
 }
 
 impl CacheFilters {
@@ -150,6 +153,7 @@ impl CacheFilters {
         feed_list(&mut hasher, &self.archive_exclude_status);
         feed_list(&mut hasher, &self.archive_mime);
         feed_list(&mut hasher, &self.archive_exclude_mime);
+        hasher.update([self.archived_discovery as u8]);
 
         hasher
             .finalize()

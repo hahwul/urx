@@ -53,6 +53,8 @@ zoomeye_api_key = ""                  # ZoomEye API key
 github_api_key = ""                   # GitHub Code Search personal access token
 exclude_robots = false                # Skip robots.txt discovery
 exclude_sitemap = false               # Skip sitemap.xml discovery
+archived_discovery = false            # Also read archived robots.txt / sitemap versions
+archived_discovery_limit = 50         # Documents fetched per domain by each archived provider
 
 # ─── Filters ─────────────────────────────────────────────
 [filter]

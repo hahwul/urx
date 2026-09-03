@@ -198,6 +198,26 @@ pub struct Args {
     #[clap(long, help_heading = "Discovery Options")]
     pub exclude_sitemap: bool,
 
+    /// Also read the *archived* versions of robots.txt and sitemap.xml the
+    /// Wayback Machine holds — every distinct version, not just today's — so
+    /// paths a site once listed and has since removed are recovered. Obeys
+    /// --exclude-robots / --exclude-sitemap and --from / --to. Archived
+    /// results are attributed to "robots.txt (archived)" / "sitemap.xml
+    /// (archived)" under --show-sources and --stats.
+    #[clap(long, help_heading = "Discovery Options")]
+    pub archived_discovery: bool,
+
+    /// Maximum archived documents fetched per domain by each of the archived
+    /// robots.txt and sitemap providers (nested sitemaps count). The newest
+    /// versions are read first.
+    #[clap(
+        long,
+        help_heading = "Discovery Options",
+        value_name = "N",
+        default_value = "50"
+    )]
+    pub archived_discovery_limit: usize,
+
     #[clap(help_heading = "Display Options")]
     /// Show verbose output
     #[clap(short, long)]
@@ -711,6 +731,8 @@ mod tests {
         assert_eq!(args.retries, 2);
         assert!(!args.archive_body);
         assert_eq!(args.archive_body_limit, 500);
+        assert!(!args.archived_discovery);
+        assert_eq!(args.archived_discovery_limit, 50);
         assert!(args.include_robots);
         assert!(args.include_sitemap);
         assert!(!args.exclude_robots);

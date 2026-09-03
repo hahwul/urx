@@ -34,6 +34,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
   * Mine the *archived* response bodies of collected URLs (`--archive-body`), so pages that no longer exist still give up the links they contained — one request per distinct body, thanks to CDX digest deduplication
+* Archived robots.txt and sitemap.xml discovery (`--archived-discovery`): every distinct version the Wayback Machine holds, so a `Disallow:` from 2015 still names the paths the site has since stopped mentioning
 * Caching and Incremental Scanning:
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
@@ -174,8 +175,14 @@ Provider Options:
           Personal access token for the GitHub Code Search provider (also reads URX_GITHUB_API_KEY, comma-separated for rotation)
 
 Discovery Options:
-      --exclude-robots   Exclude robots.txt discovery
-      --exclude-sitemap  Exclude sitemap.xml discovery
+      --exclude-robots
+          Exclude robots.txt discovery
+      --exclude-sitemap
+          Exclude sitemap.xml discovery
+      --archived-discovery
+          Also read every distinct archived version of robots.txt and sitemap.xml the Wayback Machine holds
+      --archived-discovery-limit <N>
+          Maximum archived documents fetched per domain by each archived provider (nested sitemaps count) [default: 50]
 
 Display Options:
   -v, --verbose       Show verbose output
@@ -315,6 +322,13 @@ urx example.com --exclude-robots
 
 # Exclude URLs from sitemap
 urx example.com --exclude-sitemap
+
+# Also read every archived version of robots.txt and sitemap.xml, so paths the
+# site once listed and has since removed come back
+urx example.com --archived-discovery
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016 --exclude-sitemap
 
 # Include subdomains
 urx example.com --subs
@@ -579,6 +593,53 @@ Details worth knowing:
 - `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
   `--timeout`, and `--retries` all apply to the replay requests.
 - Incompatible with `--stream`, like every option that runs after collection.
+
+### Archived robots.txt and sitemap.xml
+
+The `robots` and `sitemap` providers read the *live* files, which only say what
+a site hides or lists today. `--archived-discovery` also reads every distinct
+version of those files the Wayback Machine has stored. A `Disallow:` from 2015
+names paths the site has since stopped mentioning — often because they were
+meant to be forgotten, not because they are gone — and an old sitemap lists
+everything the site once wanted crawled.
+
+```bash
+# Every archived version of robots.txt and sitemap.xml, alongside the live ones
+urx example.com --archived-discovery
+
+# Bound it and pace it; both archived providers answer to --rate-limit-by
+urx example.com --archived-discovery --archived-discovery-limit 20 --rate-limit-by robots=2,sitemap=2
+
+# Only the versions captured in a given era
+urx example.com --archived-discovery --from 2014 --to 2016
+```
+
+How it works, and why it is cheap:
+
+- The versions of a document are listed with one CDX query per file
+  (`robots.txt`, `sitemap.xml`, `sitemap_index.xml`, `sitemap.txt`), using
+  `collapse=digest` so consecutive captures that served the same bytes fold
+  into one row. Only rows recorded as a success are asked for: the index folds
+  `www.` and the apex into one listing, and their interleaved `301`/`200` rows
+  otherwise defeat the collapse — for github.com/robots.txt that is 325k rows
+  without the filter and 14k with it, for the same 107 distinct versions.
+- Each distinct version is replayed in raw form (`/web/<timestamp>id_/…`) and
+  handed to the **same parser as the live file**. No second parser: a 2015
+  robots.txt is read by exactly the rules the current one is, including the
+  absolute-path and pattern-skipping guards. An archived `<sitemapindex>` is
+  followed into its children as they were at that same moment.
+- Captures the archive recorded as errors (github.com's robots.txt was a 401
+  for part of 2007) are skipped without a request and reported under
+  `--verbose` only.
+- `--archived-discovery-limit` (default 50) caps the documents fetched per
+  domain by each archived provider, newest versions first; nested sitemaps
+  count. `--verbose` says when the cap cut the list short.
+- The archived variants run as their own provider instances — "Robots.txt
+  (archived)" and "Sitemap (archived)" in `--stats` and `--show-sources` — but
+  under the existing `robots` / `sitemap` ids, so `--exclude-robots`,
+  `--exclude-sitemap`, and `--rate-limit-by robots=N` govern both the live and
+  archived reads. `--from` / `--to` narrow which versions are considered.
+- Works with `--stream`; it is a provider like any other.
 
 ### Archive-side Filtering
 

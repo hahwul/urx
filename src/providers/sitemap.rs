@@ -10,6 +10,10 @@ use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
+use crate::progress::ProgressReporter;
+use crate::providers::archived::{
+    describe_skipped, list_versions, replay_at, ArchivedDiscovery, Replay,
+};
 use crate::providers::{Provider, UrlRecord};
 
 /// Max nesting depth for sitemap-index → sitemap recursion. A hostile or
@@ -49,6 +53,90 @@ fn same_host_as_parent(parent: &str, child: &str) -> bool {
     }
 }
 
+/// Whether a sitemap body should fall back to line-based parsing when it is
+/// not XML. Decided from the URL suffix and `Content-Type` *before* the body
+/// is consumed, so an XML endpoint that returns an HTML error page isn't mined
+/// for stray `http` lines.
+fn is_text_sitemap(sitemap_url: &str, content_type: Option<&str>) -> bool {
+    sitemap_url.to_ascii_lowercase().ends_with(".txt")
+        || content_type
+            .map(|ct| ct.to_ascii_lowercase().contains("text/plain"))
+            .unwrap_or(false)
+}
+
+/// What one sitemap document turned out to be.
+#[derive(Debug, PartialEq, Eq)]
+enum SitemapDocument {
+    /// A `<sitemapindex>`: the child sitemap locations, not yet host-checked.
+    Index(Vec<String>),
+    /// A `<urlset>` or a plain-text list: the URLs it names.
+    Urls(Vec<String>),
+}
+
+/// Parse one sitemap body, whether it came from the live site or from the
+/// archive — the one parser both paths use.
+fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
+    match Document::parse(content) {
+        Ok(doc) => {
+            // Check if this is a sitemap index file
+            if doc.root_element().has_tag_name("sitemapindex") {
+                let children = doc
+                    .descendants()
+                    .filter(|n| n.has_tag_name("sitemap"))
+                    .filter_map(|sitemap_node| {
+                        sitemap_node
+                            .descendants()
+                            .find(|n| n.has_tag_name("loc"))
+                            .and_then(|loc| loc.text())
+                            .map(|loc| loc.trim().to_string())
+                    })
+                    .filter(|loc| !loc.is_empty())
+                    .take(MAX_SITEMAP_URLS)
+                    .collect();
+                SitemapDocument::Index(children)
+            } else {
+                // A regular sitemap file. `<loc>` text is trimmed: XML lets a
+                // pretty-printed `<loc>\n  https://…\n</loc>` carry the
+                // surrounding indentation into the text node, and the
+                // newlines rode along into the emitted URL — which then failed
+                // host validation, so every URL of such a sitemap was silently
+                // lost.
+                let urls = doc
+                    .descendants()
+                    .filter(|n| n.has_tag_name("url"))
+                    .filter_map(|url_node| {
+                        url_node
+                            .descendants()
+                            .find(|n| n.has_tag_name("loc"))
+                            .and_then(|loc| loc.text())
+                            .map(|url| url.trim().to_string())
+                    })
+                    .filter(|url| !url.is_empty())
+                    .take(MAX_SITEMAP_URLS)
+                    .collect();
+                SitemapDocument::Urls(urls)
+            }
+        }
+        Err(_) => {
+            // XML parse failed. Only treat it as a plain-text URL list when
+            // the source actually is text (a .txt sitemap or text/plain);
+            // otherwise this was an HTML/error page and yields no URLs.
+            let urls = if is_text {
+                content
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| line.starts_with("http"))
+                    .map(str::to_string)
+                    .take(MAX_SITEMAP_URLS)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            SitemapDocument::Urls(urls)
+        }
+    }
+}
+
 /// State threaded through one domain's sitemap walk.
 #[derive(Default)]
 struct Walk {
@@ -73,6 +161,10 @@ pub struct SitemapProvider {
     proxy_auth: Option<String>,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
+    /// When set, this instance reads the *archived* sitemaps the Wayback
+    /// Machine holds instead of the live ones. See
+    /// [`SitemapProvider::archived`].
+    archived: Option<ArchivedDiscovery>,
 }
 
 impl SitemapProvider {
@@ -85,7 +177,22 @@ impl SitemapProvider {
             proxy_auth: None,
             insecure: false,
             rate_limit: None,
+            archived: None,
         }
+    }
+
+    /// A provider over the sitemap versions the Wayback Machine holds.
+    ///
+    /// A sitemap is the site's own list of what it wanted crawled; an old one
+    /// lists what it wanted crawled *then*, including everything it has since
+    /// unlisted. Every distinct archived version of the usual locations is
+    /// replayed and fed to the same parser as the live sitemap, and a
+    /// `<sitemapindex>` is followed into its children as they were at the
+    /// same moment.
+    pub fn archived(settings: ArchivedDiscovery) -> Self {
+        let mut provider = Self::new();
+        provider.archived = Some(settings);
+        provider
     }
 
     fn client_config(&self) -> HttpClientConfig {
@@ -151,17 +258,12 @@ impl SitemapProvider {
             return Ok(Vec::new());
         }
 
-        // Only a genuine text sitemap should fall back to line-based parsing.
-        // Decide that from the URL suffix / Content-Type *before* consuming the
-        // body, so an XML endpoint that returns an HTML error page isn't mined
-        // for stray `http` lines.
-        let is_text_sitemap = sitemap_url.to_ascii_lowercase().ends_with(".txt")
-            || resp
-                .headers()
+        let is_text = is_text_sitemap(
+            sitemap_url,
+            resp.headers()
                 .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|ct| ct.to_ascii_lowercase().contains("text/plain"))
-                .unwrap_or(false);
+                .and_then(|v| v.to_str().ok()),
+        );
 
         let content = match read_body_capped(resp, MAX_SITEMAP_BYTES).await {
             Ok(content) => content,
@@ -173,88 +275,192 @@ impl SitemapProvider {
             }
         };
         walk.answered = true;
-        let mut urls = Vec::new();
 
-        match Document::parse(&content) {
-            Ok(doc) => {
-                // Check if this is a sitemap index file
-                let is_sitemap_index = doc.root_element().has_tag_name("sitemapindex");
-
-                if is_sitemap_index {
-                    // This is a sitemap index file, so we need to process each sitemap
-                    for sitemap_node in doc.descendants().filter(|n| n.has_tag_name("sitemap")) {
-                        if urls.len() >= MAX_SITEMAP_URLS {
-                            break;
-                        }
-                        if let Some(loc_node) =
-                            sitemap_node.descendants().find(|n| n.has_tag_name("loc"))
-                        {
-                            if let Some(nested_sitemap_url) = loc_node.text() {
-                                // A child sitemap must live on the same host as
-                                // the index that names it; anything else is the
-                                // document steering us off the target.
-                                if !same_host_as_parent(sitemap_url, nested_sitemap_url.trim()) {
-                                    continue;
-                                }
-                                // Recursively fetch and parse nested sitemaps.
-                                // Box::pin the future to avoid infinitely sized futures.
-                                let nested_urls = Box::pin(Self::parse_sitemap(
-                                    client,
-                                    nested_sitemap_url.trim(),
-                                    depth + 1,
-                                    walk,
-                                    limiter,
-                                ))
-                                .await?;
-                                urls.extend(nested_urls);
-                            }
-                        }
+        match parse_sitemap_document(&content, is_text) {
+            SitemapDocument::Urls(urls) => Ok(urls),
+            SitemapDocument::Index(children) => {
+                let mut urls = Vec::new();
+                for nested_sitemap_url in children {
+                    if urls.len() >= MAX_SITEMAP_URLS {
+                        break;
                     }
-                } else {
-                    // This is a regular sitemap file
-                    for url_node in doc.descendants().filter(|n| n.has_tag_name("url")) {
-                        if urls.len() >= MAX_SITEMAP_URLS {
-                            break;
-                        }
-                        if let Some(loc_node) =
-                            url_node.descendants().find(|n| n.has_tag_name("loc"))
-                        {
-                            if let Some(url) = loc_node.text() {
-                                // Trimmed, like the sitemap-index branch above:
-                                // XML lets a pretty-printed
-                                // `<loc>\n  https://…\n</loc>` carry the
-                                // surrounding indentation into the text node,
-                                // and the newlines rode along into the emitted
-                                // URL — which then failed host validation, so
-                                // every URL of such a sitemap was silently lost.
-                                let url = url.trim();
-                                if !url.is_empty() {
-                                    urls.push(url.to_string());
-                                }
-                            }
-                        }
+                    // A child sitemap must live on the same host as the index
+                    // that names it; anything else is the document steering
+                    // us off the target.
+                    if !same_host_as_parent(sitemap_url, &nested_sitemap_url) {
+                        continue;
                     }
+                    // Recursively fetch and parse nested sitemaps. Box::pin
+                    // the future to avoid infinitely sized futures.
+                    let nested_urls = Box::pin(Self::parse_sitemap(
+                        client,
+                        &nested_sitemap_url,
+                        depth + 1,
+                        walk,
+                        limiter,
+                    ))
+                    .await?;
+                    urls.extend(nested_urls);
                 }
+                Ok(urls)
             }
-            Err(_) => {
-                // XML parse failed. Only treat it as a plain-text URL list when
-                // the source actually is text (a .txt sitemap or text/plain);
-                // otherwise this was an HTML/error page and yields no URLs.
-                if is_text_sitemap {
-                    for line in content.lines() {
-                        if urls.len() >= MAX_SITEMAP_URLS {
-                            break;
-                        }
-                        let line = line.trim();
-                        if line.starts_with("http") {
-                            urls.push(line.to_string());
-                        }
+        }
+    }
+}
+
+/// The candidate sitemap locations, scheme-less: the CDX urlkey ignores the
+/// scheme, so one listing per name covers both `http://` and `https://`.
+const ARCHIVED_SITEMAP_NAMES: [&str; 3] = ["sitemap.xml", "sitemap_index.xml", "sitemap.txt"];
+
+/// State threaded through one domain's archived sitemap walk.
+struct ArchivedWalk<'a> {
+    client: &'a Client,
+    settings: &'a ArchivedDiscovery,
+    limiter: Option<&'a RateLimiter>,
+    reporter: Option<&'a ProgressReporter>,
+    domain: &'a str,
+    /// Documents this walk may still fetch. Nested sitemaps count: a
+    /// `<sitemapindex>` with two hundred children is two hundred requests.
+    budget: usize,
+    /// `(timestamp, url)` pairs already replayed, so a cycle inside one
+    /// version of an index is fetched at most once.
+    visited: HashSet<(String, String)>,
+    urls: Vec<String>,
+}
+
+impl ArchivedWalk<'_> {
+    fn note(&self, msg: String) {
+        if let Some(r) = self.reporter {
+            r.note(msg);
+        }
+    }
+
+    /// Replay `sitemap_url` as it was at `timestamp` and collect what it
+    /// names, following a `<sitemapindex>` into its children *at the same
+    /// timestamp* — the archive replays the nearest capture, which is the
+    /// child as it was when that version of the index pointed at it.
+    #[async_recursion]
+    async fn walk(&mut self, timestamp: &str, sitemap_url: &str, depth: usize) {
+        if depth > MAX_SITEMAP_DEPTH || self.budget == 0 {
+            return;
+        }
+        if !self
+            .visited
+            .insert((timestamp.to_string(), sitemap_url.to_string()))
+        {
+            return;
+        }
+        self.budget -= 1;
+
+        let replay = replay_at(
+            self.client,
+            self.settings.origin(),
+            timestamp,
+            sitemap_url,
+            MAX_SITEMAP_BYTES,
+            self.limiter,
+        )
+        .await;
+        let (content, content_type) = match replay {
+            Ok(Replay::Body { text, content_type }) => (text, content_type),
+            Ok(Replay::Unavailable(status)) => {
+                self.note(format!(
+                    "{}: skipping archived {sitemap_url} from {timestamp} (archive answered {status})",
+                    self.domain
+                ));
+                return;
+            }
+            Err(e) => {
+                self.note(format!(
+                    "{}: failed to replay archived {sitemap_url} from {timestamp}: {e}",
+                    self.domain
+                ));
+                return;
+            }
+        };
+
+        let is_text = is_text_sitemap(sitemap_url, content_type.as_deref());
+        match parse_sitemap_document(&content, is_text) {
+            SitemapDocument::Urls(found) => self.urls.extend(found),
+            SitemapDocument::Index(children) => {
+                for child in children {
+                    if !same_host_as_parent(sitemap_url, &child) {
+                        continue;
                     }
+                    self.walk(timestamp, &child, depth + 1).await;
                 }
             }
         }
+    }
+}
 
-        Ok(urls)
+impl SitemapProvider {
+    /// Read every distinct archived version of `domain`'s sitemaps.
+    ///
+    /// The three usual locations are each listed once; captures the archive
+    /// recorded as anything but a success are not replayed (reported under
+    /// `--verbose` only), and `--archived-discovery-limit` bounds the total
+    /// number of documents fetched, nested sitemaps included.
+    async fn fetch_archived(
+        &self,
+        domain: &str,
+        settings: &ArchivedDiscovery,
+        reporter: Option<ProgressReporter>,
+    ) -> Result<Vec<UrlRecord>> {
+        let client = self.build_client()?;
+        let mut walk = ArchivedWalk {
+            client: &client,
+            settings,
+            limiter: self.rate_limit.as_ref(),
+            reporter: reporter.as_ref(),
+            domain,
+            budget: settings.limit,
+            visited: HashSet::new(),
+            urls: Vec::new(),
+        };
+
+        'names: for name in ARCHIVED_SITEMAP_NAMES {
+            if let Some(r) = &reporter {
+                r.detail(format!("listing {name} versions…"));
+            }
+            let listing = list_versions(
+                &client,
+                settings,
+                &format!("{domain}/{name}"),
+                self.retries,
+                walk.limiter,
+            )
+            .await?;
+            if !listing.skipped.is_empty() {
+                walk.note(format!(
+                    "{domain}: archived {name} captures not worth replaying: {}",
+                    describe_skipped(&listing.skipped)
+                ));
+            }
+
+            let total = listing.fetchable.len();
+            for (i, capture) in listing.fetchable.iter().enumerate() {
+                if walk.budget == 0 {
+                    walk.note(format!(
+                        "{domain}: --archived-discovery-limit reached with archived {name} versions left unread; raise it for the rest"
+                    ));
+                    break 'names;
+                }
+                if let Some(r) = &reporter {
+                    if r.stop_requested() {
+                        r.mark_partial();
+                        break 'names;
+                    }
+                    r.detail(format!("{name} version {}/{total}…", i + 1));
+                }
+                walk.walk(&capture.timestamp, &capture.original, 0).await;
+            }
+        }
+
+        let mut urls = walk.urls;
+        urls.sort();
+        urls.dedup();
+        Ok(urls.into_iter().map(UrlRecord::bare).collect())
     }
 }
 
@@ -269,6 +475,10 @@ impl Provider for SitemapProvider {
         domain: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(settings) = &self.archived {
+                return self.fetch_archived(domain, settings, None).await;
+            }
+
             let client = self.build_client()?;
             let limiter = self.rate_limit.as_ref();
             let mut urls = Vec::new();
@@ -322,6 +532,17 @@ impl Provider for SitemapProvider {
 
             Ok(urls.into_iter().map(UrlRecord::bare).collect())
         })
+    }
+
+    fn fetch_urls_with_progress<'a>(
+        &'a self,
+        domain: &'a str,
+        reporter: Option<ProgressReporter>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
+        match &self.archived {
+            Some(settings) => Box::pin(self.fetch_archived(domain, settings, reporter)),
+            None => self.fetch_urls(domain),
+        }
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -897,5 +1118,303 @@ mod tests {
             assert_eq!(u.trim(), u, "{u:?}");
             assert!(url::Url::parse(u).is_ok(), "{u:?}");
         }
+    }
+
+    const URLSET_A: &str = r#"<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/2019/launch</loc></url>
+  <url><loc>https://example.com/shared</loc></url>
+</urlset>"#;
+
+    const URLSET_B: &str = r#"<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/2024/now</loc></url>
+  <url><loc>https://example.com/shared</loc></url>
+</urlset>"#;
+
+    /// An index listing for `name` on the mock archive, and empty listings for
+    /// the other candidate names so the walk has exactly one thing to read.
+    async fn archived_index_mocks(
+        server: &mut Server,
+        name: &str,
+        body: &str,
+    ) -> Vec<mockito::Mock> {
+        let mut mocks = Vec::new();
+        for candidate in ARCHIVED_SITEMAP_NAMES {
+            let rows = if candidate == name { body } else { "" };
+            mocks.push(
+                server
+                    .mock("GET", "/cdx/search/cdx")
+                    .match_query(mockito::Matcher::AllOf(vec![
+                        mockito::Matcher::UrlEncoded(
+                            "url".into(),
+                            format!("example.com/{candidate}"),
+                        ),
+                        mockito::Matcher::UrlEncoded("collapse".into(), "digest".into()),
+                    ]))
+                    .with_status(200)
+                    .with_body(rows)
+                    .expect(1)
+                    .create_async()
+                    .await,
+            );
+        }
+        mocks
+    }
+
+    #[test]
+    fn parse_sitemap_document_tells_indexes_from_url_lists() {
+        assert_eq!(
+            parse_sitemap_document(URLSET_A, false),
+            SitemapDocument::Urls(vec![
+                "https://example.com/2019/launch".to_string(),
+                "https://example.com/shared".to_string(),
+            ])
+        );
+        let index = r#"<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>
+    https://example.com/a.xml
+  </loc></sitemap>
+  <sitemap><loc>https://example.com/b.xml</loc></sitemap>
+</sitemapindex>"#;
+        assert_eq!(
+            parse_sitemap_document(index, false),
+            SitemapDocument::Index(vec![
+                "https://example.com/a.xml".to_string(),
+                "https://example.com/b.xml".to_string(),
+            ])
+        );
+        // Plain text only counts as a URL list when the source is text.
+        let text = "https://example.com/t1\nnot a url\nhttps://example.com/t2\n";
+        assert_eq!(
+            parse_sitemap_document(text, true),
+            SitemapDocument::Urls(vec![
+                "https://example.com/t1".to_string(),
+                "https://example.com/t2".to_string(),
+            ])
+        );
+        assert_eq!(
+            parse_sitemap_document("<html>error & oops http://x/</html>", false),
+            SitemapDocument::Urls(vec![])
+        );
+        assert!(is_text_sitemap("https://example.com/sitemap.txt", None));
+        assert!(is_text_sitemap(
+            "https://example.com/sitemap",
+            Some("text/plain")
+        ));
+        assert!(!is_text_sitemap(
+            "https://example.com/sitemap.xml",
+            Some("application/xml")
+        ));
+    }
+
+    #[tokio::test]
+    async fn archived_sitemap_versions_are_replayed_and_parsed() {
+        let mut server = Server::new_async().await;
+        let indexes = archived_index_mocks(
+            &mut server,
+            "sitemap.xml",
+            "https://example.com/sitemap.xml 20190101000000 200 V2019\n\
+             https://example.com/sitemap.xml 20240101000000 200 V2024\n",
+        )
+        .await;
+        let v2019 = server
+            .mock(
+                "GET",
+                "/web/20190101000000id_/https://example.com/sitemap.xml",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(URLSET_A)
+            .expect(1)
+            .create_async()
+            .await;
+        let v2024 = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/sitemap.xml",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(URLSET_B)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let provider =
+            SitemapProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
+
+        // A 2019 entry the current sitemap no longer lists is recovered.
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/2019/launch".to_string(),
+                "https://example.com/2024/now".to_string(),
+                "https://example.com/shared".to_string(),
+            ]
+        );
+        for m in &indexes {
+            m.assert();
+        }
+        v2019.assert();
+        v2024.assert();
+    }
+
+    #[tokio::test]
+    async fn an_archived_index_is_followed_into_its_children_at_the_same_moment() {
+        let mut server = Server::new_async().await;
+        let _indexes = archived_index_mocks(
+            &mut server,
+            "sitemap_index.xml",
+            "https://example.com/sitemap_index.xml 20200101000000 200 IDX\n",
+        )
+        .await;
+        let _index_body = server
+            .mock(
+                "GET",
+                "/web/20200101000000id_/https://example.com/sitemap_index.xml",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(
+                r#"<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+  <sitemap><loc>https://elsewhere.test/private.xml</loc></sitemap>
+</sitemapindex>"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        // The child is replayed at the *index's* timestamp: the archive
+        // resolves it to the child as it was then.
+        let child = server
+            .mock(
+                "GET",
+                "/web/20200101000000id_/https://example.com/posts.xml",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(URLSET_A)
+            .expect(1)
+            .create_async()
+            .await;
+        // An off-host child is never followed, archived or not.
+        let offsite = server
+            .mock(
+                "GET",
+                "/web/20200101000000id_/https://elsewhere.test/private.xml",
+            )
+            .expect(0)
+            .create_async()
+            .await;
+
+        let provider =
+            SitemapProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/2019/launch".to_string(),
+                "https://example.com/shared".to_string(),
+            ]
+        );
+        child.assert();
+        offsite.assert();
+    }
+
+    #[tokio::test]
+    async fn archived_limit_counts_nested_documents_and_stops_the_walk() {
+        let mut server = Server::new_async().await;
+        let _indexes = archived_index_mocks(
+            &mut server,
+            "sitemap_index.xml",
+            "https://example.com/sitemap_index.xml 20200101000000 200 IDX\n",
+        )
+        .await;
+        let _index_body = server
+            .mock(
+                "GET",
+                "/web/20200101000000id_/https://example.com/sitemap_index.xml",
+            )
+            .with_status(200)
+            .with_body(
+                r#"<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/posts.xml</loc></sitemap>
+</sitemapindex>"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let child = server
+            .mock(
+                "GET",
+                "/web/20200101000000id_/https://example.com/posts.xml",
+            )
+            .expect(0)
+            .create_async()
+            .await;
+
+        // Budget of one document: the index itself uses it up.
+        let provider =
+            SitemapProvider::archived(ArchivedDiscovery::new(1).with_origin(server.url()));
+        let urls = provider.fetch_urls("example.com").await.unwrap();
+        assert!(urls.is_empty());
+        child.assert();
+    }
+
+    #[tokio::test]
+    async fn archived_captures_the_index_recorded_as_errors_are_reported_verbosely_only() {
+        let mut server = Server::new_async().await;
+        let _indexes = archived_index_mocks(
+            &mut server,
+            "sitemap.xml",
+            "https://example.com/sitemap.xml 20180101000000 - -\n\
+             https://example.com/sitemap.xml 20240101000000 200 OK\n",
+        )
+        .await;
+        let dead = server
+            .mock(
+                "GET",
+                "/web/20180101000000id_/https://example.com/sitemap.xml",
+            )
+            .expect(0)
+            .create_async()
+            .await;
+        let _ok = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/sitemap.xml",
+            )
+            .with_status(200)
+            .with_body(URLSET_B)
+            .create_async()
+            .await;
+
+        let provider =
+            SitemapProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        let (manager, notes) = crate::progress::ProgressManager::capturing();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
+            .with_notifier(manager.notifier());
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(urls.len(), 2);
+        dead.assert();
+        let notes = notes.lock().unwrap().join("\n");
+        assert!(
+            notes.contains("sitemap.xml captures not worth replaying: 1 skipped"),
+            "{notes}"
+        );
+
+        // Without a verbose reporter nothing is said at all.
+        let (manager, quiet) = crate::progress::ProgressManager::capturing();
+        let _ = manager;
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
+        assert_eq!(urls.len(), 2);
+        assert!(quiet.lock().unwrap().is_empty());
     }
 }
