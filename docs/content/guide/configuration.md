@@ -53,6 +53,7 @@ vt_api_key = ""                       # VirusTotal API key
 urlscan_api_key = ""                  # URLScan API key (optional; urlscan also works anonymously)
 zoomeye_api_key = ""                  # ZoomEye API key
 github_api_key = ""                   # GitHub Code Search personal access token
+bevigil_api_key = ""                  # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false                # Skip robots.txt discovery
 exclude_sitemap = false               # Skip sitemap.xml discovery
 
@@ -122,10 +123,11 @@ incremental = true
 
 ```toml
 [provider]
-providers = ["wayback", "cc", "otx", "vt", "urlscan", "zoomeye"]
+providers = ["wayback", "cc", "otx", "vt", "urlscan", "zoomeye", "bevigil"]
 vt_api_key = "YOUR_VT_KEY"
 urlscan_api_key = "YOUR_URLSCAN_KEY"
 zoomeye_api_key = "YOUR_ZOOMEYE_KEY"
+bevigil_api_key = "YOUR_BEVIGIL_KEY"
 subs = true
 
 [filter]

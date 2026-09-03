@@ -31,6 +31,7 @@ archive_exclude_mime = ["text/html"] # Leave assets and endpoints behind
 # archive_status = ["200"]           # Keep only these recorded status codes
 # archive_mime = ["application/json"] # Finds endpoints that carry no extension
 vt_api_key = ""                      # VirusTotal API key (If using VirusTotal)
+# bevigil_api_key = ""               # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false               # Exclude robots.txt URLs
 exclude_sitemap = false              # Exclude sitemap.xml URLs
 

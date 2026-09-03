@@ -24,6 +24,7 @@ fn no_valid_providers_error_lists_every_provider() {
         .env_remove("URX_URLSCAN_API_KEY")
         .env_remove("URX_ZOOMEYE_API_KEY")
         .env_remove("URX_GITHUB_API_KEY")
+        .env_remove("URX_BEVIGIL_API_KEY")
         .output()
         .expect("urx should run");
 
@@ -32,7 +33,7 @@ fn no_valid_providers_error_lists_every_provider() {
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(
         stderr.contains(
-            "valid provider names (arquivo, cc, github, otx, robots, sitemap, urlscan, vt, wayback, zoomeye)",
+            "valid provider names (arquivo, bevigil, cc, github, otx, robots, sitemap, urlscan, vt, wayback, zoomeye)",
         ),
         "unexpected stderr: {stderr}"
     );

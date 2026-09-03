@@ -203,6 +203,13 @@ pub struct Args {
     #[clap(long, action = clap::ArgAction::Append)]
     pub github_api_key: Vec<String>,
 
+    #[clap(help_heading = "Provider Options")]
+    /// API key for BeVigil (URLs extracted from unpacked Android apps; also
+    /// reads URX_BEVIGIL_API_KEY, comma-separated for rotation). Required for
+    /// the `bevigil` provider.
+    #[clap(long, action = clap::ArgAction::Append)]
+    pub bevigil_api_key: Vec<String>,
+
     /// Include robots.txt discovery (default: true)
     #[clap(long, default_value = "true", hide = true)]
     pub include_robots: bool,

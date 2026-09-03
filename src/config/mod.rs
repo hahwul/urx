@@ -70,6 +70,7 @@ pub struct ProviderConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    pub bevigil_api_key: Option<String>,
     pub include_robots: Option<bool>,
     pub include_sitemap: Option<bool>,
     pub exclude_robots: Option<bool>,
@@ -89,6 +90,7 @@ pub struct ProviderKeysConfig {
     pub urlscan_api_key: Option<String>,
     pub zoomeye_api_key: Option<String>,
     pub github_api_key: Option<String>,
+    pub bevigil_api_key: Option<String>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -215,6 +217,7 @@ impl ProviderKeysConfig {
         cli_supplied_urlscan: bool,
         cli_supplied_zoomeye: bool,
         cli_supplied_github: bool,
+        cli_supplied_bevigil: bool,
     ) {
         warn_about_unknown_keys(
             &self.unknown_keys(),
@@ -240,6 +243,11 @@ impl ProviderKeysConfig {
         if !cli_supplied_github {
             if let Some(keys) = &self.github_api_key {
                 args.github_api_key = split_csv(keys);
+            }
+        }
+        if !cli_supplied_bevigil {
+            if let Some(keys) = &self.bevigil_api_key {
+                args.bevigil_api_key = split_csv(keys);
             }
         }
     }
@@ -590,6 +598,12 @@ impl Config {
         if args.github_api_key.is_empty() {
             if let Some(github_api_key) = &self.provider.github_api_key {
                 args.github_api_key = split_csv(github_api_key);
+            }
+        }
+
+        if args.bevigil_api_key.is_empty() {
+            if let Some(bevigil_api_key) = &self.provider.bevigil_api_key {
+                args.bevigil_api_key = split_csv(bevigil_api_key);
             }
         }
 
@@ -1114,13 +1128,14 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: Some("from-provider-config".to_string()),
+            bevigil_api_key: None,
             unknown: Default::default(),
         };
-        keys.apply_to_args(&mut args, false, false, false, false);
+        keys.apply_to_args(&mut args, false, false, false, false, false);
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
 
         // ...but a CLI-supplied key still wins.
-        keys.apply_to_args(&mut args, false, false, false, true);
+        keys.apply_to_args(&mut args, false, false, false, true, false);
         assert_eq!(args.github_api_key, vec!["from-provider-config"]);
     }
 
@@ -1157,6 +1172,7 @@ mod tests {
             urlscan_api_key: Some("us-from-file".to_string()),
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
@@ -1164,7 +1180,7 @@ mod tests {
         // overwrite that.
         args.vt_api_key = vec!["cli-key".to_string()];
 
-        cfg.apply_to_args(&mut args, true, false, false, false);
+        cfg.apply_to_args(&mut args, true, false, false, false, false);
 
         assert_eq!(args.vt_api_key, vec!["cli-key".to_string()]);
         // urlscan was empty and not CLI-supplied -> file value applies and
@@ -1181,10 +1197,11 @@ mod tests {
             urlscan_api_key: None,
             zoomeye_api_key: None,
             github_api_key: None,
+            bevigil_api_key: None,
             unknown: Default::default(),
         };
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
-        cfg.apply_to_args(&mut args, false, false, false, false);
+        cfg.apply_to_args(&mut args, false, false, false, false, false);
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
     }
 

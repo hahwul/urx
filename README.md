@@ -21,6 +21,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Fetch URLs from multiple sources in parallel (Wayback Machine, Common Crawl, OTX, Arquivo.pt)
 * Plug in any other CDX index server — national web archives, a private pywb, OutbackCDX — with `--cdx-endpoint URL`, no code change needed
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
+* BeVigil provider: URLs extracted from unpacked Android apps — endpoints no web archive ever crawled
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
 * Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
 * Predefined presets, both by file family ("no-images", "only-js") and by security interest ("only-secrets", "only-backup", "only-config", "only-api")
@@ -176,6 +177,8 @@ Provider Options:
           Optional API key for Urlscan; the provider also works anonymously (rate-limited ~30 req/min per IP). Can be used multiple times for rotation, or via URX_URLSCAN_API_KEY (comma-separated keys)
       --github-api-key <GITHUB_API_KEY>
           Personal access token for the GitHub Code Search provider (also reads URX_GITHUB_API_KEY, comma-separated for rotation)
+      --bevigil-api-key <BEVIGIL_API_KEY>
+          API key for BeVigil, which returns URLs extracted from unpacked Android apps (also reads URX_BEVIGIL_API_KEY, comma-separated for rotation). Required for the `bevigil` provider
 
 Discovery Options:
       --exclude-robots   Exclude robots.txt discovery
@@ -289,6 +292,9 @@ urx example.is --cdx-endpoint https://vefsafn.is/cdx --providers cdx:vefsafn.is 
 
 # URLScan works without a key (anonymous, rate-limited); a key just raises limits
 urx example.com --providers urlscan
+
+# BeVigil: endpoints pulled out of unpacked Android apps (key required; auto-enables the provider)
+URX_BEVIGIL_API_KEY=*** urx example.com
 
 # Using VirusTotal and URLScan providers
 # 1. Explicitly add to providers (with API keys via command line)
@@ -490,8 +496,8 @@ Where the same URL comes from several captures or several archives, the values
 are merged: `first_seen` is the oldest timestamp anyone reported, `last_seen`
 the newest, and `mime`/`archive_status` come from the most recent capture that
 had them. Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`,
-`github`, `robots`, `sitemap`, and `--files` input) report the URL alone — no
-values are invented for them.
+`github`, `bevigil`, `robots`, `sitemap`, and `--files` input) report the URL
+alone — no values are invented for them.
 
 How the metadata surfaces depends on the format:
 

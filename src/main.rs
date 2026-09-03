@@ -54,6 +54,7 @@ fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
         direct.urlscan,
         direct.zoomeye,
         direct.github,
+        direct.bevigil,
     );
 
     Ok(())

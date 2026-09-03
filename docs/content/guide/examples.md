@@ -112,7 +112,7 @@ urx example.com --providers wayback,otx
 urx example.com --providers wayback,cc,otx,arquivo,urlscan
 
 # All available providers (with API keys)
-urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github
+urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github,bevigil
 
 # Or enable everything at once (keyed providers activate only when a key is present)
 urx example.com --all-providers

@@ -53,6 +53,7 @@ Provider Options:
   --urlscan-api-key <URLSCAN_API_KEY>   Optional API key for Urlscan (also works anonymously)
   --zoomeye-api-key <ZOOMEYE_API_KEY>   API key for ZoomEye
   --github-api-key <GITHUB_API_KEY>     Personal access token for GitHub Code Search (URX_GITHUB_API_KEY)
+  --bevigil-api-key <BEVIGIL_API_KEY>   API key for BeVigil, URLs from unpacked Android apps (URX_BEVIGIL_API_KEY)
 
 Discovery Options:
   --exclude-robots   Exclude robots.txt discovery
@@ -167,9 +168,10 @@ urx example.com --providers wayback --show-meta
 | URLScan | `urlscan` | No (optional) | `URX_URLSCAN_API_KEY` |
 | ZoomEye | `zoomeye` | Yes | `URX_ZOOMEYE_API_KEY` |
 | GitHub Code Search | `github` | Yes | `URX_GITHUB_API_KEY` |
+| BeVigil | `bevigil` | Yes | `URX_BEVIGIL_API_KEY` |
 | Custom CDX server | `cdx:<host>` (via `--cdx-endpoint URL`) | No | - |
 
-Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`).
+Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`). `bevigil` returns URLs that [BeVigil](https://bevigil.com/osint-api) extracted from unpacked Android apps — a source no web archive covers — and requires an API key (`--bevigil-api-key` or `URX_BEVIGIL_API_KEY`).
 
 Run `urx --list-providers` to print the full catalog (id, API-key requirement, and a one-line summary) directly from the binary.
 

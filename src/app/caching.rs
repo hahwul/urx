@@ -361,6 +361,7 @@ mod tests {
             "URX_URLSCAN_API_KEY",
             "URX_ZOOMEYE_API_KEY",
             "URX_GITHUB_API_KEY",
+            "URX_BEVIGIL_API_KEY",
         ]);
 
         let mut args = build_test_args();
@@ -384,6 +385,7 @@ mod tests {
             "URX_URLSCAN_API_KEY",
             "URX_ZOOMEYE_API_KEY",
             "URX_GITHUB_API_KEY",
+            "URX_BEVIGIL_API_KEY",
         ]);
 
         let mut args = build_test_args();

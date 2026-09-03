@@ -129,6 +129,12 @@ pub fn provider_catalog() -> &'static [ProviderInfo] {
             summary: "GitHub Code Search (URX_GITHUB_API_KEY)",
         },
         ProviderInfo {
+            id: "bevigil",
+            display_name: "BeVigil",
+            requires_key: true,
+            summary: "URLs extracted from unpacked Android apps (URX_BEVIGIL_API_KEY)",
+        },
+        ProviderInfo {
             id: "robots",
             display_name: "robots.txt",
             requires_key: false,
@@ -334,6 +340,11 @@ mod tests {
         assert!(msg.contains("The GitHub provider (github)"), "{msg}");
         assert!(msg.contains("--github-api-key"), "{msg}");
         assert!(msg.contains("URX_GITHUB_API_KEY"), "{msg}");
+
+        let msg = missing_api_key_message("bevigil");
+        assert!(msg.contains("The BeVigil provider (bevigil)"), "{msg}");
+        assert!(msg.contains("--bevigil-api-key"), "{msg}");
+        assert!(msg.contains("URX_BEVIGIL_API_KEY"), "{msg}");
     }
 
     #[test]

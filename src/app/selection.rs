@@ -17,9 +17,9 @@ use crate::cli::Args;
 use crate::filters::{compile_url_regexes, validate_presets};
 use crate::network::NetworkSettings;
 use crate::providers::{
-    self, ArquivoProvider, CdxDialect, CdxProvider, CommonCrawlProvider, GitHubProvider,
-    OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider, VirusTotalProvider,
-    WaybackMachineProvider, ZoomEyeProvider,
+    self, ArquivoProvider, BeVigilProvider, CdxDialect, CdxProvider, CommonCrawlProvider,
+    GitHubProvider, OTXProvider, Provider, RobotsProvider, SitemapProvider, UrlscanProvider,
+    VirusTotalProvider, WaybackMachineProvider, ZoomEyeProvider,
 };
 use crate::runner::add_provider;
 
@@ -380,6 +380,17 @@ pub fn initialize_providers(
         }
     }
 
+    if enabled.contains("bevigil") {
+        let bevigil_keys = keys.bevigil.clone();
+        if !bevigil_keys.is_empty() {
+            register!("bevigil", "BeVigil".to_string(), || {
+                BeVigilProvider::new_with_keys(bevigil_keys)
+            });
+        } else if !args.silent && !args.all_providers {
+            eprintln!("{}", missing_api_key_message("bevigil"));
+        }
+    }
+
     if providers.is_empty() {
         // Returned, not printed-and-returned: `main` reports the error too, so
         // the old eprintln made every no-provider run emit the message twice —
@@ -399,13 +410,14 @@ mod tests {
     use crate::test_support::{build_test_args, env_mutex, EnvGuard};
     use clap::Parser;
 
-    /// The four keyed providers' environment variables, cleared so a developer's
+    /// The keyed providers' environment variables, cleared so a developer's
     /// real keys can't change what a selection test observes.
-    const KEYED_ENV: [&str; 4] = [
+    const KEYED_ENV: [&str; 5] = [
         "URX_VT_API_KEY",
         "URX_URLSCAN_API_KEY",
         "URX_ZOOMEYE_API_KEY",
         "URX_GITHUB_API_KEY",
+        "URX_BEVIGIL_API_KEY",
     ];
 
     /// Run `initialize_providers` expecting rejection, and return the message.
@@ -618,12 +630,40 @@ mod tests {
                 "--all-providers (keyless) must enable {id}; got {ids:?}"
             );
         }
-        for id in ["vt", "zoomeye", "github"] {
+        for id in ["vt", "zoomeye", "github", "bevigil"] {
             assert!(
                 !ids.iter().any(|p| p == id),
                 "keyed provider {id} must not activate without a key; got {ids:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_bevigil_is_keyed_like_the_other_keyed_providers() {
+        let _env_lock = env_mutex().lock().unwrap();
+        let _guard = EnvGuard::unset(&KEYED_ENV);
+
+        // Requested without a key: skipped (the message goes to stderr).
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string(), "bevigil".to_string()];
+        let (providers, names) = initialize_providers(&args, &NetworkSettings::default()).unwrap();
+        assert_eq!(providers.len(), 1, "bevigil has no key and must be skipped");
+        assert_eq!(names, vec!["Wayback Machine"]);
+
+        // A key on the flag both enables and builds it.
+        args.providers = vec!["wayback".to_string()];
+        args.bevigil_api_key = vec!["k".to_string()];
+        assert_eq!(effective_provider_ids(&args), vec!["wayback", "bevigil"]);
+        let (providers, names) = initialize_providers(&args, &NetworkSettings::default()).unwrap();
+        assert_eq!(providers.len(), 2);
+        assert_eq!(names, vec!["Wayback Machine", "BeVigil"]);
+
+        // ...and so does the environment variable, on --all-providers too.
+        drop(_guard);
+        let _guard = EnvGuard::set(&[("URX_BEVIGIL_API_KEY", "env-key")]);
+        let mut args = build_test_args();
+        args.all_providers = true;
+        assert!(effective_provider_ids(&args).iter().any(|p| p == "bevigil"));
     }
 
     #[test]

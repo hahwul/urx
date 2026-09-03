@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 mod api_key_rotation;
 mod arquivo;
+mod bevigil;
 pub mod cdx;
 mod commoncrawl;
 pub mod filters;
@@ -18,6 +19,7 @@ pub mod wayback;
 mod zoomeye;
 pub use api_key_rotation::ApiKeyRotator;
 pub use arquivo::ArquivoProvider;
+pub use bevigil::BeVigilProvider;
 pub use cdx::CdxProvider;
 pub use commoncrawl::CommonCrawlProvider;
 pub use filters::{normalize_cdx_timestamp, ArchiveFilters, CdxDialect};

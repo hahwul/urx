@@ -68,6 +68,22 @@ export URX_GITHUB_API_KEY=token1,token2,token3
 urx example.com --providers github
 ```
 
+#### URX_BEVIGIL_API_KEY
+BeVigil API key for the `bevigil` provider, which returns URLs extracted from
+unpacked Android apps. Required; the provider does nothing without it. Get a
+key from the [BeVigil OSINT API](https://bevigil.com/osint-api).
+
+```bash
+export URX_BEVIGIL_API_KEY=your_key_here
+urx example.com --providers bevigil
+```
+
+**Multiple Keys (Rotation):**
+```bash
+export URX_BEVIGIL_API_KEY=key1,key2
+urx example.com --providers bevigil
+```
+
 ### Summary
 
 | Variable | Provider | Description |
@@ -76,6 +92,7 @@ urx example.com --providers github
 | `URX_URLSCAN_API_KEY` | URLScan | Optional URLScan API key (the provider also works anonymously) |
 | `URX_ZOOMEYE_API_KEY` | ZoomEye | ZoomEye API key |
 | `URX_GITHUB_API_KEY` | GitHub | GitHub Code Search personal access token |
+| `URX_BEVIGIL_API_KEY` | BeVigil | BeVigil OSINT API key (URLs from unpacked Android apps) |
 
 ### Usage Notes
 
