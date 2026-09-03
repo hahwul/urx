@@ -85,10 +85,14 @@ async fn collect_urls(
         let elapsed = read_started.elapsed();
         // Counted before deduplication, matching what a provider row reports.
         let url_count = urls.len();
-        let mut url_map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        let mut url_map: std::collections::HashMap<String, runner::UrlEntry> =
             std::collections::HashMap::new();
         for url in urls {
-            url_map.entry(url).or_default().insert("file".to_string());
+            // File input carries no archive metadata — only the URL was read.
+            url_map
+                .entry(url)
+                .or_default()
+                .absorb("file", &providers::CaptureMeta::default());
         }
         return Ok(ProviderRunResult {
             urls: url_map,
@@ -182,13 +186,43 @@ async fn run_testers(
 /// keep an empty `sources` list.
 fn attach_sources(final_urls: &mut [output::UrlData], run_result: &ProviderRunResult) {
     for entry in final_urls.iter_mut() {
-        if let Some(providers) = run_result.urls.get(&entry.url) {
-            let mut sources: Vec<String> = providers.iter().cloned().collect();
+        if let Some(found) = run_result.urls.get(&entry.url) {
+            let mut sources: Vec<String> = found.sources.iter().cloned().collect();
             sources.sort();
             sources.dedup();
             entry.sources = sources;
         }
     }
+}
+
+/// Attach the archive capture metadata (`first_seen`, `last_seen`, `mime`,
+/// `archive_status`, `digest`) the providers reported for each surviving URL.
+///
+/// A URL the run never saw — one the link extractor discovered, or one
+/// `--merge-endpoint` rewrote — simply has no metadata, exactly as it has no
+/// sources.
+fn attach_capture_meta(final_urls: &mut [output::UrlData], run_result: &ProviderRunResult) {
+    for entry in final_urls.iter_mut() {
+        if let Some(found) = run_result.urls.get(&entry.url) {
+            if !found.meta.is_empty() {
+                entry.set_capture_meta(&found.meta);
+            }
+        }
+    }
+}
+
+/// Whether capture metadata should reach the output.
+///
+/// The structured formats always take it: they omit absent keys, so a run that
+/// collected none is byte-identical to before the fields existed. Plain text is
+/// a pipeline contract — `urx target.com | httpx` must keep working — so there
+/// it is opt-in via `--show-meta`.
+fn wants_capture_meta(args: &Args) -> bool {
+    args.show_meta
+        || matches!(
+            args.format.to_lowercase().as_str(),
+            "json" | "jsonl" | "csv"
+        )
 }
 
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
@@ -291,6 +325,9 @@ async fn main() -> Result<()> {
     if args.show_sources {
         attach_sources(&mut final_urls, &run_result);
     }
+    if wants_capture_meta(&args) {
+        attach_capture_meta(&mut final_urls, &run_result);
+    }
 
     // Progress is transient: tear down the live region (header + all bars) now
     // that scanning is done, so the only thing left on screen is the result —
@@ -344,6 +381,52 @@ mod tests {
         .expect_err("a run with no resolvable target must not succeed");
 
         assert!(err.to_string().contains("No domains provided"), "{err}");
+    }
+
+    #[test]
+    fn metadata_reaches_structured_formats_but_not_bare_plain_output() {
+        // Plain output is a pipeline contract: `urx target.com | httpx` must
+        // keep seeing one bare URL per line unless the user opts in.
+        let plain = Args::parse_from(["urx", "example.com"]);
+        assert!(!wants_capture_meta(&plain));
+
+        let plain_opt_in = Args::parse_from(["urx", "--show-meta", "example.com"]);
+        assert!(wants_capture_meta(&plain_opt_in));
+
+        for format in ["json", "jsonl", "csv", "JSON"] {
+            let args = Args::parse_from(["urx", "-f", format, "example.com"]);
+            assert!(wants_capture_meta(&args), "{format} should carry metadata");
+        }
+    }
+
+    #[test]
+    fn attach_capture_meta_only_touches_urls_the_run_reported() {
+        let mut run_result = ProviderRunResult::default();
+        run_result.urls.insert(
+            "https://example.com/known".to_string(),
+            runner::UrlEntry {
+                sources: std::collections::HashSet::new(),
+                meta: providers::CaptureMeta::capture(
+                    Some("20240101000000"),
+                    Some("text/html"),
+                    Some("200"),
+                    Some("ABC"),
+                ),
+            },
+        );
+
+        let mut final_urls = vec![
+            output::UrlData::new("https://example.com/known".to_string()),
+            // Discovered by the link extractor, so it is not in the run result.
+            output::UrlData::new("https://example.com/extracted".to_string()),
+        ];
+        attach_capture_meta(&mut final_urls, &run_result);
+
+        assert_eq!(final_urls[0].first_seen.as_deref(), Some("20240101000000"));
+        assert_eq!(final_urls[0].mime.as_deref(), Some("text/html"));
+        assert_eq!(final_urls[0].archive_status.as_deref(), Some("200"));
+        assert_eq!(final_urls[0].digest.as_deref(), Some("ABC"));
+        assert!(!final_urls[1].has_capture_meta());
     }
 
     /// Build an `Args` for a `--files` run over a temp file of `urls`.
@@ -437,6 +520,9 @@ mod tests {
         assert_eq!(row.partial_count, 0);
         // Every URL is still attributed to the "file" source.
         assert_eq!(result.urls.len(), 3);
-        assert!(result.urls.values().all(|sources| sources.contains("file")));
+        assert!(result
+            .urls
+            .values()
+            .all(|entry| entry.sources.contains("file")));
     }
 }

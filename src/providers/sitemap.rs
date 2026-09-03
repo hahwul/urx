@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
-use crate::providers::Provider;
+use crate::providers::{Provider, UrlRecord};
 
 /// Max nesting depth for sitemap-index → sitemap recursion. A hostile or
 /// misconfigured index can chain or cycle indefinitely; this bounds it.
@@ -267,7 +267,7 @@ impl Provider for SitemapProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
             let limiter = self.rate_limit.as_ref();
@@ -320,7 +320,7 @@ impl Provider for SitemapProvider {
             urls.sort();
             urls.dedup();
 
-            Ok(urls)
+            Ok(urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -351,6 +351,7 @@ impl Provider for SitemapProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::urls_of;
     use mockito::Server;
 
     #[test]
@@ -428,7 +429,7 @@ mod tests {
             .await;
 
         let provider = SitemapProvider::new();
-        let urls = provider.fetch_urls(&host).await.unwrap();
+        let urls = urls_of(provider.fetch_urls(&host).await.unwrap());
 
         assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
         offsite.assert(); // never requested
@@ -505,7 +506,7 @@ mod tests {
         let provider = SitemapProvider::new();
         // The https:// candidates can't reach a plain-HTTP mock; the http:// one
         // does, which is what exercises the single-fetch path.
-        let urls = provider.fetch_urls(&host).await.unwrap();
+        let urls = urls_of(provider.fetch_urls(&host).await.unwrap());
 
         assert_eq!(urls, vec!["https://example.com/only".to_string()]);
         sitemap.assert();
@@ -670,7 +671,7 @@ mod tests {
         let result = provider.fetch_urls(&host).await;
 
         assert!(result.is_ok());
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"https://example.com/page2".to_string()));
@@ -722,7 +723,7 @@ mod tests {
         let result = provider.fetch_urls(&host).await;
 
         assert!(result.is_ok());
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 1);
         assert!(urls.contains(&"https://example.com/nested-page".to_string()));
     }
@@ -774,7 +775,7 @@ mod tests {
         let result = provider.fetch_urls(&host).await;
 
         assert!(result.is_ok());
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"https://example.com/page2".to_string()));
@@ -798,7 +799,7 @@ mod tests {
             .await;
 
         let provider = SitemapProvider::new();
-        let urls = provider.fetch_urls(&host).await.unwrap();
+        let urls = urls_of(provider.fetch_urls(&host).await.unwrap());
         assert!(
             !urls.iter().any(|u| u.contains("attacker.example")),
             "HTML error page was mined for URLs: {urls:?}"
@@ -815,7 +816,7 @@ mod tests {
         let result = provider.fetch_urls(&host).await;
 
         assert!(result.is_ok());
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert!(urls.is_empty());
     }
 
@@ -856,10 +857,12 @@ mod tests {
             .await;
 
         let provider = SitemapProvider::new();
-        let urls = provider
-            .fetch_urls(&host)
-            .await
-            .expect("a host without a sitemap is an empty result, not an error");
+        let urls = urls_of(
+            provider
+                .fetch_urls(&host)
+                .await
+                .expect("a host without a sitemap is an empty result, not an error"),
+        );
         assert!(urls.is_empty(), "{urls:?}");
     }
 
@@ -886,7 +889,7 @@ mod tests {
             .await;
 
         let provider = SitemapProvider::new();
-        let urls = provider.fetch_urls(&host).await.unwrap();
+        let urls = urls_of(provider.fetch_urls(&host).await.unwrap());
 
         assert_eq!(urls, vec!["https://example.com/pretty".to_string()]);
         // Belt and braces: nothing we emit may carry stray whitespace.

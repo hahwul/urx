@@ -1,6 +1,8 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use crate::providers::CaptureMeta;
+
 mod formatter;
 mod stream;
 mod writer;
@@ -10,7 +12,7 @@ pub use stream::{format_supports_streaming, StreamSink};
 pub use writer::*;
 
 /// A structure to hold URL data with optional status information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UrlData {
     /// The URL string
     pub url: String,
@@ -18,6 +20,19 @@ pub struct UrlData {
     pub status: Option<String>,
     /// Providers that reported this URL (sorted, deduped). Empty when unknown.
     pub sources: Vec<String>,
+    /// Timestamp of the oldest archived capture, 14-digit CDX form. `None`
+    /// unless a provider with a capture index reported this URL.
+    pub first_seen: Option<String>,
+    /// Timestamp of the newest archived capture, 14-digit CDX form.
+    pub last_seen: Option<String>,
+    /// MIME type the archive recorded for the newest capture.
+    pub mime: Option<String>,
+    /// HTTP status the *archive* recorded at capture time. Distinct from
+    /// [`UrlData::status`], which `--check-status` produces by re-requesting
+    /// the URL live.
+    pub archive_status: Option<String>,
+    /// One representative content digest across the captures of this URL.
+    pub digest: Option<String>,
 }
 
 impl UrlData {
@@ -25,8 +40,7 @@ impl UrlData {
     pub fn new(url: String) -> Self {
         UrlData {
             url,
-            status: None,
-            sources: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -35,7 +49,7 @@ impl UrlData {
         UrlData {
             url,
             status: Some(status),
-            sources: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -46,6 +60,26 @@ impl UrlData {
         sources.dedup();
         self.sources = sources;
         self
+    }
+
+    /// Copy the archive metadata a provider reported for this URL onto the
+    /// output record. Absent fields stay absent — the formatters omit them
+    /// entirely rather than emitting a placeholder.
+    pub fn set_capture_meta(&mut self, meta: &CaptureMeta) {
+        self.first_seen = meta.first_seen().map(str::to_string);
+        self.last_seen = meta.last_seen().map(str::to_string);
+        self.mime = meta.mime().map(str::to_string);
+        self.archive_status = meta.archive_status().map(str::to_string);
+        self.digest = meta.digest().map(str::to_string);
+    }
+
+    /// True when this entry carries any archive metadata at all.
+    pub fn has_capture_meta(&self) -> bool {
+        self.first_seen.is_some()
+            || self.last_seen.is_some()
+            || self.mime.is_some()
+            || self.archive_status.is_some()
+            || self.digest.is_some()
     }
 
     /// Parse a URL data entry from a string
@@ -61,14 +95,13 @@ impl UrlData {
             UrlData {
                 url: url.to_string(),
                 status: Some(status.to_string()),
-                sources: Vec::new(),
+                ..Default::default()
             }
         } else {
             // No status information found
             UrlData {
                 url: data,
-                status: None,
-                sources: Vec::new(),
+                ..Default::default()
             }
         }
     }

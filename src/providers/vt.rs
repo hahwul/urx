@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::ApiKeyRotator;
-use super::Provider;
+use super::{Provider, UrlRecord};
 use crate::network::client::{read_json_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -227,7 +227,7 @@ impl Provider for VirusTotalProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -235,7 +235,7 @@ impl Provider for VirusTotalProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             // Skip if no API keys are provided.
             if !self.api_key_rotator.has_keys() {
@@ -309,7 +309,7 @@ impl Provider for VirusTotalProvider {
 
             urls.sort();
             urls.dedup();
-            Ok(urls)
+            Ok(urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -349,6 +349,7 @@ impl Provider for VirusTotalProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_new_provider() {
@@ -552,7 +553,7 @@ mod tests {
         let result = provider.fetch_urls("example.com").await;
 
         assert!(result.is_ok(), "Expected success with empty API key");
-        let urls = result.unwrap();
+        let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 0, "Expected empty URLs list with empty API key");
     }
 
@@ -601,7 +602,7 @@ mod tests {
         let mut provider = VirusTotalProvider::new("test_api_key".to_string());
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
             urls,
             vec![
@@ -654,7 +655,7 @@ mod tests {
         let mut provider = VirusTotalProvider::new("test_api_key".to_string());
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
             urls,
             vec![
@@ -695,10 +696,12 @@ mod tests {
         provider.with_retries(0); // fail fast, no back-off sleeps
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
         assert_eq!(urls, vec!["https://example.com/a".to_string()]);
         assert!(reporter.is_partial());
     }
@@ -761,7 +764,7 @@ mod tests {
         provider.with_base_url(server.url());
         provider.with_retries(0);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert!(urls.is_empty());
     }
 }

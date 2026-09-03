@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::cli::Args;
-use crate::providers::Provider;
+use crate::providers::{Provider, UrlRecord};
 use crate::testers::Tester;
 
 /// Strip ANSI escapes so layout assertions hold regardless of the ambient
@@ -145,6 +145,7 @@ pub fn build_test_args() -> Args {
         all_providers: false,
         list_providers: false,
         show_sources: false,
+        show_meta: false,
         stats: false,
         domain_list: vec![],
         max_time: 0,
@@ -200,7 +201,7 @@ impl Provider for MockProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         let urls = self.urls.clone();
         let should_fail = self.should_fail;
         let calls = self.calls.clone();
@@ -216,7 +217,7 @@ impl Provider for MockProvider {
             if should_fail {
                 Err(anyhow::anyhow!("Mock provider failure"))
             } else {
-                Ok(urls)
+                Ok(urls.into_iter().map(UrlRecord::bare).collect())
             }
         })
     }

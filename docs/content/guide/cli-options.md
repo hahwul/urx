@@ -62,6 +62,7 @@ Display Options:
       --no-progress   No progress bar
       --no-color      Disable ANSI color (NO_COLOR is also honored)
       --show-sources  Annotate output URLs with the providers that returned them
+      --show-meta     Annotate plain-text URLs with the archive capture metadata
       --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
@@ -106,6 +107,50 @@ Cache Options:
   --redis-url <REDIS_URL>    Redis connection URL
   --cache-ttl <CACHE_TTL>    Cache TTL in seconds [default: 86400]
   --no-cache                 Disable caching entirely
+```
+
+## Archive Capture Metadata
+
+The CDX-backed providers (`wayback`, `cc`, `arquivo`) index *captures*, not just
+URLs, so every row they return already carries when the capture was taken, what
+it served, and a digest of the body. urx keeps those fields and reports them
+alongside each URL.
+
+| Field | Meaning |
+|-------|---------|
+| `first_seen` | Oldest capture timestamp, 14-digit CDX form (`YYYYMMDDhhmmss`) |
+| `last_seen` | Newest capture timestamp |
+| `mime` | MIME type of the most recent capture that recorded one |
+| `archive_status` | HTTP status the *archive* recorded at capture time |
+| `digest` | A representative content digest across the captures |
+
+`archive_status` is what the crawler saw when it captured the page. It is not
+the same as `status`, which only appears under `--check-status` and comes from
+re-requesting the URL live.
+
+When the same URL arrives from several captures or several archives, the fields
+merge: `first_seen` is the oldest timestamp anyone reported, `last_seen` the
+newest, and `mime`/`archive_status` come from the most recent capture that had
+them. Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`,
+`github`, `robots`, `sitemap`) and `--files` input report the URL alone; no
+values are invented for them, and a domain served from cache has none either
+(the cache stores URLs only).
+
+Per format:
+
+* `json` / `jsonl` — a key per field, present only when it has a value.
+* `csv` — a column per field, added only when at least one row has a value.
+* `plain` — unchanged by default (one bare URL per line, for piping); pass
+  `--show-meta` to append `first_seen=… last_seen=… mime=…` after the URL.
+
+`--show-meta` is incompatible with `--stream`, which prints a URL on first
+sighting — before the captures that would widen its `first_seen`/`last_seen`
+range have arrived.
+
+```bash
+urx example.com --providers wayback -f jsonl
+urx example.com -f jsonl | jq -r 'select(.last_seen < "20100101000000") | .url'
+urx example.com --providers wayback --show-meta
 ```
 
 ## Available Providers

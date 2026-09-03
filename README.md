@@ -26,6 +26,7 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
 * URL normalization and deduplication: Sort query parameters, remove trailing slashes, merge semantically identical URLs, and collapse near-duplicates that differ only in ids, hashes, or dates (`--dedup-similar`)
 * Support for multiple output formats: plain text, JSON, JSON Lines, CSV
+* Archive capture metadata: `first_seen`, `last_seen`, `mime`, `archive_status`, and `digest` come back with every URL a CDX archive reported, at no extra network cost
 * Streaming output (`--stream`): URLs are written as each provider reports them, so a pipeline starts working immediately instead of waiting for the slowest archive
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
 * Output results to the console or a file, or stream via stdin for pipeline integration
@@ -180,6 +181,7 @@ Display Options:
       --silent        Silent mode (no output)
       --no-progress   No progress bar
       --show-sources  Annotate output URLs with the providers that returned them
+      --show-meta     Annotate plain-text URLs with the archive capture metadata
       --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
@@ -444,12 +446,72 @@ deduplicated. Two things differ:
   (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
   `--check-status` /
   `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
-  `--show-sources`, `--output-dir`, and `--files`. Caching is bypassed, and
+  `--show-sources`, `--show-meta`, `--output-dir`, and `--files`. Caching is
+  bypassed, and
   `--format json` is refused in favour of `jsonl` because a JSON array has to
   know which entry is last.
 
 Because the batch result map is never populated in this mode, a streamed run
 also holds far less in memory — only the dedup set of URLs already written.
+
+### Archive Capture Metadata
+
+A CDX index records more than the URL: every capture carries a timestamp, the
+MIME type and HTTP status the archive saw, and a digest of the body. urx keeps
+all of it, so the three CDX-backed providers — `wayback`, `cc`, and `arquivo` —
+report each URL together with:
+
+| Field | Meaning |
+|---|---|
+| `first_seen` | Oldest capture timestamp, 14-digit CDX form (`YYYYMMDDhhmmss`) |
+| `last_seen` | Newest capture timestamp |
+| `mime` | MIME type of the most recent capture that recorded one |
+| `archive_status` | HTTP status the *archive* recorded at capture time |
+| `digest` | A representative content digest across the captures |
+
+`archive_status` is not `status`: `status` only appears under `--check-status`,
+which re-requests the URL live now, whereas `archive_status` is what the crawler
+got when it captured the page. A URL can perfectly well be `archive_status`
+`200` and dead today.
+
+Where the same URL comes from several captures or several archives, the values
+are merged: `first_seen` is the oldest timestamp anyone reported, `last_seen`
+the newest, and `mime`/`archive_status` come from the most recent capture that
+had them. Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`,
+`github`, `robots`, `sitemap`, and `--files` input) report the URL alone — no
+values are invented for them.
+
+How the metadata surfaces depends on the format:
+
+* **`json` / `jsonl`** — each field appears as a key when it has a value and is
+  omitted entirely when it does not, exactly like `sources`.
+* **`csv`** — a column is added only when at least one row has a value for it,
+  so a run with no metadata still produces a single `url` column.
+* **plain text** — unchanged by default, one bare URL per line, so existing
+  pipelines keep working. Pass `--show-meta` to append the fields.
+
+```bash
+# Rich records: when the URL was alive, and what it served
+urx example.com --providers wayback -f jsonl
+# {"url":"https://example.com/old.php","first_seen":"20040112093000",
+#  "last_seen":"20180722140311","mime":"text/html","archive_status":"200",
+#  "digest":"HT2DYGA5UKZCPBSFVCV3JOBXGW2G5UUA"}
+
+# Triage by age: everything last captured before 2010
+urx example.com -f jsonl | jq -r 'select(.last_seen < "20100101000000") | .url'
+
+# Opt plain output into the metadata
+urx example.com --providers wayback --show-meta
+```
+
+Streaming (`--stream`) reports URLs only. A URL is printed on first sighting,
+before the captures that would widen its `first_seen`/`last_seen` range have
+arrived, so `--show-meta` is rejected there for the same reason
+`--show-sources` is.
+
+A cache hit also carries no metadata: the cache stores URLs, so a domain served
+from cache reports its URLs without capture fields. Use `--no-cache` (or wait
+for the TTL) for a run that repopulates them.
 
 ### Archive-side Filtering
 

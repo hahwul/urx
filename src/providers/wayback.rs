@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::filters::{ArchiveFilters, CdxDialect};
-use super::Provider;
+use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
 use crate::network::client::{get_with_retry, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
@@ -21,15 +21,63 @@ const PAGE_LIMIT: usize = 50_000;
 /// up to ~500M captured URLs — far beyond anything real.
 const MAX_PAGES: usize = 10_000;
 
-/// Split a CDX `showResumeKey=true` response into its URL rows and the resume
-/// key for the next page (if any).
+/// The CDX fields we request, in order. `original` stays first so a data row
+/// still starts with the URL — [`split_page`] tells rows from the trailing
+/// resume key by exactly that, and the server was verified to still append the
+/// key after a blank line with a multi-field `fl`.
+///
+/// The other four are the capture metadata the archive already holds. They do
+/// widen a row (roughly 5x over `fl=original` alone), but that is the cheap
+/// side of the trade: deriving any one of them locally would mean re-requesting
+/// every URL over the network, which is what `--check-status` costs.
+const FIELDS: &str = "original,timestamp,mimetype,statuscode,digest";
+
+/// Parse one `FIELDS` row into a record.
+///
+/// The columns are space-separated with the URL first, but an archived URL can
+/// itself contain a raw space, so the row is split from the *right*: the four
+/// trailing columns are fixed in count, and whatever precedes them is the URL.
+/// A row that does not split into exactly five columns is not the layout we
+/// asked for, so it is rejected rather than parsed into shifted fields.
+fn parse_row(line: &str) -> Option<UrlRecord> {
+    let line = line.trim();
+    if !line.starts_with("http://") && !line.starts_with("https://") {
+        return None;
+    }
+
+    // `rsplitn` yields the trailing fields first and the remainder (the URL)
+    // last, so the five items arrive in reverse column order.
+    let mut fields = line.rsplitn(5, ' ');
+    let (Some(digest), Some(statuscode), Some(mimetype), Some(timestamp), Some(url)) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
+        return None;
+    };
+
+    Some(UrlRecord::new(
+        url.to_string(),
+        CaptureMeta::capture(
+            Some(timestamp),
+            Some(mimetype),
+            Some(statuscode),
+            Some(digest),
+        ),
+    ))
+}
+
+/// Split a CDX `showResumeKey=true` response into its capture rows and the
+/// resume key for the next page (if any).
 ///
 /// The server streams the result rows, then — *only while more results remain*
 /// — a blank line followed by an opaque resume key:
 ///
 /// ```text
-/// https://example.com/a
-/// https://example.com/b
+/// https://example.com/a 20240101000000 text/html 200 ABC…
+/// https://example.com/b 20240102000000 text/html 404 DEF…
 ///                          <- blank separator
 /// eJxLzs_V...              <- resume key
 /// ```
@@ -38,7 +86,7 @@ const MAX_PAGES: usize = 10_000;
 /// cursor. Requiring the blank separator is what stops stray non-URL junk in a
 /// malformed/error body from being mistaken for a key (which would trigger a
 /// spurious follow-up request). No such trailing token ⇒ this was the last page.
-fn split_page(text: &str) -> (Vec<String>, Option<String>) {
+fn split_page(text: &str) -> (Vec<UrlRecord>, Option<String>) {
     let lines: Vec<&str> = text.lines().collect();
 
     let mut resume_key = None;
@@ -53,14 +101,12 @@ fn split_page(text: &str) -> (Vec<String>, Option<String>) {
         }
     }
 
-    let urls = lines[..url_scan_end]
+    let records = lines[..url_scan_end]
         .iter()
-        .map(|l| l.trim())
-        .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
-        .map(String::from)
+        .filter_map(|line| parse_row(line))
         .collect();
 
-    (urls, resume_key)
+    (records, resume_key)
 }
 
 /// Percent-encode a resume key so opaque cursor bytes (`+`, `/`, `=` in some
@@ -141,17 +187,17 @@ impl WaybackMachineProvider {
     }
 
     /// Build the CDX query *without* pagination params. Plain-text streaming
-    /// (`fl=original`) is far more reliable than `output=json` for large
-    /// domains, and `collapse=urlkey` trims server-side duplicates.
+    /// (an explicit `fl=` field list) is far more reliable than `output=json`
+    /// for large domains, and `collapse=urlkey` trims server-side duplicates.
     fn query_base(&self, domain: &str) -> String {
         let mut url = if self.include_subdomains {
             format!(
-                "{}/cdx/search/cdx?url=*.{domain}/*&fl=original&collapse=urlkey",
+                "{}/cdx/search/cdx?url=*.{domain}/*&fl={FIELDS}&collapse=urlkey",
                 self.base_url()
             )
         } else {
             format!(
-                "{}/cdx/search/cdx?url={domain}/*&fl=original&collapse=urlkey",
+                "{}/cdx/search/cdx?url={domain}/*&fl={FIELDS}&collapse=urlkey",
                 self.base_url()
             )
         };
@@ -168,7 +214,7 @@ impl Provider for WaybackMachineProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         self.fetch_urls_with_progress(domain, None)
     }
 
@@ -176,7 +222,7 @@ impl Provider for WaybackMachineProvider {
         &'a self,
         domain: &'a str,
         reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.client_config().build_client()?;
             let query_base = self.query_base(domain);
@@ -190,7 +236,10 @@ impl Provider for WaybackMachineProvider {
             // plus a resume key pointing at the next slice. Following the key
             // lets arbitrarily large domains complete as a series of bounded,
             // fast requests instead of one unbounded request that times out.
-            let mut urls: Vec<String> = Vec::new();
+            // Rows are folded per URL as they arrive: `collapse=urlkey` only
+            // collapses *adjacent* rows, so the same URL still shows up on
+            // several pages, each time with a different capture.
+            let mut records = RecordSet::new();
             let mut resume_key: Option<String> = None;
             // Every cursor position we have already requested. A key we have
             // seen before means the cursor is stuck or cycling, which is the
@@ -244,7 +293,7 @@ impl Provider for WaybackMachineProvider {
                         // Best effort: a mid-cursor failure shouldn't discard
                         // the pages we already pulled. Only a failure on the
                         // very first request (nothing collected) is fatal.
-                        if urls.is_empty() {
+                        if records.is_empty() {
                             return Err(e);
                         }
                         // We're returning a truncated result. Flag it so the
@@ -257,11 +306,11 @@ impl Provider for WaybackMachineProvider {
                     }
                 };
 
-                let (page_urls, next_key) = split_page(&text);
-                urls.extend(page_urls);
+                let (page_records, next_key) = split_page(&text);
+                records.extend(page_records);
 
                 if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", urls.len()));
+                    r.detail(format!("{} URLs…", records.len()));
                     // The run asked us to stop (--max-time elapsed, or Ctrl-C).
                     // Hand back the pages already walked instead of losing them
                     // to the hard cancel after the runner's grace window.
@@ -296,10 +345,7 @@ impl Provider for WaybackMachineProvider {
                 }
             }
 
-            urls.sort();
-            urls.dedup();
-
-            Ok(urls)
+            Ok(records.into_sorted())
         })
     }
 
@@ -342,6 +388,7 @@ impl Provider for WaybackMachineProvider {
 mod tests {
     use super::*;
     use crate::progress::StopSignal;
+    use crate::providers::urls_of;
     // Removed unused import: std::time::Duration
 
     #[test]
@@ -506,14 +553,14 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
-                mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), FIELDS.into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
                 mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "text/plain")
             .with_body(
-                "http://example.com/page1\nhttp://example.com/page2\nhttp://example.com/page1\n",
+                "http://example.com/page1 20200101000000 text/html 200 DIGEST\nhttp://example.com/page2 20200101000000 text/html 200 DIGEST\nhttp://example.com/page1 20200101000000 text/html 200 DIGEST\n",
             )
             .expect(1)
             .create_async()
@@ -522,7 +569,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         // Should return unique URLs sorted.
         assert_eq!(urls.len(), 2);
@@ -555,7 +602,7 @@ mod tests {
             .with_status(200)
             .with_body_from_request(move |_| {
                 flip.request_stop();
-                b"http://example.com/a\nhttp://example.com/b\n\nKEY2\n".to_vec()
+                b"http://example.com/a 20200101000000 text/html 200 DIGEST\nhttp://example.com/b 20200101000000 text/html 200 DIGEST\n\nKEY2\n".to_vec()
             })
             .expect(1)
             .create_async()
@@ -569,7 +616,7 @@ mod tests {
                 "KEY2".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/c\n")
+            .with_body("http://example.com/c 20200101000000 text/html 200 DIGEST\n")
             .expect(0)
             .create_async()
             .await;
@@ -580,10 +627,12 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
 
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         // Page one survives the deadline instead of dying with the future.
         assert_eq!(
@@ -607,7 +656,7 @@ mod tests {
         let page1 = server
             .mock("GET", "/cdx/search/cdx")
             .with_status(200)
-            .with_body("http://example.com/a\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\n")
             .expect(0)
             .create_async()
             .await;
@@ -620,10 +669,12 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop);
 
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter))
+                .await
+                .unwrap(),
+        );
 
         assert!(urls.is_empty());
         page1.assert();
@@ -644,7 +695,7 @@ mod tests {
                 mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
-            .with_body("http://example.com/a\nhttp://example.com/b\n\nKEY2\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\nhttp://example.com/b 20200101000000 text/html 200 DIGEST\n\nKEY2\n")
             .expect(1)
             .create_async()
             .await;
@@ -657,7 +708,7 @@ mod tests {
                 "KEY2".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/b\nhttp://example.com/c\n")
+            .with_body("http://example.com/b 20200101000000 text/html 200 DIGEST\nhttp://example.com/c 20200101000000 text/html 200 DIGEST\n")
             .expect(1)
             .create_async()
             .await;
@@ -665,7 +716,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(
             urls,
@@ -691,7 +742,7 @@ mod tests {
                 "true".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/a\n\nKEY2\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\n\nKEY2\n")
             .expect(1)
             .create_async()
             .await;
@@ -702,7 +753,7 @@ mod tests {
                 "KEY2".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/b\n")
+            .with_body("http://example.com/b 20200101000000 text/html 200 DIGEST\n")
             .expect(1)
             .create_async()
             .await;
@@ -713,7 +764,7 @@ mod tests {
         provider.with_rate_limit(Some(5.0));
 
         let start = Instant::now();
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls.len(), 2);
         assert!(
             start.elapsed() >= Duration::from_millis(150),
@@ -735,7 +786,7 @@ mod tests {
                 mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
-            .with_body("http://example.com/a\nhttp://example.com/b\n\nKEY2\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\nhttp://example.com/b 20200101000000 text/html 200 DIGEST\n\nKEY2\n")
             .expect(1)
             .create_async()
             .await;
@@ -756,10 +807,12 @@ mod tests {
 
         // Drive it through a reporter so we can assert the partial flag is set.
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
         assert_eq!(
             urls,
             vec![
@@ -792,25 +845,35 @@ mod tests {
         assert!(provider.fetch_urls("example.com").await.is_err());
     }
 
+    /// One CDX row in the `FIELDS` layout the provider requests.
+    fn row(url: &str, timestamp: &str) -> String {
+        format!("{url} {timestamp} text/html 200 DIGEST{timestamp}")
+    }
+
     #[test]
     fn test_split_page_extracts_resume_key_after_blank_line() {
-        let body = "http://example.com/a\nhttps://example.com/b\n\neJxKEY\n";
-        let (urls, key) = split_page(body);
+        let body = format!(
+            "{}\n{}\n\neJxKEY\n",
+            row("http://example.com/a", "20200101000000"),
+            row("https://example.com/b", "20200102000000"),
+        );
+        let (records, key) = split_page(&body);
         assert_eq!(
-            urls,
-            vec![
-                "http://example.com/a".to_string(),
-                "https://example.com/b".to_string(),
-            ]
+            records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+            vec!["http://example.com/a", "https://example.com/b"]
         );
         assert_eq!(key.as_deref(), Some("eJxKEY"));
     }
 
     #[test]
     fn test_split_page_no_resume_key_on_last_page() {
-        let body = "http://example.com/a\nhttp://example.com/b\n";
-        let (urls, key) = split_page(body);
-        assert_eq!(urls.len(), 2);
+        let body = format!(
+            "{}\n{}\n",
+            row("http://example.com/a", "20200101000000"),
+            row("http://example.com/b", "20200102000000"),
+        );
+        let (records, key) = split_page(&body);
+        assert_eq!(records.len(), 2);
         assert_eq!(key, None);
     }
 
@@ -818,10 +881,61 @@ mod tests {
     fn test_split_page_ignores_trailing_junk_without_blank_separator() {
         // A non-URL line *not* preceded by a blank line is junk (e.g. an error
         // page line), never a resume key — so no spurious follow-up request.
-        let body = "<html>Service unavailable</html>\nhttp://example.com/real\nnot-a-url\n";
-        let (urls, key) = split_page(body);
-        assert_eq!(urls, vec!["http://example.com/real".to_string()]);
+        let body = format!(
+            "<html>Service unavailable</html>\n{}\nnot-a-url\n",
+            row("http://example.com/real", "20200101000000"),
+        );
+        let (records, key) = split_page(&body);
+        assert_eq!(
+            records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+            vec!["http://example.com/real"]
+        );
         assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_split_page_carries_the_capture_metadata() {
+        let body = "https://example.com/a 20240115120000 text/html 200 ABCDEF\n";
+        let (records, _) = split_page(body);
+        assert_eq!(records.len(), 1);
+        let meta = &records[0].meta;
+        assert_eq!(meta.first_seen(), Some("20240115120000"));
+        assert_eq!(meta.last_seen(), Some("20240115120000"));
+        assert_eq!(meta.mime(), Some("text/html"));
+        assert_eq!(meta.archive_status(), Some("200"));
+        assert_eq!(meta.digest(), Some("ABCDEF"));
+    }
+
+    #[test]
+    fn test_parse_row_handles_a_url_containing_a_space() {
+        // CDX stores `original` verbatim, spaces included. Splitting from the
+        // left would put "b/c.pdf" in the timestamp column and shift every
+        // other field along with it.
+        let record =
+            parse_row("https://example.com/a b/c.pdf 20240115120000 application/pdf 200 ABCDEF")
+                .expect("a five-column row must parse");
+        assert_eq!(record.url, "https://example.com/a b/c.pdf");
+        assert_eq!(record.meta.first_seen(), Some("20240115120000"));
+        assert_eq!(record.meta.mime(), Some("application/pdf"));
+    }
+
+    #[test]
+    fn test_parse_row_rejects_a_row_that_is_not_the_requested_layout() {
+        // Fewer columns than requested would otherwise be read shifted: the
+        // status parsed as the digest, the MIME type as the status, and so on.
+        assert!(parse_row("https://example.com/a 20240115120000 text/html").is_none());
+        assert!(parse_row("not-a-url 20240115120000 text/html 200 ABC").is_none());
+        assert!(parse_row("").is_none());
+    }
+
+    #[test]
+    fn test_parse_row_treats_cdx_null_markers_as_absent() {
+        let record = parse_row("https://example.com/a 20240115120000 - - -")
+            .expect("a five-column row must parse");
+        assert_eq!(record.meta.first_seen(), Some("20240115120000"));
+        assert_eq!(record.meta.mime(), None);
+        assert_eq!(record.meta.archive_status(), None);
+        assert_eq!(record.meta.digest(), None);
     }
 
     #[test]
@@ -847,13 +961,13 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "*.example.com/*".into()),
-                mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), FIELDS.into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
                 mockito::Matcher::UrlEncoded("showResumeKey".into(), "true".into()),
             ]))
             .with_status(200)
             .with_header("content-type", "text/plain")
-            .with_body("http://sub.example.com/page1\n")
+            .with_body("http://sub.example.com/page1 20200101000000 text/html 200 DIGEST\n")
             .expect(1)
             .create_async()
             .await;
@@ -862,7 +976,7 @@ mod tests {
         provider.with_base_url(server.url());
         provider.with_subdomains(true);
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0], "http://sub.example.com/page1");
@@ -887,7 +1001,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(urls.len(), 0);
 
@@ -906,7 +1020,7 @@ mod tests {
             .with_header("content-type", "text/html")
             .with_body(
                 "<html><body>Service temporarily unavailable</body></html>\n\
-                 http://example.com/real\n\
+                 http://example.com/real 20200101000000 text/html 200 DIGEST\n\
                  not-a-url\n",
             )
             .create_async()
@@ -915,7 +1029,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.with_base_url(server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(urls, vec!["http://example.com/real".to_string()]);
     }
@@ -929,7 +1043,7 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("url".into(), "example.com/*".into()),
-                mockito::Matcher::UrlEncoded("fl".into(), "original".into()),
+                mockito::Matcher::UrlEncoded("fl".into(), FIELDS.into()),
                 mockito::Matcher::UrlEncoded("collapse".into(), "urlkey".into()),
                 mockito::Matcher::UrlEncoded("from".into(), "20200101000000".into()),
                 mockito::Matcher::UrlEncoded("to".into(), "20201231235959".into()),
@@ -937,7 +1051,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_header("content-type", "text/plain")
-            .with_body("http://example.com/page\n")
+            .with_body("http://example.com/page 20200101000000 text/html 200 DIGEST\n")
             .expect(1)
             .create_async()
             .await;
@@ -950,7 +1064,7 @@ mod tests {
             ..Default::default()
         });
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["http://example.com/page".to_string()]);
         mock.assert();
     }
@@ -1025,7 +1139,7 @@ mod tests {
                 "KEY2".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/a\nhttp://example.com/b\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\nhttp://example.com/b 20200101000000 text/html 200 DIGEST\n")
             .expect(1)
             .create_async()
             .await;
@@ -1034,10 +1148,12 @@ mod tests {
         provider.with_base_url(server.url());
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(
             urls,
@@ -1077,7 +1193,8 @@ mod tests {
                 } else {
                     "A"
                 };
-                format!("http://example.com/{n}\n\n{next}\n").into_bytes()
+                format!("http://example.com/{n} 20200101000000 text/html 200 DIGEST\n\n{next}\n")
+                    .into_bytes()
             })
             .create_async()
             .await;
@@ -1086,10 +1203,12 @@ mod tests {
         provider.with_base_url(server.url());
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         // First page (key A), second page (key B), third page hands back A —
         // already used, so we stop there.
@@ -1108,7 +1227,7 @@ mod tests {
             .mock("GET", "/cdx/search/cdx")
             .match_query(mockito::Matcher::Any)
             .with_status(200)
-            .with_body("http://example.com/a\n\nSTUCK\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\n\nSTUCK\n")
             .expect(2)
             .create_async()
             .await;
@@ -1117,10 +1236,12 @@ mod tests {
         provider.with_base_url(server.url());
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(urls, vec!["http://example.com/a".to_string()]);
         assert!(reporter.is_partial());
@@ -1137,7 +1258,7 @@ mod tests {
                 "true".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/a\n\nKEY2\n")
+            .with_body("http://example.com/a 20200101000000 text/html 200 DIGEST\n\nKEY2\n")
             .expect(1)
             .create_async()
             .await;
@@ -1148,7 +1269,7 @@ mod tests {
                 "KEY2".into(),
             ))
             .with_status(200)
-            .with_body("http://example.com/b\n")
+            .with_body("http://example.com/b 20200101000000 text/html 200 DIGEST\n")
             .expect(1)
             .create_async()
             .await;
@@ -1157,10 +1278,12 @@ mod tests {
         provider.with_base_url(server.url());
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
-        let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
-            .await
-            .unwrap();
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
 
         assert_eq!(
             urls,

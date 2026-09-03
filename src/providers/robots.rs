@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
-use crate::providers::Provider;
+use crate::providers::{Provider, UrlRecord};
 
 /// Cap on the bytes read from a robots.txt. The body was previously read whole
 /// with `text()`, so a host serving an endless stream at /robots.txt could grow
@@ -143,7 +143,7 @@ impl Provider for RobotsProvider {
     fn fetch_urls<'a>(
         &'a self,
         domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.build_client()?;
             let limiter = self.rate_limit.as_ref();
@@ -203,7 +203,9 @@ impl Provider for RobotsProvider {
                 Some(found) => found,
                 // The host answered over at least one scheme and said there is
                 // no robots.txt — an empty result, not a failure.
-                None if host_answered => return Ok(urls),
+                None if host_answered => {
+                    return Ok(urls.into_iter().map(UrlRecord::bare).collect())
+                }
                 // Neither scheme ever got an answer: DNS failure, refused
                 // connection, TLS failure, timeout. Surface it so `--stats`
                 // counts an error instead of showing "0 urls, 0 errors".
@@ -280,7 +282,7 @@ impl Provider for RobotsProvider {
             urls.sort();
             urls.dedup();
 
-            Ok(urls)
+            Ok(urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -311,6 +313,7 @@ impl Provider for RobotsProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::urls_of;
 
     #[test]
     fn test_new_provider() {
@@ -472,7 +475,7 @@ Sitemap: https://example.com/sitemap.xml
 
         let mut provider = RobotsProvider::new();
         provider.with_base_url(server.url());
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert!(urls.contains(&"https://example.com/lower/".to_string()));
         assert!(urls.contains(&"https://example.com/upper".to_string()));
@@ -496,7 +499,7 @@ Sitemap: https://example.com/sitemap.xml
 
         let mut provider = RobotsProvider::new();
         provider.with_base_url(server.url());
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         // Glob pattern is skipped entirely.
         assert!(!urls.iter().any(|u| u.contains('*')), "{urls:?}");
@@ -529,7 +532,7 @@ Sitemap: https://example.com/sitemap.xml
 
         let mut provider = RobotsProvider::new();
         provider.with_base_url(server.url());
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(
             urls,
@@ -563,7 +566,7 @@ Sitemap: https://example.com/sitemap.xml
 
         let mut provider = RobotsProvider::new();
         provider.with_base_url(server.url());
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/admin".to_string()]);
     }
 
@@ -605,7 +608,7 @@ Sitemap: https://example.com/sitemap.xml
         let mut provider = RobotsProvider::new();
         provider.with_base_url(mock_server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         // Protocol should be https because first request (simulated https) succeeded
         assert!(urls.contains(&"https://example.com/private/".to_string()));
@@ -635,7 +638,7 @@ Sitemap: https://example.com/sitemap.xml
         let mut provider = RobotsProvider::new();
         provider.with_base_url(mock_server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert!(
             urls.contains(&"https://example.com/early".to_string()),
@@ -667,7 +670,7 @@ Sitemap: https://example.com/sitemap.xml
         let mut provider = RobotsProvider::new();
         provider.with_base_url(mock_server.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert!(
             urls.len() <= MAX_ROBOTS_ENTRIES,
             "entry count must be bounded, got {}",
@@ -725,10 +728,12 @@ Sitemap: https://example.com/sitemap.xml
         provider.with_base_url(https.url());
         provider.with_http_base_url(http.url());
 
-        let urls = provider
-            .fetch_urls("example.com")
-            .await
-            .expect("a 404 robots.txt is an empty result, not an error");
+        let urls = urls_of(
+            provider
+                .fetch_urls("example.com")
+                .await
+                .expect("a 404 robots.txt is an empty result, not an error"),
+        );
         assert!(urls.is_empty(), "{urls:?}");
     }
 
@@ -778,7 +783,7 @@ Sitemap: https://example.com/sitemap.xml
 
         let mut provider = RobotsProvider::new();
         provider.with_base_url(server.url());
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert!(
             urls.contains(&"https://example.com/sitemap.xml".to_string()),
@@ -830,7 +835,7 @@ Sitemap: http://example.com/sitemap.xml
         provider.with_base_url(mock_server_https.url());
         provider.with_http_base_url(mock_server_http.url());
 
-        let urls = provider.fetch_urls("example.com").await.unwrap();
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         // Protocol should be http
         assert!(urls.contains(&"http://example.com/private/".to_string()));
