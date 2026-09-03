@@ -87,6 +87,8 @@ check_status = false
 include_status = ["200", "30x"]
 exclude_status = ["404", "50x"]
 extract_links = false
+extract_js_endpoints = false   # Mine collected JavaScript for endpoints
+max_js_files = 500             # Cap on files --extract-js-endpoints fetches (0 = unlimited)
 
 # ─── Cache ────────────────────────────────────────────────
 [cache]

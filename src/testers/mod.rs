@@ -2,9 +2,11 @@ use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
 
+mod js_endpoint_extractor;
 mod link_extractor;
 mod status_checker;
 
+pub use js_endpoint_extractor::JsEndpointExtractor;
 pub use link_extractor::LinkExtractor;
 pub use status_checker::StatusChecker;
 

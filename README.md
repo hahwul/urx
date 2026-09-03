@@ -234,6 +234,10 @@ Testing Options:
           Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: ----es]
       --extract-links
           Extract additional links from collected URLs (requires HTTP requests)
+      --extract-js-endpoints
+          Fetch collected JavaScript files and extract the endpoint paths and URLs found in their string literals (requires HTTP requests)
+      --max-js-files <N>
+          Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
 ```
 
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
@@ -244,6 +248,18 @@ duplicates are collapsed, and discovered links pass through the same filters
 and host validation as the rest of the run. See
 [docs/content/guide/cli-options.md](docs/content/guide/cli-options.md) for the
 full table.
+
+`--extract-js-endpoints` goes one step further and reads the JavaScript
+itself: every collected URL that looks like a script is fetched and its
+string literals are mined for the paths and URLs the app calls —
+`fetch("/api/v2/users")`, `axios.post("/graphql")`, the static prefix of
+`` `/api/orders/${id}` ``. These are the endpoints that never appear in HTML.
+Output is aggressively de-noised (MIME types, module specifiers, base64,
+CSS values, regex fragments and more are dropped), each body is capped at
+10 MiB, the number of files fetched is bounded by `--max-js-files`, and the
+discovered endpoints pass the same filters and host validation as everything
+else. The full extraction and noise-suppression policy is in
+[docs/content/guide/cli-options.md](docs/content/guide/cli-options.md#javascript-endpoint-extraction).
 
 ### Examples
 
@@ -326,6 +342,12 @@ urx example.com --extract-links
 # Discovered links go through the same filters as everything else, so this
 # keeps only the JavaScript the pages reference
 urx example.com --extract-links -e js
+
+# Read the collected JavaScript and pull out the API paths it calls
+urx example.com --extract-js-endpoints --patterns api
+
+# Chain them: collect the site's bundles, then mine those for endpoints
+urx example.com --extract-links --extract-js-endpoints --max-js-files 100
 
 # Network configuration
 urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insecure
@@ -445,7 +467,8 @@ deduplicated. Two things differ:
 * **Scope.** Options that need the complete result set are rejected up front
   (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
   `--check-status` /
-  `--include-status` / `--exclude-status`, `--extract-links`, `--incremental`,
+  `--include-status` / `--exclude-status`, `--extract-links`,
+  `--extract-js-endpoints`, `--incremental`,
   `--show-sources`, `--show-meta`, `--output-dir`, and `--files`. Caching is
   bypassed, and
   `--format json` is refused in favour of `jsonl` because a JSON array has to

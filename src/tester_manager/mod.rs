@@ -10,7 +10,8 @@ use crate::progress::ProgressManager;
 use crate::testers::Tester;
 use crate::utils::{verbose_print, UrlTransformer};
 
-/// The filtering a URL discovered by `--extract-links` has to pass.
+/// The filtering a URL discovered by `--extract-links` or
+/// `--extract-js-endpoints` has to pass.
 ///
 /// The primary URL list goes through the filters, host validation, and the
 /// `show_only_*`/`--normalize-url` views *before* testing starts. Links found
@@ -102,7 +103,7 @@ pub async fn process_urls_with_testers(
 
     let verbose = args.verbose;
     let check_status = should_check_status;
-    let extract_links = args.extract_links;
+    let extract_links = args.extract_links || args.extract_js_endpoints;
     let silent = args.silent;
     // With an --include-status allowlist, a URL whose status we could never
     // resolve has not been shown to match it. Emitting it with a placeholder
@@ -144,8 +145,10 @@ pub async fn process_urls_with_testers(
                                     // Status checker results (first tester if check_status is enabled)
                                     status_result = Some(results);
                                 } else if extract_links {
-                                    // Link extractor results
-                                    links_result = Some(results);
+                                    // Link / JS-endpoint extractor results.
+                                    // Both extractors may run in the same
+                                    // pass, so accumulate rather than replace.
+                                    links_result.get_or_insert_with(Vec::new).extend(results);
                                 }
                             }
                             Err(e) => {
@@ -521,6 +524,45 @@ mod tests {
         .await;
 
         assert!(out.contains(&"/a/b".to_string()), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn test_link_and_js_extractor_results_are_both_kept() {
+        // Both extractors can run in the same pass. Results used to be
+        // *replaced* per tester, so whichever ran last silently discarded the
+        // other's discoveries.
+        use clap::Parser;
+        let args = Args::parse_from([
+            "urx",
+            "--extract-links",
+            "--extract-js-endpoints",
+            "--silent",
+            "example.com",
+        ]);
+        let progress = ProgressManager::new(true);
+        let links = FixedLinkTester(vec!["https://example.com/from-html".to_string()]);
+        let endpoints = FixedLinkTester(vec!["https://example.com/api/from-js".to_string()]);
+        let out: Vec<String> = process_urls_with_testers(
+            vec!["https://example.com/seed".to_string()],
+            &args,
+            &progress,
+            vec![Box::new(links), Box::new(endpoints)],
+            false,
+            None,
+        )
+        .await
+        .into_iter()
+        .map(|d| d.url)
+        .collect();
+
+        assert!(
+            out.contains(&"https://example.com/from-html".to_string()),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(&"https://example.com/api/from-js".to_string()),
+            "{out:?}"
+        );
     }
 
     #[tokio::test]

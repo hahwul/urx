@@ -12,12 +12,12 @@ use anyhow::{Context, Result};
 
 use crate::cli::{self, read_domains_from_file, read_domains_from_stdin, Args};
 use crate::filters::{compile_url_regexes, HostValidator, UrlFilter};
-use crate::network::NetworkSettings;
+use crate::network::{NetworkScope, NetworkSettings};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::readers::read_urls_from_file;
 use crate::tester_manager::{self, apply_network_settings_to_tester};
-use crate::testers::{LinkExtractor, StatusChecker, Tester};
+use crate::testers::{JsEndpointExtractor, LinkExtractor, StatusChecker, Tester};
 use crate::utils::{verbose_print, UrlTransformer};
 
 /// Raw targets named directly on the command line: positional args plus every
@@ -319,6 +319,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it fetches collected URLs after collection finishes",
         ));
     }
+    if args.extract_js_endpoints {
+        out.push((
+            "--extract-js-endpoints",
+            "it fetches collected scripts after collection finishes",
+        ));
+    }
     if args.incremental {
         out.push((
             "--incremental",
@@ -401,8 +407,8 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     )?)))
 }
 
-/// The filter applied to links `--extract-links` discovers, or `None` when the
-/// extractor isn't running.
+/// The filter applied to links `--extract-links` and `--extract-js-endpoints`
+/// discover, or `None` when neither extractor is running.
 ///
 /// Links found *inside* pages come into existence after
 /// [`apply_url_filters`]/[`apply_url_transformations`] have already run over the
@@ -413,7 +419,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
 pub fn build_extracted_link_filter(
     args: &Args,
 ) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
-    if !args.extract_links {
+    if !args.extract_links && !args.extract_js_endpoints {
         return Ok(None);
     }
     // File input has no queried domain to validate against, which is why the
@@ -480,6 +486,20 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         testers.push(Box::new(link_extractor));
     }
 
+    if args.extract_js_endpoints {
+        verbose_print(args, "Extracting endpoints from JavaScript content");
+
+        let mut js_extractor = JsEndpointExtractor::new();
+        apply_network_settings_to_tester(&mut js_extractor, network_settings);
+        js_extractor.with_max_files(args.max_js_files);
+        // Providers pace themselves with --rate-limit; this tester re-requests
+        // a large slice of the result set from the target, so it must too.
+        if network_settings.scope != NetworkScope::Providers {
+            js_extractor.with_rate_limit(network_settings.rate_limit);
+        }
+        testers.push(Box::new(js_extractor));
+    }
+
     testers
 }
 
@@ -498,6 +518,7 @@ mod tests {
             (vec!["--dedup-similar"], "--dedup-similar"),
             (vec!["--check-status"], "--check-status"),
             (vec!["--extract-links"], "--extract-links"),
+            (vec!["--extract-js-endpoints"], "--extract-js-endpoints"),
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
             (vec!["--show-meta"], "--show-meta"),
@@ -878,5 +899,35 @@ mod tests {
         args.extract_links = true;
         assert!(should_check_status(&args));
         assert_eq!(build_testers(&args, &settings).len(), 2);
+
+        // --extract-js-endpoints is a third tester, independent of the others.
+        let mut args = build_test_args();
+        args.extract_js_endpoints = true;
+        assert_eq!(build_testers(&args, &settings).len(), 1);
+
+        let mut args = build_test_args();
+        args.check_status = true;
+        args.extract_links = true;
+        args.extract_js_endpoints = true;
+        assert_eq!(build_testers(&args, &settings).len(), 3);
+    }
+
+    #[test]
+    fn test_extract_js_endpoints_filter_is_wired_up() {
+        // Endpoints mined from scripts come into existence after the filters
+        // ran over the primary list, exactly like extracted links — so the
+        // same filter must be built for them, including strict host
+        // validation (on by default).
+        let args = Args::parse_from(["urx", "--extract-js-endpoints", "--silent", "example.com"]);
+        let filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--extract-js-endpoints must build a filter");
+        assert_eq!(
+            filter.accept("https://example.com/api/v1/users").as_deref(),
+            Some("https://example.com/api/v1/users")
+        );
+        assert!(filter
+            .accept("https://api.thirdparty.net/v1/track")
+            .is_none());
     }
 }

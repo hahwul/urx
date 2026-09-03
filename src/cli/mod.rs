@@ -407,6 +407,17 @@ pub struct Args {
     #[clap(long)]
     pub extract_links: bool,
 
+    /// Fetch collected JavaScript files and extract the endpoint paths and
+    /// URLs found in their string literals (requires HTTP requests)
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long)]
+    pub extract_js_endpoints: bool,
+
+    /// Maximum number of files --extract-js-endpoints will fetch (0 = unlimited)
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, default_value = "500", value_name = "N")]
+    pub max_js_files: usize,
+
     /// Enable incremental scanning mode (only return new URLs compared to previous scans)
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]
