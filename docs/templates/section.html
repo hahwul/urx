@@ -1,17 +1,4 @@
 {% include "header.html" %}
-{% include "_docsnav.html" %}
-<div class="docs-shell">
-  {% include "_sidebar.html" %}
-  <main class="docs-main">
-    <h1>{{ page.title }}</h1>
-    <div class="docs-content">
-      {{ content }}
-      {% if section.list %}
-      <h2>In This Section</h2>
-      <ul class="section-list">
-        {{ section.list }}
-      </ul>
-      {% endif %}
-      {{ pagination }}
-    </div>
+{% include "partials/nav.html" %}
+{% include "partials/document.html" %}
 {% include "footer.html" %}

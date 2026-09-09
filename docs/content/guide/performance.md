@@ -1,5 +1,7 @@
 +++
 title = "Performance"
+description = "Tune throughput with parallelism, network settings, provider choice and early filtering."
+toc = true
 weight = 7
 +++
 

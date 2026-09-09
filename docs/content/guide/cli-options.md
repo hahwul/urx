@@ -1,5 +1,7 @@
 +++
 title = "CLI Options"
+description = "Every command-line flag urx accepts, plus the webhook notification payloads and their failure handling."
+toc = true
 weight = 1
 +++
 

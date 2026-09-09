@@ -1,5 +1,7 @@
 +++
 title = "Installation"
+description = "Install urx with Cargo, Homebrew, Docker or from source, then add shell completions and the man page."
+toc = true
 weight = 1
 +++
 

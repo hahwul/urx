@@ -1,5 +1,7 @@
 +++
 title = "Quick Start"
+description = "Run a first scan, pick providers, filter what comes back, and write the results to a file."
+toc = true
 weight = 2
 +++
 
