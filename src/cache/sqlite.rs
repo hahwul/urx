@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use tokio::task;
 
+use super::admin::{domain_matches, is_expired, CacheAdmin, EntryMeta};
 use super::types::{CacheBackend, CacheEntry, CacheKey};
 
 /// SQLite-based cache implementation
@@ -91,6 +92,34 @@ impl SqliteCache {
             f(&conn)
         })
         .await?
+    }
+
+    /// Delete rows by primary key inside one transaction, reclaiming space when
+    /// the delete was large enough to be worth a `VACUUM`.
+    async fn delete_ids(&self, ids: Vec<i64>) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        self.with_connection(move |conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut deleted = 0usize;
+            {
+                let mut stmt = tx.prepare("DELETE FROM url_cache WHERE id = ?1")?;
+                for id in &ids {
+                    deleted += stmt.execute(params![id])?;
+                }
+            }
+            tx.commit()?;
+
+            // Matches `cleanup_expired`: reclaiming pages costs a full rewrite,
+            // so it is only worth it once a meaningful number of rows went.
+            if deleted > 10 {
+                conn.execute("VACUUM", [])?;
+            }
+            Ok(deleted)
+        })
+        .await
     }
 }
 
@@ -204,6 +233,132 @@ impl CacheBackend for SqliteCache {
     }
 }
 
+#[async_trait]
+impl CacheAdmin for SqliteCache {
+    fn backend_name(&self) -> &'static str {
+        "sqlite"
+    }
+
+    fn location(&self) -> String {
+        self.db_path.display().to_string()
+    }
+
+    async fn entries(&self) -> Result<Vec<EntryMeta>> {
+        self.with_connection(move |conn| {
+            let mut stmt = conn.prepare("SELECT domain, urls, timestamp FROM url_cache")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+
+            let mut entries = Vec::new();
+            for row in rows {
+                let (domain, urls_json, timestamp) = row?;
+                // A row whose payload no longer parses is reported rather than
+                // aborting the whole report: `urx cache` is the tool you reach
+                // for *because* the cache looks wrong, so it has to survive a
+                // corrupt row. It still counts as an entry, with zero URLs.
+                let url_count = serde_json::from_str::<Vec<String>>(&urls_json)
+                    .map(|urls| urls.len())
+                    .unwrap_or(0);
+                let Ok(timestamp) = timestamp.parse::<DateTime<Utc>>() else {
+                    continue;
+                };
+                entries.push(EntryMeta {
+                    domain,
+                    url_count,
+                    timestamp,
+                });
+            }
+            Ok(entries)
+        })
+        .await
+    }
+
+    async fn size_bytes(&self) -> Result<Option<u64>> {
+        let db_path = self.db_path.clone();
+        // The write-ahead log and shared-memory files are part of what the
+        // cache costs on disk, so a size that ignored them would read low right
+        // after a big scan.
+        Ok(task::spawn_blocking(move || {
+            let mut total = 0u64;
+            let mut found = false;
+            for suffix in ["", "-wal", "-shm"] {
+                let mut path = db_path.clone().into_os_string();
+                path.push(suffix);
+                if let Ok(meta) = std::fs::metadata(std::path::PathBuf::from(path)) {
+                    total += meta.len();
+                    found = true;
+                }
+            }
+            found.then_some(total)
+        })
+        .await?)
+    }
+
+    async fn delete_expired(&self, ttl_seconds: u64) -> Result<usize> {
+        // Selected and tested in Rust rather than compared as SQL strings, so
+        // the sweep uses exactly the expiry rule `CacheEntry::is_expired` uses
+        // — including its clock-skew guard — and a row stored in some other
+        // timestamp format can't be deleted by a lexicographic accident.
+        let doomed: Vec<i64> = self
+            .with_connection(move |conn| {
+                let mut stmt = conn.prepare("SELECT id, timestamp FROM url_cache")?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows
+                    .into_iter()
+                    .filter_map(|(id, ts)| {
+                        let ts = ts.parse::<DateTime<Utc>>().ok()?;
+                        is_expired(ts, ttl_seconds).then_some(id)
+                    })
+                    .collect())
+            })
+            .await?;
+
+        self.delete_ids(doomed).await
+    }
+
+    async fn delete_domains(&self, patterns: &[String]) -> Result<usize> {
+        let patterns = patterns.to_vec();
+        let doomed: Vec<i64> = self
+            .with_connection(move |conn| {
+                let mut stmt = conn.prepare("SELECT id, domain FROM url_cache")?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows
+                    .into_iter()
+                    .filter(|(_, domain)| patterns.iter().any(|p| domain_matches(p, domain)))
+                    .map(|(id, _)| id)
+                    .collect())
+            })
+            .await?;
+
+        self.delete_ids(doomed).await
+    }
+
+    async fn clear(&self) -> Result<usize> {
+        self.with_connection(move |conn| {
+            let deleted = conn.execute("DELETE FROM url_cache", [])?;
+            // Always, unlike the incremental deletes: an emptied table should
+            // hand the disk space back rather than leave a multi-megabyte file
+            // that makes `urx cache stats` look like the clear did nothing.
+            conn.execute("VACUUM", [])?;
+            Ok(deleted)
+        })
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +452,189 @@ mod tests {
         cache.cleanup_expired(10_000_000_000_000_000).await?;
         assert!(cache.exists(&key).await?);
 
+        Ok(())
+    }
+
+    /// Store one entry under a distinct key, dated `age_secs` in the past.
+    async fn seed(
+        cache: &SqliteCache,
+        domain: &str,
+        tag: &str,
+        urls: usize,
+        age_secs: i64,
+    ) -> Result<()> {
+        let filters = CacheFilters {
+            presets: vec![tag.to_string()],
+            ..Default::default()
+        };
+        let key = CacheKey::new(domain, &["wayback".to_string()], &filters);
+        let mut entry = CacheEntry::new(
+            (0..urls)
+                .map(|i| format!("https://{domain}/{tag}/{i}"))
+                .collect(),
+        );
+        entry.timestamp = Utc::now() - chrono::Duration::seconds(age_secs);
+        cache.set(&key, &entry).await
+    }
+
+    async fn admin_cache(dir: &tempfile::TempDir) -> Result<SqliteCache> {
+        SqliteCache::new(dir.path().join("admin.db")).await
+    }
+
+    #[tokio::test]
+    async fn admin_entries_report_domain_url_count_and_age() -> Result<()> {
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+
+        seed(&cache, "example.com", "a", 3, 60).await?;
+        seed(&cache, "example.com", "b", 2, 7200).await?;
+        seed(&cache, "other.test", "a", 1, 10).await?;
+
+        let mut entries = cache.entries().await?;
+        entries.sort_by_key(|e| e.timestamp);
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].domain, "example.com");
+        assert_eq!(entries[0].url_count, 2);
+        assert_eq!(
+            entries.iter().map(|e| e.url_count).sum::<usize>(),
+            6,
+            "{entries:?}"
+        );
+
+        // The database file exists and is measured, WAL sidecars included.
+        assert!(cache.size_bytes().await?.unwrap() > 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn admin_reports_an_empty_cache_rather_than_failing() -> Result<()> {
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+
+        assert!(cache.entries().await?.is_empty());
+        assert_eq!(cache.delete_expired(3600).await?, 0);
+        assert_eq!(cache.delete_domains(&["example.com".to_string()]).await?, 0);
+        assert_eq!(cache.clear().await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prune_removes_only_what_the_ttl_actually_covers() -> Result<()> {
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+
+        seed(&cache, "fresh.test", "a", 1, 60).await?;
+        seed(&cache, "stale.test", "a", 1, 7200).await?;
+        seed(&cache, "stale.test", "b", 1, 90_000).await?;
+
+        assert_eq!(cache.delete_expired(3600).await?, 2);
+        let left = cache.entries().await?;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].domain, "fresh.test");
+
+        // Idempotent: a second sweep has nothing left to take.
+        assert_eq!(cache.delete_expired(3600).await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prune_with_a_huge_ttl_deletes_nothing() -> Result<()> {
+        // The `--cache-ttl` overflow that would otherwise put the cutoff in the
+        // future and wipe the cache — the same hazard `expiry_cutoff` guards.
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+        seed(&cache, "example.com", "a", 1, 90_000).await?;
+
+        assert_eq!(cache.delete_expired(u64::MAX).await?, 0);
+        assert_eq!(cache.entries().await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn drop_matches_domains_exactly_unless_a_wildcard_says_otherwise() -> Result<()> {
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+
+        seed(&cache, "example.com", "a", 1, 10).await?;
+        seed(&cache, "example.com", "b", 1, 20).await?;
+        seed(&cache, "api.example.com", "a", 1, 30).await?;
+        seed(&cache, "notexample.com", "a", 1, 40).await?;
+
+        // Exact: both entries for the domain go, and nothing that merely
+        // contains the name does.
+        assert_eq!(cache.delete_domains(&["example.com".to_string()]).await?, 2);
+        let left: Vec<String> = cache
+            .entries()
+            .await?
+            .into_iter()
+            .map(|e| e.domain)
+            .collect();
+        assert!(left.contains(&"api.example.com".to_string()), "{left:?}");
+        assert!(left.contains(&"notexample.com".to_string()), "{left:?}");
+
+        // Wildcards reach subdomains when asked to.
+        assert_eq!(
+            cache.delete_domains(&["*.example.com".to_string()]).await?,
+            1
+        );
+        assert_eq!(cache.entries().await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clear_empties_the_table_and_reclaims_the_file() -> Result<()> {
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+
+        for i in 0..15 {
+            seed(&cache, &format!("d{i}.test"), "a", 40, 10).await?;
+        }
+        let before = cache.size_bytes().await?.unwrap();
+
+        assert_eq!(cache.clear().await?, 15);
+        assert!(cache.entries().await?.is_empty());
+        // VACUUM runs unconditionally on clear, so the file must not stay at
+        // its full size and make `cache stats` look like nothing happened.
+        assert!(
+            cache.size_bytes().await?.unwrap() < before,
+            "file did not shrink after clear"
+        );
+
+        // The cache is still usable afterwards.
+        seed(&cache, "again.test", "a", 1, 0).await?;
+        assert_eq!(cache.entries().await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_row_is_reported_not_fatal() -> Result<()> {
+        // `urx cache` is the tool you reach for *because* the cache looks
+        // wrong, so a row whose payload no longer parses must not abort the
+        // report. It still counts as an entry, with zero URLs.
+        let dir = tempdir()?;
+        let cache = admin_cache(&dir).await?;
+        seed(&cache, "good.test", "a", 2, 10).await?;
+
+        let db_path = dir.path().join("admin.db");
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let conn = Connection::open(&db_path)?;
+            conn.execute(
+                "INSERT INTO url_cache (cache_key, domain, providers, filters_hash, urls, timestamp)
+                 VALUES ('broken', 'bad.test', '[]', 'h', 'not json', ?1)",
+                params![Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .await??;
+
+        let entries = cache.entries().await?;
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        let bad = entries.iter().find(|e| e.domain == "bad.test").unwrap();
+        assert_eq!(bad.url_count, 0);
+
+        // ...and it can still be dropped.
+        assert_eq!(cache.delete_domains(&["bad.test".to_string()]).await?, 1);
         Ok(())
     }
 

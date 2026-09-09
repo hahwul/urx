@@ -10,7 +10,7 @@ pub struct Args {
     pub domains: Vec<String>,
 
     /// Config file to load
-    #[clap(short, long, value_parser)]
+    #[clap(short, long, value_parser, global = true)]
     pub config: Option<PathBuf>,
 
     /// Path to a separate provider config file holding only API keys
@@ -48,7 +48,7 @@ pub struct Args {
     /// Output format: "plain", "json" (one array), "jsonl" (one JSON object
     /// per line — pipeline-friendly and valid while still being written), "csv"
     #[clap(help_heading = "Output Options")]
-    #[clap(short, long, default_value = "plain")]
+    #[clap(short, long, default_value = "plain", global = true)]
     pub format: String,
 
     /// Merge endpoints with the same path and merge URL parameters
@@ -490,22 +490,22 @@ pub struct Args {
 
     /// Cache backend type (sqlite or redis)
     #[clap(help_heading = "Cache Options")]
-    #[clap(long, default_value = "sqlite")]
+    #[clap(long, default_value = "sqlite", global = true)]
     pub cache_type: String,
 
     /// Path for SQLite cache database
     #[clap(help_heading = "Cache Options")]
-    #[clap(long)]
+    #[clap(long, global = true)]
     pub cache_path: Option<std::path::PathBuf>,
 
     /// Redis connection URL for remote caching
     #[clap(help_heading = "Cache Options")]
-    #[clap(long)]
+    #[clap(long, global = true)]
     pub redis_url: Option<String>,
 
     /// Cache time-to-live in seconds (default: 24 hours)
     #[clap(help_heading = "Cache Options")]
-    #[clap(long, default_value = "86400")]
+    #[clap(long, default_value = "86400", global = true)]
     pub cache_ttl: u64,
 
     /// Disable caching entirely
@@ -580,6 +580,16 @@ pub struct Args {
     #[clap(help_heading = "Testing Options")]
     #[clap(long = "check-title")]
     pub check_title: bool,
+
+    // --- cache-cli ---
+    /// Subcommand, when one was named. `None` is the historical
+    /// `urx [OPTIONS] [DOMAINS]...` invocation, which is unchanged: only the
+    /// literal first token `cache` selects a subcommand, and `urx -- cache`
+    /// still scans a host of that name.
+    ///
+    /// The variants live in `crate::cache` beside the code that serves them.
+    #[clap(subcommand)]
+    pub command: Option<crate::cache::Command>,
 }
 
 /// The set of options the user actually named on the command line.

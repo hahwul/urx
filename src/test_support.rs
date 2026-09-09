@@ -178,6 +178,9 @@ pub fn build_test_args() -> Args {
         params_by_endpoint: false,
         fuzz_placeholder: None,
         check_title: false,
+
+        // --- cache-cli ---
+        command: None,
     }
 }
 
