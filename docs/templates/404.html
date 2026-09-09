@@ -1,28 +1,11 @@
 {% include "header.html" %}
-{% include "_docsnav.html" %}
-<main class="lost-space">
-  <div class="lost-inner">
-    <img src="{{ base_url }}/images/urx.png" alt="">
+{% include "partials/nav.html" %}
+<main id="main" class="lost">
+  <div>
+    <span class="lost-mark" aria-hidden="true"></span>
     <h1>404</h1>
-    <p>This URL drifted out of orbit. It is not in the archive.</p>
-    <a href="{{ base_url }}/" class="nav-cta">Back to base</a>
+    <p>This URL drifted out of orbit.</p>
+    <a href="{{ base_url }}/" class="btn btn-primary">Back to the docs</a>
   </div>
 </main>
-<script>
-(function () {
-  function currentTheme() {
-    var t = document.documentElement.getAttribute("data-theme");
-    if (t) return t;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var next = currentTheme() === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", next);
-      try { localStorage.setItem("urx-theme", next); } catch (e) {}
-    });
-  });
-})();
-</script>
-</body>
-</html>
+{% include "footer.html" %}

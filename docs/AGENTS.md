@@ -32,53 +32,37 @@ This is the documentation site for [Urx](https://github.com/hahwul/urx), a fast 
 
 ```
 docs/
-├── config.toml              # Site configuration
-├── AGENTS.md                # This file
-├── content/                 # Markdown content files
-│   ├── index.md             # Landing page
-│   ├── getting-started/     # Getting started section
-│   │   ├── _index.md
-│   │   ├── installation.md
-│   │   └── quick-start.md
-│   ├── usage/               # Usage guides
-│   │   ├── _index.md
-│   │   ├── cli-options.md
-│   │   ├── configuration.md
-│   │   └── examples.md
-│   ├── advanced/            # Advanced topics
-│   │   ├── _index.md
-│   │   ├── integration.md
-│   │   ├── caching.md
-│   │   └── performance.md
-│   ├── reference/           # Reference material
-│   │   ├── _index.md
-│   │   ├── environment-variables.md
-│   │   └── changelog.md
-│   └── community/           # Community & contributing
-│       ├── _index.md
-│       └── contributing.md
-├── templates/               # Jinja2 templates
-│   ├── header.html          # HTML head section
-│   ├── footer.html          # Footer with active-link JS
-│   ├── page.html            # Individual page template
-│   ├── section.html         # Section listing template
-│   ├── 404.html             # Not found page
-│   ├── taxonomy.html
-│   ├── taxonomy_term.html
-│   └── shortcodes/
-│       └── alert.html
-└── static/                  # Static assets
-    ├── CNAME                # DNS configuration
-    ├── favicon.ico
-    ├── css/
-    │   └── style.css        # Main stylesheet (includes dark mode)
-    └── images/
-        ├── urx-dark.png     # Logo (used in header)
-        ├── urx-light.png
-        ├── urx.png
-        ├── logo.png
-        ├── preview.jpg      # OG image
-        └── social.jpg
+├── config.toml              Site config, plugins, SEO, search, OG
+├── content/
+│   ├── index.md             Landing page (raw HTML, template = "landing.html")
+│   ├── getting-started/     _index.md + installation, quick-start
+│   ├── guide/               _index.md + cli-options, configuration, examples,
+│   │                        environment-variables, caching, integration, performance
+│   └── about/               _index.md + contributing
+├── templates/
+│   ├── header.html          <head>, favicon set, fonts, no-flash theme script
+│   ├── footer.html          Footer plus the deferred script tags
+│   ├── page.html            Leaf docs page
+│   ├── section.html         Section index page
+│   ├── landing.html         Home page shell (loads landing.css)
+│   ├── 404.html
+│   ├── partials/
+│   │   ├── nav.html             Top nav: brand, links, search, theme, GitHub
+│   │   ├── sidebar.html         Docs sidebar, DERIVED from site.sections
+│   │   ├── document.html        Breadcrumb, heading, body, TOC rail
+│   │   ├── page-navigation.html Prev/next within the section
+│   │   └── search.html          Search modal markup
+│   └── shortcodes/alert.html
+├── static/
+│   ├── css/style.css        Tokens, shell, prose, code, search, responsive
+│   ├── css/landing.css      Landing-only sections
+│   ├── js/                  theme, search, toc, docs, codecopy, home
+│   ├── fonts/               Self-hosted Space Grotesk + JetBrains Mono (woff2)
+│   ├── images/              mark, mark-light, lockups, og-card, preview
+│   ├── icons/               favicon set + site.webmanifest
+│   └── CNAME
+├── tools/brand/generate.sh  Regenerates every logo, icon and OG asset
+└── DESIGN.md                The design contract. Read it before restyling.
 ```
 
 ## Content Management
@@ -151,9 +135,11 @@ Templates use Jinja2 syntax. Key variables:
 ## Notes for AI Agents
 
 1. **Always preserve TOML front matter** when editing content files.
-2. **Use `hwaro serve`** to preview changes locally.
+2. **Use `hwaro serve`** to preview changes locally, and `hwaro doctor` to check config and templates.
 3. **Check `config.toml`** for site-wide settings.
-4. **Template Syntax:** Standard Jinja2 syntax.
+4. **Template syntax** is Crinja (Jinja2 for Crystal). Note that `{{ ... }}` is not allowed inside a `{# ... #}` comment.
 5. **Keep URLs relative** using `{{ base_url }}` in templates, or absolute paths (`/getting-started/`) in markdown.
-6. **Sidebar navigation** lives in the shared `_sidebar.html` partial — update that one file when adding/removing pages.
-7. **ZoomEye** is the most recently added provider — ensure it's included in provider lists and examples.
+6. **The sidebar and prev/next are derived** from `site.sections` and front-matter `weight`. Never hand-maintain a link list. Every new page needs `title`, `description`, `weight` and `toc = true`.
+7. **Read `DESIGN.md` before changing anything visual.** It records the palette, the amber-on-light contrast rule, the radius system and the motion policy.
+8. **Brand assets are generated, not hand-edited.** Run `tools/brand/generate.sh` to rebuild the mark, icons, lockups and OG card from `tools/brand/src/mark-source.jpg`.
+9. **ZoomEye, GitHub and BeVigil** are the most recently added providers. The catalog in `src/app/catalog.rs` is the source of truth for provider lists: there are nine, five of them keyless.

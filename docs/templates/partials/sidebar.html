@@ -1,0 +1,23 @@
+{# Derived entirely from site.sections + front-matter weight. There is no
+   hand-maintained link list any more, so the sidebar cannot drift from the
+   content tree. Add a page, give it a weight, and it appears here. #}
+<aside class="docs-sidebar">
+  <details class="docs-navigation" open>
+    <summary class="docs-navigation-toggle">Documentation</summary>
+    <nav class="manual-nav" aria-label="Documentation">
+      {% for sec in site.sections | sort(attribute="weight") %}
+      {% if sec.name != "" %}
+      <details class="nav-group"{% if page.section == sec.name %} open{% endif %}>
+        <summary>{{ sec.title | e }}</summary>
+        <ul class="nav-links">
+          <li><a href="{{ base_url }}{{ sec.url }}"{% if page.url == sec.url %} class="active" aria-current="page"{% endif %}>Overview</a></li>
+          {% for p in sec.pages | rejectattr("is_index") | sort(attribute="weight") %}
+          <li><a href="{{ base_url }}{{ p.url }}"{% if page.url == p.url %} class="active" aria-current="page"{% endif %}>{{ p.title | e }}</a></li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+      {% endfor %}
+    </nav>
+  </details>
+</aside>

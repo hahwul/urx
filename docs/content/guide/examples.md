@@ -1,5 +1,7 @@
 +++
 title = "Examples"
+description = "Worked commands for filtering, provider selection, API keys, link extraction and status checking."
+toc = true
 weight = 3
 +++
 

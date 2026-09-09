@@ -1,5 +1,6 @@
 +++
 title = "Guide"
+description = "CLI options, configuration, caching, integration and performance tuning for urx."
 weight = 2
 sort_by = "weight"
 +++

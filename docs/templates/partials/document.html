@@ -1,0 +1,42 @@
+<div class="docs-container">
+  {% include "partials/sidebar.html" %}
+  <main id="main" class="docs-main">
+    <nav class="document-path" aria-label="Breadcrumb">
+      <a href="{{ base_url }}/">{{ site.title | e }}</a>
+      {% for sec in site.sections %}{% if sec.name == page.section %}
+      <span aria-hidden="true">/</span><a href="{{ base_url }}{{ sec.url }}">{{ sec.title | e }}</a>
+      {% endif %}{% endfor %}
+    </nav>
+
+    <header class="document-heading">
+      <h1>{{ page.title | e }}</h1>
+      <span class="contrail" aria-hidden="true"></span>
+      {% if page.description %}<p class="document-lede">{{ page.description | e }}</p>{% endif %}
+    </header>
+
+    <article class="document-body">{{ content }}</article>
+
+    {# Section index: the _index.md files carry front matter only, so the child
+       listing is what actually makes these pages useful. #}
+    {% if page.is_index %}
+    <ul class="section-list">
+      {% for sec in site.sections %}{% if sec.name == page.section %}
+      {% for p in sec.pages | rejectattr("is_index") | sort(attribute="weight") %}
+      <li><a href="{{ base_url }}{{ p.url }}">{{ p.title | e }}</a></li>
+      {% endfor %}
+      {% endif %}{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% include "partials/page-navigation.html" %}
+  </main>
+
+  {# Emitted from Hwaro's native toc variable, so the list ships in the HTML and
+     works with JS off. toc.js only adds scrollspy and the narrow-viewport move. #}
+  {% if toc %}
+  <aside class="docs-toc-rail" id="tocRail" aria-label="On this page">
+    <p class="docs-toc-title">On this page</p>
+    {{ toc }}
+  </aside>
+  {% endif %}
+</div>
