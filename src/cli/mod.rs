@@ -572,6 +572,14 @@ pub struct Args {
     #[clap(help_heading = "Output Options")]
     #[clap(long = "fuzz-placeholder", value_name = "VALUE", conflicts_with_all = ["show_only_host", "show_only_path", "show_only_param", "params", "params_by_endpoint"])]
     pub fuzz_placeholder: Option<String>,
+
+    /// Also record each response's HTML <title> while checking statuses, and
+    /// implies --check-status. Unlike the headers a status check already
+    /// receives, this one is not free: it reads the start of every response
+    /// body (capped, HTML only), so it stays opt-in.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long = "check-title")]
+    pub check_title: bool,
 }
 
 /// The set of options the user actually named on the command line.

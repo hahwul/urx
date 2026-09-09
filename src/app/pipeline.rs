@@ -394,6 +394,12 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it keeps one URL per parameter signature, which needs every URL first",
         ));
     }
+    if args.check_title {
+        out.push((
+            "--check-title",
+            "it re-requests each URL after collection finishes",
+        ));
+    }
     out
 }
 
@@ -476,7 +482,13 @@ pub fn build_extracted_link_filter(
 /// True when URLs must be re-requested after collection — either because the
 /// user asked for statuses or because a status filter needs them.
 pub fn should_check_status(args: &Args) -> bool {
-    args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty()
+    args.check_status
+        || !args.include_status.is_empty()
+        || !args.exclude_status.is_empty()
+        // --- output-views ---
+        // --check-title has nothing to attach a title to without the request
+        // the status checker already makes, so it turns that pass on.
+        || args.check_title
 }
 
 // --- output-views ---
@@ -492,6 +504,21 @@ fn param_view(args: &Args) -> ParamView {
     } else {
         ParamView::None
     }
+}
+
+/// Whether the free response facts (`Location`, `Content-Length`,
+/// `Content-Type`) a `--check-status` request already carries should be kept.
+///
+/// Mirrors `wants_capture_meta` in `main.rs`: the structured formats always take
+/// them (absent keys are omitted, so a run that collected none is byte-identical
+/// to before the fields existed), while plain text is a pipeline contract and
+/// keeps one bare URL per line unless `--show-meta` asks otherwise.
+fn wants_response_meta(args: &Args) -> bool {
+    args.show_meta
+        || matches!(
+            args.format.to_lowercase().as_str(),
+            "json" | "jsonl" | "csv"
+        )
 }
 
 /// Build the post-collection testers implied by the flags, or an empty vec when
@@ -525,6 +552,13 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
                     args.exclude_status.join(", ")
                 ),
             );
+        }
+
+        // --- output-views ---
+        status_checker.with_response_meta(wants_response_meta(args));
+        status_checker.with_response_title(args.check_title);
+        if args.check_title {
+            verbose_print(args, "Reading response bodies to record HTML titles");
         }
 
         testers.push(Box::new(status_checker));
@@ -659,6 +693,42 @@ mod tests {
             };
             assert!(err.contains(expected), "{err}");
         }
+    }
+
+    #[test]
+    fn test_response_metadata_follows_the_capture_metadata_rule() {
+        // Structured formats always take it (absent keys are omitted, so a run
+        // that collected none is unchanged); plain text is a pipeline contract
+        // and stays one bare URL per line unless --show-meta asks otherwise.
+        let mut args = build_test_args();
+        args.format = "plain".to_string();
+        assert!(!wants_response_meta(&args));
+
+        args.show_meta = true;
+        assert!(wants_response_meta(&args));
+
+        args.show_meta = false;
+        for format in ["json", "jsonl", "csv", "JSON"] {
+            args.format = format.to_string();
+            assert!(wants_response_meta(&args), "{format}");
+        }
+
+        // A wordlist carries no per-URL fields at all, so there is nothing to
+        // populate them for.
+        args.format = "wordlist".to_string();
+        assert!(!wants_response_meta(&args));
+    }
+
+    #[test]
+    fn test_check_title_turns_the_status_pass_on() {
+        // Without the status checker's request there is no response to read a
+        // title out of, so the flag implies the pass rather than silently
+        // doing nothing.
+        let mut args = build_test_args();
+        assert!(!should_check_status(&args));
+
+        args.check_title = true;
+        assert!(should_check_status(&args));
     }
 
     #[test]
