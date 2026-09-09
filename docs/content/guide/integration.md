@@ -1,5 +1,7 @@
 +++
 title = "Integration"
+description = "Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring."
+toc = true
 weight = 6
 +++
 

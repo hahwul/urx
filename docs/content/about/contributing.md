@@ -1,5 +1,7 @@
 +++
 title = "Contributing"
+description = "Report issues, set up a development environment and open a pull request against urx."
+toc = true
 weight = 2
 +++
 
@@ -152,8 +154,7 @@ This project follows the [Contributor Covenant Code of Conduct](https://github.c
 ## Need Help?
 
 - Read the full [CONTRIBUTING.md](https://github.com/hahwul/urx/blob/main/CONTRIBUTING.md) guide
-- Join [GitHub Discussions](https://github.com/hahwul/urx/discussions)
-- Ask questions in issues
+- Ask a question in [GitHub Issues](https://github.com/hahwul/urx/issues)
 
 ## Recognition
 

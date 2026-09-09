@@ -1,52 +1,25 @@
-      <div class="docs-footer">
-        <div class="footer-mark">
-          <a href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul">
-            <span class="hahwul-img" role="img" aria-label="hahwul"></span>
-          </a>
-          <p class="footer-love">Built with Love</p>
-        </div>
-      </div>
-    </main>
-  </div>
-{{ highlight_js }}
+<footer class="docs-footer">
+  <p class="footer-meta">
+    <a class="footer-sig" href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul, built with love">
+      <span class="hahwul-img" aria-hidden="true"></span>
+      <span class="footer-love">Built with Love</span>
+    </a>
+    <span aria-hidden="true">&#183;</span>
+    <span>MIT &#183; &#169; HAHWUL</span>
+  </p>
+</footer>
+
+{% include "partials/search.html" %}
+
+{% if page.section != "" %}{{ highlight_js }}{% endif %}
+<script src="{{ base_url }}/js/theme.js" defer></script>
+<script src="{{ base_url }}/js/search.js" defer></script>
+{% if page.section == "" %}<script src="{{ base_url }}/js/home.js" defer></script>{% endif %}
+{% if page.section != "" %}
+<script src="{{ base_url }}/js/toc.js" defer></script>
+<script src="{{ base_url }}/js/docs.js" defer></script>
+<script src="{{ base_url }}/js/codecopy.js" defer></script>
+{% endif %}
 {{ auto_includes_js }}
-<script>
-(function () {
-  // active sidebar link
-  var path = window.location.pathname.replace(/\/$/, "") + "/";
-  document.querySelectorAll(".sidebar-links a").forEach(function (link) {
-    var href = link.getAttribute("href");
-    if (href && href.replace(/\/$/, "") + "/" === path) link.classList.add("active");
-  });
-
-  // theme toggle
-  function currentTheme() {
-    var explicit = document.documentElement.getAttribute("data-theme");
-    if (explicit) return explicit;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-  document.querySelectorAll("[data-theme-toggle]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var next = currentTheme() === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", next);
-      try { localStorage.setItem("urx-theme", next); } catch (e) {}
-    });
-  });
-
-  // scroll reveal
-  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var els = document.querySelectorAll(".reveal");
-  if (reduce || !("IntersectionObserver" in window)) {
-    els.forEach(function (el) { el.classList.add("is-visible"); });
-  } else {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting) { e.target.classList.add("is-visible"); io.unobserve(e.target); }
-      });
-    }, { threshold: 0.12, rootMargin: "0px 0px -8% 0px" });
-    els.forEach(function (el) { io.observe(el); });
-  }
-})();
-</script>
 </body>
 </html>

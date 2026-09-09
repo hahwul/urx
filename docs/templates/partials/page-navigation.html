@@ -1,0 +1,23 @@
+{# Prev/next within the current section, ordered by weight. The first page links
+   back to the section index rather than dead-ending. #}
+{% for sec in site.sections %}{% if sec.name == page.section %}
+{% set ordered = sec.pages | rejectattr("is_index") | sort(attribute="weight") %}
+{% for p in ordered %}{% if p.url == page.url %}
+<nav class="page-navigation" aria-label="Page navigation">
+  {% if not loop.first %}{% set prev = ordered[loop.index0 - 1] %}
+  <a class="page-nav-link" href="{{ base_url }}{{ prev.url }}" rel="prev">
+    <span>&#8592; Previous</span><strong class="page-nav-title">{{ prev.title | e }}</strong>
+  </a>
+  {% else %}
+  <a class="page-nav-link" href="{{ base_url }}{{ sec.url }}">
+    <span>&#8592; Section</span><strong class="page-nav-title">{{ sec.title | e }}</strong>
+  </a>
+  {% endif %}
+  {% if not loop.last %}{% set next = ordered[loop.index0 + 1] %}
+  <a class="page-nav-link page-nav-next" href="{{ base_url }}{{ next.url }}" rel="next">
+    <span>Next &#8594;</span><strong class="page-nav-title">{{ next.title | e }}</strong>
+  </a>
+  {% endif %}
+</nav>
+{% endif %}{% endfor %}
+{% endif %}{% endfor %}

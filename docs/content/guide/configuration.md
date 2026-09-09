@@ -1,5 +1,7 @@
 +++
 title = "Configuration"
+description = "Set urx defaults in a TOML config file, and how those settings combine with command-line flags."
+toc = true
 weight = 2
 +++
 

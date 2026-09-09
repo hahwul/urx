@@ -34,7 +34,7 @@ use_cdn = true
 # =============================================================================
 
 [og]
-default_image = "/images/preview.jpg"
+default_image = "/images/og-card.png"
 type = "website"
 twitter_card = "summary_large_image"
 twitter_site = "@hahwul"

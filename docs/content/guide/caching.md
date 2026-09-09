@@ -1,5 +1,7 @@
 +++
 title = "Caching"
+description = "Skip domains you already scanned with the SQLite or Redis cache, and return only new URLs with incremental mode."
+toc = true
 weight = 5
 +++
 
