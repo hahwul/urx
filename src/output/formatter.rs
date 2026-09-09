@@ -1,14 +1,16 @@
 /// Implements different URL output formatters
 use super::UrlData;
+use crate::utils::url::wordlist_terms;
 use colored::*;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::fmt;
 
 /// Helper struct for JSON serialization with guaranteed field order
-/// (url, status, sources, then the archive metadata). Every optional field is
-/// omitted when absent rather than emitted as `null`, so a run that collected
-/// no metadata produces byte-identical output to before it existed.
+/// (url, status, sources, the archive metadata, then what a live `--check-status`
+/// response reported). Every optional field is omitted when absent rather than
+/// emitted as `null`, so a run that collected no metadata produces
+/// byte-identical output to before it existed.
 #[derive(Serialize)]
 struct JsonUrlEntry<'a> {
     url: &'a str,
@@ -26,6 +28,14 @@ struct JsonUrlEntry<'a> {
     archive_status: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     digest: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_length: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
 }
 
 impl<'a> JsonUrlEntry<'a> {
@@ -39,6 +49,10 @@ impl<'a> JsonUrlEntry<'a> {
             mime: url_data.mime.as_deref(),
             archive_status: url_data.archive_status.as_deref(),
             digest: url_data.digest.as_deref(),
+            location: url_data.location.as_deref(),
+            content_length: url_data.content_length.as_deref(),
+            content_type: url_data.content_type.as_deref(),
+            title: url_data.title.as_deref(),
         }
     }
 }
@@ -187,8 +201,43 @@ impl Formatter for CsvFormatter {
     }
 }
 
-/// Render the archive metadata of one entry as a compact `key=value` list for
-/// plain-text output. Empty when the entry carries none.
+/// Emits a wordlist rather than URLs: the path segments and query parameter
+/// names a URL is built from, one term per line.
+///
+/// A per-entry formatter cannot deduplicate across the run, so this renders the
+/// terms of the one entry it is given (sorted, no repeats) and
+/// [`super::WordlistOutputter`] does the run-wide union. That is also why
+/// `--format wordlist` is batch-only: a streamed term could not be known to be
+/// new.
+#[derive(Debug, Clone)]
+pub struct WordlistFormatter;
+
+impl WordlistFormatter {
+    /// Create a new wordlist formatter
+    pub fn new() -> Self {
+        WordlistFormatter
+    }
+}
+
+impl Formatter for WordlistFormatter {
+    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
+        let mut terms = wordlist_terms(&url_data.url);
+        terms.sort();
+        terms.dedup();
+        terms.iter().map(|term| format!("{term}\n")).collect()
+    }
+
+    fn clone_box(&self) -> Box<dyn Formatter> {
+        Box::new(self.clone())
+    }
+}
+
+/// Render the archive metadata of one entry, plus whatever a live response
+/// reported, as a compact `key=value` list for plain-text output. Empty when the
+/// entry carries none.
+///
+/// The title is quoted because it is the one value that routinely contains
+/// spaces; without quotes it would run into whatever followed it.
 fn plain_meta(url_data: &UrlData) -> String {
     let fields = [
         ("first_seen", url_data.first_seen.as_deref()),
@@ -196,18 +245,24 @@ fn plain_meta(url_data: &UrlData) -> String {
         ("mime", url_data.mime.as_deref()),
         ("archive_status", url_data.archive_status.as_deref()),
         ("digest", url_data.digest.as_deref()),
+        ("location", url_data.location.as_deref()),
+        ("content_length", url_data.content_length.as_deref()),
+        ("content_type", url_data.content_type.as_deref()),
     ];
-    fields
+    let mut parts: Vec<String> = fields
         .iter()
         .filter_map(|(name, value)| value.map(|v| format!("{name}={v}")))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect();
+    if let Some(title) = &url_data.title {
+        parts.push(format!("title={title:?}"));
+    }
+    parts.join(" ")
 }
 
 /// The optional CSV columns, in output order. `url` is always first and is not
 /// listed here. [`csv_optional_values`] returns one value per entry in exactly
 /// this order, which is what keeps header and rows aligned.
-const CSV_OPTIONAL_COLUMNS: [&str; 7] = [
+const CSV_OPTIONAL_COLUMNS: [&str; 11] = [
     "status",
     "sources",
     "first_seen",
@@ -215,10 +270,14 @@ const CSV_OPTIONAL_COLUMNS: [&str; 7] = [
     "mime",
     "archive_status",
     "digest",
+    "location",
+    "content_length",
+    "content_type",
+    "title",
 ];
 
 /// This entry's value for each optional column, `None` where it has none.
-fn csv_optional_values(url_data: &UrlData) -> [Option<Cow<'_, str>>; 7] {
+fn csv_optional_values(url_data: &UrlData) -> [Option<Cow<'_, str>>; 11] {
     [
         url_data.status.as_deref().map(Cow::Borrowed),
         (!url_data.sources.is_empty()).then(|| Cow::Owned(url_data.sources.join("|"))),
@@ -227,6 +286,10 @@ fn csv_optional_values(url_data: &UrlData) -> [Option<Cow<'_, str>>; 7] {
         url_data.mime.as_deref().map(Cow::Borrowed),
         url_data.archive_status.as_deref().map(Cow::Borrowed),
         url_data.digest.as_deref().map(Cow::Borrowed),
+        url_data.location.as_deref().map(Cow::Borrowed),
+        url_data.content_length.as_deref().map(Cow::Borrowed),
+        url_data.content_type.as_deref().map(Cow::Borrowed),
+        url_data.title.as_deref().map(Cow::Borrowed),
     ]
 }
 
@@ -298,9 +361,10 @@ const FORMULA_TRIGGERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
 /// importers, so leaving it unquoted corrupts the table.
 ///
 /// A value *starting* with one of [`FORMULA_TRIGGERS`] is additionally prefixed
-/// with an apostrophe. Every field here is archive-controlled — the URL itself,
-/// and under `--show-only-param` a parameter name lifted verbatim out of a
-/// query string — so `=cmd|'/C calc'!A0` reaches the CSV unaltered and executes
+/// with an apostrophe. Every field here is archive- or target-controlled — the
+/// URL itself, a parameter name lifted verbatim out of a query string under
+/// `--show-only-param`, and the response headers and `<title>` a checked host
+/// chooses — so `=cmd|'/C calc'!A0` reaches the CSV unaltered and executes
 /// when the file is opened. Quoting alone does not stop that; the apostrophe is
 /// the standard mitigation for CSV formula injection (CWE-1236).
 pub(crate) fn csv_escape(value: &str) -> String {
@@ -707,6 +771,141 @@ mod tests {
         let formatter = PlainFormatter::new();
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(formatter.format(&url_data, true), "https://example.com\n");
+    }
+
+    /// A record carrying everything a live `--check-status` response reports.
+    fn with_response_meta(url: &str) -> UrlData {
+        let mut data = UrlData::with_status(url.to_string(), "301 Moved Permanently".to_string());
+        data.location = Some("https://example.com/final".to_string());
+        data.content_length = Some("1234".to_string());
+        data.content_type = Some("text/html".to_string());
+        data.title = Some("Example Home".to_string());
+        data
+    }
+
+    #[test]
+    fn test_json_carries_the_response_metadata_after_the_archive_metadata() {
+        let formatter = JsonFormatter::new();
+        assert_eq!(
+            formatter.format(&with_response_meta("https://example.com/redir"), true),
+            "{\"url\":\"https://example.com/redir\",\
+             \"status\":\"301 Moved Permanently\",\
+             \"location\":\"https://example.com/final\",\
+             \"content_length\":\"1234\",\
+             \"content_type\":\"text/html\",\
+             \"title\":\"Example Home\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_json_omits_response_metadata_keys_when_absent() {
+        // Same rule as the archive fields: a run that collected none is
+        // byte-identical to before they existed.
+        let formatter = JsonFormatter::new();
+        let mut url_data =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
+        url_data.content_type = Some("text/html".to_string());
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "{\"url\":\"https://example.com\",\"status\":\"200 OK\",\"content_type\":\"text/html\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_csv_response_columns_follow_the_archive_ones() {
+        let rows = vec![with_response_meta("https://example.com/redir")];
+        let layout = CsvLayout::for_rows(&rows);
+
+        // Appended after the existing columns, so an established CSV consumer
+        // sees its columns in the same order and position as before.
+        assert_eq!(
+            csv_header(&layout),
+            "url,status,location,content_length,content_type,title\n"
+        );
+        assert_eq!(
+            csv_row(&rows[0], &layout),
+            "https://example.com/redir,301 Moved Permanently,https://example.com/final,1234,text/html,Example Home\n"
+        );
+    }
+
+    #[test]
+    fn test_csv_escapes_a_target_controlled_title() {
+        // The title is chosen by the host being checked, so it reaches the CSV
+        // as untrusted text: a formula trigger has to be neutralised and a comma
+        // quoted, exactly as for the URL.
+        let mut row = UrlData::new("https://example.com".to_string());
+        row.title = Some("=cmd|'/C calc'!A0".to_string());
+        let rows = vec![row];
+        assert_eq!(
+            csv_row(&rows[0], &CsvLayout::for_rows(&rows)),
+            "https://example.com,\"'=cmd|'/C calc'!A0\"\n"
+        );
+    }
+
+    #[test]
+    fn test_plain_output_is_unchanged_without_response_metadata() {
+        // `urx target.com --check-status | ...` keeps its shape: the fields are
+        // only populated when --show-meta or a structured format asked for them.
+        let formatter = PlainFormatter::new();
+        let url_data =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
+        let out = crate::test_support::plain(&formatter.format(&url_data, true));
+        assert_eq!(out, "https://example.com [200 OK]\n");
+    }
+
+    #[test]
+    fn test_plain_appends_response_metadata_and_quotes_the_title() {
+        let formatter = PlainFormatter::new();
+        let mut url_data =
+            UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
+        url_data.content_type = Some("text/html".to_string());
+        url_data.title = Some("Example Domain Home".to_string());
+
+        let out = crate::test_support::plain(&formatter.format(&url_data, true));
+        // The title is the one value that routinely contains spaces, so it is
+        // quoted; everything else stays bare `key=value`.
+        assert_eq!(
+            out,
+            "https://example.com [200 OK] [content_type=text/html title=\"Example Domain Home\"]\n"
+        );
+    }
+
+    #[test]
+    fn test_wordlist_formatter_emits_one_term_per_line() {
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::new("https://example.com/admin/users?id=1&sort=asc".to_string());
+        // One entry's terms, sorted and without repeats.
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "admin\nid\nsort\nusers\n"
+        );
+    }
+
+    #[test]
+    fn test_wordlist_formatter_skips_data_looking_segments() {
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::new("https://example.com/post/4711/edit".to_string());
+        assert_eq!(formatter.format(&url_data, true), "edit\npost\n");
+    }
+
+    #[test]
+    fn test_wordlist_formatter_ignores_status_and_sources() {
+        // A wordlist is words the target is built from; a status code and a
+        // provider name are neither.
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::with_status(
+            "https://example.com/admin".to_string(),
+            "200 OK".to_string(),
+        )
+        .with_sources(vec!["wayback".into()]);
+        assert_eq!(formatter.format(&url_data, true), "admin\n");
+    }
+
+    #[test]
+    fn test_wordlist_formatter_of_a_bare_host_is_empty() {
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::new("https://example.com/".to_string());
+        assert_eq!(formatter.format(&url_data, true), "");
     }
 
     #[test]

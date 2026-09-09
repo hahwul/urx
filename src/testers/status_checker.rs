@@ -1,5 +1,6 @@
 use anyhow::Result;
-use reqwest::Client;
+use reqwest::header::{HeaderName, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
+use reqwest::{Client, Response};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use tokio::sync::OnceCell;
 
 use super::Tester;
 use crate::network::client::HttpClientConfig;
+use crate::output::UrlData;
 
 /// HTTP status checker for URLs
 #[derive(Clone)]
@@ -19,6 +21,12 @@ pub struct StatusChecker {
     insecure: bool,
     include_status: Option<Vec<String>>,
     exclude_status: Option<Vec<String>>,
+    /// Record the response facts that come free with the request the checker is
+    /// already making: `Location`, `Content-Length`, `Content-Type`.
+    response_meta: bool,
+    /// Also record the HTML `<title>`. Kept apart from `response_meta` because
+    /// it is the one field that is *not* free — it needs the response body.
+    response_title: bool,
     /// One HTTP client, built lazily on first use and reused for every tested
     /// URL. `reqwest::Client` pools connections internally, so building it once
     /// (rather than per URL) lets TLS handshakes and keep-alive connections be
@@ -42,6 +50,8 @@ impl StatusChecker {
             insecure: false,
             include_status: None,
             exclude_status: None,
+            response_meta: false,
+            response_title: false,
             client: Arc::new(OnceCell::new()),
         }
     }
@@ -54,6 +64,19 @@ impl StatusChecker {
     /// Sets the status codes to exclude from the results
     pub fn with_exclude_status(&mut self, status_codes: Option<Vec<String>>) {
         self.exclude_status = status_codes;
+    }
+
+    /// Record `Location`, `Content-Length` and `Content-Type` alongside the
+    /// status code. These arrive with the response head the checker already
+    /// waits for, so collecting them costs nothing extra.
+    pub fn with_response_meta(&mut self, enabled: bool) {
+        self.response_meta = enabled;
+    }
+
+    /// Also record the HTML `<title>`. This one reads the start of the response
+    /// body, so it is a separate, explicit opt-in.
+    pub fn with_response_title(&mut self, enabled: bool) {
+        self.response_title = enabled;
     }
 
     fn client_config(&self) -> HttpClientConfig {
@@ -177,7 +200,26 @@ impl Tester for StatusChecker {
                             status_code,
                             status.canonical_reason().unwrap_or("")
                         );
-                        return Ok(vec![format!("{} - {}", url, status_text)]);
+
+                        // Nothing extra was asked for: emit the historical
+                        // `"{url} - {status}"` line, byte for byte.
+                        if !self.response_meta && !self.response_title {
+                            return Ok(vec![format!("{} - {}", url, status_text)]);
+                        }
+
+                        let mut data = UrlData::with_status(url.to_string(), status_text);
+                        let content_type = header(&response, CONTENT_TYPE);
+                        if self.response_meta {
+                            // The redirect target is recorded, never followed —
+                            // see `client()`.
+                            data.location = header(&response, LOCATION);
+                            data.content_length = header(&response, CONTENT_LENGTH);
+                            data.content_type = content_type.clone();
+                        }
+                        if self.response_title {
+                            data.title = read_title(response, content_type.as_deref()).await;
+                        }
+                        return Ok(vec![data.to_tester_line()]);
                     }
                     Err(e) => {
                         last_error = Some(e);
@@ -231,6 +273,102 @@ impl Tester for StatusChecker {
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
     }
+}
+
+/// Most bytes of a response body read while looking for a `<title>`.
+///
+/// A title lives in the document head, and a status check must not pull a
+/// hundred-megabyte download across the network to find one.
+const TITLE_SCAN_LIMIT: usize = 64 * 1024;
+
+/// Longest title kept, in characters. A page is free to serve a kilobyte of
+/// `<title>`; an output line is not.
+const TITLE_MAX_CHARS: usize = 200;
+
+/// One response header as a trimmed string, or `None` when it is absent, empty,
+/// or not valid text.
+fn header(response: &Response, name: HeaderName) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Read the start of the body and pull out its HTML `<title>`.
+///
+/// Bounded twice: at most [`TITLE_SCAN_LIMIT`] bytes are read, and the read
+/// stops as soon as the closing tag has arrived. A body the server declared as
+/// something other than HTML is not read at all — which also means a redirect,
+/// an image or a JSON API costs no extra bytes here.
+async fn read_title(mut response: Response, content_type: Option<&str>) -> Option<String> {
+    if content_type.is_some_and(|ct| !ct.to_ascii_lowercase().contains("html")) {
+        return None;
+    }
+
+    let mut body: Vec<u8> = Vec::new();
+    while body.len() < TITLE_SCAN_LIMIT {
+        match response.chunk().await {
+            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            // End of body, or a read error partway through: parse what arrived
+            // rather than throwing away a title we may already hold.
+            _ => break,
+        }
+        if find_ascii_ci(&body, b"</title").is_some() {
+            break;
+        }
+    }
+
+    extract_html_title(&body)
+}
+
+/// First position of `needle` in `haystack`, ignoring ASCII case. HTML tag names
+/// are ASCII, so this needs no decoding pass over the bytes.
+fn find_ascii_ci(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// The text of the first `<title>` element, whitespace collapsed, entities
+/// decoded, cut to [`TITLE_MAX_CHARS`]. `None` when there is no complete title
+/// element or it holds nothing but whitespace.
+fn extract_html_title(body: &[u8]) -> Option<String> {
+    let open = find_ascii_ci(body, b"<title")?;
+    // `<title>` may carry attributes, so the text starts after the tag's own
+    // closing angle bracket, not at a fixed offset.
+    let text_start = open + body[open..].iter().position(|b| *b == b'>')? + 1;
+    let text_end = text_start + find_ascii_ci(&body[text_start..], b"</title")?;
+
+    let raw = String::from_utf8_lossy(&body[text_start..text_end]);
+    let collapsed = decode_entities(&raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+
+    let mut title: String = collapsed.chars().take(TITLE_MAX_CHARS).collect();
+    if collapsed.chars().count() > TITLE_MAX_CHARS {
+        title.push('…');
+    }
+    Some(title)
+}
+
+/// Decode the handful of HTML entities that actually turn up in titles.
+///
+/// `&amp;` is decoded last so `&amp;lt;` comes out as the literal `&lt;` the
+/// page meant, rather than being decoded twice into `<`.
+fn decode_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 #[cfg(test)]
@@ -483,5 +621,170 @@ mod tests {
         assert!(checker.client.get().is_some());
         ok.assert();
         missing.assert();
+    }
+
+    /// Run one URL through a checker and decode the record it produced.
+    async fn check(checker: &StatusChecker, url: &str) -> crate::output::UrlData {
+        let out = checker.test_url(url).await.unwrap();
+        assert_eq!(out.len(), 1, "{out:?}");
+        crate::output::UrlData::from_string(out[0].clone())
+    }
+
+    #[tokio::test]
+    async fn test_response_metadata_is_off_by_default() {
+        // The default line is the historical `"{url} - {status}"` one, so an
+        // existing `--check-status` run is byte-identical to before.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/x")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_header("content-length", "12")
+            .create_async()
+            .await;
+
+        let out = StatusChecker::new()
+            .test_url(&format!("{}/x", server.url()))
+            .await
+            .unwrap();
+        assert_eq!(out[0], format!("{}/x - 200 OK", server.url()));
+    }
+
+    #[tokio::test]
+    async fn test_response_metadata_records_the_free_headers() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/x")
+            .with_status(200)
+            .with_header("content-type", "application/json; charset=utf-8")
+            .with_header("content-length", "17")
+            .with_body("{\"hello\":\"world\"}")
+            .create_async()
+            .await;
+
+        let mut checker = StatusChecker::new();
+        checker.with_response_meta(true);
+        let data = check(&checker, &format!("{}/x", server.url())).await;
+
+        assert_eq!(data.url, format!("{}/x", server.url()));
+        assert_eq!(data.status.as_deref(), Some("200 OK"));
+        assert_eq!(
+            data.content_type.as_deref(),
+            Some("application/json; charset=utf-8")
+        );
+        assert_eq!(data.content_length.as_deref(), Some("17"));
+        // No redirect, so no Location — absent fields stay absent.
+        assert_eq!(data.location, None);
+        assert_eq!(data.title, None);
+    }
+
+    #[tokio::test]
+    async fn test_redirect_location_is_recorded_but_still_not_followed() {
+        // The regression guarded by `test_redirects_are_reported_not_followed`
+        // must survive: the target is written down, never requested.
+        let mut server = mockito::Server::new_async().await;
+        let redirect = server
+            .mock("GET", "/redir")
+            .with_status(301)
+            .with_header("location", "/final")
+            .expect(1)
+            .create_async()
+            .await;
+        let final_page = server
+            .mock("GET", "/final")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut checker = StatusChecker::new();
+        checker.with_response_meta(true);
+        let data = check(&checker, &format!("{}/redir", server.url())).await;
+
+        assert_eq!(data.status.as_deref(), Some("301 Moved Permanently"));
+        assert_eq!(data.location.as_deref(), Some("/final"));
+        redirect.assert();
+        final_page.assert();
+    }
+
+    #[tokio::test]
+    async fn test_title_is_read_only_when_asked_for() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/page")
+            .with_status(200)
+            .with_header("content-type", "text/html; charset=utf-8")
+            .with_body("<html><head><title>  Example &amp; Co\n  Home </title></head></html>")
+            .expect(2)
+            .create_async()
+            .await;
+        let url = format!("{}/page", server.url());
+
+        // Headers only: no title, even though the body carries one.
+        let mut headers_only = StatusChecker::new();
+        headers_only.with_response_meta(true);
+        assert_eq!(check(&headers_only, &url).await.title, None);
+
+        // Whitespace collapsed and entities decoded.
+        let mut with_title = StatusChecker::new();
+        with_title.with_response_title(true);
+        assert_eq!(
+            check(&with_title, &url).await.title.as_deref(),
+            Some("Example & Co Home")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_title_is_not_read_for_non_html_responses() {
+        // A declared non-HTML body is never pulled across the network.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/data.json")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("<title>not really html</title>")
+            .create_async()
+            .await;
+
+        let mut checker = StatusChecker::new();
+        checker.with_response_title(true);
+        let data = check(&checker, &format!("{}/data.json", server.url())).await;
+        assert_eq!(data.title, None);
+        // The status line still made it through the record channel.
+        assert_eq!(data.status.as_deref(), Some("200 OK"));
+    }
+
+    #[test]
+    fn test_extract_html_title_handles_the_shapes_that_turn_up() {
+        // Attributes on the tag, mixed case, and a multi-line body.
+        assert_eq!(
+            extract_html_title(b"<HTML><TITLE lang=\"en\">Hi\n there</TITLE>"),
+            Some("Hi there".to_string())
+        );
+        // No title, an unterminated one, and an empty one all yield nothing
+        // rather than an empty line in the output.
+        assert_eq!(extract_html_title(b"<html><body>no head</body>"), None);
+        assert_eq!(extract_html_title(b"<title>never closed"), None);
+        assert_eq!(extract_html_title(b"<title>   </title>"), None);
+    }
+
+    #[test]
+    fn test_extract_html_title_caps_a_runaway_title() {
+        let body = format!("<title>{}</title>", "a".repeat(TITLE_MAX_CHARS + 50));
+        let title = extract_html_title(body.as_bytes()).unwrap();
+        // Cut to the cap, with a marker so a truncated title does not read as
+        // the page's real one.
+        assert_eq!(title.chars().count(), TITLE_MAX_CHARS + 1);
+        assert!(title.ends_with('…'), "{title}");
+    }
+
+    #[test]
+    fn test_decode_entities_does_not_decode_twice() {
+        // `&amp;lt;` is the page asking for the literal text `&lt;`.
+        assert_eq!(decode_entities("a &amp;lt; b"), "a &lt; b");
+        assert_eq!(
+            decode_entities("&lt;b&gt; &quot;x&quot; &#39;y&#39;"),
+            "<b> \"x\" 'y'"
+        );
     }
 }

@@ -545,6 +545,41 @@ pub struct Args {
     /// `urx --manpage > ~/.local/share/man/man1/urx.1`. Needs no DOMAINS.
     #[clap(long)]
     pub manpage: bool,
+
+    // --- output-views ---
+    /// Replace the URL list with every query parameter name the run saw, once
+    /// each, sorted — the parameter inventory of the whole target rather than
+    /// of one URL at a time. Needs the complete result set, so it cannot be
+    /// combined with --stream.
+    #[clap(help_heading = "Output Options")]
+    #[clap(long, conflicts_with_all = ["show_only_host", "show_only_path", "show_only_param", "params_by_endpoint", "fuzz_placeholder"])]
+    pub params: bool,
+
+    /// Replace the URL list with one line per endpoint: the endpoint, a space,
+    /// and the comma-separated union of the parameter names seen on it (e.g.
+    /// `https://example.com/search q,page,sort`). Identifier-looking path
+    /// segments collapse to `{id}` exactly as under --dedup-similar, so
+    /// `/post/1?a=1` and `/post/2?b=2` report as one endpoint taking `a,b`.
+    /// Needs the complete result set, so it cannot be combined with --stream.
+    #[clap(help_heading = "Output Options")]
+    #[clap(long = "params-by-endpoint", conflicts_with_all = ["show_only_host", "show_only_path", "show_only_param", "params", "fuzz_placeholder"])]
+    pub params_by_endpoint: bool,
+
+    /// Replace every query parameter *value* with VALUE (e.g. `FUZZ`), keeping
+    /// one URL per parameter signature — output you can feed straight to ffuf
+    /// or dalfox. URLs without parameters drop out. Needs the complete result
+    /// set, so it cannot be combined with --stream.
+    #[clap(help_heading = "Output Options")]
+    #[clap(long = "fuzz-placeholder", value_name = "VALUE", conflicts_with_all = ["show_only_host", "show_only_path", "show_only_param", "params", "params_by_endpoint"])]
+    pub fuzz_placeholder: Option<String>,
+
+    /// Also record each response's HTML <title> while checking statuses, and
+    /// implies --check-status. Unlike the headers a status check already
+    /// receives, this one is not free: it reads the start of every response
+    /// body (capped, HTML only), so it stays opt-in.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long = "check-title")]
+    pub check_title: bool,
 }
 
 /// The set of options the user actually named on the command line.

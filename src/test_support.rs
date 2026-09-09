@@ -173,6 +173,11 @@ pub fn build_test_args() -> Args {
         notify: vec![],
         notify_on: crate::notify::NotifyOn::New,
         notify_format: crate::notify::NotifyFormat::Json,
+        // --- output-views ---
+        params: false,
+        params_by_endpoint: false,
+        fuzz_placeholder: None,
+        check_title: false,
     }
 }
 

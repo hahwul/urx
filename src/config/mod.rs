@@ -354,6 +354,8 @@ fn normalize_output_format(format: &str) -> Option<String> {
         "json" => Some("json".to_string()),
         "jsonl" => Some("jsonl".to_string()),
         "csv" => Some("csv".to_string()),
+        // --- output-views ---
+        "wordlist" => Some("wordlist".to_string()),
         _ => None,
     }
 }
@@ -538,7 +540,7 @@ impl Config {
                     args.format = format;
                 } else if !args.silent {
                     eprintln!(
-                        "Ignoring [output].format={format:?} in config: expected plain, json, jsonl, or csv"
+                        "Ignoring [output].format={format:?} in config: expected plain, json, jsonl, csv, or wordlist"
                     );
                 }
             }
