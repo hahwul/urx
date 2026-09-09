@@ -173,6 +173,9 @@ pub fn build_test_args() -> Args {
         notify: vec![],
         notify_on: crate::notify::NotifyOn::New,
         notify_format: crate::notify::NotifyFormat::Json,
+        // --- spec-expansion ---
+        expand_specs: false,
+        max_spec_files: 50,
         // --- output-views ---
         params: false,
         params_by_endpoint: false,
