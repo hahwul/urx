@@ -328,6 +328,9 @@ pub struct TestingConfig {
     pub max_js_files: Option<usize>,
     pub archive_body: Option<bool>,
     pub archive_body_limit: Option<usize>,
+    // --- spec-expansion ---
+    pub expand_specs: Option<bool>,
+    pub max_spec_files: Option<usize>,
 
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
@@ -873,6 +876,17 @@ impl Config {
         if !provided.has("archive_body_limit") {
             if let Some(limit) = self.testing.archive_body_limit {
                 args.archive_body_limit = limit;
+            }
+        }
+
+        // --- spec-expansion ---
+        if !args.expand_specs && self.testing.expand_specs.unwrap_or(false) {
+            args.expand_specs = true;
+        }
+
+        if !provided.has("max_spec_files") {
+            if let Some(max) = self.testing.max_spec_files {
+                args.max_spec_files = max;
             }
         }
     }
@@ -1578,6 +1592,8 @@ mod tests {
             max_js_files = 42
             archive_body = true
             archive_body_limit = 100
+            expand_specs = true
+            max_spec_files = 25
 
             [cache]
             incremental = true
@@ -1852,5 +1868,32 @@ mod tests {
             },
         );
         assert_eq!(args.notify, vec!["https://hooks.example/cli"]);
+    }
+    // --- spec-expansion ---
+
+    #[test]
+    fn test_spec_expansion_settings_load_from_config_and_yield_to_the_cli() {
+        let content = r#"
+            [testing]
+            expand_specs = true
+            max_spec_files = 7
+        "#;
+        let file = create_temp_config_file(content);
+
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert!(args.expand_specs);
+        assert_eq!(args.max_spec_files, 7);
+
+        // An explicit --max-spec-files wins even when it equals the clap
+        // default.
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "--max-spec-files", "50", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &provided);
+        assert_eq!(args.max_spec_files, 50);
     }
 }

@@ -103,9 +103,11 @@ pub async fn process_urls_with_testers(
 
     let verbose = args.verbose;
     let check_status = should_check_status;
-    // All three discover links inside fetched bodies; any subset may be in
+    // All of these discover URLs inside fetched bodies; any subset may be in
     // the tester list after the status checker.
-    let extract_links = args.extract_links || args.extract_js_endpoints || args.archive_body;
+    // --- spec-expansion --- (`|| args.expand_specs`)
+    let extract_links =
+        args.extract_links || args.extract_js_endpoints || args.archive_body || args.expand_specs;
     let silent = args.silent;
     // With an --include-status allowlist, a URL whose status we could never
     // resolve has not been shown to match it. Emitting it with a placeholder

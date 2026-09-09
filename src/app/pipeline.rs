@@ -20,7 +20,7 @@ use crate::runner::ProviderRunResult;
 use crate::tester_manager::{self, apply_network_settings_to_tester};
 use crate::testers::{
     ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, JsEndpointExtractor, LinkExtractor,
-    StatusChecker, Tester,
+    SpecExpander, StatusChecker, Tester,
 };
 use crate::utils::{verbose_print, UrlTransformer};
 
@@ -335,6 +335,13 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it replays collected URLs from the archive after collection finishes",
         ));
     }
+    // --- spec-expansion ---
+    if args.expand_specs {
+        out.push((
+            "--expand-specs",
+            "it fetches collected specification documents after collection finishes",
+        ));
+    }
     if args.incremental {
         out.push((
             "--incremental",
@@ -430,7 +437,9 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
 pub fn build_extracted_link_filter(
     args: &Args,
 ) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
-    if !args.extract_links && !args.extract_js_endpoints && !args.archive_body {
+    // --- spec-expansion --- (`|| args.expand_specs`)
+    if !args.extract_links && !args.extract_js_endpoints && !args.archive_body && !args.expand_specs
+    {
         return Ok(None);
     }
     // File input has no queried domain to validate against, which is why the
@@ -509,6 +518,21 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
             js_extractor.with_rate_limit(network_settings.rate_limit);
         }
         testers.push(Box::new(js_extractor));
+    }
+
+    // --- spec-expansion ---
+    if args.expand_specs {
+        verbose_print(args, "Expanding endpoints from API specification documents");
+
+        let mut spec_expander = SpecExpander::new();
+        apply_network_settings_to_tester(&mut spec_expander, network_settings);
+        spec_expander.with_max_files(args.max_spec_files);
+        // Same reasoning as the JS extractor: these requests go to the target,
+        // not to a provider, so --rate-limit has to reach them.
+        if network_settings.scope != NetworkScope::Providers {
+            spec_expander.with_rate_limit(network_settings.rate_limit);
+        }
+        testers.push(Box::new(spec_expander));
     }
 
     testers
@@ -595,6 +619,8 @@ mod tests {
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
             (vec!["--show-meta"], "--show-meta"),
+            // --- spec-expansion ---
+            (vec!["--expand-specs"], "--expand-specs"),
         ];
 
         for (flags, expected) in cases {
@@ -1092,5 +1118,56 @@ mod tests {
         assert!(filter
             .accept("https://api.thirdparty.net/v1/track")
             .is_none());
+    }
+
+    // --- spec-expansion ---
+
+    #[test]
+    fn test_expand_specs_is_its_own_tester_and_honours_max_spec_files() {
+        let settings = NetworkSettings::default();
+
+        let mut args = build_test_args();
+        args.expand_specs = true;
+        assert_eq!(build_testers(&args, &settings).len(), 1);
+
+        // Independent of the other extractors: all four can run in one pass,
+        // and the status checker still comes first.
+        let mut args = build_test_args();
+        args.check_status = true;
+        args.extract_links = true;
+        args.extract_js_endpoints = true;
+        args.expand_specs = true;
+        assert_eq!(build_testers(&args, &settings).len(), 4);
+
+        // The flag alone builds nothing when it is off.
+        let args = build_test_args();
+        assert!(build_testers(&args, &settings).is_empty());
+    }
+
+    #[test]
+    fn test_expand_specs_filter_is_wired_up() {
+        // Routes read out of a specification come into existence after the
+        // filters ran over the primary list, exactly like extracted links — so
+        // the same filter must be built for them, including strict host
+        // validation (on by default).
+        let args = Args::parse_from(["urx", "--expand-specs", "--silent", "example.com"]);
+        let filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--expand-specs must build a filter");
+        assert_eq!(
+            filter
+                .accept("https://example.com/v3/users/{id}")
+                .as_deref(),
+            Some("https://example.com/v3/users/{id}")
+        );
+        assert!(filter
+            .accept("https://api.thirdparty.net/v1/track")
+            .is_none());
+    }
+
+    #[test]
+    fn test_max_spec_files_defaults_match_the_expander() {
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert_eq!(args.max_spec_files, SpecExpander::DEFAULT_MAX_FILES);
     }
 }

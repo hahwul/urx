@@ -483,6 +483,24 @@ pub struct Args {
     #[clap(long, value_name = "N", default_value = "500")]
     pub archive_body_limit: usize,
 
+    // --- spec-expansion ---
+    /// Fetch the API specification documents among the collected URLs
+    /// (swagger.json, openapi.json, /v3/api-docs, GraphQL introspection
+    /// responses) and expand every route they document into a URL. One
+    /// request buys the whole documented surface, path templates included and
+    /// left as the document writes them. JSON only for now; a YAML document
+    /// is recognised and skipped. Discovered URLs go through the same filters
+    /// and host validation as everything else.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long)]
+    pub expand_specs: bool,
+
+    /// Maximum number of specification documents --expand-specs will fetch
+    /// (0 = unlimited)
+    #[clap(help_heading = "Testing Options")]
+    #[clap(long, value_name = "N", default_value = "50")]
+    pub max_spec_files: usize,
+
     /// Enable incremental scanning mode (only return new URLs compared to previous scans)
     #[clap(help_heading = "Cache Options")]
     #[clap(long)]

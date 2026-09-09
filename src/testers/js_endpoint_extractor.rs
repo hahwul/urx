@@ -24,6 +24,7 @@ use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
 
+use super::shared::path_extension;
 use super::Tester;
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
@@ -64,17 +65,6 @@ enum BodyKind {
     Html,
     /// Nothing here can carry endpoints; don't read the body.
     Skip,
-}
-
-/// The extension of the last path segment of `url`, lower-cased, if any.
-fn path_extension(url: &Url) -> Option<String> {
-    let last = url.path_segments()?.next_back()?;
-    let (_, ext) = last.rsplit_once('.')?;
-    // `.htaccess`-style names and trailing dots are not extensions.
-    if ext.is_empty() || ext.len() > 5 || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return None;
-    }
-    Some(ext.to_ascii_lowercase())
 }
 
 /// Whether the URL is worth a request at all. Only URLs whose extension is
