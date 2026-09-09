@@ -181,9 +181,19 @@ pub fn build_test_args() -> Args {
         params_by_endpoint: false,
         fuzz_placeholder: None,
         check_title: false,
-
         // --- cache-cli ---
         command: None,
+        // --- result-filters ---
+        scope_file: vec![],
+        meta_first_seen_after: None,
+        meta_first_seen_before: None,
+        meta_last_seen_after: None,
+        meta_last_seen_before: None,
+        meta_mime: vec![],
+        meta_exclude_mime: vec![],
+        meta_status: vec![],
+        meta_exclude_status: vec![],
+        // --- end result-filters ---
     }
 }
 

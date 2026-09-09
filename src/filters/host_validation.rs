@@ -19,7 +19,7 @@ pub struct HostValidator {
 ///
 /// Input the parser cannot make a host of (a leading dot, say) falls back to
 /// the trimmed, lowercased original so it keeps behaving as before.
-fn normalize_domain(domain: &str) -> Option<String> {
+pub(super) fn normalize_domain(domain: &str) -> Option<String> {
     let trimmed = domain.trim().trim_end_matches('.');
     if trimmed.is_empty() {
         return None;

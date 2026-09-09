@@ -296,6 +296,17 @@ pub struct FilterConfig {
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
 
+    // --- result-filters ---
+    pub scope_file: Option<Vec<std::path::PathBuf>>,
+    pub meta_first_seen_after: Option<String>,
+    pub meta_first_seen_before: Option<String>,
+    pub meta_last_seen_after: Option<String>,
+    pub meta_last_seen_before: Option<String>,
+    pub meta_mime: Option<Vec<String>>,
+    pub meta_exclude_mime: Option<Vec<String>>,
+    pub meta_status: Option<Vec<String>>,
+    pub meta_exclude_status: Option<Vec<String>>,
+    // --- end result-filters ---
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
@@ -774,6 +785,53 @@ impl Config {
         if args.max_length.is_none() && self.filter.max_length.is_some() {
             args.max_length = self.filter.max_length;
         }
+
+        // --- result-filters ---
+        if args.scope_file.is_empty() {
+            if let Some(scope_file) = &self.filter.scope_file {
+                args.scope_file = scope_file.clone();
+            }
+        }
+
+        for (slot, configured) in [
+            (
+                &mut args.meta_first_seen_after,
+                &self.filter.meta_first_seen_after,
+            ),
+            (
+                &mut args.meta_first_seen_before,
+                &self.filter.meta_first_seen_before,
+            ),
+            (
+                &mut args.meta_last_seen_after,
+                &self.filter.meta_last_seen_after,
+            ),
+            (
+                &mut args.meta_last_seen_before,
+                &self.filter.meta_last_seen_before,
+            ),
+        ] {
+            if slot.is_none() {
+                slot.clone_from(configured);
+            }
+        }
+
+        for (slot, configured) in [
+            (&mut args.meta_mime, &self.filter.meta_mime),
+            (&mut args.meta_exclude_mime, &self.filter.meta_exclude_mime),
+            (&mut args.meta_status, &self.filter.meta_status),
+            (
+                &mut args.meta_exclude_status,
+                &self.filter.meta_exclude_status,
+            ),
+        ] {
+            if slot.is_empty() {
+                if let Some(values) = configured {
+                    slot.clone_from(values);
+                }
+            }
+        }
+        // --- end result-filters ---
     }
 
     fn apply_network_config(&self, args: &mut Args, provided: &CliProvided) {
@@ -1898,4 +1956,76 @@ mod tests {
             .apply_to_args(&mut args, &provided);
         assert_eq!(args.max_spec_files, 50);
     }
+    // --- result-filters ---
+    #[test]
+    fn test_filter_config_supplies_the_scope_and_meta_filters() {
+        let content = r#"
+            [filter]
+            scope_file = ["/tmp/scope.txt"]
+            meta_first_seen_after = "2015"
+            meta_first_seen_before = "2020"
+            meta_last_seen_after = "2021"
+            meta_last_seen_before = "2024"
+            meta_mime = ["text/html", "application/json"]
+            meta_exclude_mime = ["image/*"]
+            meta_status = ["200", "30x"]
+            meta_exclude_status = ["404"]
+        "#;
+        let config = Config::from_file(create_temp_config_file(content).path()).unwrap();
+        // A whole section urx does not know about is reported, so a typo in any
+        // of these keys would show up here rather than doing nothing.
+        assert!(
+            config.unknown_keys().is_empty(),
+            "{:?}",
+            config.unknown_keys()
+        );
+
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+
+        assert_eq!(
+            args.scope_file,
+            vec![std::path::PathBuf::from("/tmp/scope.txt")]
+        );
+        assert_eq!(args.meta_first_seen_after.as_deref(), Some("2015"));
+        assert_eq!(args.meta_first_seen_before.as_deref(), Some("2020"));
+        assert_eq!(args.meta_last_seen_after.as_deref(), Some("2021"));
+        assert_eq!(args.meta_last_seen_before.as_deref(), Some("2024"));
+        assert_eq!(args.meta_mime, vec!["text/html", "application/json"]);
+        assert_eq!(args.meta_exclude_mime, vec!["image/*"]);
+        assert_eq!(args.meta_status, vec!["200", "30x"]);
+        assert_eq!(args.meta_exclude_status, vec!["404"]);
+    }
+
+    #[test]
+    fn test_cli_beats_the_config_file_for_the_new_filters() {
+        let content = r#"
+            [filter]
+            scope_file = ["/tmp/from-config.txt"]
+            meta_status = ["404"]
+            meta_last_seen_before = "2005"
+        "#;
+        let config = Config::from_file(create_temp_config_file(content).path()).unwrap();
+
+        let mut args = <Args as clap::Parser>::parse_from([
+            "urx",
+            "--silent",
+            "--scope-file",
+            "/tmp/from-cli.txt",
+            "--meta-status",
+            "200",
+            "--meta-last-seen-before",
+            "2024",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &CliProvided::default());
+
+        assert_eq!(
+            args.scope_file,
+            vec![std::path::PathBuf::from("/tmp/from-cli.txt")]
+        );
+        assert_eq!(args.meta_status, vec!["200"]);
+        assert_eq!(args.meta_last_seen_before.as_deref(), Some("2024"));
+    }
+    // --- end result-filters ---
 }
