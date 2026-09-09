@@ -11,7 +11,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::cli::{self, read_domains_from_file, read_domains_from_stdin, Args};
-use crate::filters::{compile_url_regexes, HostValidator, UrlFilter};
+use crate::filters::{
+    compile_url_regexes, HostValidator, MetaFilter, MetaFilterStats, ScopeMatcher, UrlFilter,
+};
 use crate::network::{NetworkScope, NetworkSettings};
 use crate::output;
 use crate::progress::ProgressManager;
@@ -155,9 +157,107 @@ pub fn build_url_filter(args: &Args) -> Result<UrlFilter> {
         .with_match_regex(compile_url_regexes(&args.match_regex, "--match-regex")?)
         .with_filter_regex(compile_url_regexes(&args.filter_regex, "--filter-regex")?)
         .with_min_length(args.min_length)
-        .with_max_length(args.max_length);
+        .with_max_length(args.max_length)
+        // --- result-filters ---
+        // Attached to the shared filter so the batch list, the --stream sink
+        // and the extracted-link filter all enforce the same scope.
+        .with_scope(ScopeMatcher::from_files(&args.scope_file)?);
+    // --- end result-filters ---
     Ok(url_filter)
 }
+
+// --- result-filters ---
+/// Build the post-collection metadata filter from the `--meta-*` flags.
+///
+/// Fails on a date or status pattern urx cannot honour: unlike `--from`/`--to`,
+/// which warn and carry on because a dropped archive-side filter still yields a
+/// usable (if wider) result, these decide the *final* result set, so ignoring
+/// one would hand back URLs the user explicitly excluded.
+pub fn build_meta_filter(args: &Args) -> Result<MetaFilter> {
+    let mut filter = MetaFilter::new();
+    filter.with_first_seen(
+        args.meta_first_seen_after.as_deref(),
+        args.meta_first_seen_before.as_deref(),
+    )?;
+    filter.with_last_seen(
+        args.meta_last_seen_after.as_deref(),
+        args.meta_last_seen_before.as_deref(),
+    )?;
+    filter.with_mime(&args.meta_mime, &args.meta_exclude_mime);
+    filter.with_archive_status(&args.meta_status, &args.meta_exclude_status)?;
+    Ok(filter)
+}
+
+/// Reject a `--scope-file` or `--meta-*` value urx cannot honour, before the
+/// scan starts.
+///
+/// Both are otherwise first built once collection has finished — the scope file
+/// inside [`build_url_filter`], the metadata predicates inside
+/// [`apply_meta_filters`] — so a typo in a scope file or a date bound would
+/// surface only after minutes of fetching. Same reason [`build_stream_sink`] is
+/// called before the run rather than at first use.
+pub fn validate_result_filters(args: &Args) -> Result<()> {
+    ScopeMatcher::from_files(&args.scope_file)?;
+    build_meta_filter(args)?;
+    Ok(())
+}
+
+/// Apply the `--meta-*` filters to the batch result.
+///
+/// Runs *before* [`apply_url_transformations`]: `--merge-endpoint` and
+/// `--show-only-host` rewrite URLs, and a rewritten URL no longer keys into the
+/// run result that holds its metadata.
+///
+/// The report is deliberately louder than a plain count. A URL carries archive
+/// metadata only when a CDX provider reported it in *this* run — not from a
+/// cache hit, not from `--files`, not from `otx`/`vt`/`urlscan`/`github`/
+/// `bevigil`/`robots`/`sitemap` — so the failure mode of these flags is a run
+/// that returns nothing and looks exactly like a target with nothing to find.
+pub fn apply_meta_filters(
+    args: &Args,
+    run_result: &ProviderRunResult,
+    urls: Vec<String>,
+    progress_manager: &ProgressManager,
+) -> Result<Vec<String>> {
+    let filter = build_meta_filter(args)?;
+    if filter.is_empty() {
+        return Ok(urls);
+    }
+
+    let before = urls.len();
+    let (kept, stats) = filter.apply(urls, |url| run_result.urls.get(url).map(|e| &e.meta));
+    report_meta_filter_stats(args, before, stats, progress_manager);
+    Ok(kept)
+}
+
+/// Say what the metadata filters did, and why, when the answer is surprising.
+fn report_meta_filter_stats(
+    args: &Args,
+    before: usize,
+    stats: MetaFilterStats,
+    progress_manager: &ProgressManager,
+) {
+    verbose_print(
+        args,
+        format!(
+            "Metadata filters kept {}/{before} URLs ({} failed a predicate, {} carried no archive metadata to test)",
+            stats.kept, stats.rejected, stats.unknown
+        ),
+    );
+
+    // Worth saying without -v as well: nothing failed a predicate, everything
+    // simply had nothing to test, so the empty result is about the run's shape
+    // rather than about the target.
+    if stats.dropped_everything_for_lack_of_metadata() && !args.silent {
+        progress_manager.note(format!(
+            "[urx] --meta-* dropped all {} URLs because none carries archive metadata. \
+             Cached results, --files input and the non-CDX providers have none; \
+             a CDX provider (wayback, cc, arquivo) run with --no-cache does.",
+            stats.unknown
+        ));
+    }
+}
+// --- end result-filters ---
 
 /// Build the per-URL transformer used everywhere a URL must be decided on its
 /// own: streaming output and links discovered by `--extract-links`.
@@ -185,7 +285,25 @@ fn has_url_filters(args: &Args) -> bool {
         || !args.filter_regex.is_empty()
         || args.min_length.is_some()
         || args.max_length.is_some()
+        // --- result-filters ---
+        || !args.scope_file.is_empty()
+    // --- end result-filters ---
 }
+
+// --- result-filters ---
+/// True when any `--meta-*` flag is set. A cheap flag-shape test, unlike
+/// [`build_meta_filter`] which also validates the values.
+fn has_meta_filters(args: &Args) -> bool {
+    args.meta_first_seen_after.is_some()
+        || args.meta_first_seen_before.is_some()
+        || args.meta_last_seen_after.is_some()
+        || args.meta_last_seen_before.is_some()
+        || !args.meta_mime.is_empty()
+        || !args.meta_exclude_mime.is_empty()
+        || !args.meta_status.is_empty()
+        || !args.meta_exclude_status.is_empty()
+}
+// --- end result-filters ---
 
 /// Apply URL filtering and, in strict mode, host validation to the batch result.
 pub fn apply_url_filters(
@@ -407,6 +525,19 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it re-requests each URL after collection finishes",
         ));
     }
+    // --- result-filters ---
+    // The sink deliberately drops capture metadata: it prints a URL on first
+    // sighting, before the providers that would widen its first/last seen range
+    // have answered. There is nothing for these to read, so accepting them
+    // would silently emit an unfiltered stream — the same reason --show-meta is
+    // rejected here.
+    if has_meta_filters(args) {
+        out.push((
+            "--meta-first-seen-* / --meta-last-seen-* / --meta-mime / --meta-status",
+            "they read capture metadata, which is only complete once every provider has answered",
+        ));
+    }
+    // --- end result-filters ---
     out
 }
 
@@ -1304,4 +1435,390 @@ mod tests {
         let args = Args::parse_from(["urx", "example.com"]);
         assert_eq!(args.max_spec_files, SpecExpander::DEFAULT_MAX_FILES);
     }
+    // --- result-filters ---
+    /// Write `text` to a temp file and return the handle, which must outlive the
+    /// use — dropping it deletes the file.
+    fn scope_file(text: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(file, "{text}").unwrap();
+        file.flush().unwrap();
+        file
+    }
+
+    /// A run result in which each `(url, first_seen, mime, archive_status)` was
+    /// reported by a CDX provider, and every other URL was not.
+    fn run_result_with_meta(rows: &[(&str, &str, &str, &str)]) -> ProviderRunResult {
+        let mut result = ProviderRunResult::default();
+        for (url, ts, mime, status) in rows {
+            result.urls.insert(
+                (*url).to_string(),
+                crate::runner::UrlEntry {
+                    sources: HashSet::from(["wayback".to_string()]),
+                    meta: crate::providers::CaptureMeta::capture(
+                        (!ts.is_empty()).then_some(ts),
+                        (!mime.is_empty()).then_some(mime),
+                        (!status.is_empty()).then_some(status),
+                        None,
+                    ),
+                },
+            );
+        }
+        result
+    }
+
+    fn urls(list: &[&str]) -> Vec<String> {
+        list.iter().map(|u| u.to_string()).collect()
+    }
+
+    #[test]
+    fn a_scope_file_reaches_the_shared_url_filter() {
+        let file = scope_file("*.example.com\n!admin.example.com\n");
+        let mut args = build_test_args();
+        args.scope_file = vec![file.path().to_path_buf()];
+
+        let filter = build_url_filter(&args).unwrap();
+        assert!(filter.matches("https://api.example.com/v1"));
+        assert!(!filter.matches("https://admin.example.com/v1"));
+        assert!(!filter.matches("https://example.org/v1"));
+
+        // ...and it composes with the other filters rather than replacing them.
+        args.extensions = vec!["js".to_string()];
+        let filter = build_url_filter(&args).unwrap();
+        assert!(filter.matches("https://api.example.com/app.js"));
+        assert!(!filter.matches("https://api.example.com/index.html"));
+    }
+
+    #[test]
+    fn a_scope_file_survives_the_stream_and_extracted_link_paths() {
+        // The three emission paths share one filter precisely so a scope cannot
+        // apply to some of them and not others.
+        let file = scope_file("api.example.com\n");
+        let args = Args::parse_from([
+            "urx",
+            "--extract-links",
+            "--no-strict",
+            "--silent",
+            "--scope-file",
+            file.path().to_str().unwrap(),
+            "example.com",
+        ]);
+
+        let link_filter = build_extracted_link_filter(&args)
+            .unwrap()
+            .expect("--extract-links must build a filter");
+        assert_eq!(
+            link_filter.accept("https://api.example.com/v1").as_deref(),
+            Some("https://api.example.com/v1")
+        );
+        assert!(link_filter.accept("https://cdn.example.com/x.js").is_none());
+
+        // Streaming is not one of the combinations a scope file conflicts with.
+        let args = Args::parse_from([
+            "urx",
+            "--stream",
+            "--scope-file",
+            file.path().to_str().unwrap(),
+            "example.com",
+        ]);
+        assert!(streaming_conflicts(&args).is_empty());
+    }
+
+    #[test]
+    fn a_scope_file_that_cannot_be_parsed_stops_the_run() {
+        // Silently dropping the entry would run against a wider scope than the
+        // file describes, which for a bug bounty is the expensive direction.
+        let file = scope_file("*.example.com\nhttps://example.com/only/this/path\n");
+        let mut args = build_test_args();
+        args.scope_file = vec![file.path().to_path_buf()];
+
+        match build_url_filter(&args) {
+            Ok(_) => panic!("an unhonourable scope line must be fatal"),
+            Err(err) => {
+                let rendered = format!("{err:#}");
+                assert!(rendered.contains("path-scoped"), "{rendered}");
+                assert!(rendered.contains(":2"), "{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_scope_file_is_anded_with_strict_host_validation() {
+        // The two gates are independent, and strict mode runs first: a wildcard
+        // scope over a bare-apex query still needs --subs.
+        let file = scope_file("*.example.com\n");
+        let with_subs = Args::parse_from([
+            "urx",
+            "--subs",
+            "--silent",
+            "--scope-file",
+            file.path().to_str().unwrap(),
+            "example.com",
+        ]);
+        let strict_only = Args::parse_from([
+            "urx",
+            "--silent",
+            "--scope-file",
+            file.path().to_str().unwrap(),
+            "example.com",
+        ]);
+
+        let discovered: HashSet<String> = urls(&[
+            "https://example.com/a",
+            "https://api.example.com/a",
+            "https://example.org/a",
+        ])
+        .into_iter()
+        .collect();
+
+        let kept = apply_url_filters(&with_subs, &discovered, &ProgressManager::new(true)).unwrap();
+        assert_eq!(
+            kept,
+            urls(&["https://api.example.com/a", "https://example.com/a"])
+        );
+
+        // Without --subs, host validation removes the subdomain before the
+        // scope file ever sees it — the scope does not widen the query.
+        let kept =
+            apply_url_filters(&strict_only, &discovered, &ProgressManager::new(true)).unwrap();
+        assert_eq!(kept, urls(&["https://example.com/a"]));
+    }
+
+    #[test]
+    fn a_scope_file_makes_the_filter_progress_bar_worth_drawing() {
+        let file = scope_file("*.example.com\n");
+        let mut args = build_test_args();
+        assert!(!has_url_filters(&args));
+        args.scope_file = vec![file.path().to_path_buf()];
+        assert!(has_url_filters(&args));
+    }
+
+    #[test]
+    fn meta_filters_narrow_the_batch_result_uniformly_across_providers() {
+        // The case the archive-side filters cannot serve: a positive multi-value
+        // status list, applied to URLs from a mix of providers.
+        let run_result = run_result_with_meta(&[
+            (
+                "https://example.com/ok",
+                "20200101000000",
+                "text/html",
+                "200",
+            ),
+            (
+                "https://example.com/moved",
+                "20200101000000",
+                "text/html",
+                "301",
+            ),
+            (
+                "https://example.com/gone",
+                "20200101000000",
+                "text/html",
+                "404",
+            ),
+        ]);
+
+        let mut args = build_test_args();
+        args.meta_status = vec!["200".to_string(), "301".to_string()];
+
+        let kept = apply_meta_filters(
+            &args,
+            &run_result,
+            urls(&[
+                "https://example.com/ok",
+                "https://example.com/moved",
+                "https://example.com/gone",
+            ]),
+            &ProgressManager::new(true),
+        )
+        .unwrap();
+
+        assert_eq!(
+            kept,
+            urls(&["https://example.com/ok", "https://example.com/moved"])
+        );
+    }
+
+    #[test]
+    fn meta_date_filters_read_the_merged_capture_range() {
+        let run_result = run_result_with_meta(&[
+            ("https://example.com/old", "20050101000000", "", ""),
+            ("https://example.com/new", "20240101000000", "", ""),
+        ]);
+
+        let mut args = build_test_args();
+        args.meta_last_seen_before = Some("2010".to_string());
+
+        let kept = apply_meta_filters(
+            &args,
+            &run_result,
+            urls(&["https://example.com/old", "https://example.com/new"]),
+            &ProgressManager::new(true),
+        )
+        .unwrap();
+        assert_eq!(kept, urls(&["https://example.com/old"]));
+    }
+
+    #[test]
+    fn urls_with_no_metadata_survive_an_exclusion_but_not_a_positive_filter() {
+        // The documented policy for cache hits, --files input and the providers
+        // with no capture index.
+        let run_result = ProviderRunResult::default();
+        let list = urls(&["https://example.com/a", "https://example.com/b"]);
+
+        let mut positive = build_test_args();
+        positive.meta_mime = vec!["text/html".to_string()];
+        assert!(apply_meta_filters(
+            &positive,
+            &run_result,
+            list.clone(),
+            &ProgressManager::new(true)
+        )
+        .unwrap()
+        .is_empty());
+
+        let mut negative = build_test_args();
+        negative.meta_exclude_mime = vec!["image/*".to_string()];
+        assert_eq!(
+            apply_meta_filters(
+                &negative,
+                &run_result,
+                list.clone(),
+                &ProgressManager::new(true)
+            )
+            .unwrap(),
+            list
+        );
+    }
+
+    #[test]
+    fn no_meta_flag_leaves_the_list_untouched() {
+        let run_result = ProviderRunResult::default();
+        let list = urls(&["https://example.com/a", "https://example.com/b"]);
+        assert_eq!(
+            apply_meta_filters(
+                &build_test_args(),
+                &run_result,
+                list.clone(),
+                &ProgressManager::new(true)
+            )
+            .unwrap(),
+            list
+        );
+    }
+
+    #[test]
+    fn a_result_set_emptied_only_by_missing_metadata_says_so_without_verbose() {
+        let (progress, notes) = ProgressManager::capturing();
+        let mut args = build_test_args();
+        args.silent = false;
+        args.meta_status = vec!["200".to_string()];
+
+        let kept = apply_meta_filters(
+            &args,
+            &ProviderRunResult::default(),
+            urls(&["https://example.com/a"]),
+            &progress,
+        )
+        .unwrap();
+
+        assert!(kept.is_empty());
+        let notes = notes.lock().unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("--no-cache"), "{}", notes[0]);
+    }
+
+    #[test]
+    fn a_partially_filtered_result_set_stays_quiet() {
+        // Something did fail a predicate, so the result is about the data, not
+        // about the run's shape — no note.
+        let (progress, notes) = ProgressManager::capturing();
+        let mut args = build_test_args();
+        args.silent = false;
+        args.meta_status = vec!["200".to_string()];
+
+        let run_result =
+            run_result_with_meta(&[("https://example.com/gone", "20200101000000", "", "404")]);
+        let kept = apply_meta_filters(
+            &args,
+            &run_result,
+            urls(&["https://example.com/gone", "https://example.com/bare"]),
+            &progress,
+        )
+        .unwrap();
+
+        assert!(kept.is_empty());
+        assert!(notes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unhonourable_meta_value_stops_the_run() {
+        let mut bad_date = build_test_args();
+        bad_date.meta_first_seen_after = Some("last tuesday".to_string());
+        assert!(build_meta_filter(&bad_date).is_err());
+
+        let mut bad_status = build_test_args();
+        bad_status.meta_exclude_status = vec!["4o4".to_string()];
+        let err = build_meta_filter(&bad_status).unwrap_err();
+        assert!(err.to_string().contains("20x"), "{err}");
+    }
+
+    #[test]
+    fn streaming_rejects_every_meta_filter() {
+        for flag in [
+            "--meta-first-seen-after",
+            "--meta-first-seen-before",
+            "--meta-last-seen-after",
+            "--meta-last-seen-before",
+        ] {
+            let args = Args::parse_from(["urx", "--stream", flag, "2020", "example.com"]);
+            assert!(
+                !streaming_conflicts(&args).is_empty(),
+                "{flag} must not stream"
+            );
+            assert!(build_stream_sink(&args).is_err(), "{flag}");
+        }
+        for (flag, value) in [
+            ("--meta-mime", "text/html"),
+            ("--meta-exclude-mime", "image/*"),
+            ("--meta-status", "200"),
+            ("--meta-exclude-status", "404"),
+        ] {
+            let args = Args::parse_from(["urx", "--stream", flag, value, "example.com"]);
+            assert!(
+                !streaming_conflicts(&args).is_empty(),
+                "{flag} must not stream"
+            );
+        }
+
+        // The reason is the one the user needs: the sink has no metadata to read.
+        let args = Args::parse_from(["urx", "--stream", "--meta-status", "200", "example.com"]);
+        match build_stream_sink(&args) {
+            Ok(_) => panic!("--meta-status must not stream"),
+            Err(err) => assert!(err.to_string().contains("capture metadata"), "{err}"),
+        }
+    }
+    #[test]
+    fn unhonourable_filter_values_are_rejected_before_the_scan_starts() {
+        // The point of the check: these are otherwise first built after
+        // collection, so a typo would cost the user the whole fetch.
+        assert!(validate_result_filters(&build_test_args()).is_ok());
+
+        let good = scope_file("*.example.com\n");
+        let mut args = build_test_args();
+        args.scope_file = vec![good.path().to_path_buf()];
+        args.meta_status = vec!["20x".to_string()];
+        args.meta_last_seen_after = Some("2020".to_string());
+        assert!(validate_result_filters(&args).is_ok());
+
+        let bad = scope_file("example.com:8080\n");
+        let mut args = build_test_args();
+        args.scope_file = vec![bad.path().to_path_buf()];
+        assert!(validate_result_filters(&args).is_err());
+
+        let mut args = build_test_args();
+        args.meta_first_seen_before = Some("nope".to_string());
+        assert!(validate_result_filters(&args).is_err());
+    }
+    // --- end result-filters ---
 }

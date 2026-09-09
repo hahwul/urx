@@ -24,9 +24,9 @@ use app::caching::{create_cache_manager, process_domains_with_cache};
 use app::catalog::print_provider_list;
 use app::keys::seed_api_keys_from_env;
 use app::pipeline::{
-    apply_url_filters, apply_url_transformations, build_archive_body_extractor,
+    apply_meta_filters, apply_url_filters, apply_url_transformations, build_archive_body_extractor,
     build_extracted_link_filter, build_stream_sink, build_testers, collect_domains,
-    read_urls_from_files, should_check_status,
+    read_urls_from_files, should_check_status, validate_result_filters,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::{initialize_providers, validate_selection_flags};
@@ -376,6 +376,9 @@ async fn main() -> Result<()> {
     // Built before the scan so a rejected option combination fails immediately
     // rather than after minutes of fetching.
     let stream_sink = build_stream_sink(&args)?;
+    // Same reason: a --scope-file urx cannot parse, or a --meta-* value it
+    // cannot honour, is otherwise only discovered once collection has finished.
+    validate_result_filters(&args)?;
 
     let mut header = None;
     let (run_result, domains) = collect_urls(
@@ -413,6 +416,10 @@ async fn main() -> Result<()> {
     // URL-only view for filters (they don't care about sources).
     let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
     let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager)?;
+    // Before the transformations: --merge-endpoint and --show-only-* rewrite
+    // URLs, and a rewritten URL no longer keys into the run result that holds
+    // the capture metadata these filters read.
+    let sorted_urls = apply_meta_filters(&args, &run_result, sorted_urls, &progress_manager)?;
     let transformed_urls = apply_url_transformations(&args, sorted_urls, &progress_manager);
 
     let mut final_urls = run_testers(

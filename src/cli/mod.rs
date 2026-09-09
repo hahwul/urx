@@ -373,6 +373,78 @@ pub struct Args {
     #[clap(long)]
     pub no_strict: bool,
 
+    // --- result-filters ---
+    /// Bug-bounty scope file: one host pattern per line, `!` to exclude,
+    /// `*.example.com` for a wildcard (which covers the apex too), `#` for a
+    /// comment. Exclusions always win. Repeat the flag to union several files;
+    /// a file of only `!` lines acts as a deny-list. Applies to every provider
+    /// and to extracted links. Combines with --strict rather than replacing it,
+    /// so wildcard hosts still need --subs.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "scope-file", value_name = "FILE", action = clap::ArgAction::Append)]
+    pub scope_file: Vec<std::path::PathBuf>,
+
+    /// Keep URLs whose oldest archived capture is on or after this date.
+    /// Accepts YYYY, YYYYMM, YYYYMMDD or YYYYMMDDhhmmss; a partial date is
+    /// padded to the start of the period. Unlike --from, this runs after
+    /// collection, so it applies to every provider uniformly — but it can only
+    /// judge URLs that carry archive metadata (see --show-meta).
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-first-seen-after", value_name = "DATE")]
+    pub meta_first_seen_after: Option<String>,
+
+    /// Keep URLs whose oldest archived capture is on or before this date. A
+    /// partial date is padded to the end of the period, so
+    /// `--meta-first-seen-after 2020 --meta-first-seen-before 2020` means
+    /// "first archived during 2020".
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-first-seen-before", value_name = "DATE")]
+    pub meta_first_seen_before: Option<String>,
+
+    /// Keep URLs whose newest archived capture is on or after this date —
+    /// "still alive as of". Same date forms as --meta-first-seen-after.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-last-seen-after", value_name = "DATE")]
+    pub meta_last_seen_after: Option<String>,
+
+    /// Keep URLs whose newest archived capture is on or before this date —
+    /// "dead since". Same date forms as --meta-first-seen-before.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-last-seen-before", value_name = "DATE")]
+    pub meta_last_seen_before: Option<String>,
+
+    /// Keep only URLs whose archived MIME type is one of these
+    /// (comma-separated, repeatable; `image/*` matches any subtype). Unlike
+    /// --archive-mime this is applied locally, so a multi-value list works on
+    /// every provider including Common Crawl and Arquivo.pt.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-mime", value_name = "TYPE", value_delimiter = ',')]
+    pub meta_mime: Vec<String>,
+
+    /// Drop URLs whose archived MIME type is one of these. Same syntax as
+    /// --meta-mime; a URL with no recorded MIME type is kept.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-exclude-mime", value_name = "TYPE", value_delimiter = ',')]
+    pub meta_exclude_mime: Vec<String>,
+
+    /// Keep only URLs whose archived status code matches (comma-separated,
+    /// repeatable; `20x` / `5xx` wildcards as in --include-status). This is the
+    /// status the archive recorded at capture time, not a live check — use
+    /// --include-status for that.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(long = "meta-status", value_name = "CODE", value_delimiter = ',')]
+    pub meta_status: Vec<String>,
+
+    /// Drop URLs whose archived status code matches. Same syntax as
+    /// --meta-status; a URL with no recorded status is kept.
+    #[clap(help_heading = "Filter Options")]
+    #[clap(
+        long = "meta-exclude-status",
+        value_name = "CODE",
+        value_delimiter = ','
+    )]
+    pub meta_exclude_status: Vec<String>,
+    // --- end result-filters ---
     /// Control which components network settings apply to (all, providers, testers, or providers,testers)
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "all", value_parser = validate_network_scope)]
@@ -1387,4 +1459,64 @@ mod tests {
         assert!(Args::try_parse_from(["urx", "--notify-on", "sometimes", "x.com"]).is_err());
         assert!(Args::try_parse_from(["urx", "--notify-format", "teams", "x.com"]).is_err());
     }
+    // --- result-filters ---
+    #[test]
+    fn test_scope_file_is_repeatable_and_meta_lists_split_on_commas() {
+        let args = Args::parse_from([
+            "urx",
+            "--scope-file",
+            "core.txt",
+            "--scope-file",
+            "shared-denylist.txt",
+            "--meta-mime",
+            "text/html,application/json",
+            "--meta-exclude-status",
+            "4xx",
+            "--meta-exclude-status",
+            "5xx",
+            "example.com",
+        ]);
+
+        assert_eq!(
+            args.scope_file,
+            vec![
+                std::path::PathBuf::from("core.txt"),
+                std::path::PathBuf::from("shared-denylist.txt"),
+            ]
+        );
+        assert_eq!(args.meta_mime, vec!["text/html", "application/json"]);
+        assert_eq!(args.meta_exclude_status, vec!["4xx", "5xx"]);
+    }
+
+    #[test]
+    fn test_meta_filters_default_to_unset() {
+        let args = Args::parse_from(["urx", "example.com"]);
+        assert!(args.scope_file.is_empty());
+        assert!(args.meta_first_seen_after.is_none());
+        assert!(args.meta_first_seen_before.is_none());
+        assert!(args.meta_last_seen_after.is_none());
+        assert!(args.meta_last_seen_before.is_none());
+        assert!(args.meta_mime.is_empty());
+        assert!(args.meta_exclude_mime.is_empty());
+        assert!(args.meta_status.is_empty());
+        assert!(args.meta_exclude_status.is_empty());
+    }
+
+    #[test]
+    fn test_meta_flags_are_recorded_as_cli_supplied() {
+        // The config layer keys off this set, not off "does the field still
+        // look like its default".
+        let (_, provided) = parse_args_from([
+            "urx",
+            "--meta-status",
+            "200",
+            "--scope-file",
+            "scope.txt",
+            "example.com",
+        ]);
+        assert!(provided.has("meta_status"));
+        assert!(provided.has("scope_file"));
+        assert!(!provided.has("meta_mime"));
+    }
+    // --- end result-filters ---
 }

@@ -6,6 +6,7 @@ use regex::Regex;
 use url::Url;
 
 use super::preset::{FilterPreset, PathRule};
+use super::scope_file::ScopeMatcher;
 
 /// Normalise one user-supplied extension.
 ///
@@ -96,6 +97,10 @@ pub struct UrlFilter {
     filter_regex: Vec<Regex>,
     min_length: Option<usize>,
     max_length: Option<usize>,
+    /// Host allow/deny list loaded from `--scope-file`. `None` when the flag
+    /// wasn't used, which is not the same as an empty matcher: a scope file
+    /// holding only `!` lines is a deny-list that keeps everything else.
+    scope: Option<ScopeMatcher>,
 }
 
 impl UrlFilter {
@@ -182,12 +187,33 @@ impl UrlFilter {
         self
     }
 
+    /// Keep only URLs whose host is in the `--scope-file` scope.
+    ///
+    /// The scope lives here rather than beside [`super::HostValidator`] so that
+    /// every emission path gets it for free: the batch list, the `--stream`
+    /// sink and the `--extract-links` filter all run this same object, and a
+    /// link extracted from an in-scope page can easily point out of scope.
+    pub fn with_scope(&mut self, scope: Option<ScopeMatcher>) -> &mut Self {
+        self.scope = scope;
+        self
+    }
+
     /// Whether a single URL survives every configured filter.
     ///
     /// This is the whole of the filtering decision, kept per-URL so the batch
     /// path ([`UrlFilter::apply_filters`]) and the streaming path apply exactly
     /// the same rules instead of drifting apart.
     pub fn matches(&self, url: &str) -> bool {
+        // The scope file is checked first: it answers "is this host one I am
+        // allowed to touch", which outranks every question about the URL's
+        // shape. Exclusion inside the file already beats inclusion there, the
+        // same way --filter-regex beats --match-regex below.
+        if let Some(scope) = &self.scope {
+            if !scope.is_in_scope(url) {
+                return false;
+            }
+        }
+
         // Skip if URL doesn't match the length criteria
         if let Some(min) = self.min_length {
             if url.len() < min {
@@ -378,6 +404,7 @@ mod tests {
         assert!(filter.filter_regex.is_empty());
         assert_eq!(filter.min_length, None);
         assert_eq!(filter.max_length, None);
+        assert!(filter.scope.is_none());
     }
 
     #[test]
