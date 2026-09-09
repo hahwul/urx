@@ -11,6 +11,28 @@ pub struct UrlTransformer {
     show_only_param: bool,
     normalize_url: bool,
     dedup_similar: bool,
+    // --- output-views ---
+    param_view: ParamView,
+}
+
+/// A view that replaces the URL list with an inventory derived from it.
+///
+/// Every variant needs the *whole* result set — a union of parameter names, or
+/// one representative per parameter signature — which is why the streaming path
+/// rejects them the same way it rejects `--dedup-similar`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ParamView {
+    /// No inventory view; the URL list is emitted as usual.
+    #[default]
+    None,
+    /// `--params`: every query parameter name seen, once each.
+    Names,
+    /// `--params-by-endpoint`: one line per endpoint with the union of the
+    /// parameter names observed on it.
+    ByEndpoint,
+    /// `--fuzz-placeholder VALUE`: one ready-to-fuzz URL per parameter
+    /// signature, every query value replaced by `VALUE`.
+    Fuzz(String),
 }
 
 /// What [`UrlTransformer::transform_with_stats`] collapsed, so `--verbose` can
@@ -32,6 +54,7 @@ impl UrlTransformer {
             show_only_param: false,
             normalize_url: false,
             dedup_similar: false,
+            param_view: ParamView::None,
         }
     }
 
@@ -73,6 +96,13 @@ impl UrlTransformer {
         self
     }
 
+    // --- output-views ---
+    /// Selects the parameter inventory view that replaces the URL list, if any.
+    pub fn with_param_view(&mut self, view: ParamView) -> &mut Self {
+        self.param_view = view;
+        self
+    }
+
     /// Transforms a list of URLs according to the configured settings, and
     /// reports what the cross-URL stages removed.
     ///
@@ -106,6 +136,15 @@ impl UrlTransformer {
         // Extract URL parts if any show_only option is enabled
         if self.show_only_host || self.show_only_path || self.show_only_param {
             transformed_urls = self.extract_url_parts(transformed_urls);
+        }
+
+        // --- output-views ---
+        // An inventory view replaces the list outright. It runs last so it sees
+        // whatever --normalize-url / --merge-endpoint / --dedup-similar left,
+        // and it is mutually exclusive with the show_only_* views (enforced by
+        // clap) so the two can never both rewrite the same list.
+        if self.param_view != ParamView::None {
+            transformed_urls = apply_param_view(&self.param_view, &transformed_urls);
         }
 
         (transformed_urls, stats)
@@ -475,6 +514,175 @@ fn is_opaque_token(segment: &str) -> bool {
         && segment.bytes().any(|b| b.is_ascii_digit())
         && segment.bytes().any(|b| b.is_ascii_lowercase())
         && segment.bytes().any(|b| b.is_ascii_uppercase())
+}
+
+// --- output-views ---
+
+/// Separates an endpoint from its parameter list in `--params-by-endpoint`
+/// output. A single space, so `cut -d' ' -f1` gets the endpoint back: a URL
+/// never contains a literal space (it would be percent-encoded).
+const ENDPOINT_PARAM_SEPARATOR: char = ' ';
+
+/// Render the inventory view `view` asks for. Always sorted and deduplicated,
+/// so two runs over the same result set produce identical bytes.
+fn apply_param_view(view: &ParamView, urls: &[String]) -> Vec<String> {
+    match view {
+        ParamView::None => urls.to_vec(),
+        ParamView::Names => param_names(urls),
+        ParamView::ByEndpoint => params_by_endpoint(urls),
+        ParamView::Fuzz(placeholder) => fuzz_templates(urls, placeholder),
+    }
+}
+
+/// The query parameter *names* of one URL, in the order they appear, without
+/// repeats.
+///
+/// The raw `key=value` tokens are split by hand rather than through
+/// `query_pairs()`, for the same reason the rest of this module does: decoding
+/// rewrites what the archive actually recorded, and a parameter name is
+/// precisely the thing that must survive verbatim to be worth fuzzing.
+fn query_param_names(url: &Url) -> Vec<&str> {
+    let mut names = Vec::new();
+    for pair in url.query().unwrap_or("").split('&') {
+        let name = pair.split('=').next().unwrap_or("");
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Every query parameter name in the result set, once each, sorted.
+///
+/// The inventory a tester actually wants first: "what does this target take?",
+/// answered across the whole collection rather than one URL at a time.
+pub fn param_names(urls: &[String]) -> Vec<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    for url_str in urls {
+        let Ok(url) = Url::parse(url_str) else {
+            continue;
+        };
+        names.extend(query_param_names(&url).into_iter().map(String::from));
+    }
+    let mut out: Vec<String> = names.into_iter().collect();
+    out.sort();
+    out
+}
+
+/// One line per endpoint: the endpoint, a space, and the union of the parameter
+/// names seen on it, comma-separated.
+///
+/// Path segments go through [`normalize_segment`], the same machinery
+/// `--dedup-similar` uses, so `/post/1?a=1` and `/post/2?b=2` report as the one
+/// endpoint `/post/{id}` taking `a,b` — which is the whole point of an
+/// inventory. Endpoints with no parameters contribute nothing.
+///
+/// The endpoint is spelled out in full (`https://host/path`, not `/path`): urx
+/// routinely scans several hosts in one run (`--subs`, `--domain-list`), and a
+/// bare path would silently merge `a.example.com/search` with
+/// `b.example.com/search` into a single line that is true of neither.
+pub fn params_by_endpoint(urls: &[String]) -> Vec<String> {
+    let mut by_endpoint: HashMap<String, Vec<String>> = HashMap::new();
+
+    for url_str in urls {
+        let Ok(url) = Url::parse(url_str) else {
+            continue;
+        };
+        let names = query_param_names(&url);
+        if names.is_empty() {
+            continue;
+        }
+        let entry = by_endpoint.entry(endpoint_key(&url)).or_default();
+        for name in names {
+            entry.push(name.to_string());
+        }
+    }
+
+    let mut out: Vec<String> = by_endpoint
+        .into_iter()
+        .map(|(endpoint, mut names)| {
+            names.sort();
+            names.dedup();
+            format!("{endpoint}{ENDPOINT_PARAM_SEPARATOR}{}", names.join(","))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// `scheme://host[:port]` plus the path with identifier-looking segments
+/// replaced — the endpoint identity [`params_by_endpoint`] groups on. The query
+/// and fragment are deliberately absent: they are the varying part.
+fn endpoint_key(url: &Url) -> String {
+    let mut key = String::new();
+    key.push_str(url.scheme());
+    key.push_str("://");
+    key.push_str(url.host_str().unwrap_or(""));
+    if let Some(port) = url.port() {
+        key.push(':');
+        key.push_str(&port.to_string());
+    }
+    let segments: Vec<String> = url.path().split('/').map(normalize_segment).collect();
+    key.push_str(&segments.join("/"));
+    key
+}
+
+/// One ready-to-fuzz URL per parameter signature, every query value replaced by
+/// `placeholder`.
+///
+/// Grouping is [`similarity_key`] — the same signature `--dedup-similar`
+/// collapses on, which is exactly "same endpoint shape, same parameter names" —
+/// and the survivor is again the lexicographically smallest URL of its group,
+/// so runs are reproducible. URLs with no parameters carry nothing to fuzz and
+/// drop out, the way `--show-only-param` drops them.
+///
+/// The representative keeps its *real* path (no `{id}` placeholders), because
+/// the output is meant to be fed straight to ffuf or dalfox and has to be a URL
+/// the server will actually route.
+pub fn fuzz_templates(urls: &[String], placeholder: &str) -> Vec<String> {
+    let mut representatives: HashMap<String, &String> = HashMap::new();
+
+    for url in urls {
+        // A URL with no query has no signature worth fuzzing; skipping it here
+        // also keeps it from winning a group it would then render as nothing.
+        if !Url::parse(url).is_ok_and(|u| !query_param_names(&u).is_empty()) {
+            continue;
+        }
+        let key = similarity_key(url);
+        match representatives.get_mut(&key) {
+            Some(kept) if url < *kept => *kept = url,
+            Some(_) => {}
+            None => {
+                representatives.insert(key, url);
+            }
+        }
+    }
+
+    let mut out: Vec<String> = representatives
+        .into_values()
+        .filter_map(|url| fuzz_one(url, placeholder))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Rewrite every query value of one URL to `placeholder`. Repeated names
+/// collapse to one; the fragment is dropped (it never reaches the server).
+fn fuzz_one(url_str: &str, placeholder: &str) -> Option<String> {
+    let mut url = Url::parse(url_str).ok()?;
+    let names = query_param_names(&url);
+    if names.is_empty() {
+        return None;
+    }
+    let query = names
+        .iter()
+        .map(|name| format!("{name}={placeholder}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    url.set_fragment(None);
+    url.set_query(Some(&query));
+    Some(url.to_string())
 }
 
 #[cfg(test)]
@@ -1200,5 +1408,211 @@ mod tests {
         assert!(transformed.contains(&"plain-text".to_string()));
         assert!(transformed.contains(&"://start-with-colon".to_string()));
         assert!(transformed.contains(&"".to_string()));
+    }
+
+    // --- output-views ---
+
+    fn view(urls: &[&str], view: ParamView) -> Vec<String> {
+        let mut transformer = UrlTransformer::new();
+        transformer.with_param_view(view);
+        transformer
+            .transform_with_stats(urls.iter().map(|s| s.to_string()).collect())
+            .0
+    }
+
+    #[test]
+    fn test_params_lists_every_parameter_name_once_sorted() {
+        let out = view(
+            &[
+                "https://example.com/search?q=a&page=2",
+                "https://example.com/search?q=b&sort=asc",
+                "https://example.com/other?q=c",
+                "https://example.com/nothing",
+            ],
+            ParamView::Names,
+        );
+        assert_eq!(out, vec!["page", "q", "sort"]);
+    }
+
+    #[test]
+    fn test_params_keeps_names_verbatim_and_ignores_bare_values() {
+        // A bare `?foo` is a parameter with no value, and an encoded name is
+        // reported exactly as the archive recorded it — decoding it would
+        // produce a name that does not exist on the target.
+        let out = view(
+            &[
+                "https://example.com/a?foo",
+                "https://example.com/b?we%20ird=1",
+                "https://example.com/c?=novalue",
+                "https://example.com/d?",
+            ],
+            ParamView::Names,
+        );
+        assert_eq!(out, vec!["foo", "we%20ird"]);
+    }
+
+    #[test]
+    fn test_params_skips_unparseable_input() {
+        assert!(view(&["not-a-url?q=1"], ParamView::Names).is_empty());
+    }
+
+    #[test]
+    fn test_params_by_endpoint_unions_the_names_per_endpoint() {
+        let out = view(
+            &[
+                "https://example.com/search?q=x",
+                "https://example.com/search?page=2&q=y",
+                "https://example.com/search?sort=asc",
+                "https://example.com/login",
+            ],
+            ParamView::ByEndpoint,
+        );
+        // One line per endpoint, parameters sorted and deduped; the
+        // parameterless endpoint contributes nothing.
+        assert_eq!(out, vec!["https://example.com/search page,q,sort"]);
+    }
+
+    #[test]
+    fn test_params_by_endpoint_collapses_identifier_segments() {
+        // The same reuse --dedup-similar makes of normalize_segment: /post/1
+        // and /post/2 are one endpoint wearing different data.
+        let out = view(
+            &[
+                "https://example.com/post/1?a=1",
+                "https://example.com/post/2?b=2",
+                "https://example.com/post/550e8400-e29b-41d4-a716-446655440000?c=3",
+            ],
+            ParamView::ByEndpoint,
+        );
+        assert_eq!(out, vec!["https://example.com/post/{id} a,b,c"]);
+    }
+
+    #[test]
+    fn test_params_by_endpoint_keeps_hosts_apart() {
+        // A bare path would merge two different endpoints into one line that is
+        // true of neither, which is why the endpoint is spelled out in full.
+        let out = view(
+            &[
+                "https://a.example.com/search?q=1",
+                "https://b.example.com/search?debug=1",
+            ],
+            ParamView::ByEndpoint,
+        );
+        assert_eq!(
+            out,
+            vec![
+                "https://a.example.com/search q".to_string(),
+                "https://b.example.com/search debug".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_params_by_endpoint_line_is_cuttable_on_the_first_space() {
+        let out = view(&["https://example.com/s?q=1&r=2"], ParamView::ByEndpoint);
+        let (endpoint, params) = out[0].split_once(' ').expect("one space separator");
+        assert_eq!(endpoint, "https://example.com/s");
+        assert_eq!(params, "q,r");
+    }
+
+    #[test]
+    fn test_fuzz_placeholder_replaces_values_and_folds_the_signature() {
+        let out = view(
+            &[
+                "https://example.com/search?q=cats&page=1",
+                "https://example.com/search?q=dogs&page=2",
+                "https://example.com/search?q=birds",
+            ],
+            ParamView::Fuzz("FUZZ".to_string()),
+        );
+        // Two signatures — {q,page} and {q} — so two templates, not five.
+        assert_eq!(
+            out,
+            vec![
+                "https://example.com/search?q=FUZZ".to_string(),
+                "https://example.com/search?q=FUZZ&page=FUZZ".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fuzz_placeholder_drops_urls_without_parameters() {
+        let out = view(
+            &["https://example.com/about", "https://example.com/x?"],
+            ParamView::Fuzz("FUZZ".to_string()),
+        );
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn test_fuzz_placeholder_keeps_a_routable_path() {
+        // The template is meant to go straight into ffuf, so the path stays the
+        // representative's real one — a `{id}` placeholder would not route.
+        // Which representative that is follows --dedup-similar's rule: the
+        // lexicographically smallest URL of the group, so "22" wins over "3".
+        let out = view(
+            &[
+                "https://example.com/post/22/edit?token=abc",
+                "https://example.com/post/3/edit?token=def",
+            ],
+            ParamView::Fuzz("FUZZ".to_string()),
+        );
+        assert_eq!(out, vec!["https://example.com/post/22/edit?token=FUZZ"]);
+    }
+
+    #[test]
+    fn test_fuzz_placeholder_is_deterministic_regardless_of_input_order() {
+        let forward = view(
+            &[
+                "https://example.com/a?x=1",
+                "https://example.com/b?x=2",
+                "https://example.com/c?x=3",
+            ],
+            ParamView::Fuzz("FUZZ".to_string()),
+        );
+        let backward = view(
+            &[
+                "https://example.com/c?x=3",
+                "https://example.com/b?x=2",
+                "https://example.com/a?x=1",
+            ],
+            ParamView::Fuzz("FUZZ".to_string()),
+        );
+        assert_eq!(forward, backward);
+    }
+
+    #[test]
+    fn test_fuzz_placeholder_dedupes_a_repeated_name_and_drops_the_fragment() {
+        let out = view(
+            &["https://example.com/s?a=1&a=2&b=3#frag"],
+            ParamView::Fuzz("FUZZ".to_string()),
+        );
+        assert_eq!(out, vec!["https://example.com/s?a=FUZZ&b=FUZZ"]);
+    }
+
+    #[test]
+    fn test_param_view_composes_with_the_earlier_stages() {
+        // --normalize-url runs first, so the sorted query it produces is what
+        // the inventory sees; the view then replaces the list outright.
+        let mut transformer = UrlTransformer::new();
+        transformer
+            .with_normalize_url(true)
+            .with_param_view(ParamView::Names);
+        let out = transformer
+            .transform_with_stats(vec![
+                "https://example.com/s/?z=1&a=2".to_string(),
+                "https://example.com/s?a=3".to_string(),
+            ])
+            .0;
+        assert_eq!(out, vec!["a", "z"]);
+    }
+
+    #[test]
+    fn test_no_param_view_leaves_the_list_alone() {
+        let urls = ["https://example.com/a?q=1", "https://example.com/b"];
+        assert_eq!(
+            view(&urls, ParamView::None),
+            urls.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
     }
 }

@@ -22,7 +22,7 @@ use crate::testers::{
     ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, JsEndpointExtractor, LinkExtractor,
     StatusChecker, Tester,
 };
-use crate::utils::{verbose_print, UrlTransformer};
+use crate::utils::{verbose_print, ParamView, UrlTransformer};
 
 /// Raw targets named directly on the command line: positional args plus every
 /// `--domain-list` file, before host normalization.
@@ -256,7 +256,11 @@ pub fn apply_url_transformations(
         || args.dedup_similar
         || args.show_only_host
         || args.show_only_path
-        || args.show_only_param;
+        || args.show_only_param
+        // --- output-views ---
+        || args.params
+        || args.params_by_endpoint
+        || args.fuzz_placeholder.is_some();
     let transform_bar = reshapes_urls.then(|| {
         let bar = progress_manager.create_transform_bar();
         bar.set_message("Applying URL transformations...");
@@ -268,7 +272,13 @@ pub fn apply_url_transformations(
     let mut url_transformer = build_url_transformer(args);
     url_transformer
         .with_merge_endpoint(args.merge_endpoint)
-        .with_dedup_similar(args.dedup_similar);
+        .with_dedup_similar(args.dedup_similar)
+        // --- output-views ---
+        // Set here and not in build_url_transformer(): an inventory view needs
+        // the whole list, so only the batch path can honour it. The streaming
+        // sink and the extracted-link filter both work one URL at a time and
+        // must never see it half-applied — --stream rejects the flags outright.
+        .with_param_view(param_view(args));
 
     let (transformed_urls, stats) = url_transformer.transform_with_stats(urls);
 
@@ -365,6 +375,25 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "file input is read up front, so there is nothing to stream",
         ));
     }
+    // --- output-views ---
+    if args.params {
+        out.push((
+            "--params",
+            "it reports the parameter names of the whole target, which needs every URL first",
+        ));
+    }
+    if args.params_by_endpoint {
+        out.push((
+            "--params-by-endpoint",
+            "it unions the parameters seen per endpoint, which needs every URL first",
+        ));
+    }
+    if args.fuzz_placeholder.is_some() {
+        out.push((
+            "--fuzz-placeholder",
+            "it keeps one URL per parameter signature, which needs every URL first",
+        ));
+    }
     out
 }
 
@@ -451,6 +480,21 @@ pub fn build_extracted_link_filter(
 /// user asked for statuses or because a status filter needs them.
 pub fn should_check_status(args: &Args) -> bool {
     args.check_status || !args.include_status.is_empty() || !args.exclude_status.is_empty()
+}
+
+// --- output-views ---
+/// The inventory view the flags select, or [`ParamView::None`]. The three flags
+/// are mutually exclusive (clap enforces it), so the order here is arbitrary.
+fn param_view(args: &Args) -> ParamView {
+    if args.params {
+        ParamView::Names
+    } else if args.params_by_endpoint {
+        ParamView::ByEndpoint
+    } else if let Some(placeholder) = &args.fuzz_placeholder {
+        ParamView::Fuzz(placeholder.clone())
+    } else {
+        ParamView::None
+    }
 }
 
 /// Build the post-collection testers implied by the flags, or an empty vec when
@@ -595,6 +639,10 @@ mod tests {
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
             (vec!["--show-meta"], "--show-meta"),
+            // --- output-views ---
+            (vec!["--params"], "--params"),
+            (vec!["--params-by-endpoint"], "--params-by-endpoint"),
+            (vec!["--fuzz-placeholder", "FUZZ"], "--fuzz-placeholder"),
         ];
 
         for (flags, expected) in cases {
