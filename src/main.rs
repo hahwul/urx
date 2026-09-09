@@ -361,6 +361,15 @@ async fn main() -> Result<()> {
     // Honor --no-color / NO_COLOR before any styled output is produced.
     configure_colors(&args);
 
+    // `urx cache …` is its own errand: it reports on the store rather than
+    // scanning anything, so it returns before the network settings, the
+    // progress UI, and the domain collection that would otherwise block on
+    // stdin. It runs *after* the config layers, though, so `[cache]` in the
+    // config file points it at the same database a scan would use.
+    if let Some(command) = &args.command {
+        return cache::run_command(&args, command).await;
+    }
+
     let network_settings = NetworkSettings::from_args(&args);
     let progress_manager = ProgressManager::new(args.no_progress || args.silent);
 

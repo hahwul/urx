@@ -1,9 +1,14 @@
+mod admin;
+mod command;
 mod sqlite;
 mod types;
 
 #[cfg(feature = "redis-cache")]
 mod redis_impl;
 
+pub use admin::CacheAdmin;
+use admin::MissingCache;
+pub use command::Command;
 pub use sqlite::SqliteCache;
 pub use types::{CacheBackend, CacheEntry, CacheFilters, CacheKey};
 
@@ -12,6 +17,53 @@ pub use redis_impl::RedisCache;
 
 use anyhow::Result;
 use std::collections::HashSet;
+use std::path::PathBuf;
+
+/// Where the SQLite cache lives when `--cache-path` / `[cache].cache_path`
+/// say nothing.
+pub fn default_sqlite_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".urx").join("cache.db")
+}
+
+/// Open the cache `--cache-type` names for whole-store inspection.
+///
+/// Separate from `create_cache_manager` because that returns a
+/// [`CacheManager`], which deliberately exposes only per-key operations, and
+/// because `--no-cache` is irrelevant here: it turns caching off for a *scan*,
+/// while `urx cache` is asking about the store itself.
+pub async fn open_admin(args: &crate::cli::Args) -> Result<Box<dyn CacheAdmin>> {
+    match args.cache_type.as_str() {
+        "sqlite" => {
+            let path = args.cache_path.clone().unwrap_or_else(default_sqlite_path);
+            // Looking at the cache must not create one — see [`MissingCache`].
+            if !path.exists() {
+                return Ok(Box::new(MissingCache {
+                    location: path.display().to_string(),
+                }));
+            }
+            Ok(Box::new(SqliteCache::new(path).await?))
+        }
+        #[cfg(feature = "redis-cache")]
+        "redis" => {
+            let Some(redis_url) = &args.redis_url else {
+                anyhow::bail!("Redis cache type selected but no --redis-url provided");
+            };
+            Ok(Box::new(RedisCache::new(redis_url).await?))
+        }
+        #[cfg(not(feature = "redis-cache"))]
+        "redis" => anyhow::bail!(
+            "Redis cache support is not compiled in. Rebuild with `--features redis-cache`, or use --cache-type sqlite."
+        ),
+        other => anyhow::bail!("Unknown cache type '{other}'. Use 'sqlite' or 'redis'"),
+    }
+}
+
+/// Run one `urx cache <SUBCOMMAND>`.
+pub async fn run_command(args: &crate::cli::Args, command: &Command) -> Result<()> {
+    let Command::Cache { action } = command;
+    command::run(args, action).await
+}
 
 /// Cache manager that provides a unified interface for different cache backends
 pub struct CacheManager {
