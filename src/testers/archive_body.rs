@@ -32,6 +32,8 @@ use tokio::sync::OnceCell;
 use url::Url;
 
 use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
+// --- spec-expansion ---
+use super::spec_expander::{expand_spec_body, spec_body_kind};
 use super::Tester;
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
@@ -105,6 +107,11 @@ pub struct ArchiveBodyExtractor {
     client: Arc<OnceCell<Client>>,
     /// Archive origin, overridable so tests can point at a mock server.
     origin: String,
+    // --- spec-expansion ---
+    /// Whether `--expand-specs` is also on, in which case an archived
+    /// specification is read as one instead of being handed to the HTML link
+    /// extractor. See [`Tester::test_url`] for why the combination matters.
+    expand_specs: bool,
 }
 
 impl ArchiveBodyExtractor {
@@ -124,6 +131,8 @@ impl ArchiveBodyExtractor {
             insecure: false,
             client: Arc::new(OnceCell::new()),
             origin: WAYBACK_ORIGIN.to_string(),
+            // --- spec-expansion ---
+            expand_specs: false,
         }
     }
 
@@ -148,6 +157,20 @@ impl ArchiveBodyExtractor {
     pub fn with_origin(&mut self, origin: String) -> &mut Self {
         self.origin = origin;
         self
+    }
+
+    // --- spec-expansion ---
+    /// Read archived API specifications as specifications, as `--expand-specs`
+    /// does for live ones.
+    pub fn with_expand_specs(&mut self, enabled: bool) -> &mut Self {
+        self.expand_specs = enabled;
+        self
+    }
+
+    /// Whether archived specifications will be expanded.
+    #[cfg(test)]
+    pub fn expands_specs(&self) -> bool {
+        self.expand_specs
     }
 
     fn client_config(&self) -> HttpClientConfig {
@@ -240,6 +263,20 @@ impl Tester for ArchiveBodyExtractor {
                         // archive). Not an error; there is simply no body.
                         if !response.status().is_success() {
                             return Ok(Vec::new());
+                        }
+                        // --- spec-expansion ---
+                        // The combination that recovers an API which no longer
+                        // exists: the archive still holds the specification
+                        // that described it. The replay is `id_`, so the body
+                        // and its `Content-Type` are the originals, and the
+                        // same two signals decide as on the live path. Checked
+                        // before `is_html_like`, which rejects
+                        // `application/json` outright.
+                        if self.expand_specs {
+                            if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
+                                let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+                                return Ok(expand_spec_body(&base_url, kind, &body));
+                            }
                         }
                         if !is_html_like(response.headers()) {
                             return Ok(Vec::new());
@@ -592,6 +629,87 @@ mod tests {
             start.elapsed() >= Duration::from_millis(150),
             "rate limit was not applied; elapsed {:?}",
             start.elapsed()
+        );
+    }
+    // --- spec-expansion ---
+
+    #[tokio::test]
+    async fn an_archived_specification_is_expanded_when_expand_specs_is_on() {
+        let mut server = mockito::Server::new_async().await;
+        let _replay = server
+            .mock(
+                "GET",
+                "/web/20180101000000id_/https://gone.example.com/swagger.json",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"swagger":"2.0","basePath":"/v1","paths":{"/users":{},"/users/{id}":{}}}"#,
+            )
+            .expect(2)
+            .create_async()
+            .await;
+
+        let entries = [(
+            "https://gone.example.com/swagger.json",
+            capture("20180101000000", Some("D1")),
+        )];
+
+        // Off by default: --archive-body alone hands the body to the HTML link
+        // extractor, which `is_html_like` refuses for application/json — the
+        // gap this combination closes.
+        let mut ex = extractor(&entries, 10);
+        ex.with_origin(server.url());
+        assert!(ex
+            .test_url("https://gone.example.com/swagger.json")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // On: the API is gone, but the archive still holds what described it.
+        let mut ex = extractor(&entries, 10);
+        ex.with_origin(server.url());
+        ex.with_expand_specs(true);
+        let mut got = ex
+            .test_url("https://gone.example.com/swagger.json")
+            .await
+            .unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "https://gone.example.com/v1/users",
+                "https://gone.example.com/v1/users/{id}",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn expand_specs_leaves_archived_html_to_the_link_extractor() {
+        let mut server = mockito::Server::new_async().await;
+        let _replay = server
+            .mock(
+                "GET",
+                "/web/20200101000000id_/https://example.com/page.html",
+            )
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="/still-here">x</a>"#)
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/page.html",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_expand_specs(true);
+        assert_eq!(
+            ex.test_url("https://example.com/page.html").await.unwrap(),
+            vec!["https://example.com/still-here".to_string()]
         );
     }
 }

@@ -594,6 +594,10 @@ pub fn build_archive_body_extractor(
             .or(network_settings.rate_limit);
         extractor.with_rate_limit(rate);
     }
+    // --- spec-expansion ---
+    // With --expand-specs also on, an archived specification is read as one
+    // rather than run through the HTML link extractor.
+    extractor.with_expand_specs(args.expand_specs);
 
     let stats = extractor.stats();
     Some((extractor, stats))
@@ -1163,6 +1167,21 @@ mod tests {
         assert!(filter
             .accept("https://api.thirdparty.net/v1/track")
             .is_none());
+    }
+
+    #[test]
+    fn test_archive_body_expands_specs_only_when_both_flags_are_on() {
+        let settings = NetworkSettings::default();
+        let run_result = ProviderRunResult::default();
+
+        let mut args = build_test_args();
+        args.archive_body = true;
+        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        assert!(!extractor.expands_specs());
+
+        args.expand_specs = true;
+        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        assert!(extractor.expands_specs());
     }
 
     #[test]

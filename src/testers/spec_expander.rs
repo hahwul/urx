@@ -90,7 +90,7 @@ fn looks_like_spec(url: &Url) -> bool {
 /// How a fetched body should be parsed, decided from `Content-Type` and the
 /// URL's extension.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum BodyKind {
+pub(super) enum BodyKind {
     Json,
     Yaml,
     /// Type and extension are both uninformative — decide from the body.
@@ -507,6 +507,45 @@ fn dedup(urls: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+/// How this response should be read as a specification, or `None` when it is
+/// not one.
+///
+/// Both target signals — the URL's name and the response's `Content-Type` —
+/// in one decision, made before the body is read. Split out of
+/// [`SpecExpander::test_url`] because `--archive-body` makes the same
+/// judgement about a body it fetched from the archive.
+pub(super) fn spec_body_kind(headers: &reqwest::header::HeaderMap, url: &Url) -> Option<BodyKind> {
+    if !looks_like_spec(url) {
+        return None;
+    }
+    match classify(headers, url) {
+        BodyKind::Skip => None,
+        kind => Some(kind),
+    }
+}
+
+/// Expand a body already in hand, resolving [`BodyKind::Sniff`] from it.
+///
+/// A document truncated by the size cap, or one that does not parse after
+/// all, expands to nothing rather than failing: neither is a failure of the
+/// run.
+pub(super) fn expand_spec_body(url: &Url, kind: BodyKind, body: &str) -> Vec<String> {
+    let kind = if kind == BodyKind::Sniff {
+        sniff(body)
+    } else {
+        kind
+    };
+    let doc = match kind {
+        BodyKind::Json => serde_json::from_str::<Value>(body).ok(),
+        BodyKind::Yaml => parse_yaml(body),
+        // Resolved just above: `Sniff` became one of those two, and `Skip`
+        // never reaches here — `spec_body_kind` returns `None` for it.
+        BodyKind::Skip | BodyKind::Sniff => None,
+    };
+    doc.map(|doc| SpecExpander::expand(url, &doc))
+        .unwrap_or_default()
+}
+
 /// API specification expander: fetches the specification documents among the
 /// collected URLs and expands the endpoints they describe.
 #[derive(Clone)]
@@ -661,29 +700,11 @@ impl Tester for SpecExpander {
                         if !response.status().is_success() {
                             return Ok(Vec::new());
                         }
-                        let kind = classify(response.headers(), &spec_url);
-                        if kind == BodyKind::Skip {
+                        let Some(kind) = spec_body_kind(response.headers(), &spec_url) else {
                             return Ok(Vec::new());
-                        }
+                        };
                         let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                        let kind = if kind == BodyKind::Sniff {
-                            sniff(&body)
-                        } else {
-                            kind
-                        };
-                        // A document truncated by the size cap, or one that
-                        // does not parse after all, is not a failure of the
-                        // run — there is simply nothing to expand.
-                        let doc = match kind {
-                            BodyKind::Json => serde_json::from_str::<Value>(&body).ok(),
-                            BodyKind::Yaml => parse_yaml(&body),
-                            // Resolved above: `Sniff` became one of those two
-                            // and `Skip` already returned.
-                            BodyKind::Skip | BodyKind::Sniff => None,
-                        };
-                        return Ok(doc
-                            .map(|doc| Self::expand(&spec_url, &doc))
-                            .unwrap_or_default());
+                        return Ok(expand_spec_body(&spec_url, kind, &body));
                     }
                     Err(e) => {
                         last_error = Some(e);
