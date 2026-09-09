@@ -195,10 +195,39 @@ pub fn format_supports_streaming(format: &str) -> bool {
     )
 }
 
+/// Why `format` cannot be produced incrementally, phrased as the error the CLI
+/// shows. Lives next to [`format_supports_streaming`] so the list of formats and
+/// the reason each one is out of it stay in one place.
+pub fn streaming_format_error(format: &str) -> String {
+    let reason = match format.to_lowercase().as_str() {
+        "wordlist" => {
+            "it emits each term once across the whole run, so no term can be \
+             known to be new until every URL has arrived"
+        }
+        _ => {
+            "it wraps every entry in one array, so the writer must know which entry is \
+             last. Use --format jsonl for line-delimited JSON"
+        }
+    };
+    format!("--stream cannot produce --format {format}: {reason}.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn test_wordlist_cannot_be_streamed_and_says_why() {
+        assert!(!format_supports_streaming("wordlist"));
+        let err = streaming_format_error("wordlist");
+        assert!(err.contains("--format wordlist"), "{err}");
+        assert!(err.contains("every URL has arrived"), "{err}");
+        // The json reason is about the array wrapper, not about term dedup.
+        let json = streaming_format_error("json");
+        assert!(json.contains("one array"), "{json}");
+        assert!(json.contains("--format jsonl"), "{json}");
+    }
 
     /// The streaming path reads only the URL of each record, so tests feed it
     /// bare ones.

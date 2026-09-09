@@ -415,10 +415,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     }
 
     if !output::format_supports_streaming(&args.format) {
-        anyhow::bail!(
-            "--stream cannot produce --format {}: it wraps every entry in one array, so the writer must know which entry is last. Use --format jsonl for line-delimited JSON.",
-            args.format
-        );
+        anyhow::bail!(output::streaming_format_error(&args.format));
     }
 
     let writer: Box<dyn std::io::Write + Send> = match &args.output {

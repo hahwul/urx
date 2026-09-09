@@ -685,6 +685,44 @@ fn fuzz_one(url_str: &str, placeholder: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+/// The wordlist terms of one URL: its path segments and its query parameter
+/// names, with anything that looks like data left out.
+///
+/// "Looks like data" is [`is_variable_segment`], the same test `--dedup-similar`
+/// uses — a wordlist full of `4711`, UUIDs and session tokens is worse than no
+/// wordlist, since every one of them is a word that exists on exactly one
+/// target. A segment whose *stem* is an identifier (`article-1234.html`) goes
+/// too: `{id}.html` is not a word either.
+///
+/// Case is preserved. Path segments are case-sensitive on most origins, so
+/// lower-casing `WebResource.axd` would produce a word that 404s everywhere it
+/// is tried; keeping both `Admin` and `admin` when a target really shows both
+/// is the useful answer for a wordlist.
+pub fn wordlist_terms(url_str: &str) -> Vec<String> {
+    let Ok(url) = Url::parse(url_str) else {
+        return Vec::new();
+    };
+
+    let mut terms: Vec<String> = Vec::new();
+    let mut push = |term: &str| {
+        if !term.is_empty() && !terms.iter().any(|t| t == term) {
+            terms.push(term.to_string());
+        }
+    };
+
+    for segment in url.path().split('/') {
+        if segment.is_empty() || normalize_segment(segment).contains(VARIABLE_SEGMENT) {
+            continue;
+        }
+        push(segment);
+    }
+    for name in query_param_names(&url) {
+        push(name);
+    }
+
+    terms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1614,5 +1652,58 @@ mod tests {
             view(&urls, ParamView::None),
             urls.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_wordlist_terms_takes_path_segments_and_parameter_names() {
+        assert_eq!(
+            wordlist_terms("https://example.com/admin/users?id=1&sort=asc"),
+            vec!["admin", "users", "id", "sort"]
+        );
+    }
+
+    #[test]
+    fn test_wordlist_terms_drops_data_looking_segments() {
+        // Numbers, UUIDs, hashes, dates and opaque tokens are words that exist
+        // on exactly one target, which is the opposite of a wordlist.
+        assert_eq!(
+            wordlist_terms(
+                "https://example.com/post/4711/550e8400-e29b-41d4-a716-446655440000/2024-01-02/edit"
+            ),
+            vec!["post", "edit"]
+        );
+        // The stem is the identifier here, so the whole segment goes: `{id}.html`
+        // is not a word either.
+        assert_eq!(
+            wordlist_terms("https://example.com/news/1234.html"),
+            vec!["news"]
+        );
+        // A stem that is a name with a number stuck on it is still a route,
+        // and `normalize_segment` leaves it alone — so it stays a word.
+        assert_eq!(
+            wordlist_terms("https://example.com/news/article-1234.html"),
+            vec!["news", "article-1234.html"]
+        );
+        // ...but a segment that merely contains digits is a real route name.
+        assert_eq!(
+            wordlist_terms("https://example.com/api/v2/2fa"),
+            vec!["api", "v2", "2fa"]
+        );
+    }
+
+    #[test]
+    fn test_wordlist_terms_preserves_case_and_dedupes_within_a_url() {
+        // Path segments are case-sensitive on most origins, so lower-casing
+        // would produce words that 404 everywhere they are tried.
+        assert_eq!(
+            wordlist_terms("https://example.com/Admin/admin/Admin?Q=1&Q=2"),
+            vec!["Admin", "admin", "Q"]
+        );
+    }
+
+    #[test]
+    fn test_wordlist_terms_of_an_unparseable_or_bare_url() {
+        assert!(wordlist_terms("not a url").is_empty());
+        assert!(wordlist_terms("https://example.com/").is_empty());
     }
 }

@@ -1,5 +1,6 @@
 /// Implements different URL output formatters
 use super::UrlData;
+use crate::utils::url::wordlist_terms;
 use colored::*;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -180,6 +181,37 @@ impl Formatter for CsvFormatter {
         // Standalone row: include only the columns this entry actually has,
         // so a single formatted row is self-consistent (no dangling commas).
         csv_row(url_data, &CsvLayout::for_row(url_data))
+    }
+
+    fn clone_box(&self) -> Box<dyn Formatter> {
+        Box::new(self.clone())
+    }
+}
+
+/// Emits a wordlist rather than URLs: the path segments and query parameter
+/// names a URL is built from, one term per line.
+///
+/// A per-entry formatter cannot deduplicate across the run, so this renders the
+/// terms of the one entry it is given (sorted, no repeats) and
+/// [`super::WordlistOutputter`] does the run-wide union. That is also why
+/// `--format wordlist` is batch-only: a streamed term could not be known to be
+/// new.
+#[derive(Debug, Clone)]
+pub struct WordlistFormatter;
+
+impl WordlistFormatter {
+    /// Create a new wordlist formatter
+    pub fn new() -> Self {
+        WordlistFormatter
+    }
+}
+
+impl Formatter for WordlistFormatter {
+    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
+        let mut terms = wordlist_terms(&url_data.url);
+        terms.sort();
+        terms.dedup();
+        terms.iter().map(|term| format!("{term}\n")).collect()
     }
 
     fn clone_box(&self) -> Box<dyn Formatter> {
@@ -707,6 +739,44 @@ mod tests {
         let formatter = PlainFormatter::new();
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(formatter.format(&url_data, true), "https://example.com\n");
+    }
+
+    #[test]
+    fn test_wordlist_formatter_emits_one_term_per_line() {
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::new("https://example.com/admin/users?id=1&sort=asc".to_string());
+        // One entry's terms, sorted and without repeats.
+        assert_eq!(
+            formatter.format(&url_data, true),
+            "admin\nid\nsort\nusers\n"
+        );
+    }
+
+    #[test]
+    fn test_wordlist_formatter_skips_data_looking_segments() {
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::new("https://example.com/post/4711/edit".to_string());
+        assert_eq!(formatter.format(&url_data, true), "edit\npost\n");
+    }
+
+    #[test]
+    fn test_wordlist_formatter_ignores_status_and_sources() {
+        // A wordlist is words the target is built from; a status code and a
+        // provider name are neither.
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::with_status(
+            "https://example.com/admin".to_string(),
+            "200 OK".to_string(),
+        )
+        .with_sources(vec!["wayback".into()]);
+        assert_eq!(formatter.format(&url_data, true), "admin\n");
+    }
+
+    #[test]
+    fn test_wordlist_formatter_of_a_bare_host_is_empty() {
+        let formatter = WordlistFormatter::new();
+        let url_data = UrlData::new("https://example.com/".to_string());
+        assert_eq!(formatter.format(&url_data, true), "");
     }
 
     #[test]

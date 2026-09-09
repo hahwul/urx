@@ -1,5 +1,7 @@
 use crate::output::Formatter;
+use crate::utils::url::wordlist_terms;
 use anyhow::{Context, Result};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -232,6 +234,69 @@ impl CsvOutputter {
 }
 
 impl Outputter for CsvOutputter {
+    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
+        self.formatter.format(url_data, is_last)
+    }
+
+    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+        match output_path {
+            Some(path) => {
+                let mut file = File::create(&path).context("Failed to create output file")?;
+                self.render(urls, &mut file)
+                    .context("Failed to write to output file")
+            }
+            None => {
+                if silent {
+                    return Ok(());
+                };
+
+                write_stdout(|out| self.render(urls, out))
+            }
+        }
+    }
+}
+
+/// Writes a wordlist: every path segment and query parameter name the run saw,
+/// deduplicated across the whole result set and sorted, one per line.
+#[derive(Debug, Clone)]
+pub struct WordlistOutputter {
+    formatter: Box<dyn Formatter>,
+}
+
+impl WordlistOutputter {
+    pub fn new() -> Self {
+        WordlistOutputter {
+            formatter: Box::new(super::WordlistFormatter::new()),
+        }
+    }
+}
+
+impl Default for WordlistOutputter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WordlistOutputter {
+    /// Render the run-wide term set for either destination.
+    ///
+    /// The union is taken here rather than per entry because a wordlist is a
+    /// set: `/admin/users` and `/admin/roles` contribute `admin` once, not
+    /// twice. A `BTreeSet` gives the dedup and the sort in one pass.
+    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
+        let mut terms: BTreeSet<String> = BTreeSet::new();
+        for url_data in urls {
+            terms.extend(wordlist_terms(&url_data.url));
+        }
+        for term in &terms {
+            out.write_all(term.as_bytes())?;
+            out.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+}
+
+impl Outputter for WordlistOutputter {
     fn format(&self, url_data: &UrlData, is_last: bool) -> String {
         self.formatter.format(url_data, is_last)
     }
@@ -652,6 +717,74 @@ mod tests {
         let outputter = JsonLinesOutputter::new();
         let urls = vec![UrlData::new("https://example.com".to_string())];
         // Silent + stdout must be a no-op rather than an error.
+        outputter.output(&urls, None, true)?;
+        Ok(())
+    }
+
+    fn wordlist_of(urls: &[&str]) -> Result<String> {
+        let outputter = create_outputter("wordlist");
+        let entries: Vec<UrlData> = urls
+            .iter()
+            .map(|u| UrlData::new((*u).to_string()))
+            .collect();
+
+        let temp_file = NamedTempFile::new()?;
+        let temp_path = temp_file.path().to_path_buf();
+        outputter.output(&entries, Some(temp_path.clone()), false)?;
+
+        let mut content = String::new();
+        File::open(&temp_path)?.read_to_string(&mut content)?;
+        Ok(content)
+    }
+
+    #[test]
+    fn test_wordlist_outputter_unions_terms_across_the_whole_run() -> Result<()> {
+        // `admin` is contributed by both URLs and appears once: a wordlist is a
+        // set, which is what the per-entry formatter cannot decide on its own.
+        assert_eq!(
+            wordlist_of(&[
+                "https://example.com/admin/users?id=1",
+                "https://example.com/admin/roles?sort=asc",
+            ])?,
+            "admin\nid\nroles\nsort\nusers\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_wordlist_outputter_drops_data_and_keeps_route_names() -> Result<()> {
+        assert_eq!(
+            wordlist_of(&[
+                "https://example.com/api/v2/users/550e8400-e29b-41d4-a716-446655440000",
+                "https://example.com/post/4711/comments",
+                "https://example.com/2024-01-02/report",
+            ])?,
+            "api\ncomments\npost\nreport\nusers\nv2\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_wordlist_outputter_preserves_case() -> Result<()> {
+        // Path segments are case-sensitive on most origins, so both spellings
+        // are real words worth trying.
+        assert_eq!(
+            wordlist_of(&["https://example.com/Admin", "https://example.com/admin"])?,
+            "Admin\nadmin\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_wordlist_outputter_writes_nothing_for_bare_hosts() -> Result<()> {
+        assert_eq!(wordlist_of(&["https://example.com/"])?, "");
+        Ok(())
+    }
+
+    #[test]
+    fn test_wordlist_outputter_silent_writes_nothing() -> Result<()> {
+        let outputter = WordlistOutputter::new();
+        let urls = vec![UrlData::new("https://example.com/admin".to_string())];
         outputter.output(&urls, None, true)?;
         Ok(())
     }

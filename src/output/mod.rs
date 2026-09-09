@@ -8,7 +8,7 @@ mod stream;
 mod writer;
 
 pub use formatter::*;
-pub use stream::{format_supports_streaming, StreamSink};
+pub use stream::{format_supports_streaming, streaming_format_error, StreamSink};
 pub use writer::*;
 
 /// A structure to hold URL data with optional status information
@@ -122,12 +122,15 @@ pub trait Outputter: Send + Sync {
 /// - "json": a single JSON array of entries
 /// - "jsonl": JSON Lines — one independent JSON object per line
 /// - "csv": CSV format with URL and optional status
+/// - "wordlist": the path segments and parameter names the URLs are built from,
+///   deduplicated across the run, one term per line
 /// - any other value: Plain text format with one URL per line
 pub fn create_outputter(format: &str) -> Box<dyn Outputter> {
     match format.to_lowercase().as_str() {
         "json" => Box::new(JsonOutputter::new()),
         "jsonl" => Box::new(JsonLinesOutputter::new()),
         "csv" => Box::new(CsvOutputter::new()),
+        "wordlist" => Box::new(WordlistOutputter::new()),
         _ => Box::new(PlainOutputter::new()),
     }
 }
