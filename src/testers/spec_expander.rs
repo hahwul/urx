@@ -12,10 +12,9 @@
 //! endpoints, already exact and already parameterised, instead of a megabyte
 //! of minified strings that then has to be filtered down.
 //!
-//! Supported inputs, all as JSON: OpenAPI 3.x, Swagger 2.0, and GraphQL
-//! introspection responses. YAML needs a parser urx does not currently
-//! depend on; a YAML document is recognised and skipped rather than
-//! mis-parsed.
+//! Supported inputs: OpenAPI 3.x, Swagger 2.0, and GraphQL introspection
+//! responses, as JSON or YAML. YAML is converted to the same
+//! `serde_json::Value` shape before expansion, so one reader covers both.
 
 use anyhow::Result;
 use reqwest::Client;
@@ -27,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use url::Url;
+use yaml_rust2::yaml::{Yaml, YamlLoader};
 
 use super::shared::path_extension;
 use super::Tester;
@@ -92,7 +92,6 @@ fn looks_like_spec(url: &Url) -> bool {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum BodyKind {
     Json,
-    /// Recognised, but urx has no YAML parser; see the module docs.
     Yaml,
     /// Type and extension are both uninformative — decide from the body.
     Sniff,
@@ -143,13 +142,103 @@ fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyKind {
 }
 
 /// Resolve [`BodyKind::Sniff`] from the body: a JSON document's first
-/// non-whitespace byte is `{`. Anything else is YAML or not a document at
-/// all, and either way there is nothing this tester can read.
+/// non-whitespace byte is `{`. Anything else is read as YAML, which fails
+/// harmlessly when the body was neither.
 fn sniff(body: &str) -> BodyKind {
     match body.trim_start().as_bytes().first() {
         Some(b'{') => BodyKind::Json,
         _ => BodyKind::Yaml,
     }
+}
+
+/// Refuse a YAML document that references more anchors than this.
+///
+/// YAML aliases are expanded by copying, so a document that references a
+/// growing anchor from inside the next anchor multiplies its own size at every
+/// level — the "billion laughs" shape: a few hundred bytes that expand to
+/// gigabytes of nodes. [`MAX_BODY_BYTES`] cannot catch it, because the input
+/// really is tiny, and no YAML parser in the ecosystem bounds the expansion
+/// (libyaml does not either), so the reference count is bounded here, before
+/// parsing starts. That matters more for this tester than for most: the body
+/// comes from whatever host the URL list happened to name.
+///
+/// Published specifications use `$ref`, which is a plain string and costs
+/// nothing; the rare document that uses YAML anchors uses a handful.
+const MAX_YAML_ALIASES: usize = 32;
+
+/// A rough count of `*alias` references in `body`.
+///
+/// Counted on the raw text because the blow-up happens inside the parser,
+/// before there is a document to inspect. A `*` inside prose or a quoted
+/// pattern can be miscounted as an alias; the cap is loose enough that it
+/// does not matter, and the cost of a false positive is one document skipped.
+fn alias_references(body: &str) -> usize {
+    let bytes = body.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(i, b)| {
+            **b == b'*'
+                // An alias token starts a value: it follows the start of the
+                // document, whitespace, or a flow-collection opener.
+                && bytes
+                    .get(i.wrapping_sub(1))
+                    .is_none_or(|p| p.is_ascii_whitespace() || matches!(p, b'[' | b'{' | b',' | b'-'))
+                // ...and names something.
+                && bytes
+                    .get(i + 1)
+                    .is_some_and(|n| n.is_ascii_alphanumeric() || matches!(n, b'_' | b'-'))
+        })
+        .count()
+}
+
+/// A YAML mapping key as a string. YAML permits any node as a key; a
+/// specification never uses anything but a scalar.
+fn yaml_key(key: &Yaml) -> Option<String> {
+    match key {
+        Yaml::String(s) => Some(s.clone()),
+        Yaml::Integer(n) => Some(n.to_string()),
+        Yaml::Real(raw) => Some(raw.clone()),
+        Yaml::Boolean(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Convert a YAML node into the `serde_json::Value` shape the rest of this
+/// module reads, so one expander covers both serialisations.
+fn yaml_to_json(node: &Yaml) -> Value {
+    match node {
+        Yaml::Real(raw) => raw
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number),
+        Yaml::Integer(n) => Value::Number((*n).into()),
+        Yaml::String(s) => Value::String(s.clone()),
+        Yaml::Boolean(b) => Value::Bool(*b),
+        Yaml::Array(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
+        Yaml::Hash(map) => Value::Object(
+            map.iter()
+                .filter_map(|(key, value)| Some((yaml_key(key)?, yaml_to_json(value))))
+                .collect(),
+        ),
+        // The loader resolves anchors as it goes, so `Alias` survives only for
+        // a reference the document never defined. It, `Null` and the parser's
+        // `BadValue` all mean "nothing here".
+        Yaml::Alias(_) | Yaml::Null | Yaml::BadValue => Value::Null,
+    }
+}
+
+/// The first YAML document in `body`, as a [`Value`].
+///
+/// A specification is one document; the rest of a multi-document stream is
+/// something else and is ignored rather than merged.
+fn parse_yaml(body: &str) -> Option<Value> {
+    if alias_references(body) > MAX_YAML_ALIASES {
+        return None;
+    }
+    let docs = YamlLoader::load_from_str(body).ok()?;
+    Some(yaml_to_json(docs.first()?))
 }
 
 /// `url` without query or fragment and without a trailing slash: the string a
@@ -582,16 +671,19 @@ impl Tester for SpecExpander {
                         } else {
                             kind
                         };
-                        if kind != BodyKind::Json {
-                            return Ok(Vec::new());
-                        }
-                        // A document truncated by the size cap, or one that is
-                        // not JSON after all, is not a failure of the run —
-                        // there is simply nothing to expand.
-                        return Ok(match serde_json::from_str::<Value>(&body) {
-                            Ok(doc) => Self::expand(&spec_url, &doc),
-                            Err(_) => Vec::new(),
-                        });
+                        // A document truncated by the size cap, or one that
+                        // does not parse after all, is not a failure of the
+                        // run — there is simply nothing to expand.
+                        let doc = match kind {
+                            BodyKind::Json => serde_json::from_str::<Value>(&body).ok(),
+                            BodyKind::Yaml => parse_yaml(&body),
+                            // Resolved above: `Sniff` became one of those two
+                            // and `Skip` already returned.
+                            BodyKind::Skip | BodyKind::Sniff => None,
+                        };
+                        return Ok(doc
+                            .map(|doc| Self::expand(&spec_url, &doc))
+                            .unwrap_or_default());
                     }
                     Err(e) => {
                         last_error = Some(e);
@@ -958,6 +1050,102 @@ mod tests {
         }
     }
 
+    // ---- YAML --------------------------------------------------------------
+
+    #[test]
+    fn test_yaml_documents_expand_exactly_as_their_json_twin() {
+        // Unquoted `{petId}` is a plain scalar in block context, which is how
+        // every real specification writes a path template.
+        let yaml = "\
+openapi: 3.0.3
+servers:
+  - url: https://api.example.com/v3
+  - url: /local
+paths:
+  /pets:
+    get: {}
+  /pets/{petId}:
+    get: {}
+";
+        let doc = parse_yaml(yaml).expect("valid YAML");
+        let mut got = SpecExpander::expand(&url("https://example.com/openapi.yaml"), &doc);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "https://api.example.com/v3/pets",
+                "https://api.example.com/v3/pets/{petId}",
+                "https://example.com/local/pets",
+                "https://example.com/local/pets/{petId}",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_yaml_scalars_convert_to_the_shapes_the_expander_reads() {
+        let doc = parse_yaml(
+            "\
+swagger: '2.0'
+host: api.example.com
+basePath: /v2
+schemes:
+  - https
+paths:
+  /status: {}
+",
+        )
+        .expect("valid YAML");
+        assert_eq!(
+            SpecExpander::expand(&url("http://example.com/swagger.yaml"), &doc),
+            vec!["https://api.example.com/v2/status"]
+        );
+    }
+
+    #[test]
+    fn test_yaml_anchors_resolve_but_an_expansion_bomb_is_refused() {
+        // A legitimate anchor is expanded like any other value...
+        let doc = parse_yaml(
+            "\
+openapi: 3.0.0
+x-common: &base
+  url: https://api.example.com/v1
+servers:
+  - *base
+paths:
+  /ok: {}
+",
+        )
+        .expect("valid YAML");
+        assert_eq!(
+            SpecExpander::expand(&url("https://example.com/openapi.yaml"), &doc),
+            vec!["https://api.example.com/v1/ok"]
+        );
+
+        // ...but a billion-laughs document is refused before the parser sees
+        // it. Each level here multiplies the last by nine.
+        let mut bomb = String::from("a: &a [x,x,x,x,x,x,x,x,x]\n");
+        for (level, prev) in [('b', 'a'), ('c', 'b'), ('d', 'c'), ('e', 'd'), ('f', 'e')] {
+            bomb.push_str(&format!(
+                "{level}: &{level} [{}]\n",
+                vec![format!("*{prev}"); 9].join(",")
+            ));
+        }
+        assert!(alias_references(&bomb) > MAX_YAML_ALIASES);
+        assert!(parse_yaml(&bomb).is_none());
+    }
+
+    #[test]
+    fn test_alias_counting_ignores_multiplication_and_globs() {
+        // `*` in prose, in a regex and in a glob is not an alias reference.
+        let benign = "\
+description: use * with care, a * b
+pattern: '^/api/v[0-9]*$'
+glob: /assets/*
+";
+        assert_eq!(alias_references(benign), 0);
+        assert_eq!(alias_references("servers: [*a, *b]"), 2);
+    }
+
     // ---- transport ---------------------------------------------------------
 
     #[tokio::test]
@@ -1036,36 +1224,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_untyped_body_is_sniffed_and_yaml_is_skipped() {
+    async fn test_untyped_bodies_are_sniffed_as_json_or_yaml() {
         let mut server = mockito::Server::new_async().await;
         let _json = server
             .mock("GET", "/v3/api-docs")
             .with_status(200)
             .with_header("content-type", "text/plain")
-            .with_body(r#"{"openapi":"3.0.0","paths":{"/sniffed":{}}}"#)
+            .with_body(r#"{"openapi":"3.0.0","paths":{"/sniffed-json":{}}}"#)
             .create_async()
             .await;
         let _yaml = server
-            .mock("GET", "/openapi.yaml")
+            .mock("GET", "/openapi")
             .with_status(200)
-            .with_header("content-type", "text/yaml")
-            .with_body("openapi: 3.0.0\npaths:\n  /nope: {}\n")
+            .with_header("content-type", "application/octet-stream")
+            .with_body("openapi: 3.0.0\npaths:\n  /sniffed-yaml: {}\n")
             .create_async()
             .await;
 
         let expander = SpecExpander::new();
-        assert_eq!(
-            expander
-                .test_url(&format!("{}/v3/api-docs", server.url()))
-                .await
-                .unwrap(),
-            vec![format!("{}/sniffed", server.url())]
-        );
-        assert!(expander
-            .test_url(&format!("{}/openapi.yaml", server.url()))
-            .await
-            .unwrap()
-            .is_empty());
+        for (path, expected) in [
+            ("/v3/api-docs", "/sniffed-json"),
+            ("/openapi", "/sniffed-yaml"),
+        ] {
+            assert_eq!(
+                expander
+                    .test_url(&format!("{}{path}", server.url()))
+                    .await
+                    .unwrap(),
+                vec![format!("{}{expected}", server.url())],
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]

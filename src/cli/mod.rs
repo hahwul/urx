@@ -488,9 +488,9 @@ pub struct Args {
     /// (swagger.json, openapi.json, /v3/api-docs, GraphQL introspection
     /// responses) and expand every route they document into a URL. One
     /// request buys the whole documented surface, path templates included and
-    /// left as the document writes them. JSON only for now; a YAML document
-    /// is recognised and skipped. Discovered URLs go through the same filters
-    /// and host validation as everything else.
+    /// left as the document writes them. JSON and YAML are both read.
+    /// Discovered URLs go through the same filters and host validation as
+    /// everything else.
     #[clap(help_heading = "Testing Options")]
     #[clap(long)]
     pub expand_specs: bool,

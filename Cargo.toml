@@ -33,6 +33,12 @@ redis = { version = "1.2", optional = true, features = ["aio", "tokio-comp"] }
 sha2 = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.12"
+# Reads OpenAPI/Swagger documents served as YAML. Pure safe Rust with no
+# `unsafe` anywhere in its source, unlike every serde_yaml fork (all of which
+# vendor the unmaintained unsafe-libyaml) — this parser is fed response bodies
+# from arbitrary, possibly hostile hosts. `default-features = false` drops the
+# `encoding` feature and with it encoding_rs: urx hands it a `String`.
+yaml-rust2 = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 mockito = "1.7.2"
