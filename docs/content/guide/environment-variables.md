@@ -102,6 +102,18 @@ urx example.com --incremental --notify-format slack
 precedence over `notify_url` in the provider-config file and `[notify].url`
 in the main config.
 
+### Display
+
+#### NO_COLOR
+
+The standard [`NO_COLOR`](https://no-color.org/) convention is honored: set it
+to anything at all — an empty value counts — and urx drops ANSI color from the
+progress UI and the output, exactly as `--no-color` does.
+
+```bash
+NO_COLOR=1 urx example.com --check-status
+```
+
 ### Summary
 
 | Variable | Provider | Description |
@@ -112,6 +124,7 @@ in the main config.
 | `URX_GITHUB_API_KEY` | GitHub | GitHub Code Search personal access token |
 | `URX_BEVIGIL_API_KEY` | BeVigil | BeVigil OSINT API key (URLs from unpacked Android apps) |
 | `URX_NOTIFY_URL` | — | Webhook URL(s) for `--notify`, comma-separated |
+| `NO_COLOR` | — | Any value disables ANSI color, as `--no-color` does |
 
 ### Usage Notes
 

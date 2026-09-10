@@ -54,6 +54,26 @@ urx example.com -f json -o results.json
 urx example.com -f csv -o results.csv
 ```
 
+### Wordlist
+Every path segment and parameter name the run saw, deduplicated and sorted —
+segments that look like ids, hashes or dates are left out:
+```bash
+urx example.com --subs -f wordlist -o words.txt
+ffuf -w words.txt -u https://example.com/FUZZ
+```
+
+### Parameter Inventory
+```bash
+# Every query parameter name the target uses, once each
+urx example.com --params
+
+# ...grouped by the endpoint that takes them
+urx example.com --params-by-endpoint
+
+# One URL per parameter signature, values replaced — feed it straight to a fuzzer
+urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
+```
+
 ## Filtering Examples
 
 ### Include Specific Extensions
@@ -92,6 +112,35 @@ urx example.com -p no-resources
 
 # JavaScript files only
 urx example.com -p only-js
+```
+
+### Scope Files
+Keep a bug bounty program's own scope list as the filter, `!` lines and all:
+```bash
+# scope.txt
+#   *.example.com
+#   !admin.example.com
+urx example.com --subs --scope-file scope.txt
+
+# Several programs at once; the files are unioned, exclusions always win
+urx --domain-list targets.txt --subs --scope-file scope-a.txt --scope-file scope-b.txt
+```
+
+### Archive Metadata Filtering
+Filter on when a URL was archived and what the archive recorded, after
+collection, so it applies to every provider uniformly:
+```bash
+# Endpoints still being captured recently, with images and HTML out of the way
+urx example.com --providers wayback --meta-last-seen-after 2024 --meta-exclude-mime 'text/html,image/*'
+
+# Pages that died: nothing captured since 2019
+urx example.com --providers wayback --meta-last-seen-before 2019
+
+# JSON the archive served successfully
+urx example.com --providers wayback --meta-mime application/json --meta-status 200
+
+# First archived during 2020
+urx example.com --providers wayback --meta-first-seen-after 2020 --meta-first-seen-before 2020
 ```
 
 ### Advanced Filtering
@@ -267,6 +316,32 @@ urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 urx example.com --archive-body -e js --no-cache
 ```
 
+### Expand API Specifications
+```bash
+urx example.com --preset only-api --expand-specs
+```
+
+`--expand-specs` opens the OpenAPI, Swagger and GraphQL documents the run
+collected and expands every route they describe into the result set — one
+request buys the whole documented surface. JSON and YAML are both read:
+
+```bash
+# Bounded and paced
+urx example.com --expand-specs --max-spec-files 10 --rate-limit 2
+
+# Read the archived copy instead, for an API the live host no longer serves
+urx example.com --archive-body --expand-specs
+```
+
+### Record Response Titles
+```bash
+# --check-title implies --check-status; --show-meta shows the extra fields in plain text
+urx example.com --check-title --show-meta
+
+# Everything the response head carried, as JSON Lines
+urx example.com --check-status -f jsonl | jq -r '[.url, .status, .content_type] | @tsv'
+```
+
 ### Status Filtering
 ```bash
 # Include only successful responses
@@ -358,6 +433,20 @@ urx example.com --cache-ttl 43200
 urx example.com --no-cache
 ```
 
+### Inspect and Prune the Cache
+```bash
+# What is in there
+urx cache stats
+urx cache list --domain '*.example.com'
+
+# Rescan one target from scratch, leaving the rest of the cache alone
+urx cache drop example.com
+
+# Housekeeping
+urx cache prune
+urx cache clear --yes
+```
+
 ## Pipeline Integration
 
 ### Filter with grep
@@ -406,6 +495,28 @@ urx example.com \
   --exclude-patterns test,staging \
   -f json \
   -o api-endpoints.json
+```
+
+### API Surface from Specifications
+```bash
+urx target.com \
+  --subs \
+  --preset only-api \
+  --expand-specs \
+  --max-spec-files 25 \
+  --check-status \
+  --include-status 200 \
+  -f jsonl \
+  -o api-surface.jsonl
+```
+
+### Parameter Discovery for Fuzzing
+```bash
+# What does this target take, and where?
+urx target.com --subs --params-by-endpoint -o params-by-endpoint.txt
+
+# Turn the same run into ffuf input
+urx target.com --subs --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
 ```
 
 ### JavaScript Analysis Pipeline

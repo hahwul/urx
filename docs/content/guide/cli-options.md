@@ -10,7 +10,10 @@ weight = 1
 Urx provides a comprehensive set of command-line options for customizing behavior.
 
 ```
-Usage: urx [OPTIONS] [DOMAINS]...
+Usage: urx [OPTIONS] [DOMAINS]... [COMMAND]
+
+Commands:
+  cache  Inspect and maintain the URL cache (stats, list, prune, drop, clear)
 
 Arguments:
   [DOMAINS]...  Domains to fetch URLs for
@@ -30,11 +33,14 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout.
-  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv" [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist" [default: plain]
       --stream                   Write URLs as providers report them (unsorted, bypasses cache)
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --normalize-url            Normalize URLs for better deduplication
       --dedup-similar            Collapse URLs differing only in ids, hashes, dates, or query values
+      --params                   Replace the URL list with every query parameter name the run saw, once each
+      --params-by-endpoint       One line per endpoint: the endpoint and the union of the parameter names seen on it
+      --fuzz-placeholder <VALUE> Replace every query parameter value with VALUE, one URL per parameter signature
 
 Provider Options:
   --providers <PROVIDERS>                Providers to use (comma-separated) [default: wayback,cc,otx]
@@ -87,6 +93,15 @@ Filter Options:
       --max-length <MAX_LENGTH>              Maximum URL length
       --strict                               Enforce exact host validation (default)
       --no-strict                            Disable host validation entirely (wins over --strict)
+      --scope-file <FILE>                    Bug-bounty scope file of host patterns (`!` excludes, `*.host` wildcard); repeatable
+      --meta-first-seen-after <DATE>         Keep URLs whose oldest archived capture is on or after DATE
+      --meta-first-seen-before <DATE>        Keep URLs whose oldest archived capture is on or before DATE
+      --meta-last-seen-after <DATE>          Keep URLs whose newest archived capture is on or after DATE ("still alive as of")
+      --meta-last-seen-before <DATE>         Keep URLs whose newest archived capture is on or before DATE ("dead since")
+      --meta-mime <TYPE>                     Keep only URLs with these archived MIME types (`image/*` matches any subtype)
+      --meta-exclude-mime <TYPE>             Drop URLs with these archived MIME types
+      --meta-status <CODE>                   Keep only URLs with these archived status codes (20x / 5xx patterns)
+      --meta-exclude-status <CODE>           Drop URLs with these archived status codes
 
 Network Options:
   --network-scope <SCOPE>        Apply settings to: all, providers, testers, providers,testers [default: all]
@@ -103,6 +118,7 @@ Network Options:
 
 Testing Options:
   --check-status                     Check HTTP status code of collected URLs
+  --check-title                      Also record each response's HTML <title>; implies --check-status
   --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x)
   --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x)
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
@@ -110,6 +126,8 @@ Testing Options:
   --max-js-files <N>                 Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
   --archive-body                     Extract links from the *archived* body of each collected URL (see "Archived Response Bodies" below)
   --archive-body-limit <N>           Maximum archived bodies fetched per run; bounds distinct bodies, not URLs [default: 500]
+  --expand-specs                     Fetch collected OpenAPI/Swagger/GraphQL documents and expand every route they describe (see "API Specification Expansion" below)
+  --max-spec-files <N>               Maximum number of specification documents --expand-specs will fetch (0 = unlimited) [default: 50]
 
 Cache Options:
   --incremental              Only return new URLs compared to previous scans
@@ -124,6 +142,10 @@ Notification Options:
   --notify-on <NOTIFY_ON>          When to send: new (only if URLs were emitted), always, or never [default: new]
   --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
+
+The one subcommand, `urx cache`, inspects and maintains the URL cache — see
+[Inspecting and Maintaining the Cache](/guide/caching/#inspecting-and-maintaining-the-cache).
+Everything else on this page belongs to the scan invocation.
 
 ## Webhook Notifications
 
@@ -254,6 +276,54 @@ range have arrived.
 urx example.com --providers wayback -f jsonl
 urx example.com -f jsonl | jq -r 'select(.last_seen < "20100101000000") | .url'
 urx example.com --providers wayback --show-meta
+```
+
+## Live Response Metadata
+
+`--check-status` already sends a request and waits for the response head, so the
+fields that head carries come for free. urx keeps them alongside the status
+code.
+
+| Field | Meaning |
+|-------|---------|
+| `status` | The status code the live request returned |
+| `location` | The `Location` header of a 3xx — recorded, never followed |
+| `content_length` | The `Content-Length` header, verbatim |
+| `content_type` | The `Content-Type` header, verbatim |
+| `title` | The HTML `<title>`, only under `--check-title` |
+
+`--check-status` deliberately does not follow redirects, so a reported status
+always belongs to the URL that was asked for. `location` is where the 3xx
+pointed, without urx ever going there.
+
+`--check-title` is the one field that is not free: a title needs the response
+*body*, so it sits behind its own flag. The read is bounded twice — at most
+64 KiB, and it stops at the closing tag — and skipped entirely for a body the
+server declared as non-HTML, so a JSON API or an image costs nothing. The title
+itself is whitespace-collapsed, entity-decoded and cut to 200 characters.
+`--check-title` implies `--check-status`; without that request there is nothing
+to read a title from.
+
+Exposure follows the same rule the archive metadata does:
+
+* `json` / `jsonl` — a key per field, present only when it has a value.
+* `csv` — a column per field, appended after the existing columns so an
+  established consumer sees its columns unmoved. A title is chosen by the host
+  being checked, so it goes through the same spreadsheet-formula escaping the
+  URL does.
+* `plain` — one bare URL per line unless `--show-meta` asks otherwise, at which
+  point the fields are appended after the URL. The title is quoted, since it is
+  the one value that routinely contains spaces.
+
+```bash
+# Status plus the response head, as JSON Lines
+urx example.com --check-status -f jsonl
+
+# Titles too, in plain text
+urx example.com --check-title --show-meta
+
+# Where did the redirects point?
+urx example.com --check-status --is 30x -f jsonl | jq -r '.url + " -> " + .location'
 ```
 
 ## Available Providers
@@ -403,6 +473,127 @@ urx example.com --match-regex '\.php$' --match-regex '/admin/[a-z]{3,8}$'
 urx example.com --filter-regex '/(assets|static|dist)/'
 ```
 
+## Scope Files
+
+A bug bounty program's scope is a list of hosts, and every platform writes it
+the same way: `*.example.com` for a wildcard, a bare host for a single target,
+and a handful of subdomains that are explicitly out of scope. `--scope-file`
+takes that list as-is, so it never has to be hand-translated into anchored
+regex alternations — where getting the anchoring wrong silently *widens* the
+scope instead of failing.
+
+```text
+# scope.txt — in scope
+*.example.com
+api.example.org
+
+# out of scope, even though the wildcard above covers them
+!admin.example.com
+!*.internal.example.com
+```
+
+```bash
+urx example.com --subs --scope-file scope.txt
+
+# Several programs at once; the files are unioned
+urx --domain-list targets.txt --subs --scope-file scope-a.txt --scope-file scope-b.txt
+```
+
+The rules:
+
+* A line is a host pattern, optionally prefixed with `!` to exclude it.
+* `*.example.com` matches `example.com` **and** every host under it. That is
+  the bug-bounty reading rather than the DNS one, and it is what every
+  platform's scope table means; a program that really excludes its apex says so
+  with a `!example.com` line, which wins.
+* A bare `example.com` matches that host and nothing else — not `www.`, not any
+  subdomain. A scope file is an explicit list, so no leniency is applied.
+* A lone `*` matches every host, for a file that is purely a deny-list.
+* Everything from a `#` to the end of the line is a comment, so an entry can be
+  annotated in place. Blank lines are skipped.
+* **Exclusion always wins**, mirroring `--filter-regex` beating `--match-regex`.
+* A file with no include lines at all is a pure deny-list: everything is in
+  scope except what it excludes.
+
+Anything else — a port, a path, a wildcard in the middle — is a startup error
+naming the file and the line. This filter decides which hosts you are willing
+to touch, so a line urx cannot honour has to stop the run rather than quietly
+leave the scope wider than the file describes.
+
+`--scope-file` and `--strict` are separate gates and a URL must pass both. Host
+validation answers "does this URL belong to a domain I queried?"; a scope file
+answers "is this host one I am allowed to touch?". They usually agree, but not
+always: a `*.example.com` scope line while querying the bare apex still needs
+`--subs`, because strict mode drops the subdomains before the scope file ever
+sees them. The filter lives inside urx's URL filter, so the batch result, the
+`--stream` sink and the links `--extract-links` discovers are all held to it.
+
+## Archive Metadata Filters
+
+`--from`/`--to` and the `--archive-*` predicates are pushed down into the
+archive's own query, which makes them free — and also limits them: they reach
+CDX-backed providers only, and the two CDX dialects disagree badly enough that a
+positive multi-value list (`--archive-status 200,301`) is unsatisfiable on pywb
+servers and gets dropped with a warning.
+
+The eight `--meta-*` filters run **after** collection instead. They see one
+merged set of [capture metadata](#archive-capture-metadata) per URL regardless of
+which provider produced it, so "any of these" always works:
+
+| Flag | Keeps |
+|------|-------|
+| `--meta-first-seen-after <DATE>` | URLs whose oldest capture is on or after `DATE` |
+| `--meta-first-seen-before <DATE>` | URLs whose oldest capture is on or before `DATE` |
+| `--meta-last-seen-after <DATE>` | URLs whose newest capture is on or after `DATE` — "still alive as of" |
+| `--meta-last-seen-before <DATE>` | URLs whose newest capture is on or before `DATE` — "dead since" |
+| `--meta-mime <TYPE>` | URLs with one of these archived MIME types (`image/*` matches any subtype) |
+| `--meta-exclude-mime <TYPE>` | everything except those |
+| `--meta-status <CODE>` | URLs with one of these archived status codes (`20x` / `5xx` patterns, as in `--include-status`) |
+| `--meta-exclude-status <CODE>` | everything except those |
+
+Dates accept `YYYY`, `YYYYMM`, `YYYYMMDD` or `YYYYMMDDhhmmss` and are padded the
+way `--from`/`--to` are: an `after` bound pads to the start of the period, a
+`before` bound to the end. So `--meta-first-seen-after 2020
+--meta-first-seen-before 2020` means "first archived during 2020".
+
+```bash
+# Endpoints that were alive recently, HTML and images out of the way
+urx example.com --providers wayback --meta-last-seen-after 2024 --meta-exclude-mime 'text/html,image/*'
+
+# Pages that died: last captured before 2019, and nothing since
+urx example.com --providers wayback --meta-last-seen-before 2019
+
+# JSON the archive served successfully
+urx example.com --providers wayback --meta-mime application/json --meta-status 200
+```
+
+The two kinds of filter are complementary, not alternatives. Archive-side
+predicates reduce what comes over the wire; `--meta-*` predicates apply
+uniformly to the merged result set. Using both is normal.
+
+**URLs with no metadata.** Most URLs in a mixed run carry none: the non-CDX
+providers (`otx`, `vt`, `urlscan`, `zoomeye`, `github`, `bevigil`, `robots`,
+`sitemap`) have no capture index, `--files` input is a list of strings, and a
+cache hit stores URLs only. The direction of the predicate decides what happens
+to them:
+
+* A **positive** predicate (`--meta-mime`, `--meta-status`, any date bound) asks
+  "is this value one of these?", which an absent value cannot answer — the URL
+  is dropped.
+* An **exclusion** (`--meta-exclude-mime`, `--meta-exclude-status`) drops only
+  what positively matches, so a URL with no metadata survives. This is the rule
+  `--filter-regex` and `--exclude-status` already follow.
+
+`--verbose` reports the split ("… failed a predicate, … carried no archive
+metadata to test"). When missing metadata accounts for the *whole* result set,
+urx says so even without `-v`, because a cache hit otherwise makes an empty run
+look like a target with nothing to find. Pass `--no-cache` and a CDX provider to
+get metadata back.
+
+The `--meta-*` flags are rejected under `--stream` for the same reason
+`--show-meta` is: the sink emits a URL on first sighting, before the captures
+that complete its metadata have arrived.
+
 ## Collapsing Near-duplicates
 
 `--dedup-similar` prints one line for a group of URLs that are the same endpoint
@@ -434,6 +625,113 @@ need the complete result set, so none of them can be used with `--stream`.
 ```bash
 urx example.com --dedup-similar --verbose
 urx --files urls.txt --normalize-url --merge-endpoint --dedup-similar
+```
+
+## Parameter and Fuzz Views
+
+`--show-only-param` only ever cuts the query string off each URL, which cannot
+answer the first question a tester asks: what parameters does this target take?
+Three views replace the URL list with an answer instead, built on the same
+grouping `--dedup-similar` uses.
+
+**`--params`** — every query parameter name in the result set, once each,
+sorted. The parameter inventory of the whole target rather than of one URL at a
+time.
+
+```console
+$ urx example.com --params
+page
+q
+ref
+sort
+utm_source
+```
+
+**`--params-by-endpoint`** — one line per endpoint: the endpoint, a space, and
+the comma-separated union of the parameter names seen on it. Identifier-looking
+path segments collapse to `{id}` exactly as under `--dedup-similar`, so
+`/post/1?a=1` and `/post/2?b=2` report as one endpoint taking `a,b`. The
+endpoint is spelled out in full rather than as a bare path, because urx
+routinely scans several hosts in one run and a bare path would merge
+`a.example.com/search` with `b.example.com/search` into a line true of neither.
+
+```console
+$ urx example.com --params-by-endpoint
+https://example.com/post/{id} ref,utm_source
+https://example.com/search page,q,sort
+```
+
+**`--fuzz-placeholder VALUE`** — every query parameter *value* rewritten to
+`VALUE`, keeping one URL per parameter signature. URLs without parameters drop
+out. The representative keeps its real path — a `{id}` would not route — and is
+the lexicographically smallest URL of its group, so runs are reproducible.
+
+```console
+$ urx example.com --fuzz-placeholder FUZZ
+https://example.com/post/1?ref=FUZZ
+https://example.com/post/2?utm_source=FUZZ
+https://example.com/search?q=FUZZ&page=FUZZ
+https://example.com/search?q=FUZZ&sort=FUZZ
+```
+
+```bash
+# Straight into ffuf
+urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
+
+# ...or dalfox
+urx example.com --fuzz-placeholder FUZZ | dalfox pipe
+```
+
+Parameter names are split out of the raw query rather than decoded first: the
+name is precisely what has to survive verbatim to be worth fuzzing.
+
+All three views need the complete result set, so they cannot be combined with
+`--stream`. They are mutually exclusive with each other and with the
+`--show-only-*` views.
+
+## Wordlist Output
+
+`-f wordlist` turns a collected result set into a wordlist: every path segment
+and query parameter name the run saw, deduplicated across the whole run and
+sorted, one term per line.
+
+```console
+$ urx example.com -f wordlist
+admin
+api
+page
+post
+q
+ref
+search
+sort
+users
+users.json
+utm_source
+v1
+```
+
+Segments that look like data rather than route names are left out, reusing the
+same test `--dedup-similar` groups on — a wordlist full of `4711`, UUIDs, dates
+and session tokens is worse than no wordlist, since every one of those words
+exists on exactly one target. A segment whose *stem* is an identifier goes too:
+`article-1234.html` is not a word either.
+
+Case is preserved rather than normalised. Path segments are case-sensitive on
+most origins, so lower-casing `WebResource.axd` would produce a word that 404s
+everywhere it is tried, and a target that really serves both `/Admin` and
+`/admin` is telling you something worth keeping.
+
+The union has to be taken over the full set, so the format is batch-only and
+`--stream` rejects it. Per-URL fields — a status code, `--show-sources`
+attribution, capture metadata — have nowhere to go in a wordlist and are simply
+not emitted. `--output-dir` writes wordlists as `.txt`, and `[output].format`
+in the config file accepts `wordlist` alongside the rest.
+
+```bash
+# Build a target-specific wordlist and fuzz with it
+urx example.com --subs -f wordlist -o words.txt
+ffuf -w words.txt -u https://example.com/FUZZ
 ```
 
 ## Link Extraction
@@ -560,6 +858,86 @@ urx example.com --extract-js-endpoints --patterns api,graphql --check-status
 urx example.com --extract-js-endpoints --max-js-files 50 --rate-limit 1
 ```
 
+
+## API Specification Expansion
+
+A `--preset only-api` sweep finds `/swagger.json`, `/openapi.yaml` and
+`/v3/api-docs` and then never opens them: `--extract-links` parses HTML,
+`--extract-js-endpoints` deliberately drops `application/json` bodies, and
+`--archive-body` runs the HTML parser over whatever the archive returns. So the
+single most information-dense file on the target is collected as one URL and
+left unread.
+
+`--expand-specs` fetches those documents and expands every route they describe
+into the result set. One request buys the whole documented surface — exact and
+already parameterised — which is a far better exchange rate than mining
+minified bundles.
+
+```bash
+# Find the specs and expand them in the same run
+urx example.com --preset only-api --expand-specs
+
+# Bound and pace it
+urx example.com --expand-specs --max-spec-files 10 --rate-limit 2
+
+# Recover an API that no longer exists: read the archived copy of the document
+urx example.com --archive-body --expand-specs
+```
+
+**What is expanded.**
+
+- **OpenAPI 3.x** — `servers[].url` (absolute, relative to the document, and
+  templated: `{var}` resolves from `variables[var].default`, else the first
+  `enum` value) crossed with every `paths` key. A path item's own `servers`
+  override the document's, which is what gateways fronting several backends
+  use.
+- **Swagger 2.0** — `schemes` × `host` + `basePath`, each part falling back to
+  the corresponding part of the document's own URL when omitted, as the
+  specification says. `ws`/`wss` schemes are dropped; they are not URLs a
+  scanner can request.
+- **GraphQL introspection** (`{"data":{"__schema":…}}` or the unwrapped form) —
+  one URL per query, mutation and subscription field, written as the endpoint
+  plus `?query=…`. That is both a request a server may genuinely answer and a
+  legible name for the operation in a result list. A schema saved as a file
+  resolves to its endpoint (`/graphql/schema.json` → `/graphql`).
+
+JSON and YAML are both read; a YAML document is converted to the same shape as
+a JSON one before expansion, so one reader covers both.
+
+**Which URLs are requested.** The name is checked first and for free: the path
+must contain a specification marker (`swagger`, `openapi`, `api-docs`,
+`apidocs`, `api_docs`, `graphql`, `introspection`) and, when the URL has an
+extension at all, it must be `json`, `yaml` or `yml`. So `swagger-ui.html` and
+`swagger-ui-bundle.js` cost no request. The response's `Content-Type` then
+decides: a definite unrelated type (HTML, image, JavaScript) skips the body even
+under a specification name, while the vague types static hosts hand out
+(`text/plain`, `application/octet-stream`) yield to the extension and then to
+the first byte of the body, so an untyped `/v3/api-docs` still parses.
+
+### Details
+
+- Path templates are emitted as the document writes them (`/users/{id}`, not
+  `/users/%7Bid%7D`) — reading the route is the point. `--normalize-url`, if
+  you ask for it, re-parses and encodes them downstream.
+- `--max-spec-files` (default 50) caps the documents fetched per run; `0` means
+  unlimited.
+- Each body is capped at 10 MiB, the same guard the other body-reading testers
+  use. A YAML document with more than 32 alias references is refused before
+  parsing starts: YAML aliases expand by copying, so a few hundred bytes can
+  expand to gigabytes of nodes ("billion laughs"), which a byte cap cannot
+  catch. Published specifications use `$ref`, a plain string, and the rare
+  document that uses YAML anchors uses a handful.
+- Only the first document of a multi-document YAML stream is read.
+- Discovered URLs go through the same filters, host validation, and output
+  transforms as URLs that came from a provider.
+- Incompatible with `--stream`, like every option that runs after collection.
+- With `--archive-body` also on, an *archived* specification is read as one
+  rather than being handed to the HTML link extractor and discarded. This costs
+  no extra requests — the body was already being fetched and already counted
+  against `--archive-body-limit` — and it is where the feature earns the most:
+  the live host may have retired the API, moved it behind auth, or removed the
+  document, while the archive still holds the file that described every route
+  it had.
 
 ## Archived Response Bodies
 

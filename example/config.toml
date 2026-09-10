@@ -1,12 +1,11 @@
 # URX Configuration File Example
-
-# Domain configuration
-domains = ["example.com", "example.org"]
+#
+# Targets are given on the command line, not here: `urx -c config.toml example.com`.
 
 # Output options
 [output]
 output = "results.txt"
-format = "plain"       # Options: plain, json, jsonl, csv
+format = "plain"       # Options: plain, json, jsonl, csv, wordlist
 merge_endpoint = false
 dedup_similar = false  # Collapse URLs differing only in ids, hashes, dates, or query values
 stream = false         # Write URLs as providers report them (see README)
@@ -37,10 +36,8 @@ exclude_sitemap = false              # Exclude sitemap.xml URLs
 archived_discovery = false           # Also read every archived version of robots.txt / sitemap.xml
 archived_discovery_limit = 50        # Documents fetched per domain by each archived provider
 
-# Display options
-verbose = false
-silent = false
-no_progress = false
+# Display options (--verbose, --silent, --no-progress, --no-color) are CLI-only
+# and have no config file equivalent.
 
 # Filter options
 [filter]
@@ -56,7 +53,23 @@ show_only_path = false
 show_only_param = false
 min_length = 10                         # Minimum URL length to include
 max_length = 500                        # Maximum URL length to include
-strict = true                           # Strict mode for host validation
+# Host validation (--strict / --no-strict) is CLI-only.
+
+# Bug-bounty scope files: one host pattern per line, `!` excludes, `*.host`
+# covers the apex too. Repeatable and unioned; exclusions always win.
+# scope_file = ["scope.txt"]
+
+# Client-side metadata filters, applied after collection so they cover every
+# provider (unlike the archive-side [provider] filters above). URLs with no
+# archive metadata fail a positive filter and survive an exclusion.
+# meta_first_seen_after = "2015"        # Oldest capture on or after this date
+# meta_first_seen_before = "2020"       # ...on or before
+# meta_last_seen_after = "2024"         # Newest capture on or after ("still alive as of")
+# meta_last_seen_before = "2019"        # ...on or before ("dead since")
+# meta_mime = ["application/json"]      # Keep only these recorded MIME types ("image/*" wildcard)
+# meta_exclude_mime = ["image/*"]       # Drop these recorded MIME types
+# meta_status = ["200", "30x"]          # Keep only these recorded status codes
+# meta_exclude_status = ["404"]         # Drop these recorded status codes
 
 # Network options
 [network]
@@ -80,6 +93,8 @@ extract_js_endpoints = false    # Fetch collected JavaScript and extract the end
 max_js_files = 500              # Cap on files extract_js_endpoints fetches (0 = unlimited)
 archive_body = false            # Extract links from the *archived* bodies of collected URLs
 archive_body_limit = 500        # Distinct archived bodies fetched per run (duplicates never count)
+expand_specs = false            # Expand collected OpenAPI/Swagger/GraphQL documents into routes
+max_spec_files = 50             # Cap on specification documents fetched (0 = unlimited)
 
 # Cache options
 [cache]

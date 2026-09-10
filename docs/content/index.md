@@ -143,7 +143,7 @@ https://target.com/v1/users.js</span></pre>
       <div class="cell">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5M14 3l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 13h8M8 17h5"/></svg></span>
         <h3>Flexible output</h3>
-        <p>Plain text, JSON or CSV, streamed to the console, a file, or the next tool in the pipe.</p>
+        <p>Plain text, JSON, CSV or a ready-made wordlist, streamed to the console, a file, or the next tool in the pipe.</p>
       </div>
       <div class="cell cell-wide">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span>
@@ -180,7 +180,7 @@ https://target.com/v1/users.js</span></pre>
       <div class="stage">
         <span class="s-flag">-f json &#183; -o</span>
         <h3>Output</h3>
-        <p>Write text, JSON or CSV to a file, or pipe it straight into the next tool.</p>
+        <p>Write text, JSON, CSV or a wordlist to a file, or pipe it straight into the next tool.</p>
       </div>
     </div>
   </div>

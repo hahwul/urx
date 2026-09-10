@@ -82,19 +82,86 @@ Default TTL is 86400 seconds (24 hours).
 urx example.com --no-cache
 ```
 
-### Clearing the Cache
+### Inspecting and Maintaining the Cache
 
-For SQLite, delete the database file:
+`urx cache` is the operator-facing view of the cache. Every subcommand honours
+the same `--cache-type`, `--cache-path`, `--redis-url` and `--cache-ttl` a scan
+uses, so what it reports is what a scan would actually see, and all five work
+against both backends.
 
-```bash
-rm ~/.urx/cache.db
+| Command | What it does |
+|---------|--------------|
+| `urx cache stats` | Entries, domains, URLs, age span, size on disk, expired count |
+| `urx cache list [--domain PAT]` | Per-domain entry and URL counts, last scan time, TTL remaining |
+| `urx cache prune` | Delete only what `--cache-ttl` has expired |
+| `urx cache drop <DOMAIN>...` | Delete every entry for the given domains |
+| `urx cache clear [--yes]` | Delete everything, confirming first |
+
+```console
+$ urx cache stats
+Cache:    sqlite
+Location: /home/you/.urx/cache.db
+Size:     4.2 MiB (database file)
+
+Entries:  312
+Domains:  27
+URLs:     184,905
+Expired:  41  (--cache-ttl 86400s = 1d 0h)
+
+Oldest:   2026-09-02T11:04:18Z  (8d 3h ago)
+Newest:   2026-09-09T22:41:02Z  (16h 12m ago)
+
+$ urx cache list --domain '*.example.com'
+DOMAIN            ENTRIES  EXPIRED       URLS  LAST SCAN             TTL LEFT
+----------------  -------  -------  ---------  --------------------  --------
+api.example.com         2        0     12,884  2026-09-09T22:41:02Z  7h 47m
+shop.example.com        1        1      3,201  2026-09-02T11:04:18Z  expired
 ```
 
-For Redis, use the Redis CLI:
+```bash
+# Which domains are cached, and how much life is left in each
+urx cache list
+
+# Just one program's hosts
+urx cache list --domain '*.example.com'
+
+# Rescan one target from scratch without touching the rest of the cache
+urx cache drop example.com
+
+# Housekeeping: drop only what has expired
+urx cache prune
+
+# A shared Redis cache is addressed the same way
+urx cache stats --cache-type redis --redis-url redis://cache-server:6379
+```
+
+**Domain patterns.** `list --domain` and `drop` take the same pattern language.
+Matching is case-insensitive and **exact** unless the pattern contains `*`,
+which stands for any run of characters: `*.example.com` matches subdomains only,
+`example.*` matches any TLD, `*example*` matches any domain containing the text.
+The exact-by-default rule is deliberate — a substring default would have let
+`drop example.com` take out `notexample.com` too.
+
+**Machine-readable output.** `-f json` / `-f jsonl` switch every subcommand to
+JSON, so cache state can be monitored the same way a scan is:
 
 ```bash
-redis-cli FLUSHDB
+urx cache stats -f json | jq '.expired_entries'
+urx cache list -f json | jq -r '.[] | select(.ttl_remaining == null) | .domain'
 ```
+
+Details worth knowing:
+
+- Looking at the cache does not create one. A first-ever `urx cache stats`
+  reports the location as "does not exist yet" rather than leaving behind the
+  database it had just called empty.
+- `clear` asks before deleting and refuses a non-interactive stdin instead of
+  assuming an answer — use `--yes` in a script.
+- `drop` names any pattern that matched nothing, so a typo'd domain does not
+  look like a successful no-op.
+- Redis sweeps with `SCAN` rather than `KEYS`, which would block a shared
+  server for the whole sweep, and any password in `--redis-url` is redacted
+  before the location is printed.
 
 ### Combined Examples
 

@@ -45,6 +45,26 @@ Fuzz discovered endpoints:
 urx example.com --patterns api | ffuf -w - -u FUZZ
 ```
 
+`--fuzz-placeholder` hands ffuf the parameter templates directly — every query
+value replaced, one URL per parameter signature:
+```bash
+urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
+```
+
+`-f wordlist` turns the run into a target-specific wordlist instead — the path
+segments and parameter names the target is built from, with ids, hashes and
+dates left out:
+```bash
+urx example.com --subs -f wordlist -o words.txt
+ffuf -w words.txt -u https://example.com/FUZZ
+```
+
+#### dalfox
+Parameter templates feed a scanner just as well as a fuzzer:
+```bash
+urx example.com --fuzz-placeholder FUZZ | dalfox pipe
+```
+
 #### waybackurls / gau
 Combine with other URL collection tools:
 ```bash
