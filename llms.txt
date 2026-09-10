@@ -1,0 +1,29 @@
+# Urx
+
+> Extracts URLs from OSINT Archives for Security Insights
+
+This is the documentation for Urx, a URL extraction tool for OSINT.
+
+## Pages
+
+- [urx](/): Extract URLs from OSINT archives for security research. A fast, keyless Rust CLI.
+
+## About
+
+- [Contributing](/about/contributing/): Report issues, set up a development environment and open a pull request against urx.
+
+## Getting Started
+
+- [Installation](/getting-started/installation/): Install urx with Cargo, Homebrew, Docker or from source, then add shell completions and the man page.
+- [Quick Start](/getting-started/quick-start/): Run a first scan, pick providers, filter what comes back, and write the results to a file.
+
+## Guide
+
+- [Caching](/guide/caching/): Skip domains you already scanned with the SQLite or Redis cache, and return only new URLs with incremental mode.
+- [CLI Options](/guide/cli-options/): Every command-line flag urx accepts, plus the webhook notification payloads and their failure handling.
+- [Configuration](/guide/configuration/): Set urx defaults in a TOML config file, and how those settings combine with command-line flags.
+- [Environment Variables](/guide/environment-variables/): The environment variables urx reads, including provider API keys and their comma-separated rotation form.
+- [Examples](/guide/examples/): Worked commands for filtering, provider selection, API keys, link extraction and status checking.
+- [Integration](/guide/integration/): Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring.
+- [Performance](/guide/performance/): Tune throughput with parallelism, network settings, provider choice and early filtering.
+
