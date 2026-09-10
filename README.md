@@ -26,8 +26,11 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
 * Predefined presets, both by file family ("no-images", "only-js") and by security interest ("only-secrets", "only-backup", "only-config", "only-api")
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
+* Client-side metadata filtering (`--meta-*`): filter on first/last capture date, recorded MIME type and recorded status uniformly across every provider, after collection
+* Bug-bounty scope files (`--scope-file`): a program's own `*.example.com` / `!admin.example.com` list used verbatim, repeatable and unioned, exclusions always winning
 * URL normalization and deduplication: Sort query parameters, remove trailing slashes, merge semantically identical URLs, and collapse near-duplicates that differ only in ids, hashes, or dates (`--dedup-similar`)
-* Support for multiple output formats: plain text, JSON, JSON Lines, CSV
+* Support for multiple output formats: plain text, JSON, JSON Lines, CSV, and `wordlist` — the path segments and parameter names the target is built from, with ids, hashes and dates left out
+* Parameter and fuzz views: `--params` (the whole target's parameter inventory), `--params-by-endpoint` (which endpoint takes what), and `--fuzz-placeholder FUZZ` (one templated URL per parameter signature, ready for ffuf or dalfox)
 * Archive capture metadata: `first_seen`, `last_seen`, `mime`, `archive_status`, and `digest` come back with every URL a CDX archive reported, at no extra network cost
 * Streaming output (`--stream`): URLs are written as each provider reports them, so a pipeline starts working immediately instead of waiting for the slowest archive
 * Direct file input support: Read URLs directly from WARC files, URLTeam compressed files, and text files
@@ -36,11 +39,14 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
   * Mine the *archived* response bodies of collected URLs (`--archive-body`), so pages that no longer exist still give up the links they contained — one request per distinct body, thanks to CDX digest deduplication
+  * Expand API specifications (`--expand-specs`): OpenAPI 3.x, Swagger 2.0 and GraphQL introspection documents, JSON or YAML, turned into every route they describe — one request buys the whole documented surface
+  * Response metadata: `--check-status` also records `Location`, `Content-Length` and `Content-Type`, and `--check-title` adds the HTML `<title>`
 * Archived robots.txt and sitemap.xml discovery (`--archived-discovery`): every distinct version the Wayback Machine holds, so a `Disallow:` from 2015 still names the paths the site has since stopped mentioning
 * Caching and Incremental Scanning:
   * Local SQLite or remote Redis caching to avoid re-scanning domains
   * Incremental mode to discover only new URLs since last scan
   * Configurable cache TTL and automatic cleanup of expired entries
+  * `urx cache` subcommand to inspect and maintain the cache: `stats`, `list`, `prune`, `drop <domain>`, `clear`
 
 ![Preview](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/static/images/preview.jpg)
 
@@ -118,7 +124,10 @@ cat domains.txt | urx
 ### Options
 
 ```
-Usage: urx [OPTIONS] [DOMAINS]...
+Usage: urx [OPTIONS] [DOMAINS]... [COMMAND]
+
+Commands:
+  cache  Inspect and maintain the URL cache: stats, list, prune, drop <DOMAIN>..., clear
 
 Arguments:
   [DOMAINS]...  Domains to fetch URLs for
@@ -138,11 +147,16 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per domain into this directory (extension matches --format). Coexists with --output / stdout.
-  -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv" [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv", "wordlist" (path segments and parameter names, deduplicated and sorted) [default: plain]
       --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
       --dedup-similar    Collapse URLs that differ only in variable data (numeric ids, UUIDs, hashes, dates, query values)
+      --params           Replace the URL list with every query parameter name the run saw, once each
+      --params-by-endpoint
+                         One line per endpoint: the endpoint and the comma-separated union of the parameter names seen on it (id-looking path segments collapse to `{id}`)
+      --fuzz-placeholder <VALUE>
+                         Replace every query parameter value with VALUE, keeping one URL per parameter signature — output you can feed straight to ffuf or dalfox
 
 Provider Options:
       --providers <PROVIDERS>
@@ -196,6 +210,7 @@ Display Options:
   -v, --verbose       Show verbose output
       --silent        Silent mode (no output)
       --no-progress   No progress bar
+      --no-color      Disable ANSI color in the progress UI and output (NO_COLOR is also honored)
       --show-sources  Annotate output URLs with the providers that returned them
       --show-meta     Annotate plain-text URLs with the archive capture metadata
       --stats         Print a per-provider summary to stderr at end of run
@@ -227,6 +242,26 @@ Filter Options:
           Maximum URL length to include
       --strict
           Enforce exact host validation (default)
+      --no-strict
+          Disable host validation entirely (keep every URL a provider returns). Wins over --strict
+      --scope-file <FILE>
+          Bug-bounty scope file: one host pattern per line, `!` to exclude, `*.example.com` for a wildcard (which covers the apex too), `#` for a comment. Repeatable and unioned; exclusions always win. See "Scope Files" below
+      --meta-first-seen-after <DATE>
+          Keep URLs whose oldest archived capture is on or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
+      --meta-first-seen-before <DATE>
+          Keep URLs whose oldest archived capture is on or before DATE
+      --meta-last-seen-after <DATE>
+          Keep URLs whose newest archived capture is on or after DATE — "still alive as of"
+      --meta-last-seen-before <DATE>
+          Keep URLs whose newest archived capture is on or before DATE — "dead since"
+      --meta-mime <TYPE>
+          Keep only URLs whose archived MIME type is one of these (comma-separated; `image/*` matches any subtype)
+      --meta-exclude-mime <TYPE>
+          Drop URLs whose archived MIME type is one of these
+      --meta-status <CODE>
+          Keep only URLs whose archived status code matches (comma-separated; `20x` / `5xx` patterns)
+      --meta-exclude-status <CODE>
+          Drop URLs whose archived status code matches
 
 Network Options:
       --network-scope <NETWORK_SCOPE>  Control which components network settings apply to (all, providers, testers, or providers,testers) [default: all]
@@ -244,6 +279,8 @@ Network Options:
 Testing Options:
       --check-status
           Check HTTP status code of collected URLs [aliases: ----cs]
+      --check-title
+          Also record each response's HTML <title> while checking statuses; implies --check-status
       --include-status <INCLUDE_STATUS>
           Include URLs with specific HTTP status codes or patterns (e.g., --is=200,30x) [aliases: ----is]
       --exclude-status <EXCLUDE_STATUS>
@@ -258,6 +295,18 @@ Testing Options:
           Fetch the archived body of each collected URL from the Wayback Machine and extract the links inside it (works for pages that no longer exist)
       --archive-body-limit <N>
           Maximum number of archived bodies --archive-body fetches per run; bounds distinct bodies, not URLs [default: 500]
+      --expand-specs
+          Fetch the API specification documents among the collected URLs (OpenAPI, Swagger, GraphQL introspection; JSON or YAML) and expand every route they document into a URL. See "Expanding API Specifications" below
+      --max-spec-files <N>
+          Maximum number of specification documents --expand-specs will fetch (0 = unlimited) [default: 50]
+
+Cache Options:
+      --incremental              Enable incremental scanning mode (only return new URLs compared to previous scans)
+      --cache-type <TYPE>        Cache backend: sqlite or redis [default: sqlite]
+      --cache-path <PATH>        Path for the SQLite cache database
+      --redis-url <URL>          Redis connection URL for remote caching
+      --cache-ttl <SECONDS>      Cache time-to-live in seconds [default: 86400]
+      --no-cache                 Disable caching entirely
 
 Notification Options:
       --notify <URL>                   POST a run summary to this webhook when the run ends (repeatable; also URX_NOTIFY_URL, provider-config `notify_url`, or `[notify].url`)
@@ -451,6 +500,34 @@ urx example.com -p only-secrets   # /.env, /.git/config, id_rsa, *.pem
 urx example.com -p only-backup    # *.bak, *.sql, /backup/, index.php~
 urx example.com -p only-config    # *.yaml, web.config, .htaccess, Dockerfile
 urx example.com -p only-api       # /api/, /v1/, /graphql, /swagger, *.wsdl
+
+# Scope files: a bug bounty program's own host list, used verbatim
+urx example.com --subs --scope-file scope.txt
+
+# Metadata filters, applied after collection so every provider is covered
+urx example.com --providers wayback --meta-last-seen-after 2024 --meta-exclude-mime 'image/*'
+urx example.com --providers wayback --meta-mime application/json --meta-status 200
+
+# What parameters does this target take, and where?
+urx example.com --params
+urx example.com --params-by-endpoint
+
+# One templated URL per parameter signature, straight into a fuzzer
+urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
+
+# A target-specific wordlist instead of a URL list
+urx example.com --subs -f wordlist -o words.txt
+
+# Open the API specifications the sweep found and expand every route in them
+urx example.com -p only-api --expand-specs
+
+# Status checks also keep the response head; --check-title adds the <title>
+urx example.com --check-status -f jsonl
+urx example.com --check-title --show-meta
+
+# Inspect and maintain the cache
+urx cache stats
+urx cache drop example.com
 ```
 
 ### Regular-expression Filtering
@@ -471,6 +548,68 @@ Both regex flags are evaluated against the **whole URL string** as collected
 Exclusion wins: a URL matching `--filter-regex` is dropped even if
 `--match-regex` also matched it. A malformed expression fails the run at
 startup, before any archive is queried.
+
+### Scope Files
+
+A bug bounty program's scope is a list of hosts, and every platform writes it
+the same way. `--scope-file` takes that list verbatim instead of making you
+hand-translate it into anchored regex alternations — where getting the
+anchoring wrong silently *widens* the scope rather than failing.
+
+```text
+# scope.txt — in scope
+*.example.com
+api.example.org
+
+# out of scope, even though the wildcard above covers them
+!admin.example.com
+!*.internal.example.com
+```
+
+```bash
+urx example.com --subs --scope-file scope.txt
+urx --domain-list targets.txt --subs --scope-file scope-a.txt --scope-file scope-b.txt
+```
+
+`*.example.com` matches the apex as well as everything under it (the
+bug-bounty reading, which is what a platform's scope table means); a bare host
+matches exactly that host; a lone `*` makes the file a pure deny-list;
+exclusions always win; `#` starts a comment. Anything urx cannot honour — a
+port, a path, a wildcard in the middle — is a startup error naming the file and
+line rather than a silently wider scope. The filter applies to every provider
+and to extracted links, and it combines with `--strict` rather than replacing
+it, so a `*.example.com` scope line still needs `--subs`.
+
+### Archive Metadata Filters
+
+`--from`/`--to` and the `--archive-*` predicates are pushed into the archive's
+own query, which makes them free and also limits them to CDX-backed providers —
+and the two CDX dialects disagree badly enough that a positive multi-value list
+(`--archive-status 200,301`) is unsatisfiable on pywb servers. The eight
+`--meta-*` filters run *after* collection instead, over one merged set of
+capture metadata per URL, so they apply to every provider uniformly.
+
+```bash
+# Endpoints still being captured recently, with HTML and images out of the way
+urx example.com --providers wayback --meta-last-seen-after 2024 --meta-exclude-mime 'text/html,image/*'
+
+# Pages that died: nothing captured since 2019
+urx example.com --providers wayback --meta-last-seen-before 2019
+
+# JSON the archive served successfully
+urx example.com --providers wayback --meta-mime application/json --meta-status 200
+
+# First archived during 2020 (partial dates pad to the start / end of the period)
+urx example.com --providers wayback --meta-first-seen-after 2020 --meta-first-seen-before 2020
+```
+
+URLs that carry no metadata — the non-CDX providers, `--files` input, cache hits
+— are split by the direction of the predicate: a positive predicate cannot be
+satisfied by an absent value, so the URL is dropped; an exclusion drops only
+what positively matches, so it survives. `--verbose` reports the split, and when
+missing metadata accounts for the whole result set urx says so even without
+`-v`, because a cache hit otherwise makes an empty run look like a target with
+nothing to find.
 
 ### Collapsing Near-duplicates
 
@@ -496,6 +635,65 @@ collapsed. The option is independent of `--normalize-url` and
 `--merge-endpoint` and combines with either; all three need the complete result
 set, so none of them works with `--stream`.
 
+### Parameter and Fuzz Views
+
+`--show-only-param` only cuts the query string off each URL, which cannot answer
+the first question a tester asks: what parameters does this target take? Three
+views answer it, built on the same grouping `--dedup-similar` uses.
+
+```console
+$ urx example.com --params
+page
+q
+ref
+sort
+utm_source
+
+$ urx example.com --params-by-endpoint
+https://example.com/post/{id} ref,utm_source
+https://example.com/search page,q,sort
+
+$ urx example.com --fuzz-placeholder FUZZ
+https://example.com/post/1?ref=FUZZ
+https://example.com/post/2?utm_source=FUZZ
+https://example.com/search?q=FUZZ&page=FUZZ
+https://example.com/search?q=FUZZ&sort=FUZZ
+```
+
+`--params-by-endpoint` collapses id-looking path segments to `{id}` exactly as
+`--dedup-similar` does, and spells the endpoint out in full because urx
+routinely scans several hosts in one run. `--fuzz-placeholder` keeps one URL per
+parameter signature and keeps its real path — a `{id}` would not route — so the
+output feeds straight into a fuzzer:
+
+```bash
+urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
+urx example.com --fuzz-placeholder FUZZ | dalfox pipe
+```
+
+All three need the complete result set, so they are batch-only and mutually
+exclusive with each other and with the `--show-only-*` views.
+
+### Wordlist Output
+
+`-f wordlist` turns a run into a target-specific wordlist: every path segment
+and query parameter name it saw, deduplicated across the whole run and sorted,
+one term per line.
+
+```bash
+urx example.com --subs -f wordlist -o words.txt
+ffuf -w words.txt -u https://example.com/FUZZ
+```
+
+Segments that look like data rather than route names are left out, reusing the
+test `--dedup-similar` groups on — a wordlist full of `4711`, UUIDs, dates and
+session tokens is worse than no wordlist, since every one of those words exists
+on exactly one target. A segment whose stem is an identifier goes too
+(`article-1234.html`). Case is preserved: path segments are case-sensitive on
+most origins, so lower-casing `WebResource.axd` would produce a word that 404s
+everywhere it is tried. The union has to be taken over the full set, so the
+format is batch-only.
+
 ### Streaming Output
 
 By default urx collects everything, then filters, sorts, and prints once. On a
@@ -519,11 +717,13 @@ deduplicated. Two things differ:
   (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
   `--check-status` /
   `--include-status` / `--exclude-status`, `--extract-links`,
-  `--extract-js-endpoints`, `--archive-body`, `--incremental`,
-  `--show-sources`, `--show-meta`, `--output-dir`, and `--files`. Caching is
-  bypassed, and
+  `--extract-js-endpoints`, `--archive-body`, `--expand-specs`,
+  `--incremental`, `--show-sources`, `--show-meta`, the `--meta-*` filters,
+  `--params`, `--params-by-endpoint`, `--fuzz-placeholder`, `--output-dir`, and
+  `--files`. Caching is bypassed;
   `--format json` is refused in favour of `jsonl` because a JSON array has to
-  know which entry is last.
+  know which entry is last, and `--format wordlist` because no term can be known
+  to be new until every URL has arrived.
 
 Because the batch result map is never populated in this mode, a streamed run
 also holds far less in memory — only the dedup set of URLs already written.
@@ -587,6 +787,33 @@ A cache hit also carries no metadata: the cache stores URLs, so a domain served
 from cache reports its URLs without capture fields. Use `--no-cache` (or wait
 for the TTL) for a run that repopulates them.
 
+### Live Response Metadata
+
+`--check-status` already sends a request and waits for the response head, so
+what that head carries comes for free: `Location`, `Content-Length` and
+`Content-Type` are recorded alongside the status code. Redirects are still never
+followed, so a reported status always belongs to the URL that was asked for and
+`location` simply says where the 3xx pointed.
+
+`--check-title` adds the HTML `<title>`. It is the one field that is not free —
+a title needs the response body — so it sits behind its own flag. The read is
+bounded twice (at most 64 KiB, and it stops at the closing tag) and skipped
+entirely for a body the server declared as non-HTML, so a JSON API or an image
+costs nothing. The title is whitespace-collapsed, entity-decoded and cut to 200
+characters. `--check-title` implies `--check-status`.
+
+```bash
+urx example.com --check-status -f jsonl
+urx example.com --check-title --show-meta
+urx example.com --check-status --is 30x -f jsonl | jq -r '.url + " -> " + .location'
+```
+
+Exposure follows the rule the archive metadata already set: `json`/`jsonl`/`csv`
+always carry the fields (absent keys are omitted, and the CSV columns are
+appended after the existing ones), while plain text stays one bare URL per line
+unless `--show-meta` asks otherwise. In plain output the title is quoted, since
+it is the one value that routinely contains spaces.
+
 ### Mining Archived Response Bodies
 
 `--extract-links` fetches every collected URL from the live site, which is
@@ -638,6 +865,46 @@ Details worth knowing:
 - `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
   `--timeout`, and `--retries` all apply to the replay requests.
 - Incompatible with `--stream`, like every option that runs after collection.
+
+### Expanding API Specifications
+
+A `-p only-api` sweep finds `/swagger.json`, `/openapi.yaml` and `/v3/api-docs`
+and then never opens them: `--extract-links` parses HTML, `--extract-js-endpoints`
+drops `application/json` bodies, and `--archive-body` runs the HTML parser over
+whatever the archive returns. `--expand-specs` reads them and expands every route
+they describe into the result set — one request buys the whole documented
+surface, exact and already parameterised.
+
+```bash
+urx example.com -p only-api --expand-specs
+urx example.com --expand-specs --max-spec-files 10 --rate-limit 2
+
+# Recover an API the live host no longer serves: read the archived document
+urx example.com --archive-body --expand-specs
+```
+
+What is expanded:
+
+* **OpenAPI 3.x** — `servers[].url` (absolute, document-relative, and templated,
+  with `{var}` resolved from `variables[var].default` or the first `enum` value)
+  crossed with every `paths` key; a path item's own `servers` override the
+  document's.
+* **Swagger 2.0** — `schemes` × `host` + `basePath`, each part falling back to
+  the corresponding part of the document's own URL. `ws`/`wss` are dropped.
+* **GraphQL introspection** — one URL per query, mutation and subscription
+  field, written as the endpoint plus `?query=…`. A schema saved as a file
+  resolves to its endpoint (`/graphql/schema.json` → `/graphql`).
+
+JSON and YAML are both read. Targets are chosen by name first and for free (a
+spec-marker substring — `swagger`, `openapi`, `api-docs`, `graphql`,
+`introspection` — plus a `json`/`yaml`/`yml` extension when there is one, so
+`swagger-ui.html` costs no request), then by the response's `Content-Type`. Path
+templates are emitted as the document writes them (`/users/{id}`, not
+`/users/%7Bid%7D`). Bodies are capped at 10 MiB, and a YAML document with more
+than 32 alias references is refused before parsing to rule out expansion bombs.
+`--max-spec-files` (default 50) bounds the documents fetched. With
+`--archive-body` also on, an archived specification is read as one at no extra
+request cost — the body was already being fetched.
 
 ### Archived robots.txt and sitemap.xml
 
@@ -781,6 +1048,33 @@ urx example.com --incremental -e js,php --patterns api
 # Configuration file with caching settings
 urx -c example/config.toml example.com
 ```
+
+#### Managing the Cache
+
+`urx cache` inspects and maintains the cache without touching the database by
+hand. Every subcommand honours the same `--cache-type`, `--cache-path`,
+`--redis-url` and `--cache-ttl` a scan does, and all five work against both
+backends.
+
+```bash
+urx cache stats                     # entries, domains, URLs, age span, size, expired count
+urx cache list                      # per-domain counts, last scan, TTL remaining
+urx cache list --domain '*.example.com'
+urx cache prune                     # delete only what --cache-ttl has expired
+urx cache drop example.com          # rescan one target without clearing the rest
+urx cache clear --yes               # delete everything
+
+# machine-readable
+urx cache stats -f json | jq '.expired_entries'
+```
+
+Domain matching is case-insensitive and **exact** unless the pattern contains
+`*` — a substring default would have let `drop example.com` take out
+`notexample.com` too. `clear` asks before deleting and refuses a
+non-interactive stdin rather than assuming an answer, `drop` names any pattern
+that matched nothing, looking at the cache never creates one, and Redis is swept
+with `SCAN` rather than the blocking `KEYS` (with any password in `--redis-url`
+redacted before it is printed).
 
 #### Caching Use Cases
 

@@ -27,13 +27,13 @@ Command-line flags always take precedence over config file values.
 Below is a complete annotated configuration file. All sections and keys are optional.
 
 ```toml
-# Domain configuration
-domains = ["example.com", "example.org"]
+# Targets are given on the command line, not here:
+#   urx -c config.toml example.com
 
 # ─── Output ──────────────────────────────────────────────
 [output]
 output = "results.txt"
-format = "plain"           # plain, json, jsonl, csv
+format = "plain"           # plain, json, jsonl, csv, wordlist
 merge_endpoint = false
 dedup_similar = false      # Collapse URLs differing only in ids, hashes, dates, or query values
 stream = false             # Write URLs as providers report them (unsorted, bypasses cache)
@@ -75,6 +75,15 @@ show_only_path = false
 show_only_param = false
 min_length = 10
 max_length = 500
+scope_file = ["scope.txt"]        # Bug-bounty scope files; repeatable, unioned, `!` excludes
+meta_first_seen_after = ""        # Keep URLs first archived on or after this date (YYYY/YYYYMM/YYYYMMDD)
+meta_first_seen_before = ""       # ...on or before
+meta_last_seen_after = ""         # Keep URLs last archived on or after this date ("still alive as of")
+meta_last_seen_before = ""        # ...on or before ("dead since")
+meta_mime = []                    # Keep only these archived MIME types ("image/*" matches any subtype)
+meta_exclude_mime = []            # Drop these archived MIME types
+meta_status = []                  # Keep only these archived status codes ("20x" / "5xx" patterns)
+meta_exclude_status = []          # Drop these archived status codes
 
 # ─── Network ─────────────────────────────────────────────
 [network]
@@ -98,6 +107,8 @@ extract_js_endpoints = false   # Mine collected JavaScript for endpoints
 max_js_files = 500             # Cap on files --extract-js-endpoints fetches (0 = unlimited)
 archive_body = false                   # Mine the archived bodies of collected URLs
 archive_body_limit = 500               # Distinct bodies fetched per run (duplicates never count)
+expand_specs = false                   # Expand collected OpenAPI/Swagger/GraphQL documents into routes
+max_spec_files = 50                    # Cap on specification documents fetched (0 = unlimited)
 
 # ─── Cache ────────────────────────────────────────────────
 [cache]
@@ -130,6 +141,7 @@ subs = true
 [filter]
 preset = ["no-resources"]
 patterns = ["api", "admin", "login"]
+scope_file = ["~/programs/example/scope.txt"]  # the program's own scope, verbatim
 
 [cache]
 incremental = true
@@ -149,6 +161,10 @@ subs = true
 [filter]
 patterns = ["api", "graphql", "rest", "v1", "v2"]
 extensions = ["json", "xml"]
+
+[testing]
+expand_specs = true          # open the OpenAPI/Swagger/GraphQL documents this finds
+max_spec_files = 25
 
 [network]
 parallel = 10
@@ -171,7 +187,9 @@ cache_ttl = 43200
 > Run this with `--silent` on the command line — display flags such as
 > `--silent`, `--verbose`, and `--no-progress`, along with host-validation
 > flags (`--strict` / `--no-strict`), are CLI-only and have no config file
-> equivalent.
+> equivalent. So are the output views (`--params`, `--params-by-endpoint`,
+> `--fuzz-placeholder`) and `--check-title`: they change what a single run
+> prints rather than how the tool is set up.
 
 ### Config File Location
 
