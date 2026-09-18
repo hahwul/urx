@@ -217,6 +217,13 @@ impl SitemapProvider {
         self.client_config().build_client()
     }
 
+    /// A client for requests that go to an archive rather than the target,
+    /// i.e. everything `--archived-discovery` does. See
+    /// [`HttpClientConfig::without_headers`].
+    fn build_archive_client(&self) -> Result<Client> {
+        self.client_config().without_headers().build_client()
+    }
+
     /// Recursively fetch and parse a sitemap (or sitemap index).
     ///
     /// `walk.visited` records already-fetched sitemap URLs to break cycles
@@ -413,7 +420,7 @@ impl SitemapProvider {
         settings: &ArchivedDiscovery,
         reporter: Option<ProgressReporter>,
     ) -> Result<Vec<UrlRecord>> {
-        let client = self.build_client()?;
+        let client = self.build_archive_client()?;
         let mut walk = ArchivedWalk {
             client: &client,
             settings,

@@ -39,6 +39,19 @@ impl Default for HttpClientConfig {
 }
 
 impl HttpClientConfig {
+    /// The same configuration with the user's `-H` headers removed.
+    ///
+    /// For the one shape of component that talks to *both* ends: the `robots`
+    /// and `sitemap` providers normally fetch from the target, so they carry
+    /// the headers, but under `--archived-discovery` the very same provider
+    /// reads those files out of the Wayback Machine instead. Sending the
+    /// target's session cookie there is the leak the whole scheme exists to
+    /// prevent, so the archive-facing request drops them.
+    pub fn without_headers(mut self) -> Self {
+        self.headers = super::CustomHeaders::default();
+        self
+    }
+
     /// Build a `reqwest::Client` from this configuration.
     ///
     /// Redirects are followed (reqwest's default), which is what a provider
