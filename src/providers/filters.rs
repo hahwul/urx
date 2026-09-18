@@ -339,19 +339,37 @@ pub fn cdx_url_pattern(target: &str, include_subdomains: bool) -> String {
 /// `url=hahwul.com/cullinan*`, so a `%26` in this value reaches the index as
 /// an `&` inside the path rather than as a parameter separator.
 fn encode_url_pattern_path(path: &str) -> String {
+    let bytes = path.as_bytes();
     let mut out = String::with_capacity(path.len());
-    for ch in path.chars() {
+    for (i, ch) in path.char_indices() {
         match ch {
             '&' => out.push_str("%26"),
             '=' => out.push_str("%3D"),
+            // Unreachable as things stand — `target_path` splits a query and
+            // fragment off before parsing, and `Url::path` never yields
+            // either — but this value is spliced into a query string, so the
+            // two characters that would end it are escaped regardless.
             '?' => out.push_str("%3F"),
             '#' => out.push_str("%23"),
             // A `+` in a query value reads as a space to many parsers.
             '+' => out.push_str("%2B"),
+            // A `%` that does not begin a valid escape. `Url::parse` does not
+            // repair one — `/100%discount` survives verbatim — and a server
+            // that decodes with a strict decoder (Java's `URLDecoder` throws)
+            // answers 400, failing the whole provider rather than the one
+            // scope. A `%` that *does* begin an escape is left alone, or
+            // `/%C3%BCber` would become a request for a path literally
+            // spelled `%C3%BCber`.
+            '%' if !begins_escape(&bytes[i + 1..]) => out.push_str("%25"),
             _ => out.push(ch),
         }
     }
     out
+}
+
+/// Whether `rest` starts with the two hex digits that complete a `%XX` escape.
+fn begins_escape(rest: &[u8]) -> bool {
+    matches!(rest, [a, b, ..] if a.is_ascii_hexdigit() && b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -603,6 +621,30 @@ mod tests {
         assert_eq!(
             cdx_url_pattern("example.com/%C3%BCber", false),
             "example.com/%C3%BCber*"
+        );
+    }
+
+    #[test]
+    fn test_cdx_url_pattern_repairs_a_stray_percent() {
+        // `Url::parse` passes a malformed escape through untouched, and a CDX
+        // server decoding with a strict decoder answers 400 — failing the
+        // whole provider rather than just this scope.
+        assert_eq!(
+            cdx_url_pattern("example.com/100%discount", false),
+            "example.com/100%25discount*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a%", false),
+            "example.com/a%25*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a%zz", false),
+            "example.com/a%25zz*"
+        );
+        // ...while a well-formed escape still survives, in either case.
+        assert_eq!(
+            cdx_url_pattern("example.com/a%2fb%2Fc", false),
+            "example.com/a%2fb%2Fc*"
         );
     }
 }

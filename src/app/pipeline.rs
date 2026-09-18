@@ -367,6 +367,28 @@ fn has_meta_filters(args: &Args) -> bool {
 }
 // --- end result-filters ---
 
+/// What to suggest when host validation discarded most of the result.
+///
+/// With a path scope in play, part of what was removed fell outside the
+/// *path*, and `--no-strict` does not widen a path scope — so offering it
+/// would send the reader in a circle.
+///
+/// `--subs` is offered only while the host check is on. In paths-only mode
+/// (`--no-strict` with a scope) it does the opposite of what the sentence
+/// promises: without it a subdomain's URL never matches a target host and
+/// passes unjudged, and with it the URL is matched and then measured against
+/// the scope — so the flag *shrinks* the result set it is being recommended to
+/// grow.
+fn drops_most_hint(has_path_scopes: bool, strict: bool) -> &'static str {
+    match (has_path_scopes, strict) {
+        (true, true) => {
+            "pass --subs to keep subdomains, or drop the path from the target to scan the whole site"
+        }
+        (true, false) => "drop the path from the target to scan the whole site",
+        (false, _) => "pass --subs to keep subdomains or --no-strict to keep all hosts",
+    }
+}
+
 /// Apply URL filtering and, in strict mode, host validation to the batch result.
 pub fn apply_url_filters(
     args: &Args,
@@ -412,14 +434,7 @@ pub fn apply_url_filters(
             // subdomains under a bare apex query.
             let drops_most = before > 0 && (sorted_urls.is_empty() || removed * 2 > before);
             if drops_most && !args.silent && !args.subs {
-                // With a path scope in play, part of what was removed fell
-                // outside the *path*, and --no-strict does not widen a path
-                // scope — so offering it would send the reader in a circle.
-                let hint = if host_validator.has_path_scopes() {
-                    "pass --subs to keep subdomains, or drop the path from the target to scan the whole site"
-                } else {
-                    "pass --subs to keep subdomains or --no-strict to keep all hosts"
-                };
+                let hint = drops_most_hint(host_validator.has_path_scopes(), args.strict_enabled());
                 let what = if args.strict_enabled() {
                     "strict host validation"
                 } else {
@@ -2044,5 +2059,39 @@ mod tests {
         let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
         assert_eq!(kept, vec!["https://other.test/anything".to_string()]);
         Ok(())
+    }
+
+    #[test]
+    fn paths_only_mode_does_not_recommend_a_flag_that_would_shrink_the_result() {
+        // Under --no-strict with a scope, `--subs` inverts: without it a
+        // subdomain's URL never matches a target host and passes unjudged;
+        // with it the URL is matched and then measured against the scope. So
+        // the advisory must not offer it as a way to keep more URLs.
+        let mut args = build_test_args();
+        args.domains = vec!["example.com/shop".to_string()];
+        args.strict = false;
+        args.no_strict = true;
+
+        let validator = build_host_validator(&args).unwrap().unwrap();
+        assert!(validator.has_path_scopes());
+        assert!(!args.strict_enabled());
+
+        let hint = drops_most_hint(validator.has_path_scopes(), args.strict_enabled());
+        assert!(!hint.contains("--subs"), "{hint}");
+
+        // With the host check on, --subs really does widen the result, so it
+        // is still the right thing to offer.
+        args.strict = true;
+        args.no_strict = false;
+        let validator = build_host_validator(&args).unwrap().unwrap();
+        let hint = drops_most_hint(validator.has_path_scopes(), args.strict_enabled());
+        assert!(hint.contains("--subs"), "{hint}");
+
+        // An unscoped run is untouched: --subs and --no-strict both widen it.
+        let hint = drops_most_hint(false, true);
+        assert!(
+            hint.contains("--subs") && hint.contains("--no-strict"),
+            "{hint}"
+        );
     }
 }
