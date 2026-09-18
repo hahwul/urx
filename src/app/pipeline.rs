@@ -230,6 +230,15 @@ pub fn build_meta_filter(args: &Args) -> Result<MetaFilter> {
 pub fn validate_result_filters(args: &Args) -> Result<()> {
     ScopeMatcher::from_files(&args.scope_file)?;
     build_meta_filter(args)?;
+    // clap's `requires` covers the command line, but a config file can set
+    // `archive_body_dir` on its own, and the run would then quietly write
+    // nothing at all — the exact failure mode the unknown-key warning exists
+    // to prevent, arriving through a key urx does recognise.
+    if args.archive_body_dir.is_some() && !args.archive_body {
+        anyhow::bail!(
+            "--archive-body-dir has nothing to store without --archive-body (it keeps the bodies that flag replays)"
+        );
+    }
     Ok(())
 }
 
@@ -1890,4 +1899,18 @@ mod tests {
         assert!(validate_result_filters(&args).is_err());
     }
     // --- end result-filters ---
+
+    #[test]
+    fn a_body_directory_without_archive_body_is_refused() {
+        // Reachable only through a config file — clap rejects the CLI form —
+        // and a run that silently wrote nothing would be read as "the archive
+        // had nothing to store".
+        let mut args = build_test_args();
+        args.archive_body_dir = Some(std::path::PathBuf::from("/tmp/urx-corpus"));
+        let err = validate_result_filters(&args).expect_err("should be refused");
+        assert!(format!("{err}").contains("--archive-body-dir"), "{err}");
+
+        args.archive_body = true;
+        assert!(validate_result_filters(&args).is_ok());
+    }
 }
