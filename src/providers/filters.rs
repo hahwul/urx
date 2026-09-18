@@ -313,9 +313,40 @@ pub fn cdx_url_pattern(target: &str, include_subdomains: bool) -> String {
     let (host, path) = crate::cli::split_target(target);
     match (include_subdomains, path) {
         (true, _) => format!("*.{host}/*"),
-        (false, Some(path)) => format!("{host}{path}*"),
+        (false, Some(path)) => format!("{host}{}*", encode_url_pattern_path(path)),
         (false, None) => format!("{host}/*"),
     }
+}
+
+/// Percent-encode the characters in a path scope that would otherwise end the
+/// `url=` parameter instead of belonging to it.
+///
+/// Every CDX provider splices the pattern straight into `...?url={pattern}&fl=`
+/// — before path scopes existed the value could only be a hostname and a
+/// wildcard, so nothing ever needed escaping. A path can hold anything, and
+/// `urx "example.com/a&limit=1"` would otherwise send `url=example.com/a`
+/// followed by a `limit=1` of its own, silently truncating the run to one row.
+///
+/// Unlike [`encode_value`], which form-encodes a whole filter value, this
+/// touches only the delimiters. The rest of the path arrived from
+/// [`url::Url::path`] already percent-encoded for transport — that is how a
+/// non-ASCII scope survives at all — and re-encoding its `%` would turn
+/// `/%C3%BCber` into a request for a path literally spelled `%C3%BCber`.
+/// `/` is likewise left alone: it is the path separator the archive matches on.
+fn encode_url_pattern_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '&' => out.push_str("%26"),
+            '=' => out.push_str("%3D"),
+            '?' => out.push_str("%3F"),
+            '#' => out.push_str("%23"),
+            // A `+` in a query value reads as a space to many parsers.
+            '+' => out.push_str("%2B"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -542,5 +573,31 @@ mod tests {
         // which no CDX server combines with a path. Host validation applies
         // the scope to the results instead.
         assert_eq!(cdx_url_pattern("example.com/shop", true), "*.example.com/*");
+    }
+
+    #[test]
+    fn test_cdx_url_pattern_cannot_inject_query_parameters() {
+        // The pattern is spliced into `...?url={pattern}&fl=...`, so a `&` or
+        // `=` in the path would otherwise append a CDX parameter of its own —
+        // `limit=1` here would silently truncate the run to one row.
+        assert_eq!(
+            cdx_url_pattern("example.com/a&limit=1", false),
+            "example.com/a%26limit%3D1*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a?b", false),
+            "example.com/a%3Fb*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a+b", false),
+            "example.com/a%2Bb*"
+        );
+
+        // An already-encoded byte is left alone: re-encoding the `%` would ask
+        // the archive for a path literally containing "%C3%BC".
+        assert_eq!(
+            cdx_url_pattern("example.com/%C3%BCber", false),
+            "example.com/%C3%BCber*"
+        );
     }
 }

@@ -589,11 +589,12 @@ pub struct Args {
     /// internal hostnames. Only text-like bodies are stored; images, fonts and
     /// video are skipped. Requires --archive-body.
     #[clap(help_heading = "Testing Options")]
-    #[clap(
-        long = "archive-body-dir",
-        value_name = "DIR",
-        requires = "archive_body"
-    )]
+    // No clap `requires`: it demands the flag be present on the *command
+    // line*, which would reject `--archive-body-dir` against an
+    // `archive_body = true` in the config file. The pairing is checked in
+    // `validate_result_filters`, after the config has been merged, so both
+    // directions are caught.
+    #[clap(long = "archive-body-dir", value_name = "DIR")]
     pub archive_body_dir: Option<PathBuf>,
 
     // --- spec-expansion ---
@@ -867,12 +868,19 @@ fn target_path(raw: &str) -> Option<String> {
     let (_, path) = after_authority.split_once('/')?;
     // A query or fragment narrows a request, not a scope.
     let path = path.split(['?', '#']).next().unwrap_or("");
-    let path = path.trim_end_matches('/');
+    // Run it through the URL parser rather than keeping the user's bytes.
+    // Host validation compares against `Url::path()`, which reports a path
+    // percent-encoded — a candidate `https://example.com/über` reports
+    // `/%C3%BCber` — so a raw `/über` scope would match nothing at all. This
+    // also folds away `.`/`..` segments and double slashes, the same way the
+    // candidate side has already had them folded.
+    let parsed = url::Url::parse(&format!("https://placeholder.invalid/{path}")).ok()?;
+    let path = parsed.path().trim_end_matches('/');
     if path.is_empty() {
         // `example.com/`, `example.com/?x=1` — the apex, not a sub-scope.
         return None;
     }
-    Some(format!("/{path}"))
+    Some(path.to_string())
 }
 
 /// Split a target produced by [`normalize_target`] into its host and its
@@ -1659,6 +1667,31 @@ mod tests {
         assert_eq!(
             normalize_target("example.com/shop/?sort=price#top").as_deref(),
             Some("example.com/shop")
+        );
+    }
+
+    #[test]
+    fn test_normalize_target_encodes_a_path_the_way_urls_report_one() {
+        // Host validation compares against `Url::path()`, which is
+        // percent-encoded, so a raw `/über` scope would match nothing at all.
+        assert_eq!(
+            normalize_target("example.com/über").as_deref(),
+            Some("example.com/%C3%BCber")
+        );
+        assert_eq!(
+            normalize_target("example.com/a b").as_deref(),
+            Some("example.com/a%20b")
+        );
+        // Already-encoded input is left as it is, not encoded twice.
+        assert_eq!(
+            normalize_target("example.com/%C3%BCber").as_deref(),
+            Some("example.com/%C3%BCber")
+        );
+        // Dot segments and double slashes fold, as they have already folded on
+        // the candidate side.
+        assert_eq!(
+            normalize_target("example.com/a/./b/../c").as_deref(),
+            Some("example.com/a/c")
         );
     }
 

@@ -173,7 +173,7 @@ pub fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
         // `urx example.com/shop --no-strict` still asked for /shop, and a path
         // prefix is part of what the target is rather than a filter over it.
         // With no path anywhere, there is nothing left to check.
-        return Ok(HostValidator::paths_only(&domains));
+        return Ok(HostValidator::paths_only(&domains, args.subs));
     }
     Ok(Some(HostValidator::new(&domains, args.subs)))
 }
@@ -249,6 +249,16 @@ pub fn validate_result_filters(args: &Args) -> Result<()> {
         anyhow::bail!(
             "--archive-body-dir has nothing to store without --archive-body (it keeps the bodies that flag replays)"
         );
+    }
+    // Create the corpus directory *here*, at start-up, and drop the handle.
+    // The tester that writes to it is built only once every provider has
+    // finished, so an unwritable path used to abort the run after all the
+    // collection work had been done and before a single URL was written —
+    // the opposite of what the tester's own comment promised. Creating twice
+    // is harmless: the second call reuses the directory and reopens the index
+    // for appending.
+    if let Some(dir) = &args.archive_body_dir {
+        crate::testers::BodyArchive::create(dir.clone())?;
     }
     Ok(())
 }
@@ -372,10 +382,24 @@ pub fn apply_url_filters(
 
     // Host validation only applies to domain-driven runs: file input has no
     // queried domain to validate against.
-    if args.strict_enabled() && args.files.is_empty() {
-        verbose_print(args, "Enforcing strict host validation...");
-
+    //
+    // Not gated on `--strict` any more: `build_host_validator` also returns a
+    // validator under `--no-strict` when a target named a path, because the
+    // scope was asked for explicitly and only the *host* check was waived.
+    // Gating here as well left the batch path emitting the whole host while
+    // --stream and the extracted-link filter — which both call
+    // `build_host_validator` directly — applied the scope, so one run gave two
+    // different answers depending on the output mode.
+    if args.files.is_empty() {
         if let Some(host_validator) = build_host_validator(args)? {
+            verbose_print(
+                args,
+                if args.strict_enabled() {
+                    "Enforcing strict host validation..."
+                } else {
+                    "Enforcing the targets' path scopes..."
+                },
+            );
             let before = sorted_urls.len();
             sorted_urls.retain(|url| host_validator.is_valid_host(url));
             let removed = before - sorted_urls.len();
@@ -395,7 +419,12 @@ pub fn apply_url_filters(
                 } else {
                     "pass --subs to keep subdomains or --no-strict to keep all hosts"
                 };
-                eprintln!("[urx] strict host validation removed {removed}/{before} URLs; {hint}");
+                let what = if args.strict_enabled() {
+                    "strict host validation"
+                } else {
+                    "the target's path scope"
+                };
+                eprintln!("[urx] {what} removed {removed}/{before} URLs; {hint}");
             }
 
             verbose_print(
@@ -867,8 +896,8 @@ pub fn build_archive_body_extractor(
     extractor.with_extract_js_endpoints(args.extract_js_endpoints);
 
     if let Some(dir) = &args.archive_body_dir {
-        // Created (and proved writable) now rather than on the first body, so
-        // a bad path stops the run before it spends an hour on the archive.
+        // Already created and proved writable at start-up by
+        // `validate_result_filters`; this reopens the index for appending.
         let archive = Arc::new(BodyArchive::create(dir.clone())?);
         verbose_print(
             args,
@@ -1916,13 +1945,29 @@ mod tests {
         // Reachable only through a config file — clap rejects the CLI form —
         // and a run that silently wrote nothing would be read as "the archive
         // had nothing to store".
+        let dir = tempfile::tempdir().unwrap();
         let mut args = build_test_args();
-        args.archive_body_dir = Some(std::path::PathBuf::from("/tmp/urx-corpus"));
+        args.archive_body_dir = Some(dir.path().join("corpus"));
         let err = validate_result_filters(&args).expect_err("should be refused");
         assert!(format!("{err}").contains("--archive-body-dir"), "{err}");
 
         args.archive_body = true;
         assert!(validate_result_filters(&args).is_ok());
+    }
+
+    #[test]
+    fn an_unwritable_body_directory_fails_before_any_collection() {
+        // The tester that writes the corpus is built only after every provider
+        // has finished, so discovering the problem there would throw away a
+        // whole run's work. `validate_result_filters` runs at start-up.
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("taken");
+        std::fs::write(&blocked, b"").unwrap();
+
+        let mut args = build_test_args();
+        args.archive_body = true;
+        args.archive_body_dir = Some(blocked);
+        assert!(validate_result_filters(&args).is_err());
     }
 
     #[test]
@@ -1950,5 +1995,52 @@ mod tests {
         let note = path_scope_note(&domains, false).unwrap();
         assert!(note.contains("(+7 more)"), "{note}");
         assert_eq!(note.lines().count(), 1, "{note}");
+    }
+
+    #[test]
+    fn no_strict_keeps_the_path_scope_on_the_batch_path() -> Result<()> {
+        // The bug this pins: `apply_url_filters` used to gate host validation
+        // on `--strict`, so `--no-strict` with a path scope emitted the whole
+        // host in batch mode while --stream (which calls
+        // `build_host_validator` directly) applied the scope. One run, two
+        // answers, decided by the output mode.
+        let mut args = build_test_args();
+        args.domains = vec!["example.com/shop".to_string()];
+        args.strict = false;
+        args.no_strict = true;
+        args.silent = true;
+
+        let urls: HashSet<String> = [
+            "https://example.com/shop/item",
+            "https://example.com/about",
+            // Off-host: --no-strict was asked for, so this stays.
+            "https://other.test/anything",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        assert!(kept.contains(&"https://example.com/shop/item".to_string()));
+        assert!(kept.contains(&"https://other.test/anything".to_string()));
+        assert!(!kept.contains(&"https://example.com/about".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn no_strict_without_a_path_scope_still_validates_nothing() -> Result<()> {
+        let mut args = build_test_args();
+        args.domains = vec!["example.com".to_string()];
+        args.strict = false;
+        args.no_strict = true;
+        args.silent = true;
+
+        let urls: HashSet<String> = ["https://other.test/anything"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        assert_eq!(kept, vec!["https://other.test/anything".to_string()]);
+        Ok(())
     }
 }

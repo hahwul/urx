@@ -90,16 +90,20 @@ impl HostValidator {
     /// `--no-strict`. `None` when no target named a path, because there is
     /// then nothing left to check and the caller should skip validation
     /// entirely.
-    pub fn paths_only(domains: &[String]) -> Option<Self> {
+    pub fn paths_only(domains: &[String], include_subdomains: bool) -> Option<Self> {
         let indexed = Self::index(domains);
         if indexed.values().all(Vec::is_empty) {
             return None;
         }
         Some(HostValidator {
             domains: indexed,
-            // A path-scoped target implies its subdomains are out of scope
-            // only if the host check runs at all, which here it does not.
-            include_subdomains: false,
+            // Carried through even though the host check is off, because it
+            // decides which *scope* a subdomain's URL is judged against.
+            // Hard-coding `false` here left `cdn.example.com/about` falling
+            // past the host lookup entirely and passing unchecked, while
+            // `www.example.com/about` was matched as the apex and correctly
+            // dropped — the scope enforced on two hosts out of three.
+            include_subdomains,
             enforce_host: false,
         })
     }
@@ -397,6 +401,17 @@ mod tests {
     }
 
     #[test]
+    fn a_non_ascii_path_scope_matches_the_urls_it_names() {
+        // Both sides are percent-encoded — the target by `normalize_target`,
+        // the candidate by the URL parser — so they can actually meet.
+        let target = crate::cli::normalize_target("example.com/über").unwrap();
+        let validator = HostValidator::new(&[target], false);
+        assert!(validator.is_valid_host("https://example.com/über/x"));
+        assert!(validator.is_valid_host("https://example.com/%C3%BCber/x"));
+        assert!(!validator.is_valid_host("https://example.com/other"));
+    }
+
+    #[test]
     fn the_broader_of_two_overlapping_targets_wins() {
         // Naming the host both ways means the whole host was asked for; the
         // narrower target must not silently cancel the broader one.
@@ -442,8 +457,8 @@ mod tests {
     fn paths_only_waives_the_host_check_but_not_the_scope() {
         // `--no-strict` says "don't drop off-host URLs". It does not say
         // "ignore the /shop I asked for".
-        let validator =
-            HostValidator::paths_only(&["example.com/shop".to_string()]).expect("a scope exists");
+        let validator = HostValidator::paths_only(&["example.com/shop".to_string()], false)
+            .expect("a scope exists");
         assert!(validator.is_valid_host("https://example.com/shop/x"));
         assert!(!validator.is_valid_host("https://example.com/about"));
         // An unrecognised host was never claimed either way, so it passes.
@@ -455,6 +470,19 @@ mod tests {
         // With no scope to enforce there is nothing left to check, and the
         // caller should skip validation entirely rather than run an
         // always-true predicate over every URL.
-        assert!(HostValidator::paths_only(&["example.com".to_string()]).is_none());
+        assert!(HostValidator::paths_only(&["example.com".to_string()], false).is_none());
+    }
+
+    #[test]
+    fn paths_only_enforces_the_scope_on_subdomains_too_under_subs() {
+        // Without --subs threaded through, a subdomain's URL never matched a
+        // target host at all and sailed past the scope unchecked.
+        let validator = HostValidator::paths_only(&["example.com/shop".to_string()], true)
+            .expect("a scope exists");
+        assert!(validator.is_valid_host("https://cdn.example.com/shop/x"));
+        assert!(!validator.is_valid_host("https://cdn.example.com/about"));
+        assert!(!validator.is_valid_host("https://www.example.com/about"));
+        // Still nothing claimed about an unrelated host.
+        assert!(validator.is_valid_host("https://other.test/anything"));
     }
 }
