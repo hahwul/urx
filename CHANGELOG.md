@@ -1,27 +1,50 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
-- Streaming output with `--stream`: URLs are written as each provider reports
-  them rather than once the whole scan finishes, so a pipeline starts producing
-  matches immediately on large targets. Filtering and deduplication are
-  unchanged; output is unsorted, caching is bypassed, and options that need the
-  complete result set are rejected with a message naming each one
-- New `jsonl` output format — one standalone JSON object per line, so the
-  output stays parseable while it is still being written and works with
-  `jq`/`head` line by line
-- Archive-side filtering pushed into the CDX query: `--archive-status`,
-  `--archive-exclude-status`, `--archive-mime`, `--archive-exclude-mime`.
-  The index already records these, so filtered-out captures never cross the
-  network — unlike `--include-status`, which re-requests every URL
-- Date range generalised from Wayback-only to every CDX provider (wayback, cc,
-  arquivo): `--from` / `--to`, with `--wayback-from` / `--wayback-to` kept as
-  aliases
-- All six flags are also settable under `[provider]` in the config file
-- SOCKS5 proxy support (`--proxy socks5://...`); previously only HTTP proxies
-  built successfully
-- Enable gzip/brotli response compression, cutting bandwidth on the plain-text
-  CDX responses that dominate a large scan
+### Providers
+- New `bevigil` provider (`--bevigil-api-key`) — URLs extracted from unpacked Android apps
+- `--cdx-endpoint` / `--cdx-dialect` plug any pywb, OutbackCDX or classic CDX server in as a provider
+- `--archived-discovery` reads robots.txt and sitemap.xml out of the archive instead of the live site
+- A target may name a path (`urx example.com/shop`); the scope is pushed into the CDX query
+- CDX capture metadata (first/last seen, MIME, status) carried through the pipeline
+
+### Testing and extraction
+- `--archive-body` replays archived responses and mines them for endpoints; `--archive-body-dir` saves each body with an `index.jsonl`
+- `--extract-js-endpoints` mines JavaScript bodies — live and archived — for endpoints
+- `--expand-specs` expands OpenAPI, Swagger and GraphQL specs (JSON and YAML), including archived ones
+- `--check-title` records each response's HTML `<title>`; `--check-status` now records response metadata
+- `--extract-links` also collects script, link, form, iframe and media sources
+- `-H` / `--cookie` / `--user-agent` authenticate the requests urx makes to the target; never sent to archives
+
+### Filtering
+- `--match-regex` / `--filter-regex` for regex matching, alongside the substring `--patterns`
+- `--dedup-similar` folds URLs that share a shape (`/post/1` … `/post/99999`)
+- New presets: `only-secrets`, `only-backup`, `only-config`, `only-api`, `no-audio`, `only-audio`; an unknown `--preset` now fails instead of being ignored
+- Client-side `--meta-*` filters (first/last seen, MIME, status) that apply to every provider
+- `--scope-file` to scope a run from a file
+- Archive-side CDX filters: `--archive-status`, `--archive-exclude-status`, `--archive-mime`, `--archive-exclude-mime`
+- `--from` / `--to` generalised from Wayback-only to every CDX provider (`--wayback-from` / `--wayback-to` kept as aliases)
+
+### Output
+- `--stream` writes URLs as each provider reports them, instead of after the whole scan
+- New `jsonl` and `wordlist` formats
+- `--params`, `--params-by-endpoint` and `--fuzz-placeholder VALUE` for parameter inventory and fuzz templates
+- `--notify` POSTs a run summary to a webhook (`--notify-on`, `--notify-format`)
+
+### CLI
+- `urx cache` subcommand: `stats`, `list`, `prune`, `drop`, `clear`
+- `--completions SHELL` and `--manpage`
+- SOCKS5 proxy support (`--proxy socks5://...`) and gzip/brotli response compression
+- Documentation site redesigned around the new logo
+
+### Fixes
+- Silent truncation in the Wayback, Arquivo and Common Crawl walks
+- Host, extension, pattern and `only-*` preset filters dropping everything
+- CLI precedence over config, failing on no targets, and rejecting config typos
+- Honest `--max-time` accounting that keeps the URLs a provider already collected
+- Broken-pipe panic, CSV injection, multi-member gzip data loss, Redis TTL overflow
+- Discovery providers reporting failed scans as clean empty results
 
 ## 0.10.0
 
