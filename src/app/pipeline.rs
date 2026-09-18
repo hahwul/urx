@@ -159,7 +159,8 @@ pub fn read_urls_from_files(args: &Args) -> Result<Option<Vec<String>>> {
 }
 
 /// Re-resolve the original target list into a [`HostValidator`], or `None` when
-/// strict mode is off or no host-bearing target was supplied.
+/// there is nothing to check: no host-bearing target was supplied, or strict
+/// mode is off *and* no target named a path scope.
 ///
 /// The domains are normalized exactly the way the fetch targets were, so the
 /// validator's hosts line up with what was actually queried.
@@ -664,8 +665,9 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     Ok(Some(Arc::new(output::StreamSink::new(
         build_url_filter(args)?,
         build_url_transformer(args),
-        // Host validation mirrors the batch path: only meaningful when strict
-        // mode is on and the targets came from the command line, not a file.
+        // Host validation mirrors the batch path, and returns `None` on its
+        // own when there is nothing to enforce — no target, or `--no-strict`
+        // with no path scope among the targets.
         build_host_validator(args)?,
         &args.format,
         writer,
