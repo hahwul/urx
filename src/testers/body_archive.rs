@@ -170,6 +170,18 @@ impl BodyArchive {
                     self.dir.join(Self::INDEX_FILE).display()
                 )
             })?;
+            // `tokio::fs::File` buffers, and dropping it does not reliably
+            // flush — so without this the index could be short of its last
+            // lines, or empty, while the body files it is supposed to explain
+            // sat on disk. The corpus also has to survive a long run being
+            // interrupted, which means the index must be durable as it goes
+            // rather than at the end.
+            index.flush().await.with_context(|| {
+                format!(
+                    "Failed to flush {}",
+                    self.dir.join(Self::INDEX_FILE).display()
+                )
+            })?;
         }
 
         self.written.fetch_add(1, Ordering::Relaxed);
@@ -325,6 +337,39 @@ mod tests {
         assert_eq!(archive.written(), 1);
         assert_eq!(archive.bytes(), 38);
         assert_eq!(archive.human_bytes(), "38 B");
+    }
+
+    #[tokio::test]
+    async fn the_index_is_readable_while_the_run_is_still_going() {
+        // The regression this pins: tokio's File buffers and does not flush on
+        // drop, so the index could be empty on disk while the body files it
+        // explains were already there — and a run interrupted halfway would
+        // leave a corpus nothing could map back to a URL.
+        //
+        // Note this only *fails* where the buffering actually bites; macOS
+        // happened to pass it unflushed, which is how the bug reached CI in
+        // the first place. It is a Linux guard, not a portable one.
+        let dir = tempfile::tempdir().unwrap();
+        let archive = BodyArchive::create(dir.path().to_path_buf()).unwrap();
+        for i in 0..3 {
+            archive
+                .store(
+                    &format!("https://example.com/{i}"),
+                    "20200101000000",
+                    None,
+                    None,
+                    "body",
+                )
+                .await
+                .unwrap();
+        }
+        // Read without dropping the archive: the handle is still open.
+        let index = std::fs::read_to_string(dir.path().join(BodyArchive::INDEX_FILE)).unwrap();
+        assert_eq!(index.lines().count(), 3, "{index}");
+        for (i, line) in index.lines().enumerate() {
+            let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(entry["url"], format!("https://example.com/{i}"));
+        }
     }
 
     #[tokio::test]
