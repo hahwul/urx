@@ -27,6 +27,7 @@ use url::Url;
 use super::shared::path_extension;
 use super::Tester;
 use crate::network::client::{read_body_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 
 /// Cap on bytes read from one script before scanning.
@@ -57,8 +58,12 @@ const NON_SCRIPT_EXTENSIONS: &[&str] = &[
 
 /// How a fetched body should be scanned, decided from `Content-Type` and the
 /// URL's extension.
+///
+/// Visible to the rest of `testers` so the archived path can reach the same
+/// verdict as the live one: `--archive-body` classifies a replayed body with
+/// exactly this function rather than a second, drifting copy of the rules.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum BodyKind {
+pub(super) enum BodyKind {
     /// Scan the whole body as script.
     Script,
     /// Scan only the inline `<script>` blocks.
@@ -85,7 +90,7 @@ fn worth_fetching(url: &Url) -> bool {
 /// type means only inline `<script>` blocks are scanned — running the script
 /// regexes over the markup itself would match every `href` and `src` the link
 /// extractor already collects properly.
-fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyKind {
+pub(super) fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyKind {
     let ext_is_js = path_extension(url)
         .map(|e| JS_EXTENSIONS.contains(&e.as_str()))
         .unwrap_or(false);
@@ -493,6 +498,9 @@ fn resolve(base: &Url, candidate: &str) -> Option<String> {
 pub struct JsEndpointExtractor {
     proxy: Option<String>,
     proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
+    /// target itself, so the user's headers belong on those requests.
+    headers: CustomHeaders,
     timeout: u64,
     retries: u32,
     random_agent: bool,
@@ -521,6 +529,7 @@ impl JsEndpointExtractor {
         JsEndpointExtractor {
             proxy: None,
             proxy_auth: None,
+            headers: CustomHeaders::default(),
             timeout: 30,
             retries: 3,
             random_agent: false,
@@ -551,6 +560,7 @@ impl JsEndpointExtractor {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: self.headers.clone(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -742,6 +752,10 @@ impl Tester for JsEndpointExtractor {
 
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
+    }
+
+    fn with_headers(&mut self, headers: CustomHeaders) {
+        self.headers = headers;
     }
 }
 

@@ -9,6 +9,7 @@ use super::cdx::{walk_block_pages, CdxSession};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{Provider, UrlRecord};
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -113,6 +114,7 @@ impl CommonCrawlProvider {
     /// Build an `HttpClientConfig` from the current provider settings.
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -168,17 +170,20 @@ impl CommonCrawlProvider {
     /// per request.
     fn query_base(&self, index: &str, domain: &str) -> String {
         let base_url = self.index_base_url();
-        let mut url = if self.include_subdomains {
-            format!("{base_url}/{index}-index?url=*.{domain}/*&output=json")
-        } else {
-            format!("{base_url}/{index}-index?url={domain}/*&output=json")
-        };
+        let pattern = super::cdx_url_pattern(domain, self.include_subdomains);
+        let mut url = format!("{base_url}/{index}-index?url={pattern}&output=json");
         url.push_str(&self.filters.query_params(CdxDialect::Pywb));
         url
     }
 }
 
 impl Provider for CommonCrawlProvider {
+    /// A CDX query carries the path scope itself; see
+    /// [`super::cdx_url_pattern`].
+    fn accepts_path_scope(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }

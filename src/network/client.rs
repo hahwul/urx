@@ -19,6 +19,10 @@ pub struct HttpClientConfig {
     pub proxy: Option<String>,
     /// Optional proxy authentication in "username:password" format
     pub proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`, for the components that talk to the
+    /// target. Empty everywhere else — see [`super::CustomHeaders`] for why
+    /// the archives never see them.
+    pub headers: super::CustomHeaders,
 }
 
 impl Default for HttpClientConfig {
@@ -29,11 +33,25 @@ impl Default for HttpClientConfig {
             random_agent: false,
             proxy: None,
             proxy_auth: None,
+            headers: super::CustomHeaders::default(),
         }
     }
 }
 
 impl HttpClientConfig {
+    /// The same configuration with the user's `-H` headers removed.
+    ///
+    /// For the one shape of component that talks to *both* ends: the `robots`
+    /// and `sitemap` providers normally fetch from the target, so they carry
+    /// the headers, but under `--archived-discovery` the very same provider
+    /// reads those files out of the Wayback Machine instead. Sending the
+    /// target's session cookie there is the leak the whole scheme exists to
+    /// prevent, so the archive-facing request drops them.
+    pub fn without_headers(mut self) -> Self {
+        self.headers = super::CustomHeaders::default();
+        self
+    }
+
     /// Build a `reqwest::Client` from this configuration.
     ///
     /// Redirects are followed (reqwest's default), which is what a provider
@@ -83,6 +101,14 @@ impl HttpClientConfig {
             crate::network::default_user_agent()
         };
         builder = builder.user_agent(ua);
+
+        // Applied after the User-Agent, so an explicit `--user-agent` (or a
+        // `-H "User-Agent: …"`) replaces the one chosen just above rather than
+        // being replaced by it. reqwest's `default_headers` inserts per name,
+        // so this is a plain overwrite.
+        if let Some(headers) = self.headers.map() {
+            builder = builder.default_headers(headers.clone());
+        }
 
         if let Some(proxy_url) = &self.proxy {
             let mut proxy = reqwest::Proxy::all(proxy_url)?;
@@ -286,6 +312,7 @@ mod tests {
     #[test]
     fn test_build_client_insecure() {
         let config = HttpClientConfig {
+            headers: crate::network::CustomHeaders::default(),
             insecure: true,
             ..Default::default()
         };
@@ -296,6 +323,7 @@ mod tests {
     #[test]
     fn test_build_client_random_agent() {
         let config = HttpClientConfig {
+            headers: crate::network::CustomHeaders::default(),
             random_agent: true,
             ..Default::default()
         };
@@ -306,6 +334,7 @@ mod tests {
     #[test]
     fn test_build_client_with_proxy() {
         let config = HttpClientConfig {
+            headers: crate::network::CustomHeaders::default(),
             proxy: Some("http://127.0.0.1:8080".to_string()),
             proxy_auth: Some("user:pass".to_string()),
             ..Default::default()
@@ -317,6 +346,7 @@ mod tests {
     #[test]
     fn test_build_client_with_proxy_no_auth() {
         let config = HttpClientConfig {
+            headers: crate::network::CustomHeaders::default(),
             proxy: Some("http://127.0.0.1:8080".to_string()),
             ..Default::default()
         };
@@ -327,6 +357,7 @@ mod tests {
     #[test]
     fn test_build_client_with_custom_timeout() {
         let config = HttpClientConfig {
+            headers: crate::network::CustomHeaders::default(),
             timeout: 120,
             ..Default::default()
         };
@@ -337,6 +368,7 @@ mod tests {
     #[test]
     fn test_build_client_all_options() {
         let config = HttpClientConfig {
+            headers: crate::network::CustomHeaders::default(),
             timeout: 60,
             insecure: true,
             random_agent: true,

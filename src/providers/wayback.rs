@@ -6,6 +6,7 @@ use super::cdx::{walk_resume_key, CdxSession, CLASSIC_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{CaptureMeta, Provider, UrlRecord};
 use crate::network::client::HttpClientConfig;
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -148,6 +149,7 @@ impl WaybackMachineProvider {
     /// Build an `HttpClientConfig` from the current provider settings.
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -172,23 +174,23 @@ impl WaybackMachineProvider {
     /// (an explicit `fl=` field list) is far more reliable than `output=json`
     /// for large domains, and `collapse=urlkey` trims server-side duplicates.
     fn query_base(&self, domain: &str) -> String {
-        let mut url = if self.include_subdomains {
-            format!(
-                "{}/cdx/search/cdx?url=*.{domain}/*&fl={FIELDS}&collapse=urlkey",
-                self.base_url()
-            )
-        } else {
-            format!(
-                "{}/cdx/search/cdx?url={domain}/*&fl={FIELDS}&collapse=urlkey",
-                self.base_url()
-            )
-        };
+        let pattern = super::cdx_url_pattern(domain, self.include_subdomains);
+        let mut url = format!(
+            "{}/cdx/search/cdx?url={pattern}&fl={FIELDS}&collapse=urlkey",
+            self.base_url()
+        );
         url.push_str(&self.filters.query_params(CdxDialect::Classic));
         url
     }
 }
 
 impl Provider for WaybackMachineProvider {
+    /// A CDX query carries the path scope itself; see
+    /// [`super::cdx_url_pattern`].
+    fn accepts_path_scope(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }

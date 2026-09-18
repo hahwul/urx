@@ -156,6 +156,12 @@ async fn collect_urls(
         ));
     }
 
+    if !args.silent {
+        if let Some(note) = app::pipeline::path_scope_note(&domains, args.subs) {
+            eprintln!("{note}");
+        }
+    }
+
     let (providers, provider_names) = initialize_providers(args, network_settings)?;
 
     *header = Some(
@@ -206,8 +212,9 @@ async fn run_testers(
     // capture), which the other testers do not, so it is built separately and
     // appended last: link-producing testers must follow the status checker.
     let mut archive_stats = None;
+    let mut body_archive = None;
     if let Some((extractor, stats)) =
-        build_archive_body_extractor(args, network_settings, run_result)
+        build_archive_body_extractor(args, network_settings, run_result)?
     {
         // Nothing to replay is worth saying even without -v. The usual cause
         // is a cache hit — the cache stores URLs only — and a silent no-op
@@ -217,6 +224,7 @@ async fn run_testers(
                 "[urx] --archive-body: none of the collected URLs carry a capture timestamp, so there is nothing to replay.                  Cached results and --files input have none; a CDX provider (wayback, cc, arquivo) run with --no-cache does.",
             );
         }
+        body_archive = extractor.body_archive();
         testers.push(Box::new(extractor));
         archive_stats = Some(stats);
     }
@@ -253,6 +261,20 @@ async fn run_testers(
                 "[urx] --archive-body stopped at {} bodies ({} more distinct bodies were available); raise --archive-body-limit to fetch them",
                 stats.fetched(),
                 stats.over_limit()
+            ));
+        }
+    }
+
+    // Where the corpus went is worth saying without -v: the files are the
+    // point of the flag, and nothing else in the output mentions them.
+    if let Some(archive) = body_archive {
+        if !args.silent {
+            progress_manager.note(format!(
+                "[urx] --archive-body-dir: stored {} response bodies ({}) in {}; {} maps each file back to its URL",
+                archive.written(),
+                archive.human_bytes(),
+                archive.dir().display(),
+                testers::BodyArchive::INDEX_FILE,
             ));
         }
     }
@@ -370,7 +392,19 @@ async fn main() -> Result<()> {
         return cache::run_command(&args, command).await;
     }
 
-    let network_settings = NetworkSettings::from_args(&args);
+    let network_settings = NetworkSettings::from_args(&args)?;
+    if !network_settings.headers.is_empty() {
+        // Confirming the headers took effect is the whole reason a user runs
+        // with -v after adding one, and where they go is the part that
+        // surprises people.
+        verbose_print(
+            &args,
+            format!(
+                "Sending {} custom header(s) on requests to the target (archives are queried without them)",
+                network_settings.headers.len()
+            ),
+        );
+    }
     let progress_manager = ProgressManager::new(args.no_progress || args.silent);
 
     // Built before the scan so a rejected option combination fails immediately

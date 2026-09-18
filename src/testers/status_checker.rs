@@ -8,6 +8,7 @@ use tokio::sync::OnceCell;
 
 use super::Tester;
 use crate::network::client::HttpClientConfig;
+use crate::network::CustomHeaders;
 use crate::output::UrlData;
 
 /// HTTP status checker for URLs
@@ -15,6 +16,9 @@ use crate::output::UrlData;
 pub struct StatusChecker {
     proxy: Option<String>,
     proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
+    /// target itself, so the user's headers belong on those requests.
+    headers: CustomHeaders,
     timeout: u64,
     retries: u32,
     random_agent: bool,
@@ -44,6 +48,7 @@ impl StatusChecker {
         StatusChecker {
             proxy: None,
             proxy_auth: None,
+            headers: CustomHeaders::default(),
             timeout: 30,
             retries: 3,
             random_agent: false,
@@ -81,6 +86,7 @@ impl StatusChecker {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: self.headers.clone(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -272,6 +278,10 @@ impl Tester for StatusChecker {
     /// Sets the proxy authentication credentials (username:password)
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
+    }
+
+    fn with_headers(&mut self, headers: CustomHeaders) {
+        self.headers = headers;
     }
 }
 

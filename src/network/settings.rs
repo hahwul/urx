@@ -43,6 +43,10 @@ pub struct NetworkSettings {
     /// Whether to include subdomains in search
     pub include_subdomains: bool,
 
+    /// `-H` / `--cookie` / `--user-agent`, for the components that request
+    /// URLs from the target. See [`crate::network::CustomHeaders`].
+    pub headers: super::CustomHeaders,
+
     /// Which components should use these network settings
     pub scope: NetworkScope,
 }
@@ -59,6 +63,7 @@ impl Default for NetworkSettings {
             parallel: 5,
             rate_limit: None,
             include_subdomains: false,
+            headers: super::CustomHeaders::default(),
             scope: NetworkScope::All,
         }
     }
@@ -124,15 +129,33 @@ impl NetworkSettings {
         self
     }
 
-    /// Apply settings from command line arguments
-    pub fn from_args(args: &crate::cli::Args) -> Self {
+    /// Set the headers sent to the target.
+    pub fn with_headers(mut self, headers: super::CustomHeaders) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    /// Apply settings from command line arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `-H`, `--cookie` or `--user-agent` was given a
+    /// value that is not a legal HTTP header. A malformed `-H` reads as "I
+    /// sent an authenticated request" while sending an anonymous one, so it
+    /// stops the run instead of being dropped.
+    pub fn from_args(args: &crate::cli::Args) -> anyhow::Result<Self> {
         let mut settings = NetworkSettings::new()
             .with_timeout(args.timeout.max(1))
             .with_retries(args.retries)
             .with_random_agent(args.random_agent)
             .with_insecure(args.insecure)
             .with_parallel(args.parallel.unwrap_or(5).max(1))
-            .with_subdomains(args.subs);
+            .with_subdomains(args.subs)
+            .with_headers(super::CustomHeaders::parse(
+                &args.header,
+                args.cookie.as_deref(),
+                args.user_agent.as_deref(),
+            )?);
 
         // Parse network scope from args
         let scope = match args.network_scope.to_lowercase().as_str() {
@@ -156,7 +179,7 @@ impl NetworkSettings {
             }
         }
 
-        settings
+        Ok(settings)
     }
 }
 
@@ -283,7 +306,7 @@ mod tests {
         use clap::Parser;
 
         let args = Args::parse_from(["urx", "example.com"]);
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.timeout, 120); // Default timeout in args is 120
         assert_eq!(settings.retries, 2); // Default retries in args is 2
@@ -308,7 +331,7 @@ mod tests {
             "--proxy-auth",
             "user:pass",
         ]);
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.proxy, Some("http://proxy:8080".to_string()));
         assert_eq!(settings.proxy_auth, Some("user:pass".to_string()));
@@ -334,7 +357,7 @@ mod tests {
             "2.5",
             "--subs",
         ]);
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.timeout, 60);
         assert_eq!(settings.retries, 5);
@@ -354,7 +377,7 @@ mod tests {
         args.timeout = 0;
         args.parallel = Some(0);
 
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.timeout, 1);
         assert_eq!(settings.parallel, 1);
@@ -366,7 +389,7 @@ mod tests {
         use clap::Parser;
 
         let args = Args::parse_from(["urx", "example.com", "--network-scope", "providers"]);
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.scope, NetworkScope::Providers);
     }
@@ -377,7 +400,7 @@ mod tests {
         use clap::Parser;
 
         let args = Args::parse_from(["urx", "example.com", "--network-scope", "testers"]);
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.scope, NetworkScope::Testers);
     }
@@ -388,8 +411,40 @@ mod tests {
         use clap::Parser;
 
         let args = Args::parse_from(["urx", "example.com", "--network-scope", "providers,testers"]);
-        let settings = NetworkSettings::from_args(&args);
+        let settings = NetworkSettings::from_args(&args).unwrap();
 
         assert_eq!(settings.scope, NetworkScope::All);
+    }
+
+    #[test]
+    fn test_from_args_parses_target_headers() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        let args = Args::parse_from([
+            "urx",
+            "example.com",
+            "-H",
+            "X-Trace: urx",
+            "--cookie",
+            "session=abc",
+            "--user-agent",
+            "urx-test/1",
+        ]);
+        let settings = NetworkSettings::from_args(&args).unwrap();
+        assert!(!settings.headers.is_empty());
+        // X-Trace, Cookie, User-Agent.
+        assert_eq!(settings.headers.len(), 3);
+    }
+
+    #[test]
+    fn test_from_args_rejects_a_malformed_header() {
+        use crate::cli::Args;
+        use clap::Parser;
+
+        // Silently dropping this would leave the user running an anonymous
+        // scan while believing it was authenticated.
+        let args = Args::parse_from(["urx", "example.com", "-H", "no-colon"]);
+        assert!(NetworkSettings::from_args(&args).is_err());
     }
 }

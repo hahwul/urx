@@ -23,6 +23,7 @@ use serde::Serialize;
 
 use crate::cli::Args;
 use crate::network::client::HttpClientConfig;
+use crate::network::CustomHeaders;
 use crate::network::NetworkSettings;
 use crate::runner::ProviderStats;
 
@@ -396,6 +397,7 @@ pub async fn deliver(client: &reqwest::Client, url: &str, body: &str) -> Deliver
 /// given.
 fn build_client(settings: &NetworkSettings) -> anyhow::Result<reqwest::Client> {
     HttpClientConfig {
+        headers: CustomHeaders::default(),
         timeout: settings.timeout,
         insecure: settings.insecure,
         random_agent: false,

@@ -367,8 +367,10 @@ pub struct Args {
     #[clap(long, default_value = "true")]
     pub strict: bool,
 
-    /// Disable host validation entirely (keep every URL a provider returns,
-    /// regardless of host). Convenience inverse of `--strict`; wins over it.
+    /// Disable host validation (keep URLs on any host a provider returns).
+    /// Convenience inverse of `--strict`; wins over it. A target's path scope
+    /// still applies: `example.com/shop` asked for /shop, and only the *host*
+    /// check is waived.
     #[clap(help_heading = "Filter Options")]
     #[clap(long)]
     pub no_strict: bool,
@@ -470,6 +472,29 @@ pub struct Args {
     #[clap(long)]
     pub random_agent: bool,
 
+    /// Extra request header, as "Name: value". Repeatable. Sent only on
+    /// requests urx makes to the *target* — --check-status, --extract-links,
+    /// --extract-js-endpoints, --expand-specs, and the robots/sitemap
+    /// providers — so a session cookie or bearer token for the target is
+    /// never handed to web.archive.org or any other archive.
+    #[clap(help_heading = "Network Options")]
+    #[clap(short = 'H', long = "header", value_name = "NAME: VALUE", action = clap::ArgAction::Append)]
+    pub header: Vec<String>,
+
+    /// Cookie header sent with requests to the target, e.g.
+    /// "session=abc; role=admin". Shorthand for -H "Cookie: ...".
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, value_name = "COOKIES")]
+    pub cookie: Option<String>,
+
+    /// User-Agent sent with requests to the target, overriding urx's default
+    /// and --random-agent for those requests. Shorthand for
+    /// -H "User-Agent: ...", and applies to the same components -H does;
+    /// archive queries keep the tool's own User-Agent either way.
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, value_name = "STRING")]
+    pub user_agent: Option<String>,
+
     /// Request timeout in seconds
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "120", value_parser = validate_positive_timeout)]
@@ -528,7 +553,10 @@ pub struct Args {
     pub extract_links: bool,
 
     /// Fetch collected JavaScript files and extract the endpoint paths and
-    /// URLs found in their string literals (requires HTTP requests)
+    /// URLs found in their string literals (requires HTTP requests). With
+    /// --archive-body this also mines the *archived* copy of each script,
+    /// which is the only way to reach a bundle whose build-hash filename the
+    /// site has since stopped serving.
     #[clap(help_heading = "Testing Options")]
     #[clap(long)]
     pub extract_js_endpoints: bool,
@@ -554,6 +582,22 @@ pub struct Args {
     #[clap(help_heading = "Testing Options")]
     #[clap(long, value_name = "N", default_value = "500")]
     pub archive_body_limit: usize,
+
+    /// Keep every body --archive-body replays in DIR, alongside an
+    /// index.jsonl that maps each file back to its URL, capture timestamp,
+    /// digest and content type. The bodies are already being fetched, so this
+    /// costs no extra requests, and it leaves a corpus to grep for what no
+    /// link extractor looks for: developer comments, inlined credentials,
+    /// internal hostnames. Only text-like bodies are stored; images, fonts and
+    /// video are skipped. Requires --archive-body.
+    #[clap(help_heading = "Testing Options")]
+    // No clap `requires`: it demands the flag be present on the *command
+    // line*, which would reject `--archive-body-dir` against an
+    // `archive_body = true` in the config file. The pairing is checked in
+    // `validate_result_filters`, after the config has been merged, so both
+    // directions are caught.
+    #[clap(long = "archive-body-dir", value_name = "DIR")]
+    pub archive_body_dir: Option<PathBuf>,
 
     // --- spec-expansion ---
     /// Fetch the API specification documents among the collected URLs
@@ -785,6 +829,74 @@ fn parse_domain_line(line: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+/// Reduce a user-supplied target to `host` or `host/path`.
+///
+/// A path is *scope*, not noise: `urx example.com/shop` means "the part of
+/// this site under /shop", which a CDX index can answer natively with prefix
+/// matching (`url=example.com/shop*`) instead of shipping the whole index
+/// across the network to be thrown away by a client-side filter. The path was
+/// previously dropped on the floor, so a large target could only be narrowed
+/// after paying for all of it.
+///
+/// What is *not* scope is dropped: a query string, a fragment, and a trailing
+/// slash. `https://example.com/shop/?sort=price#top` and `example.com/shop`
+/// name the same scope, and only the second form is a thing a provider query
+/// can be built from.
+///
+/// Returns `None` when nothing host-like remains.
+pub fn normalize_target(raw: &str) -> Option<String> {
+    let host = normalize_domain(raw)?;
+    match target_path(raw) {
+        Some(path) => Some(format!("{host}{path}")),
+        None => Some(host),
+    }
+}
+
+/// The path-prefix part of a raw target, normalised to a leading slash and no
+/// trailing one, or `None` when the target names a whole host.
+fn target_path(raw: &str) -> Option<String> {
+    let trimmed = strip_bom(raw.trim()).trim();
+    // Everything from the first path separator on, with the scheme and
+    // authority removed first so `https://example.com/shop` and
+    // `example.com/shop` are read alike.
+    let after_authority = if let Some((_, rest)) = trimmed.split_once("://") {
+        rest
+    } else {
+        trimmed.trim_start_matches("//")
+    };
+    let (_, path) = after_authority.split_once('/')?;
+    // A query or fragment narrows a request, not a scope.
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    // Run it through the URL parser rather than keeping the user's bytes.
+    // Host validation compares against `Url::path()`, which reports a path
+    // percent-encoded — a candidate `https://example.com/über` reports
+    // `/%C3%BCber` — so a raw `/über` scope would match nothing at all. This
+    // also folds away `.`/`..` segments and double slashes, the same way the
+    // candidate side has already had them folded.
+    let parsed = url::Url::parse(&format!("https://placeholder.invalid/{path}")).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() {
+        // `example.com/`, `example.com/?x=1` — the apex, not a sub-scope.
+        return None;
+    }
+    Some(path.to_string())
+}
+
+/// Split a target produced by [`normalize_target`] into its host and its
+/// optional path prefix.
+///
+/// Every consumer that needs one half or the other goes through here, so the
+/// two never drift: a provider that cannot express a path prefix in its query
+/// takes the host, and [`crate::filters::HostValidator`] enforces the prefix
+/// afterwards.
+pub fn split_target(target: &str) -> (&str, Option<&str>) {
+    match target.split_once('/') {
+        Some((host, path)) if !path.is_empty() => (host, Some(&target[host.len()..])),
+        Some((host, _)) => (host, None),
+        None => (target, None),
     }
 }
 
@@ -1519,4 +1631,87 @@ mod tests {
         assert!(!provided.has("meta_mime"));
     }
     // --- end result-filters ---
+
+    #[test]
+    fn test_normalize_target_keeps_a_path_as_scope() {
+        assert_eq!(
+            normalize_target("example.com/shop").as_deref(),
+            Some("example.com/shop")
+        );
+        assert_eq!(
+            normalize_target("https://Example.COM/Shop/Cart").as_deref(),
+            Some("example.com/Shop/Cart"),
+            "the host folds case, the path must not: paths are case-sensitive"
+        );
+        assert_eq!(
+            normalize_target("//example.com/shop").as_deref(),
+            Some("example.com/shop")
+        );
+    }
+
+    #[test]
+    fn test_normalize_target_drops_what_is_not_scope() {
+        for raw in [
+            "example.com",
+            "example.com/",
+            "https://example.com/",
+            "example.com/?utm=x",
+            "https://example.com/#top",
+        ] {
+            assert_eq!(
+                normalize_target(raw).as_deref(),
+                Some("example.com"),
+                "{raw} names the whole host"
+            );
+        }
+        // A trailing slash is not a different scope, and a query string
+        // narrows a request rather than a scope.
+        assert_eq!(
+            normalize_target("example.com/shop/?sort=price#top").as_deref(),
+            Some("example.com/shop")
+        );
+    }
+
+    #[test]
+    fn test_normalize_target_encodes_a_path_the_way_urls_report_one() {
+        // Host validation compares against `Url::path()`, which is
+        // percent-encoded, so a raw `/über` scope would match nothing at all.
+        assert_eq!(
+            normalize_target("example.com/über").as_deref(),
+            Some("example.com/%C3%BCber")
+        );
+        assert_eq!(
+            normalize_target("example.com/a b").as_deref(),
+            Some("example.com/a%20b")
+        );
+        // Already-encoded input is left as it is, not encoded twice.
+        assert_eq!(
+            normalize_target("example.com/%C3%BCber").as_deref(),
+            Some("example.com/%C3%BCber")
+        );
+        // Dot segments and double slashes fold, as they have already folded on
+        // the candidate side.
+        assert_eq!(
+            normalize_target("example.com/a/./b/../c").as_deref(),
+            Some("example.com/a/c")
+        );
+    }
+
+    #[test]
+    fn test_normalize_target_rejects_what_has_no_host() {
+        assert_eq!(normalize_target(""), None);
+        assert_eq!(normalize_target("/just/a/path"), None);
+    }
+
+    #[test]
+    fn test_split_target_round_trips_normalize_target() {
+        for (raw, host, path) in [
+            ("example.com", "example.com", None),
+            ("example.com/shop", "example.com", Some("/shop")),
+            ("example.com/a/b", "example.com", Some("/a/b")),
+        ] {
+            let target = normalize_target(raw).unwrap();
+            assert_eq!(split_target(&target), (host, path), "{raw}");
+        }
+    }
 }

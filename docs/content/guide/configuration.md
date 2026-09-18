@@ -92,6 +92,9 @@ proxy = "http://proxy.example.com:8080"
 proxy_auth = "username:password"
 insecure = false
 random_agent = true
+header = ["X-Env: staging"]            # Sent to the target only, never to an archive
+cookie = "session=abc"
+user_agent = "acme-security-scan/1.0"  # Overrides random_agent for target requests
 timeout = 30
 retries = 3
 parallel = 5
@@ -107,6 +110,7 @@ extract_js_endpoints = false   # Mine collected JavaScript for endpoints
 max_js_files = 500             # Cap on files --extract-js-endpoints fetches (0 = unlimited)
 archive_body = false                   # Mine the archived bodies of collected URLs
 archive_body_limit = 500               # Distinct bodies fetched per run (duplicates never count)
+archive_body_dir = "./corpus"          # Keep each replayed body, with an index.jsonl beside them
 expand_specs = false                   # Expand collected OpenAPI/Swagger/GraphQL documents into routes
 max_spec_files = 50                    # Cap on specification documents fetched (0 = unlimited)
 

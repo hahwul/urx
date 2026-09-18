@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 use crate::providers::archived::{
@@ -31,6 +32,9 @@ pub struct RobotsProvider {
     random_agent: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
+    /// target itself, so the user's headers belong on those requests.
+    headers: CustomHeaders,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
     /// When set, this instance reads the *archived* versions of robots.txt
@@ -51,6 +55,7 @@ impl RobotsProvider {
             random_agent: false,
             proxy: None,
             proxy_auth: None,
+            headers: CustomHeaders::default(),
             insecure: false,
             rate_limit: None,
             archived: None,
@@ -88,6 +93,7 @@ impl RobotsProvider {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: self.headers.clone(),
             timeout: self.timeout.as_secs(),
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -100,6 +106,13 @@ impl RobotsProvider {
     /// User-Agent (a UA-less request is rejected with 400 by some servers).
     fn build_client(&self) -> Result<Client> {
         self.client_config().build_client()
+    }
+
+    /// A client for requests that go to an archive rather than the target,
+    /// i.e. everything `--archived-discovery` does. See
+    /// [`HttpClientConfig::without_headers`].
+    fn build_archive_client(&self) -> Result<Client> {
+        self.client_config().without_headers().build_client()
     }
 }
 
@@ -209,7 +222,7 @@ impl RobotsProvider {
         settings: &ArchivedDiscovery,
         reporter: Option<ProgressReporter>,
     ) -> Result<Vec<UrlRecord>> {
-        let client = self.build_client()?;
+        let client = self.build_archive_client()?;
         let limiter = self.rate_limit.as_ref();
         let note = |msg: String| {
             if let Some(r) = &reporter {
@@ -440,6 +453,10 @@ impl Provider for RobotsProvider {
     }
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
+    }
+
+    fn with_headers(&mut self, headers: CustomHeaders) {
+        self.headers = headers;
     }
     fn with_timeout(&mut self, seconds: u64) {
         self.timeout = Duration::from_secs(seconds);
@@ -1126,6 +1143,51 @@ Sitemap: /sitemap-2015.xml
         // The skipped capture is reported — through the verbose channel only.
         let notes = notes.lock().unwrap().join("\n");
         assert!(notes.contains("1 skipped (no status ×1)"), "{notes}");
+    }
+
+    #[tokio::test]
+    async fn archived_discovery_never_sends_the_targets_headers_to_the_archive() {
+        // This provider is the one that fetches from *both* ends: normally
+        // from the target, where -H belongs, and under --archived-discovery
+        // from the Wayback Machine, where the target's session cookie must not
+        // go. Every mock here refuses a request carrying one.
+        let mut server = mockito::Server::new_async().await;
+        let index = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .match_header("cookie", mockito::Matcher::Missing)
+            .match_header("x-trace", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body("https://example.com/robots.txt 20240101000000 200 DIGEST1\n")
+            .create_async()
+            .await;
+        let replay = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/web/.*robots\.txt$".into()),
+            )
+            .match_header("cookie", mockito::Matcher::Missing)
+            .match_header("x-trace", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body("User-agent: *\nDisallow: /admin/\n")
+            .create_async()
+            .await;
+
+        let mut provider =
+            RobotsProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        provider.with_headers(
+            crate::network::CustomHeaders::parse(
+                &["X-Trace: urx".to_string()],
+                Some("session=secret"),
+                None,
+            )
+            .unwrap(),
+        );
+
+        let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
+        assert_eq!(urls, vec!["https://example.com/admin/".to_string()]);
+        index.assert();
+        replay.assert();
     }
 
     #[tokio::test]

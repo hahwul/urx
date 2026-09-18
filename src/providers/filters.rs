@@ -292,6 +292,86 @@ pub fn normalize_cdx_timestamp(input: &str, end_of_range: bool) -> Option<String
     Some(format!("{year:04}{month}{day}{tail}"))
 }
 
+/// The `url=` value for a CDX query over `target`, which is a bare host or a
+/// `host/path` scope.
+///
+/// A path scope is pushed into the query itself wherever the query can carry
+/// it, which is what makes `urx example.com/shop` cheaper than collecting the
+/// whole site and filtering afterwards: the archive never sends the rows.
+///
+/// Two deliberate imprecisions, both resolved by
+/// [`crate::filters::HostValidator`] afterwards:
+///
+/// - The prefix is spelled `{host}{path}*`, not `{host}{path}/*`, so a capture
+///   of `/shop` itself is returned alongside `/shop/…`. The cost is that
+///   sibling paths sharing the prefix (`/shopping`) come back too. Over-fetching
+///   is a filtering problem; under-fetching would be a missing result.
+/// - With `--subs` the prefix is left out entirely. A leading `*.` selects
+///   `matchType=domain`, which no CDX server combines with a path, so asking
+///   for both would produce an undefined query rather than a narrower one.
+pub fn cdx_url_pattern(target: &str, include_subdomains: bool) -> String {
+    let (host, path) = crate::cli::split_target(target);
+    match (include_subdomains, path) {
+        (true, _) => format!("*.{host}/*"),
+        (false, Some(path)) => format!("{host}{}*", encode_url_pattern_path(path)),
+        (false, None) => format!("{host}/*"),
+    }
+}
+
+/// Percent-encode the characters in a path scope that would otherwise end the
+/// `url=` parameter instead of belonging to it.
+///
+/// Every CDX provider splices the pattern straight into `...?url={pattern}&fl=`
+/// — before path scopes existed the value could only be a hostname and a
+/// wildcard, so nothing ever needed escaping. A path can hold anything, and
+/// `urx "example.com/a&limit=1"` would otherwise send `url=example.com/a`
+/// followed by a `limit=1` of its own, silently truncating the run to one row.
+///
+/// Unlike [`encode_value`], which form-encodes a whole filter value, this
+/// touches only the delimiters. The rest of the path arrived from
+/// [`url::Url::path`] already percent-encoded for transport — that is how a
+/// non-ASCII scope survives at all — and re-encoding its `%` would turn
+/// `/%C3%BCber` into a request for a path literally spelled `%C3%BCber`.
+/// `/` is likewise left alone: it is the path separator the archive matches on.
+///
+/// That the server decodes what we send here is not an assumption: querying
+/// web.archive.org for `url=hahwul.com/%63ullinan*` returns the same rows as
+/// `url=hahwul.com/cullinan*`, so a `%26` in this value reaches the index as
+/// an `&` inside the path rather than as a parameter separator.
+fn encode_url_pattern_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(path.len());
+    for (i, ch) in path.char_indices() {
+        match ch {
+            '&' => out.push_str("%26"),
+            '=' => out.push_str("%3D"),
+            // Unreachable as things stand — `target_path` splits a query and
+            // fragment off before parsing, and `Url::path` never yields
+            // either — but this value is spliced into a query string, so the
+            // two characters that would end it are escaped regardless.
+            '?' => out.push_str("%3F"),
+            '#' => out.push_str("%23"),
+            // A `+` in a query value reads as a space to many parsers.
+            '+' => out.push_str("%2B"),
+            // A `%` that does not begin a valid escape. `Url::parse` does not
+            // repair one — `/100%discount` survives verbatim — and a server
+            // that decodes with a strict decoder (Java's `URLDecoder` throws)
+            // answers 400, failing the whole provider rather than the one
+            // scope. A `%` that *does* begin an escape is left alone, or
+            // `/%C3%BCber` would become a request for a path literally
+            // spelled `%C3%BCber`.
+            '%' if !begins_escape(&bytes[i + 1..]) => out.push_str("%25"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Whether `rest` starts with the two hex digits that complete a `%XX` escape.
+fn begins_escape(rest: &[u8]) -> bool {
+    matches!(rest, [a, b, ..] if a.is_ascii_hexdigit() && b.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +577,74 @@ mod tests {
         assert!(normalize_cdx_timestamp("1995", false).is_none());
         // Not a date at all
         assert!(normalize_cdx_timestamp("oops", false).is_none());
+    }
+
+    #[test]
+    fn test_cdx_url_pattern_pushes_a_path_scope_into_the_query() {
+        // No scope: byte-identical to what urx has always sent.
+        assert_eq!(cdx_url_pattern("example.com", false), "example.com/*");
+        assert_eq!(cdx_url_pattern("example.com", true), "*.example.com/*");
+
+        // A scope becomes a prefix match, so the archive never sends the rows
+        // outside it.
+        assert_eq!(
+            cdx_url_pattern("example.com/shop", false),
+            "example.com/shop*"
+        );
+
+        // With --subs the prefix is dropped: `*.` selects matchType=domain,
+        // which no CDX server combines with a path. Host validation applies
+        // the scope to the results instead.
+        assert_eq!(cdx_url_pattern("example.com/shop", true), "*.example.com/*");
+    }
+
+    #[test]
+    fn test_cdx_url_pattern_cannot_inject_query_parameters() {
+        // The pattern is spliced into `...?url={pattern}&fl=...`, so a `&` or
+        // `=` in the path would otherwise append a CDX parameter of its own —
+        // `limit=1` here would silently truncate the run to one row.
+        assert_eq!(
+            cdx_url_pattern("example.com/a&limit=1", false),
+            "example.com/a%26limit%3D1*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a?b", false),
+            "example.com/a%3Fb*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a+b", false),
+            "example.com/a%2Bb*"
+        );
+
+        // An already-encoded byte is left alone: re-encoding the `%` would ask
+        // the archive for a path literally containing "%C3%BC".
+        assert_eq!(
+            cdx_url_pattern("example.com/%C3%BCber", false),
+            "example.com/%C3%BCber*"
+        );
+    }
+
+    #[test]
+    fn test_cdx_url_pattern_repairs_a_stray_percent() {
+        // `Url::parse` passes a malformed escape through untouched, and a CDX
+        // server decoding with a strict decoder answers 400 — failing the
+        // whole provider rather than just this scope.
+        assert_eq!(
+            cdx_url_pattern("example.com/100%discount", false),
+            "example.com/100%25discount*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a%", false),
+            "example.com/a%25*"
+        );
+        assert_eq!(
+            cdx_url_pattern("example.com/a%zz", false),
+            "example.com/a%25zz*"
+        );
+        // ...while a well-formed escape still survives, in either case.
+        assert_eq!(
+            cdx_url_pattern("example.com/a%2fb%2Fc", false),
+            "example.com/a%2fb%2Fc*"
+        );
     }
 }

@@ -6,6 +6,7 @@ use std::pin::Pin;
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
 use crate::network::client::{read_json_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -114,6 +115,7 @@ impl UrlscanProvider {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,

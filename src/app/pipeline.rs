@@ -21,8 +21,8 @@ use crate::readers::read_urls_from_file;
 use crate::runner::ProviderRunResult;
 use crate::tester_manager::{self, apply_network_settings_to_tester};
 use crate::testers::{
-    ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, JsEndpointExtractor, LinkExtractor,
-    SpecExpander, StatusChecker, Tester,
+    ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, BodyArchive, JsEndpointExtractor,
+    LinkExtractor, SpecExpander, StatusChecker, Tester,
 };
 use crate::utils::{verbose_print, ParamView, UrlTransformer};
 
@@ -54,12 +54,12 @@ fn cli_domain_inputs(args: &Args, announce: bool) -> Result<Vec<String>> {
     Ok(domains)
 }
 
-/// Reduce each target to a bare host so a pasted full URL or trailing path
-/// doesn't silently corrupt provider queries (a common copy/paste footgun).
-/// Inputs with no recoverable host drop out.
+/// Reduce each target to `host` or `host/path` so a pasted full URL doesn't
+/// silently corrupt provider queries (a common copy/paste footgun) while a
+/// deliberate path scope survives. Inputs with no recoverable host drop out.
 fn normalize_domains(raw: &[String]) -> Vec<String> {
     raw.iter()
-        .filter_map(|d| cli::normalize_domain(d))
+        .filter_map(|d| cli::normalize_target(d))
         .collect()
 }
 
@@ -81,6 +81,44 @@ pub fn collect_domains(args: &Args) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     normalized.retain(|d| seen.insert(d.clone()));
     Ok(normalized)
+}
+
+/// The one-line advisory for a run whose targets carry a path scope, or `None`
+/// when none do.
+///
+/// A path in a target used to be discarded, so `urx https://example.com/shop`
+/// scanned the whole site; it now scans `/shop`. That is the point of the
+/// feature, but it is also a silent narrowing for anyone who habitually pastes
+/// a full URL as the target, and "why did this return 40 URLs" is an expensive
+/// question to have to work out. Saying it once, up front, costs a line.
+///
+/// `subs` is taken into account because it changes what the scope *costs*: a
+/// `--subs` query cannot carry the path, so the archive sends the whole
+/// subdomain index and the scope is applied to the result. That is a large
+/// difference in run time for no difference in output, and it is worth saying
+/// before the fetch rather than after it.
+pub fn path_scope_note(domains: &[String], subs: bool) -> Option<String> {
+    let scoped: Vec<&String> = domains
+        .iter()
+        .filter(|d| cli::split_target(d).1.is_some())
+        .collect();
+    if scoped.is_empty() {
+        return None;
+    }
+    let listed: Vec<&str> = scoped.iter().take(3).map(|d| d.as_str()).collect();
+    let more = match scoped.len().saturating_sub(listed.len()) {
+        0 => String::new(),
+        n => format!(" (+{n} more)"),
+    };
+    let cost = if subs {
+        " With --subs the archive cannot filter by path, so the whole subdomain index is fetched and narrowed here."
+    } else {
+        ""
+    };
+    Some(format!(
+        "[urx] scoped to a path: {}{more} — only URLs under it are collected. Pass just the host for the whole site.{cost}",
+        listed.join(", "),
+    ))
 }
 
 /// Read URLs from every `--files` path, or `None` when the flag wasn't used.
@@ -121,17 +159,22 @@ pub fn read_urls_from_files(args: &Args) -> Result<Option<Vec<String>>> {
 }
 
 /// Re-resolve the original target list into a [`HostValidator`], or `None` when
-/// strict mode is off or no host-bearing target was supplied.
+/// there is nothing to check: no host-bearing target was supplied, or strict
+/// mode is off *and* no target named a path scope.
 ///
 /// The domains are normalized exactly the way the fetch targets were, so the
 /// validator's hosts line up with what was actually queried.
 pub fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
-    if !args.strict_enabled() {
-        return Ok(None);
-    }
     let domains = normalize_domains(&cli_domain_inputs(args, false)?);
     if domains.is_empty() {
         return Ok(None);
+    }
+    if !args.strict_enabled() {
+        // `--no-strict` waives the *host* check, not the target's path scope:
+        // `urx example.com/shop --no-strict` still asked for /shop, and a path
+        // prefix is part of what the target is rather than a filter over it.
+        // With no path anywhere, there is nothing left to check.
+        return Ok(HostValidator::paths_only(&domains, args.subs));
     }
     Ok(Some(HostValidator::new(&domains, args.subs)))
 }
@@ -199,6 +242,25 @@ pub fn build_meta_filter(args: &Args) -> Result<MetaFilter> {
 pub fn validate_result_filters(args: &Args) -> Result<()> {
     ScopeMatcher::from_files(&args.scope_file)?;
     build_meta_filter(args)?;
+    // clap's `requires` covers the command line, but a config file can set
+    // `archive_body_dir` on its own, and the run would then quietly write
+    // nothing at all — the exact failure mode the unknown-key warning exists
+    // to prevent, arriving through a key urx does recognise.
+    if args.archive_body_dir.is_some() && !args.archive_body {
+        anyhow::bail!(
+            "--archive-body-dir has nothing to store without --archive-body (it keeps the bodies that flag replays)"
+        );
+    }
+    // Create the corpus directory *here*, at start-up, and drop the handle.
+    // The tester that writes to it is built only once every provider has
+    // finished, so an unwritable path used to abort the run after all the
+    // collection work had been done and before a single URL was written —
+    // the opposite of what the tester's own comment promised. Creating twice
+    // is harmless: the second call reuses the directory and reopens the index
+    // for appending.
+    if let Some(dir) = &args.archive_body_dir {
+        crate::testers::BodyArchive::create(dir.clone())?;
+    }
     Ok(())
 }
 
@@ -305,6 +367,28 @@ fn has_meta_filters(args: &Args) -> bool {
 }
 // --- end result-filters ---
 
+/// What to suggest when host validation discarded most of the result.
+///
+/// With a path scope in play, part of what was removed fell outside the
+/// *path*, and `--no-strict` does not widen a path scope — so offering it
+/// would send the reader in a circle.
+///
+/// `--subs` is offered only while the host check is on. In paths-only mode
+/// (`--no-strict` with a scope) it does the opposite of what the sentence
+/// promises: without it a subdomain's URL never matches a target host and
+/// passes unjudged, and with it the URL is matched and then measured against
+/// the scope — so the flag *shrinks* the result set it is being recommended to
+/// grow.
+fn drops_most_hint(has_path_scopes: bool, strict: bool) -> &'static str {
+    match (has_path_scopes, strict) {
+        (true, true) => {
+            "pass --subs to keep subdomains, or drop the path from the target to scan the whole site"
+        }
+        (true, false) => "drop the path from the target to scan the whole site",
+        (false, _) => "pass --subs to keep subdomains or --no-strict to keep all hosts",
+    }
+}
+
 /// Apply URL filtering and, in strict mode, host validation to the batch result.
 pub fn apply_url_filters(
     args: &Args,
@@ -321,10 +405,24 @@ pub fn apply_url_filters(
 
     // Host validation only applies to domain-driven runs: file input has no
     // queried domain to validate against.
-    if args.strict_enabled() && args.files.is_empty() {
-        verbose_print(args, "Enforcing strict host validation...");
-
+    //
+    // Not gated on `--strict` any more: `build_host_validator` also returns a
+    // validator under `--no-strict` when a target named a path, because the
+    // scope was asked for explicitly and only the *host* check was waived.
+    // Gating here as well left the batch path emitting the whole host while
+    // --stream and the extracted-link filter — which both call
+    // `build_host_validator` directly — applied the scope, so one run gave two
+    // different answers depending on the output mode.
+    if args.files.is_empty() {
         if let Some(host_validator) = build_host_validator(args)? {
+            verbose_print(
+                args,
+                if args.strict_enabled() {
+                    "Enforcing strict host validation..."
+                } else {
+                    "Enforcing the targets' path scopes..."
+                },
+            );
             let before = sorted_urls.len();
             sorted_urls.retain(|url| host_validator.is_valid_host(url));
             let removed = before - sorted_urls.len();
@@ -336,10 +434,13 @@ pub fn apply_url_filters(
             // subdomains under a bare apex query.
             let drops_most = before > 0 && (sorted_urls.is_empty() || removed * 2 > before);
             if drops_most && !args.silent && !args.subs {
-                eprintln!(
-                    "[urx] strict host validation removed {removed}/{before} URLs; \
-                     pass --subs to keep subdomains or --no-strict to keep all hosts"
-                );
+                let hint = drops_most_hint(host_validator.has_path_scopes(), args.strict_enabled());
+                let what = if args.strict_enabled() {
+                    "strict host validation"
+                } else {
+                    "the target's path scope"
+                };
+                eprintln!("[urx] {what} removed {removed}/{before} URLs; {hint}");
             }
 
             verbose_print(
@@ -579,8 +680,9 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     Ok(Some(Arc::new(output::StreamSink::new(
         build_url_filter(args)?,
         build_url_transformer(args),
-        // Host validation mirrors the batch path: only meaningful when strict
-        // mode is on and the targets came from the command line, not a file.
+        // Host validation mirrors the batch path, and returns `None` on its
+        // own when there is nothing to enforce — no target, or `--no-strict`
+        // with no path scope among the targets.
         build_host_validator(args)?,
         &args.format,
         writer,
@@ -779,9 +881,9 @@ pub fn build_archive_body_extractor(
     args: &Args,
     network_settings: &NetworkSettings,
     run_result: &ProviderRunResult,
-) -> Option<(ArchiveBodyExtractor, Arc<ArchiveBodyStats>)> {
+) -> Result<Option<(ArchiveBodyExtractor, Arc<ArchiveBodyStats>)>> {
     if !args.archive_body {
-        return None;
+        return Ok(None);
     }
     verbose_print(args, "Extracting links from archived response bodies");
 
@@ -804,9 +906,25 @@ pub fn build_archive_body_extractor(
     // With --expand-specs also on, an archived specification is read as one
     // rather than run through the HTML link extractor.
     extractor.with_expand_specs(args.expand_specs);
+    // --- archived JS ---
+    // And with --extract-js-endpoints also on, an archived script is mined the
+    // way the live path mines a live one. This is the combination that reaches
+    // a bundle the site no longer serves under that build-hash name.
+    extractor.with_extract_js_endpoints(args.extract_js_endpoints);
+
+    if let Some(dir) = &args.archive_body_dir {
+        // Already created and proved writable at start-up by
+        // `validate_result_filters`; this reopens the index for appending.
+        let archive = Arc::new(BodyArchive::create(dir.clone())?);
+        verbose_print(
+            args,
+            format!("Storing archived response bodies in {}", dir.display()),
+        );
+        extractor.with_body_archive(Some(archive));
+    }
 
     let stats = extractor.stats();
-    Some((extractor, stats))
+    Ok(Some((extractor, stats)))
 }
 
 #[cfg(test)]
@@ -1149,13 +1267,16 @@ mod tests {
         let run_result = ProviderRunResult::default();
 
         let args = build_test_args();
-        assert!(build_archive_body_extractor(&args, &settings, &run_result).is_none());
+        assert!(build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .is_none());
 
         let mut args = build_test_args();
         args.archive_body = true;
         args.archive_body_limit = 7;
-        let (extractor, stats) =
-            build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        let (extractor, stats) = build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .unwrap();
         assert_eq!(extractor.candidate_count(), 0);
         assert_eq!(stats.fetched(), 0);
     }
@@ -1192,15 +1313,25 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_domains_normalizes_pasted_urls() -> Result<()> {
+    fn test_collect_domains_keeps_a_path_as_scope_but_drops_the_rest() -> Result<()> {
         let mut args = build_test_args();
         args.domains = vec![
-            "https://example.com/some/path?q=1".to_string(),
+            // A path is scope and survives; the query string and fragment
+            // narrow a request rather than a scope, and go.
+            "https://example.com/some/path?q=1#frag".to_string(),
+            // A bare host, and the two spellings of "the whole host", all
+            // reduce to the same target.
             "example.com".to_string(),
+            "https://example.com/".to_string(),
+            "example.com/?utm=x".to_string(),
+            // A trailing slash does not make a different scope.
+            "example.com/some/path/".to_string(),
         ];
 
-        // Both spellings reduce to the same host, so only one target remains.
-        assert_eq!(collect_domains(&args)?, vec!["example.com"]);
+        assert_eq!(
+            collect_domains(&args)?,
+            vec!["example.com/some/path", "example.com"]
+        );
         Ok(())
     }
 
@@ -1422,11 +1553,15 @@ mod tests {
 
         let mut args = build_test_args();
         args.archive_body = true;
-        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .unwrap();
         assert!(!extractor.expands_specs());
 
         args.expand_specs = true;
-        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .unwrap();
         assert!(extractor.expands_specs());
     }
 
@@ -1821,4 +1956,142 @@ mod tests {
         assert!(validate_result_filters(&args).is_err());
     }
     // --- end result-filters ---
+
+    #[test]
+    fn a_body_directory_without_archive_body_is_refused() {
+        // Reachable only through a config file — clap rejects the CLI form —
+        // and a run that silently wrote nothing would be read as "the archive
+        // had nothing to store".
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = build_test_args();
+        args.archive_body_dir = Some(dir.path().join("corpus"));
+        let err = validate_result_filters(&args).expect_err("should be refused");
+        assert!(format!("{err}").contains("--archive-body-dir"), "{err}");
+
+        args.archive_body = true;
+        assert!(validate_result_filters(&args).is_ok());
+    }
+
+    #[test]
+    fn an_unwritable_body_directory_fails_before_any_collection() {
+        // The tester that writes the corpus is built only after every provider
+        // has finished, so discovering the problem there would throw away a
+        // whole run's work. `validate_result_filters` runs at start-up.
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("taken");
+        std::fs::write(&blocked, b"").unwrap();
+
+        let mut args = build_test_args();
+        args.archive_body = true;
+        args.archive_body_dir = Some(blocked);
+        assert!(validate_result_filters(&args).is_err());
+    }
+
+    #[test]
+    fn a_path_scoped_run_says_so_before_it_starts() {
+        // The narrowing is deliberate but silent, and "why did this return 40
+        // URLs" is expensive to work out after the fact.
+        let note = path_scope_note(&["example.com/shop".to_string()], false).unwrap();
+        assert!(note.contains("example.com/shop"), "{note}");
+        assert!(!note.contains("--subs"), "{note}");
+
+        // An unscoped run has nothing to say.
+        assert!(path_scope_note(&["example.com".to_string()], false).is_none());
+    }
+
+    #[test]
+    fn the_subs_note_warns_that_the_archive_cannot_filter_by_path() {
+        // Same output, very different run time: worth knowing beforehand.
+        let note = path_scope_note(&["example.com/shop".to_string()], true).unwrap();
+        assert!(note.contains("--subs"), "{note}");
+    }
+
+    #[test]
+    fn the_note_stays_one_line_however_many_targets_are_scoped() {
+        let domains: Vec<String> = (0..10).map(|i| format!("example{i}.com/shop")).collect();
+        let note = path_scope_note(&domains, false).unwrap();
+        assert!(note.contains("(+7 more)"), "{note}");
+        assert_eq!(note.lines().count(), 1, "{note}");
+    }
+
+    #[test]
+    fn no_strict_keeps_the_path_scope_on_the_batch_path() -> Result<()> {
+        // The bug this pins: `apply_url_filters` used to gate host validation
+        // on `--strict`, so `--no-strict` with a path scope emitted the whole
+        // host in batch mode while --stream (which calls
+        // `build_host_validator` directly) applied the scope. One run, two
+        // answers, decided by the output mode.
+        let mut args = build_test_args();
+        args.domains = vec!["example.com/shop".to_string()];
+        args.strict = false;
+        args.no_strict = true;
+        args.silent = true;
+
+        let urls: HashSet<String> = [
+            "https://example.com/shop/item",
+            "https://example.com/about",
+            // Off-host: --no-strict was asked for, so this stays.
+            "https://other.test/anything",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        assert!(kept.contains(&"https://example.com/shop/item".to_string()));
+        assert!(kept.contains(&"https://other.test/anything".to_string()));
+        assert!(!kept.contains(&"https://example.com/about".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn no_strict_without_a_path_scope_still_validates_nothing() -> Result<()> {
+        let mut args = build_test_args();
+        args.domains = vec!["example.com".to_string()];
+        args.strict = false;
+        args.no_strict = true;
+        args.silent = true;
+
+        let urls: HashSet<String> = ["https://other.test/anything"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        assert_eq!(kept, vec!["https://other.test/anything".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn paths_only_mode_does_not_recommend_a_flag_that_would_shrink_the_result() {
+        // Under --no-strict with a scope, `--subs` inverts: without it a
+        // subdomain's URL never matches a target host and passes unjudged;
+        // with it the URL is matched and then measured against the scope. So
+        // the advisory must not offer it as a way to keep more URLs.
+        let mut args = build_test_args();
+        args.domains = vec!["example.com/shop".to_string()];
+        args.strict = false;
+        args.no_strict = true;
+
+        let validator = build_host_validator(&args).unwrap().unwrap();
+        assert!(validator.has_path_scopes());
+        assert!(!args.strict_enabled());
+
+        let hint = drops_most_hint(validator.has_path_scopes(), args.strict_enabled());
+        assert!(!hint.contains("--subs"), "{hint}");
+
+        // With the host check on, --subs really does widen the result, so it
+        // is still the right thing to offer.
+        args.strict = true;
+        args.no_strict = false;
+        let validator = build_host_validator(&args).unwrap().unwrap();
+        let hint = drops_most_hint(validator.has_path_scopes(), args.strict_enabled());
+        assert!(hint.contains("--subs"), "{hint}");
+
+        // An unscoped run is untouched: --subs and --no-strict both widen it.
+        let hint = drops_most_hint(false, true);
+        assert!(
+            hint.contains("--subs") && hint.contains("--no-strict"),
+            "{hint}"
+        );
+    }
 }

@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 use crate::providers::archived::{
@@ -159,6 +160,9 @@ pub struct SitemapProvider {
     random_agent: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
+    /// target itself, so the user's headers belong on those requests.
+    headers: CustomHeaders,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
     /// When set, this instance reads the *archived* sitemaps the Wayback
@@ -175,6 +179,7 @@ impl SitemapProvider {
             random_agent: false,
             proxy: None,
             proxy_auth: None,
+            headers: CustomHeaders::default(),
             insecure: false,
             rate_limit: None,
             archived: None,
@@ -197,6 +202,7 @@ impl SitemapProvider {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: self.headers.clone(),
             timeout: self.timeout.as_secs(),
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -209,6 +215,13 @@ impl SitemapProvider {
     /// User-Agent (a UA-less request is rejected with 400 by some servers).
     fn build_client(&self) -> Result<Client> {
         self.client_config().build_client()
+    }
+
+    /// A client for requests that go to an archive rather than the target,
+    /// i.e. everything `--archived-discovery` does. See
+    /// [`HttpClientConfig::without_headers`].
+    fn build_archive_client(&self) -> Result<Client> {
+        self.client_config().without_headers().build_client()
     }
 
     /// Recursively fetch and parse a sitemap (or sitemap index).
@@ -407,7 +420,7 @@ impl SitemapProvider {
         settings: &ArchivedDiscovery,
         reporter: Option<ProgressReporter>,
     ) -> Result<Vec<UrlRecord>> {
-        let client = self.build_client()?;
+        let client = self.build_archive_client()?;
         let mut walk = ArchivedWalk {
             client: &client,
             settings,
@@ -551,6 +564,10 @@ impl Provider for SitemapProvider {
     }
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
+    }
+
+    fn with_headers(&mut self, headers: CustomHeaders) {
+        self.headers = headers;
     }
     fn with_timeout(&mut self, seconds: u64) {
         self.timeout = Duration::from_secs(seconds);

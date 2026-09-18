@@ -6,6 +6,7 @@ use super::cdx::{parse_pywb_rows, CdxSession, PYWB_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{Provider, RecordSet, UrlRecord};
 use crate::network::client::HttpClientConfig;
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -109,6 +110,7 @@ impl ArquivoProvider {
     /// Build an `HttpClientConfig` from the current provider settings.
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -145,13 +147,9 @@ impl ArquivoProvider {
     /// ignore it (`limit=3` returns three rows sharing one urlkey). Nothing here
     /// may assume the rows are collapsed.
     fn query_base(&self, domain: &str) -> String {
-        let host = if self.include_subdomains {
-            format!("*.{domain}")
-        } else {
-            domain.to_string()
-        };
+        let pattern = super::cdx_url_pattern(domain, self.include_subdomains);
         let mut url = format!(
-            "{}/wayback/cdx?url={host}/*&output=json&fl={FIELDS}&collapse=urlkey",
+            "{}/wayback/cdx?url={pattern}&output=json&fl={FIELDS}&collapse=urlkey",
             self.base_url()
         );
         url.push_str(&self.filters.query_params(CdxDialect::Pywb));
@@ -160,6 +158,12 @@ impl ArquivoProvider {
 }
 
 impl Provider for ArquivoProvider {
+    /// A CDX query carries the path scope itself; see
+    /// [`super::cdx_url_pattern`].
+    fn accepts_path_scope(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
