@@ -157,7 +157,7 @@ async fn collect_urls(
     }
 
     if !args.silent {
-        if let Some(note) = app::pipeline::path_scope_note(&domains) {
+        if let Some(note) = app::pipeline::path_scope_note(&domains, args.subs) {
             eprintln!("{note}");
         }
     }

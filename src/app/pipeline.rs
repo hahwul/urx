@@ -91,7 +91,13 @@ pub fn collect_domains(args: &Args) -> Result<Vec<String>> {
 /// feature, but it is also a silent narrowing for anyone who habitually pastes
 /// a full URL as the target, and "why did this return 40 URLs" is an expensive
 /// question to have to work out. Saying it once, up front, costs a line.
-pub fn path_scope_note(domains: &[String]) -> Option<String> {
+///
+/// `subs` is taken into account because it changes what the scope *costs*: a
+/// `--subs` query cannot carry the path, so the archive sends the whole
+/// subdomain index and the scope is applied to the result. That is a large
+/// difference in run time for no difference in output, and it is worth saying
+/// before the fetch rather than after it.
+pub fn path_scope_note(domains: &[String], subs: bool) -> Option<String> {
     let scoped: Vec<&String> = domains
         .iter()
         .filter(|d| cli::split_target(d).1.is_some())
@@ -104,8 +110,13 @@ pub fn path_scope_note(domains: &[String]) -> Option<String> {
         0 => String::new(),
         n => format!(" (+{n} more)"),
     };
+    let cost = if subs {
+        " With --subs the archive cannot filter by path, so the whole subdomain index is fetched and narrowed here."
+    } else {
+        ""
+    };
     Some(format!(
-        "[urx] scoped to a path: {}{more} — only URLs under it are collected. Pass just the host for the whole site.",
+        "[urx] scoped to a path: {}{more} — only URLs under it are collected. Pass just the host for the whole site.{cost}",
         listed.join(", "),
     ))
 }
@@ -1912,5 +1923,32 @@ mod tests {
 
         args.archive_body = true;
         assert!(validate_result_filters(&args).is_ok());
+    }
+
+    #[test]
+    fn a_path_scoped_run_says_so_before_it_starts() {
+        // The narrowing is deliberate but silent, and "why did this return 40
+        // URLs" is expensive to work out after the fact.
+        let note = path_scope_note(&["example.com/shop".to_string()], false).unwrap();
+        assert!(note.contains("example.com/shop"), "{note}");
+        assert!(!note.contains("--subs"), "{note}");
+
+        // An unscoped run has nothing to say.
+        assert!(path_scope_note(&["example.com".to_string()], false).is_none());
+    }
+
+    #[test]
+    fn the_subs_note_warns_that_the_archive_cannot_filter_by_path() {
+        // Same output, very different run time: worth knowing beforehand.
+        let note = path_scope_note(&["example.com/shop".to_string()], true).unwrap();
+        assert!(note.contains("--subs"), "{note}");
+    }
+
+    #[test]
+    fn the_note_stays_one_line_however_many_targets_are_scoped() {
+        let domains: Vec<String> = (0..10).map(|i| format!("example{i}.com/shop")).collect();
+        let note = path_scope_note(&domains, false).unwrap();
+        assert!(note.contains("(+7 more)"), "{note}");
+        assert_eq!(note.lines().count(), 1, "{note}");
     }
 }
