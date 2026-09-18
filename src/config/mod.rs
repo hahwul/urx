@@ -339,6 +339,7 @@ pub struct TestingConfig {
     pub max_js_files: Option<usize>,
     pub archive_body: Option<bool>,
     pub archive_body_limit: Option<usize>,
+    pub archive_body_dir: Option<PathBuf>,
     // --- spec-expansion ---
     pub expand_specs: Option<bool>,
     pub max_spec_files: Option<usize>,
@@ -936,6 +937,12 @@ impl Config {
         if !provided.has("archive_body_limit") {
             if let Some(limit) = self.testing.archive_body_limit {
                 args.archive_body_limit = limit;
+            }
+        }
+
+        if args.archive_body_dir.is_none() {
+            if let Some(dir) = &self.testing.archive_body_dir {
+                args.archive_body_dir = Some(dir.clone());
             }
         }
 
@@ -1719,6 +1726,7 @@ mod tests {
             [testing]
             archive_body = true
             archive_body_limit = 42
+            archive_body_dir = "/tmp/urx-bodies"
         "#;
         let file = create_temp_config_file(content);
 
@@ -1728,6 +1736,10 @@ mod tests {
             .apply_to_args(&mut args, &provided);
         assert!(args.archive_body);
         assert_eq!(args.archive_body_limit, 42);
+        assert_eq!(
+            args.archive_body_dir,
+            Some(PathBuf::from("/tmp/urx-bodies"))
+        );
 
         // An explicit limit on the command line wins even when it equals the
         // clap default.

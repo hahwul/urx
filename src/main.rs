@@ -206,8 +206,9 @@ async fn run_testers(
     // capture), which the other testers do not, so it is built separately and
     // appended last: link-producing testers must follow the status checker.
     let mut archive_stats = None;
+    let mut body_archive = None;
     if let Some((extractor, stats)) =
-        build_archive_body_extractor(args, network_settings, run_result)
+        build_archive_body_extractor(args, network_settings, run_result)?
     {
         // Nothing to replay is worth saying even without -v. The usual cause
         // is a cache hit — the cache stores URLs only — and a silent no-op
@@ -217,6 +218,7 @@ async fn run_testers(
                 "[urx] --archive-body: none of the collected URLs carry a capture timestamp, so there is nothing to replay.                  Cached results and --files input have none; a CDX provider (wayback, cc, arquivo) run with --no-cache does.",
             );
         }
+        body_archive = extractor.body_archive();
         testers.push(Box::new(extractor));
         archive_stats = Some(stats);
     }
@@ -253,6 +255,21 @@ async fn run_testers(
                 "[urx] --archive-body stopped at {} bodies ({} more distinct bodies were available); raise --archive-body-limit to fetch them",
                 stats.fetched(),
                 stats.over_limit()
+            ));
+        }
+    }
+
+    // Where the corpus went is worth saying without -v: the files are the
+    // point of the flag, and nothing else in the output mentions them.
+    if let Some(archive) = body_archive {
+        if !args.silent {
+            progress_manager.note(format!(
+                "[urx] --archive-body-dir: stored {} response bodies ({}) in {} — see {}/{}",
+                archive.written(),
+                archive.human_bytes(),
+                archive.dir().display(),
+                archive.dir().display(),
+                testers::BodyArchive::INDEX_FILE,
             ));
         }
     }

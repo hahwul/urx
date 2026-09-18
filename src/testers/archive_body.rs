@@ -20,6 +20,21 @@
 //! same coverage costs one request per *distinct body* rather than per URL.
 //! `--archive-body-limit` still bounds the run, but it bounds unique bodies,
 //! which is a much larger share of the target than the same number of URLs.
+//!
+//! # What a replayed body is worth beyond its links
+//!
+//! Once a body has been fetched, the marginal cost of doing more with it is
+//! zero, so two other flags compose with this one rather than duplicating its
+//! requests:
+//!
+//! - `--extract-js-endpoints` mines *archived* scripts. This is the case the
+//!   live path structurally cannot reach: a bundle is named by build hash, so
+//!   `app.a3f9c2.js` 404s the moment the site redeploys, and with it goes the
+//!   string table where a modern app's entire API surface lives. The archive
+//!   still holds those bytes.
+//! - `--archive-body-dir` writes each body to disk, so the run leaves behind a
+//!   corpus to grep for the things no extractor looks for: comments, inlined
+//!   credentials, internal hostnames. See [`super::body_archive`].
 
 use anyhow::Result;
 use reqwest::Client;
@@ -31,10 +46,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 use url::Url;
 
+use super::body_archive::BodyArchive;
+use super::js_endpoint_extractor::{classify, BodyKind};
 use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
 // --- spec-expansion ---
 use super::spec_expander::{expand_spec_body, spec_body_kind};
-use super::Tester;
+use super::{JsEndpointExtractor, Tester};
 use crate::network::client::{read_body_capped, HttpClientConfig};
 use crate::network::RateLimiter;
 use crate::providers::archived::{replay_url, WAYBACK_ORIGIN};
@@ -112,6 +129,14 @@ pub struct ArchiveBodyExtractor {
     /// specification is read as one instead of being handed to the HTML link
     /// extractor. See [`Tester::test_url`] for why the combination matters.
     expand_specs: bool,
+    /// Whether `--extract-js-endpoints` is also on, in which case an archived
+    /// script body is mined for endpoints instead of being discarded, and an
+    /// archived page's inline `<script>` blocks are mined alongside its links.
+    extract_js_endpoints: bool,
+    /// `--archive-body-dir`: where to keep each replayed body, if anywhere.
+    /// Shared across the cloned workers so they write into one corpus and one
+    /// index.
+    body_archive: Option<Arc<BodyArchive>>,
 }
 
 impl ArchiveBodyExtractor {
@@ -133,6 +158,8 @@ impl ArchiveBodyExtractor {
             origin: WAYBACK_ORIGIN.to_string(),
             // --- spec-expansion ---
             expand_specs: false,
+            extract_js_endpoints: false,
+            body_archive: None,
         }
     }
 
@@ -171,6 +198,31 @@ impl ArchiveBodyExtractor {
     #[cfg(test)]
     pub fn expands_specs(&self) -> bool {
         self.expand_specs
+    }
+
+    /// Mine archived script bodies for endpoints, as `--extract-js-endpoints`
+    /// does for live ones.
+    pub fn with_extract_js_endpoints(&mut self, enabled: bool) -> &mut Self {
+        self.extract_js_endpoints = enabled;
+        self
+    }
+
+    /// Whether archived scripts will be mined.
+    #[cfg(test)]
+    pub fn extracts_js_endpoints(&self) -> bool {
+        self.extract_js_endpoints
+    }
+
+    /// Keep every replayed body in `archive` (`--archive-body-dir`).
+    pub fn with_body_archive(&mut self, archive: Option<Arc<BodyArchive>>) -> &mut Self {
+        self.body_archive = archive;
+        self
+    }
+
+    /// A handle on the corpus, valid for the life of every clone, so the run
+    /// summary can report what was stored.
+    pub fn body_archive(&self) -> Option<Arc<BodyArchive>> {
+        self.body_archive.clone()
     }
 
     fn client_config(&self) -> HttpClientConfig {
@@ -223,6 +275,117 @@ impl ArchiveBodyExtractor {
 
         Some(capture)
     }
+
+    /// Write one replayed body to `--archive-body-dir`, if that flag is on.
+    ///
+    /// A failed write is reported and then dropped rather than failing the
+    /// URL: the corpus is a by-product of the run, and a full disk three hours
+    /// into a replay should not discard the links already being collected.
+    /// Creation of the directory was checked up front for exactly this reason,
+    /// so anything failing here is an unusual, per-file problem.
+    async fn persist(
+        &self,
+        url: &str,
+        capture: &ArchiveCapture,
+        content_type: &Option<String>,
+        body: &str,
+    ) {
+        let Some(archive) = &self.body_archive else {
+            return;
+        };
+        if let Err(e) = archive
+            .store(
+                url,
+                &capture.timestamp,
+                capture.digest.as_deref(),
+                content_type.as_deref(),
+                body,
+            )
+            .await
+        {
+            eprintln!("[urx] --archive-body-dir: failed to store {url}: {e}");
+        }
+    }
+}
+
+/// Whether a replayed body is text worth keeping in `--archive-body-dir`.
+///
+/// The link extractor only ever wanted markup, but a corpus meant for `grep`
+/// wants every *readable* body: a JSON config, a stylesheet with a commented
+/// staging URL, a `.txt` left in the webroot. What it does not want is the
+/// site's images, fonts and video, which would dominate the directory in both
+/// count and bytes while containing nothing anyone will grep for.
+///
+/// Decided from `Content-Type` when the archive replayed one, and from the
+/// path extension when it did not — the same two signals, in the same order,
+/// that [`classify`] and [`is_html_like`] use.
+fn is_text_like(headers: &reqwest::header::HeaderMap, url: &Url) -> bool {
+    if let Some(ct) = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        let ct = ct.to_ascii_lowercase();
+        let ct = ct.split(';').next().unwrap_or(&ct).trim().to_string();
+        return ct.starts_with("text/")
+            || ct.ends_with("+json")
+            || ct.ends_with("+xml")
+            || matches!(
+                ct.as_str(),
+                "application/json"
+                    | "application/xml"
+                    | "application/javascript"
+                    | "application/x-javascript"
+                    | "application/ecmascript"
+                    | "application/graphql"
+                    | "application/yaml"
+                    | "application/x-yaml"
+                    | "application/xhtml+xml"
+                    | "application/x-httpd-php"
+                    | "application/sql"
+            );
+    }
+
+    // No type at all: trust the extension, and treat "no extension" as a
+    // server-rendered page, which is what an extensionless archived URL almost
+    // always is.
+    match super::shared::path_extension(url) {
+        None => true,
+        Some(ext) => matches!(
+            ext.as_str(),
+            "html"
+                | "htm"
+                | "xhtml"
+                | "shtml"
+                | "php"
+                | "asp"
+                | "aspx"
+                | "jsp"
+                | "do"
+                | "js"
+                | "mjs"
+                | "cjs"
+                | "jsx"
+                | "ts"
+                | "tsx"
+                | "json"
+                | "xml"
+                | "yaml"
+                | "yml"
+                | "css"
+                | "scss"
+                | "less"
+                | "txt"
+                | "md"
+                | "csv"
+                | "svg"
+                | "map"
+                | "sql"
+                | "conf"
+                | "ini"
+                | "env"
+                | "log"
+        ),
+    }
 }
 
 impl Tester for ArchiveBodyExtractor {
@@ -264,6 +427,13 @@ impl Tester for ArchiveBodyExtractor {
                         if !response.status().is_success() {
                             return Ok(Vec::new());
                         }
+                        // Read before `read_body_capped` consumes the
+                        // response; the index records it verbatim.
+                        let content_type = response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
                         // --- spec-expansion ---
                         // The combination that recovers an API which no longer
                         // exists: the archive still holds the specification
@@ -275,14 +445,57 @@ impl Tester for ArchiveBodyExtractor {
                         if self.expand_specs {
                             if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
                                 let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+                                self.persist(url, capture, &content_type, &body).await;
                                 return Ok(expand_spec_body(&base_url, kind, &body));
                             }
                         }
-                        if !is_html_like(response.headers()) {
+
+                        // --- archived JS ---
+                        // Script is decided before HTML, not after. A `.js`
+                        // capture the archive replayed without a
+                        // `Content-Type` satisfies `is_html_like` (which
+                        // treats an absent type as "might be markup"), so
+                        // asking that question first would hand every such
+                        // bundle to the HTML parser and mine nothing.
+                        let script = self.extract_js_endpoints
+                            && classify(response.headers(), &base_url) == BodyKind::Script;
+                        let html = is_html_like(response.headers());
+                        // A body nothing will read is still worth storing when
+                        // the user asked for a corpus — JSON, CSS and plain
+                        // text hold the comments and credentials that no
+                        // extractor looks for — but an image never is.
+                        let keep = self.body_archive.is_some()
+                            && is_text_like(response.headers(), &base_url);
+                        if !script && !html && !keep {
                             return Ok(Vec::new());
                         }
+
                         let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                        return Ok(LinkExtractor::extract_links(&base_url, &body));
+                        if keep {
+                            self.persist(url, capture, &content_type, &body).await;
+                        }
+
+                        if script {
+                            return Ok(JsEndpointExtractor::extract_endpoints(&base_url, &body));
+                        }
+                        if !html {
+                            return Ok(Vec::new());
+                        }
+                        let mut links = LinkExtractor::extract_links(&base_url, &body);
+                        if self.extract_js_endpoints {
+                            // An archived page's inline scripts get the same
+                            // treatment the live path gives them, and the two
+                            // sources are merged in first-seen order.
+                            let mut seen: HashSet<String> = links.iter().cloned().collect();
+                            for endpoint in
+                                JsEndpointExtractor::extract_inline_endpoints(&base_url, &body)
+                            {
+                                if seen.insert(endpoint.clone()) {
+                                    links.push(endpoint);
+                                }
+                            }
+                        }
+                        return Ok(links);
                     }
                     Err(e) => {
                         last_error = Some(e);
@@ -506,6 +719,308 @@ mod tests {
             ]
         );
         replay.assert();
+    }
+
+    // --- archived JS ---
+
+    #[tokio::test]
+    async fn an_archived_script_is_mined_when_extract_js_endpoints_is_on() {
+        // The case the live path structurally cannot reach: a build-hashed
+        // bundle the site stopped serving the day it redeployed.
+        let mut server = mockito::Server::new_async().await;
+        let replay = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/javascript")
+            .with_body(r#"fetch("/api/v2/internal/users");var x="/admin/legacy/panel";"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/static/app.a3f9c2.js",
+                capture("20180101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_extract_js_endpoints(true);
+
+        let found = ex
+            .test_url("https://example.com/static/app.a3f9c2.js")
+            .await
+            .unwrap();
+        assert!(
+            found.contains(&"https://example.com/api/v2/internal/users".to_string()),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&"https://example.com/admin/legacy/panel".to_string()),
+            "{found:?}"
+        );
+        replay.assert();
+    }
+
+    #[tokio::test]
+    async fn an_archived_script_is_still_ignored_without_the_flag() {
+        // --archive-body alone keeps its old behaviour: scripts are not markup,
+        // so the link extractor has nothing to say about them.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/javascript")
+            .with_body(r#"fetch("/api/v2/internal/users");"#)
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/static/app.a3f9c2.js",
+                capture("20180101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        assert!(!ex.extracts_js_endpoints());
+
+        let found = ex
+            .test_url("https://example.com/static/app.a3f9c2.js")
+            .await
+            .unwrap();
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn a_typeless_archived_script_is_mined_rather_than_parsed_as_markup() {
+        // `is_html_like` answers "yes" to a missing Content-Type, so deciding
+        // HTML before script would hand every such bundle to the HTML parser
+        // and mine nothing. The extension has to win here.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(r#"axios.get("/api/orders/pending");"#)
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/bundle.js",
+                capture("20180101000000", None),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_extract_js_endpoints(true);
+
+        let found = ex.test_url("https://example.com/bundle.js").await.unwrap();
+        assert_eq!(found, vec!["https://example.com/api/orders/pending"]);
+    }
+
+    #[tokio::test]
+    async fn an_archived_pages_inline_scripts_are_mined_alongside_its_links() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                r#"<a href="/still-here">x</a>
+                   <script>fetch("/api/hidden/thing")</script>"#,
+            )
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/page.html",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_extract_js_endpoints(true);
+
+        let found = ex.test_url("https://example.com/page.html").await.unwrap();
+        // Markup links first, then what only the inline script knew.
+        assert_eq!(
+            found,
+            vec![
+                "https://example.com/still-here".to_string(),
+                "https://example.com/api/hidden/thing".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_found_in_both_markup_and_inline_script_is_reported_once() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                r#"<a href="/api/shared">x</a>
+                   <script>fetch("/api/shared")</script>"#,
+            )
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/page.html",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_extract_js_endpoints(true);
+
+        let found = ex.test_url("https://example.com/page.html").await.unwrap();
+        assert_eq!(found, vec!["https://example.com/api/shared".to_string()]);
+    }
+
+    // --- --archive-body-dir ---
+
+    #[tokio::test]
+    async fn replayed_bodies_are_stored_when_a_directory_is_given() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="/x">x</a><!-- staging.internal -->"#)
+            .create_async()
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Arc::new(BodyArchive::create(dir.path().to_path_buf()).unwrap());
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/page.html",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_body_archive(Some(Arc::clone(&archive)));
+
+        // Links still come back: storing the body is a by-product, not a mode.
+        let links = ex.test_url("https://example.com/page.html").await.unwrap();
+        assert_eq!(links, vec!["https://example.com/x".to_string()]);
+
+        assert_eq!(archive.written(), 1);
+        let index = std::fs::read_to_string(dir.path().join(BodyArchive::INDEX_FILE)).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(index.trim()).unwrap();
+        assert_eq!(entry["url"], "https://example.com/page.html");
+        let stored =
+            std::fs::read_to_string(dir.path().join(entry["file"].as_str().unwrap())).unwrap();
+        // The comment is the point: no extractor would ever have reported it.
+        assert!(stored.contains("staging.internal"), "{stored}");
+    }
+
+    #[tokio::test]
+    async fn a_body_no_extractor_wants_is_still_stored_if_it_is_text() {
+        // JSON is not markup and not script, so without --archive-body-dir the
+        // fetch is skipped entirely. With it, the bytes are worth keeping: a
+        // config left in the webroot is exactly what a corpus is grepped for.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"apiKey":"sk-live-000"}"#)
+            .create_async()
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Arc::new(BodyArchive::create(dir.path().to_path_buf()).unwrap());
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/config.json",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_body_archive(Some(Arc::clone(&archive)));
+
+        let links = ex
+            .test_url("https://example.com/config.json")
+            .await
+            .unwrap();
+        assert!(links.is_empty(), "{links:?}");
+        assert_eq!(archive.written(), 1);
+    }
+
+    #[tokio::test]
+    async fn binary_bodies_are_never_stored() {
+        // An image corpus would dominate the directory in both count and bytes
+        // while containing nothing anyone greps for.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "image/png")
+            .with_body(&b"\x89PNG\r\n"[..])
+            .create_async()
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Arc::new(BodyArchive::create(dir.path().to_path_buf()).unwrap());
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/logo.png",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_body_archive(Some(Arc::clone(&archive)));
+
+        let links = ex.test_url("https://example.com/logo.png").await.unwrap();
+        assert!(links.is_empty());
+        assert_eq!(archive.written(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_archived_specification_is_stored_too() {
+        // The spec path returns early, so it needs its own persist call —
+        // otherwise --expand-specs would silently punch a hole in the corpus.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"openapi":"3.0.0","paths":{"/pets":{"get":{}}}}"#)
+            .create_async()
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Arc::new(BodyArchive::create(dir.path().to_path_buf()).unwrap());
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/swagger.json",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_expand_specs(true);
+        ex.with_body_archive(Some(Arc::clone(&archive)));
+
+        let found = ex
+            .test_url("https://example.com/swagger.json")
+            .await
+            .unwrap();
+        assert!(!found.is_empty(), "spec should still expand");
+        assert_eq!(archive.written(), 1);
     }
 
     #[tokio::test]

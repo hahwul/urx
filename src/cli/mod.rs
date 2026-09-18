@@ -528,7 +528,10 @@ pub struct Args {
     pub extract_links: bool,
 
     /// Fetch collected JavaScript files and extract the endpoint paths and
-    /// URLs found in their string literals (requires HTTP requests)
+    /// URLs found in their string literals (requires HTTP requests). With
+    /// --archive-body this also mines the *archived* copy of each script,
+    /// which is the only way to reach a bundle whose build-hash filename the
+    /// site has since stopped serving.
     #[clap(help_heading = "Testing Options")]
     #[clap(long)]
     pub extract_js_endpoints: bool,
@@ -554,6 +557,21 @@ pub struct Args {
     #[clap(help_heading = "Testing Options")]
     #[clap(long, value_name = "N", default_value = "500")]
     pub archive_body_limit: usize,
+
+    /// Keep every body --archive-body replays in DIR, alongside an
+    /// index.jsonl that maps each file back to its URL, capture timestamp,
+    /// digest and content type. The bodies are already being fetched, so this
+    /// costs no extra requests, and it leaves a corpus to grep for what no
+    /// link extractor looks for: developer comments, inlined credentials,
+    /// internal hostnames. Only text-like bodies are stored; images, fonts and
+    /// video are skipped. Requires --archive-body.
+    #[clap(help_heading = "Testing Options")]
+    #[clap(
+        long = "archive-body-dir",
+        value_name = "DIR",
+        requires = "archive_body"
+    )]
+    pub archive_body_dir: Option<PathBuf>,
 
     // --- spec-expansion ---
     /// Fetch the API specification documents among the collected URLs

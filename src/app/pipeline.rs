@@ -21,8 +21,8 @@ use crate::readers::read_urls_from_file;
 use crate::runner::ProviderRunResult;
 use crate::tester_manager::{self, apply_network_settings_to_tester};
 use crate::testers::{
-    ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, JsEndpointExtractor, LinkExtractor,
-    SpecExpander, StatusChecker, Tester,
+    ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, BodyArchive, JsEndpointExtractor,
+    LinkExtractor, SpecExpander, StatusChecker, Tester,
 };
 use crate::utils::{verbose_print, ParamView, UrlTransformer};
 
@@ -779,9 +779,9 @@ pub fn build_archive_body_extractor(
     args: &Args,
     network_settings: &NetworkSettings,
     run_result: &ProviderRunResult,
-) -> Option<(ArchiveBodyExtractor, Arc<ArchiveBodyStats>)> {
+) -> Result<Option<(ArchiveBodyExtractor, Arc<ArchiveBodyStats>)>> {
     if !args.archive_body {
-        return None;
+        return Ok(None);
     }
     verbose_print(args, "Extracting links from archived response bodies");
 
@@ -804,9 +804,25 @@ pub fn build_archive_body_extractor(
     // With --expand-specs also on, an archived specification is read as one
     // rather than run through the HTML link extractor.
     extractor.with_expand_specs(args.expand_specs);
+    // --- archived JS ---
+    // And with --extract-js-endpoints also on, an archived script is mined the
+    // way the live path mines a live one. This is the combination that reaches
+    // a bundle the site no longer serves under that build-hash name.
+    extractor.with_extract_js_endpoints(args.extract_js_endpoints);
+
+    if let Some(dir) = &args.archive_body_dir {
+        // Created (and proved writable) now rather than on the first body, so
+        // a bad path stops the run before it spends an hour on the archive.
+        let archive = Arc::new(BodyArchive::create(dir.clone())?);
+        verbose_print(
+            args,
+            format!("Storing archived response bodies in {}", dir.display()),
+        );
+        extractor.with_body_archive(Some(archive));
+    }
 
     let stats = extractor.stats();
-    Some((extractor, stats))
+    Ok(Some((extractor, stats)))
 }
 
 #[cfg(test)]
@@ -1149,13 +1165,16 @@ mod tests {
         let run_result = ProviderRunResult::default();
 
         let args = build_test_args();
-        assert!(build_archive_body_extractor(&args, &settings, &run_result).is_none());
+        assert!(build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .is_none());
 
         let mut args = build_test_args();
         args.archive_body = true;
         args.archive_body_limit = 7;
-        let (extractor, stats) =
-            build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        let (extractor, stats) = build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .unwrap();
         assert_eq!(extractor.candidate_count(), 0);
         assert_eq!(stats.fetched(), 0);
     }
@@ -1422,11 +1441,15 @@ mod tests {
 
         let mut args = build_test_args();
         args.archive_body = true;
-        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .unwrap();
         assert!(!extractor.expands_specs());
 
         args.expand_specs = true;
-        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result).unwrap();
+        let (extractor, _) = build_archive_body_extractor(&args, &settings, &run_result)
+            .unwrap()
+            .unwrap();
         assert!(extractor.expands_specs());
     }
 

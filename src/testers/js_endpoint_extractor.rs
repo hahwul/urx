@@ -57,8 +57,12 @@ const NON_SCRIPT_EXTENSIONS: &[&str] = &[
 
 /// How a fetched body should be scanned, decided from `Content-Type` and the
 /// URL's extension.
+///
+/// Visible to the rest of `testers` so the archived path can reach the same
+/// verdict as the live one: `--archive-body` classifies a replayed body with
+/// exactly this function rather than a second, drifting copy of the rules.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum BodyKind {
+pub(super) enum BodyKind {
     /// Scan the whole body as script.
     Script,
     /// Scan only the inline `<script>` blocks.
@@ -85,7 +89,7 @@ fn worth_fetching(url: &Url) -> bool {
 /// type means only inline `<script>` blocks are scanned — running the script
 /// regexes over the markup itself would match every `href` and `src` the link
 /// extractor already collects properly.
-fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyKind {
+pub(super) fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyKind {
     let ext_is_js = path_extension(url)
         .map(|e| JS_EXTENSIONS.contains(&e.as_str()))
         .unwrap_or(false);

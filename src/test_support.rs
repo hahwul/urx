@@ -135,6 +135,7 @@ pub fn build_test_args() -> Args {
         max_js_files: 500,
         archive_body: false,
         archive_body_limit: 500,
+        archive_body_dir: None,
         include_robots: false,
         include_sitemap: false,
         exclude_robots: true,
