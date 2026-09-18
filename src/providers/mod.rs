@@ -23,7 +23,7 @@ pub use arquivo::ArquivoProvider;
 pub use bevigil::BeVigilProvider;
 pub use cdx::CdxProvider;
 pub use commoncrawl::CommonCrawlProvider;
-pub use filters::{normalize_cdx_timestamp, ArchiveFilters, CdxDialect};
+pub use filters::{cdx_url_pattern, normalize_cdx_timestamp, ArchiveFilters, CdxDialect};
 pub use github::GitHubProvider;
 pub use otx::OTXProvider;
 pub use record::{CaptureMeta, RecordSet, UrlRecord};
@@ -90,6 +90,23 @@ pub trait Provider: Send + Sync {
 
     /// Set rate limiting to avoid being blocked by providers
     fn with_rate_limit(&mut self, requests_per_second: Option<f32>);
+
+    /// Whether this provider's own query can express a target's path scope.
+    ///
+    /// A CDX index can: `url=example.com/shop*` is native prefix matching, so
+    /// the archive never sends the rows outside the scope. Nothing else urx
+    /// queries can — OTX, VirusTotal, urlscan and the rest take a hostname —
+    /// and neither can robots.txt or sitemap.xml, which live at the root
+    /// whatever the scope is.
+    ///
+    /// The default is therefore `false`, and a provider that says so is handed
+    /// the bare host; [`crate::filters::HostValidator`] applies the path scope
+    /// to whatever comes back. Defaulting the safe way round matters: a new
+    /// provider handed `example.com/shop` where it expected a hostname would
+    /// quietly return nothing at all.
+    fn accepts_path_scope(&self) -> bool {
+        false
+    }
 
     /// Send the user's `-H` / `--cookie` / `--user-agent` headers.
     ///

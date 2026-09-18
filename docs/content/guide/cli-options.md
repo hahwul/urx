@@ -109,6 +109,9 @@ Network Options:
   --proxy-auth <PROXY_AUTH>      Proxy credentials (username:password)
   --insecure                     Skip SSL certificate verification
   --random-agent                 Use a random User-Agent
+  -H, --header <NAME: VALUE>     Extra request header, repeatable; sent to the target only, never to an archive
+  --cookie <COOKIES>             Cookie header for requests to the target
+  --user-agent <STRING>          User-Agent for requests to the target, overriding --random-agent
   --timeout <TIMEOUT>            Request timeout in seconds [default: 120]
   --retries <RETRIES>            Retries for failed requests [default: 2]
   --parallel <PARALLEL>          Max domains fetched concurrently per provider (rate-limit shared) [default: 5]
@@ -122,10 +125,11 @@ Testing Options:
   --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x)
   --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x)
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
-  --extract-js-endpoints             Fetch collected JavaScript and extract the endpoints in its string literals (see "JavaScript Endpoint Extraction" below)
+  --extract-js-endpoints             Fetch collected JavaScript and extract the endpoints in its string literals; with --archive-body also mines archived scripts (see "JavaScript Endpoint Extraction" below)
   --max-js-files <N>                 Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
   --archive-body                     Extract links from the *archived* body of each collected URL (see "Archived Response Bodies" below)
   --archive-body-limit <N>           Maximum archived bodies fetched per run; bounds distinct bodies, not URLs [default: 500]
+  --archive-body-dir <DIR>           Keep every replayed body in DIR with an index.jsonl mapping it back to its URL
   --expand-specs                     Fetch collected OpenAPI/Swagger/GraphQL documents and expand every route they describe (see "API Specification Expansion" below)
   --max-spec-files <N>               Maximum number of specification documents --expand-specs will fetch (0 = unlimited) [default: 50]
 
@@ -444,6 +448,43 @@ urx example.com -p only-secrets
 urx example.com -p only-backup,only-config
 ```
 
+## Scoping a Run to a Path
+
+A target may name a path, and it means what it says: `urx example.com/shop`
+collects the part of the site under `/shop`.
+
+```bash
+urx example.com/shop
+urx https://example.com/api/v2      # a pasted URL works too
+```
+
+This is not a filter applied after the fact. A CDX index answers prefix queries
+natively, so urx sends `url=example.com/shop*` and the archive never ships the
+rest of the site across the network — on a large target that is the difference
+between a few hundred rows and a few hundred thousand.
+
+Details worth knowing:
+
+- Providers whose query cannot express a path (OTX, VirusTotal, urlscan,
+  GitHub, BeVigil, ZoomEye, and the `robots`/`sitemap` fetchers, which read the
+  site root whatever the scope is) are asked about the host, and their results
+  are narrowed afterwards by host validation.
+- `--subs` cannot push the scope into the query either: a leading `*.` selects
+  `matchType=domain`, which no CDX server combines with a path. The prefix is
+  applied to the results instead.
+- Scope means *at or under* the path: `/shop` and `/shop/cart` are in,
+  `/shopping` is not.
+- Paths are matched case-sensitively; hosts are not.
+- A query string or fragment in the target is dropped. Those narrow a request,
+  not a scope.
+- `--no-strict` waives the *host* check, not the path scope: it was asked for
+  explicitly, and it is part of what the target is.
+
+> Note: urx used to discard the path from a target, so
+> `urx https://example.com/shop` scanned the whole of `example.com`. It now
+> scans `/shop`. Pass just the host for the old behaviour; a run whose target
+> carries a path says so on stderr.
+
 ## Regular-expression Filtering
 
 `--patterns` and `--exclude-patterns` are substring tests. `--match-regex` and
@@ -734,6 +775,45 @@ urx example.com --subs -f wordlist -o words.txt
 ffuf -w words.txt -u https://example.com/FUZZ
 ```
 
+## Authenticated and Custom Requests
+
+`--check-status`, `--extract-links`, `--extract-js-endpoints` and
+`--expand-specs` all re-request collected URLs from the target itself. `-H`
+gives those requests whatever headers they need:
+
+```bash
+urx example.com --check-status -H "Authorization: Bearer $TOKEN"
+urx example.com --extract-links --cookie "session=abc; role=admin"
+urx example.com --check-status --user-agent "acme-security-scan/1.0"
+```
+
+`-H` is repeatable and takes `Name: value`. A malformed one stops the run
+rather than going out unnoticed: an argument that is silently dropped leaves an
+anonymous scan reading as an authenticated one. `--cookie` and `--user-agent`
+are shorthands for the corresponding headers, and a later value for a name
+replaces an earlier one.
+
+**These headers never reach an archive.** They are sent only by the components
+that talk to the target: the four testers above, plus the `robots` and
+`sitemap` providers, which fetch from the target too. Every other provider
+queries web.archive.org, index.commoncrawl.org or a third-party API, and so
+does `--archive-body` when it replays a capture; handing them the target's
+session cookie would mail a credential to a service that keeps what it
+receives, for no gain. Archive queries keep urx's own User-Agent, which
+`--random-agent` still rotates.
+
+They can also be set in the config file:
+
+```toml
+[network]
+header = ["X-Env: staging", "X-Team: appsec"]
+cookie = "session=abc"
+user_agent = "acme-security-scan/1.0"
+```
+
+Any `-H` on the command line replaces the configured set wholesale, so a run
+can always be made anonymous again without editing the file.
+
 ## Link Extraction
 
 `--extract-links` re-fetches every URL that survived filtering and mines the
@@ -986,6 +1066,48 @@ one request per *distinct body* rather than one per URL. `--archive-body-limit`
 (default 500) bounds distinct bodies, not URLs: duplicates never count against
 it, and `--verbose` reports how many URLs were skipped as duplicates, how many
 fell past the limit, and how many had no capture to replay.
+
+### Mining archived JavaScript
+
+A modern app's API surface lives in its bundles as string literals, and
+`--extract-js-endpoints` fetches those from the live site — where they are
+frequently gone. Bundles are named by build hash, so `app.a3f9c2.js` 404s the
+moment the site redeploys, and the endpoints it named go with it. Run the two
+flags together and urx mines the *archived* copy instead, and an archived
+page's inline `<script>` blocks alongside its links:
+
+```bash
+urx example.com --archive-body --extract-js-endpoints
+```
+
+An archived body is classified as script before it is classified as markup: a
+capture the archive replayed without a `Content-Type` satisfies the "might be
+markup" test, so asking that question first would hand every typeless bundle to
+the HTML parser and mine nothing.
+
+### Keeping the bodies
+
+The requests are already being made, so writing the bodies to disk costs
+nothing extra and answers the questions no link extractor asks: the
+`<!-- staging.internal -->` comment, the token a 2019 build inlined, the stack
+trace naming a framework version.
+
+```bash
+urx example.com --archive-body --archive-body-dir ./corpus
+grep -ri "api[_-]key" ./corpus
+```
+
+Each file is named after its URL plus a hash of it — the slug is lossy, so the
+hash is what keeps two URLs apart — and `corpus/index.jsonl` maps every file
+back to its URL, capture timestamp, digest and content type. Only text-like
+bodies are stored (HTML, script, JSON, XML, CSS, plain text), so the directory
+does not fill up with the site's images and fonts. Because the fetch is
+deduplicated by digest, the corpus covers far more of the target per request
+than one response per URL would.
+
+An unwritable directory stops the run at start-up rather than after an hour of
+replaying, and a failure on an individual file is reported without discarding
+the links the run is collecting.
 
 ### Details
 

@@ -23,10 +23,12 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
 * BeVigil provider: URLs extracted from unpacked Android apps — endpoints no web archive ever crawled
 * API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
+* Authenticated testing: `-H`, `--cookie` and `--user-agent` apply to every request urx makes to the target (`--check-status`, `--extract-links`, `--extract-js-endpoints`, `--expand-specs`) and are deliberately never sent to an archive
 * Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
 * Predefined presets, both by file family ("no-images", "only-js") and by security interest ("only-secrets", "only-backup", "only-config", "only-api")
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
 * Client-side metadata filtering (`--meta-*`): filter on first/last capture date, recorded MIME type and recorded status uniformly across every provider, after collection
+* Path-scoped targets: `urx example.com/shop` pushes the scope into the CDX query itself (`url=example.com/shop*`), so a subtree of a large site costs a fraction of the whole index instead of being filtered out client-side
 * Bug-bounty scope files (`--scope-file`): a program's own `*.example.com` / `!admin.example.com` list used verbatim, repeatable and unioned, exclusions always winning
 * URL normalization and deduplication: Sort query parameters, remove trailing slashes, merge semantically identical URLs, and collapse near-duplicates that differ only in ids, hashes, or dates (`--dedup-similar`)
 * Support for multiple output formats: plain text, JSON, JSON Lines, CSV, and `wordlist` — the path segments and parameter names the target is built from, with ids, hashes and dates left out
@@ -39,6 +41,8 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
   * Filter and validate URLs based on HTTP status codes and patterns.
   * Extract additional links from collected URLs — anchors, scripts, stylesheets, form actions, iframes, images, media sources, objects, embeds, and meta-refresh targets
   * Mine the *archived* response bodies of collected URLs (`--archive-body`), so pages that no longer exist still give up the links they contained — one request per distinct body, thanks to CDX digest deduplication
+  * With `--extract-js-endpoints`, mine the *archived* JavaScript too: a bundle named by build hash 404s the moment the site redeploys, and the archive is the only place its API surface still exists
+  * Keep the replayed bodies (`--archive-body-dir`) as a corpus to grep for what no link extractor looks for — developer comments, inlined credentials, internal hostnames — at no extra requests
   * Expand API specifications (`--expand-specs`): OpenAPI 3.x, Swagger 2.0 and GraphQL introspection documents, JSON or YAML, turned into every route they describe — one request buys the whole documented surface
   * Response metadata: `--check-status` also records `Location`, `Content-Length` and `Content-Type`, and `--check-title` adds the HTML `<title>`
 * Archived robots.txt and sitemap.xml discovery (`--archived-discovery`): every distinct version the Wayback Machine holds, so a `Disallow:` from 2015 still names the paths the site has since stopped mentioning
@@ -269,6 +273,9 @@ Network Options:
       --proxy-auth <PROXY_AUTH>        Proxy authentication credentials (format: username:password)
       --insecure                       Skip SSL certificate verification (accept self-signed certs)
       --random-agent                   Use a random User-Agent for HTTP requests
+  -H, --header <NAME: VALUE>           Extra request header, repeatable; sent only on requests urx makes to the target, never to an archive
+      --cookie <COOKIES>               Cookie header for requests to the target; shorthand for -H "Cookie: ..."
+      --user-agent <STRING>            User-Agent for requests to the target, overriding the default and --random-agent
       --timeout <TIMEOUT>              Request timeout in seconds [default: 120]
       --retries <RETRIES>              Number of retries for failed requests [default: 2]
       --parallel <PARALLEL>            Maximum domains fetched concurrently per provider (and concurrent URL tests); a provider's --rate-limit is shared across them [default: 5]
@@ -288,13 +295,15 @@ Testing Options:
       --extract-links
           Extract additional links from collected URLs (requires HTTP requests)
       --extract-js-endpoints
-          Fetch collected JavaScript files and extract the endpoint paths and URLs found in their string literals (requires HTTP requests)
+          Fetch collected JavaScript files and extract the endpoint paths and URLs found in their string literals (requires HTTP requests); with --archive-body this also mines the *archived* copy of each script
       --max-js-files <N>
           Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
       --archive-body
           Fetch the archived body of each collected URL from the Wayback Machine and extract the links inside it (works for pages that no longer exist)
       --archive-body-limit <N>
           Maximum number of archived bodies --archive-body fetches per run; bounds distinct bodies, not URLs [default: 500]
+      --archive-body-dir <DIR>
+          Keep every body --archive-body replays in DIR, with an index.jsonl mapping each file back to its URL, capture and content type
       --expand-specs
           Fetch the API specification documents among the collected URLs (OpenAPI, Swagger, GraphQL introspection; JSON or YAML) and expand every route they document into a URL. See "Expanding API Specifications" below
       --max-spec-files <N>
@@ -529,6 +538,34 @@ urx example.com --check-title --show-meta
 urx cache stats
 urx cache drop example.com
 ```
+
+### Scoping a Run to a Path
+
+A target may name a path, and it means what it says: `urx example.com/shop`
+collects the part of the site under `/shop`.
+
+```bash
+urx example.com/shop
+urx https://example.com/api/v2      # a pasted URL works too
+```
+
+This is not a filter applied after the fact. A CDX index answers prefix queries
+natively, so urx sends `url=example.com/shop*` and the archive never ships the
+rest of the site across the network — on a large target that is the difference
+between a few hundred rows and a few hundred thousand. Providers that cannot
+express a path in their query (OTX, VirusTotal, urlscan, GitHub, BeVigil,
+ZoomEye) are asked about the host and their answers are narrowed afterwards, as
+are the results of a `--subs` run, where the `*.host` form and a path prefix
+cannot be combined in one CDX query.
+
+Scope means *at or under* the path: `/shop` and `/shop/cart` are in, `/shopping`
+is not. Paths are matched case-sensitively, unlike hosts. A query string or
+fragment in the target is dropped — those narrow a request, not a scope.
+
+> Note: urx used to discard the path from a target, so
+> `urx https://example.com/shop` scanned the whole of `example.com`. It now
+> scans `/shop`. Pass just the host for the old behaviour; a run whose target
+> carries a path says so on stderr.
 
 ### Regular-expression Filtering
 
@@ -814,6 +851,33 @@ appended after the existing ones), while plain text stays one bare URL per line
 unless `--show-meta` asks otherwise. In plain output the title is quoted, since
 it is the one value that routinely contains spaces.
 
+
+### Authenticated and Custom Requests
+
+`--check-status`, `--extract-links`, `--extract-js-endpoints` and
+`--expand-specs` all re-request collected URLs from the target itself. `-H`
+gives those requests whatever headers they need:
+
+```bash
+urx example.com --check-status -H "Authorization: Bearer $TOKEN"
+urx example.com --extract-links --cookie "session=abc; role=admin"
+urx example.com --check-status --user-agent "acme-security-scan/1.0"
+```
+
+`-H` is repeatable, takes `Name: value`, and a malformed one stops the run
+rather than going out unnoticed — an argument that is silently dropped leaves
+an anonymous scan reading as an authenticated one. `--cookie` and
+`--user-agent` are shorthands for the corresponding headers.
+
+**These headers never reach an archive.** They are sent only by the components
+that talk to the target: the four testers above, plus the `robots` and
+`sitemap` providers, which fetch from the target too. Every other provider
+queries web.archive.org, index.commoncrawl.org or a third-party API, and so
+does `--archive-body` when it replays a capture; handing them the target's
+session cookie would mail a credential to a service that keeps what it
+receives, for no gain. Archive queries keep urx's own User-Agent, which
+`--random-agent` still rotates.
+
 ### Mining Archived Response Bodies
 
 `--extract-links` fetches every collected URL from the live site, which is
@@ -849,6 +913,35 @@ would replay the same bytes, so the same coverage costs one request per
 *distinct body*. `--archive-body-limit` (default 500) bounds distinct bodies,
 not URLs; duplicates never count against it, and `--verbose` reports how many
 were skipped.
+
+
+**Mining archived JavaScript.** A modern app's API surface lives in its bundles
+as string literals, and `--extract-js-endpoints` fetches those from the live
+site — where they are frequently gone. Bundles are named by build hash, so
+`app.a3f9c2.js` 404s the moment the site redeploys, and the endpoints it named
+go with it. Run the two flags together and urx mines the *archived* copy
+instead, and an archived page's inline `<script>` blocks alongside its links:
+
+```bash
+urx example.com --archive-body --extract-js-endpoints
+```
+
+**Keeping the bodies.** The requests are already being made, so writing the
+bodies to disk costs nothing extra and answers the questions no link extractor
+asks: the `<!-- staging.internal -->` comment, the token a 2019 build inlined,
+the stack trace naming a framework version.
+
+```bash
+urx example.com --archive-body --archive-body-dir ./corpus
+grep -ri "api[_-]key" ./corpus
+```
+
+Each file is named after its URL plus a hash of it, and `corpus/index.jsonl`
+maps every file back to its URL, capture timestamp, digest and content type.
+Only text-like bodies are stored — HTML, script, JSON, XML, CSS, plain text —
+so the directory does not fill up with the site's images and fonts. Because the
+fetch is deduplicated by digest, the corpus covers far more of the target per
+request than one response per URL would.
 
 Details worth knowing:
 

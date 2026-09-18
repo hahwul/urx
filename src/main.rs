@@ -156,6 +156,12 @@ async fn collect_urls(
         ));
     }
 
+    if !args.silent {
+        if let Some(note) = app::pipeline::path_scope_note(&domains) {
+            eprintln!("{note}");
+        }
+    }
+
     let (providers, provider_names) = initialize_providers(args, network_settings)?;
 
     *header = Some(
@@ -264,10 +270,9 @@ async fn run_testers(
     if let Some(archive) = body_archive {
         if !args.silent {
             progress_manager.note(format!(
-                "[urx] --archive-body-dir: stored {} response bodies ({}) in {} — see {}/{}",
+                "[urx] --archive-body-dir: stored {} response bodies ({}) in {}; {} maps each file back to its URL",
                 archive.written(),
                 archive.human_bytes(),
-                archive.dir().display(),
                 archive.dir().display(),
                 testers::BodyArchive::INDEX_FILE,
             ));

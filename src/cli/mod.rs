@@ -829,6 +829,67 @@ fn parse_domain_line(line: &str) -> Option<String> {
     }
 }
 
+/// Reduce a user-supplied target to `host` or `host/path`.
+///
+/// A path is *scope*, not noise: `urx example.com/shop` means "the part of
+/// this site under /shop", which a CDX index can answer natively with prefix
+/// matching (`url=example.com/shop*`) instead of shipping the whole index
+/// across the network to be thrown away by a client-side filter. The path was
+/// previously dropped on the floor, so a large target could only be narrowed
+/// after paying for all of it.
+///
+/// What is *not* scope is dropped: a query string, a fragment, and a trailing
+/// slash. `https://example.com/shop/?sort=price#top` and `example.com/shop`
+/// name the same scope, and only the second form is a thing a provider query
+/// can be built from.
+///
+/// Returns `None` when nothing host-like remains.
+pub fn normalize_target(raw: &str) -> Option<String> {
+    let host = normalize_domain(raw)?;
+    match target_path(raw) {
+        Some(path) => Some(format!("{host}{path}")),
+        None => Some(host),
+    }
+}
+
+/// The path-prefix part of a raw target, normalised to a leading slash and no
+/// trailing one, or `None` when the target names a whole host.
+fn target_path(raw: &str) -> Option<String> {
+    let trimmed = strip_bom(raw.trim()).trim();
+    // Everything from the first path separator on, with the scheme and
+    // authority removed first so `https://example.com/shop` and
+    // `example.com/shop` are read alike.
+    let after_authority = if let Some((_, rest)) = trimmed.split_once("://") {
+        rest
+    } else {
+        trimmed.trim_start_matches("//")
+    };
+    let (_, path) = after_authority.split_once('/')?;
+    // A query or fragment narrows a request, not a scope.
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let path = path.trim_end_matches('/');
+    if path.is_empty() {
+        // `example.com/`, `example.com/?x=1` — the apex, not a sub-scope.
+        return None;
+    }
+    Some(format!("/{path}"))
+}
+
+/// Split a target produced by [`normalize_target`] into its host and its
+/// optional path prefix.
+///
+/// Every consumer that needs one half or the other goes through here, so the
+/// two never drift: a provider that cannot express a path prefix in its query
+/// takes the host, and [`crate::filters::HostValidator`] enforces the prefix
+/// afterwards.
+pub fn split_target(target: &str) -> (&str, Option<&str>) {
+    match target.split_once('/') {
+        Some((host, path)) if !path.is_empty() => (host, Some(&target[host.len()..])),
+        Some((host, _)) => (host, None),
+        None => (target, None),
+    }
+}
+
 /// Reduce a user-supplied target to a bare host. People routinely paste a full
 /// URL (`https://example.com/path?q=1`) or `example.com/` as the target; left
 /// as-is those produce a malformed provider query (`url=https://example.com/...`)
@@ -1560,4 +1621,62 @@ mod tests {
         assert!(!provided.has("meta_mime"));
     }
     // --- end result-filters ---
+
+    #[test]
+    fn test_normalize_target_keeps_a_path_as_scope() {
+        assert_eq!(
+            normalize_target("example.com/shop").as_deref(),
+            Some("example.com/shop")
+        );
+        assert_eq!(
+            normalize_target("https://Example.COM/Shop/Cart").as_deref(),
+            Some("example.com/Shop/Cart"),
+            "the host folds case, the path must not: paths are case-sensitive"
+        );
+        assert_eq!(
+            normalize_target("//example.com/shop").as_deref(),
+            Some("example.com/shop")
+        );
+    }
+
+    #[test]
+    fn test_normalize_target_drops_what_is_not_scope() {
+        for raw in [
+            "example.com",
+            "example.com/",
+            "https://example.com/",
+            "example.com/?utm=x",
+            "https://example.com/#top",
+        ] {
+            assert_eq!(
+                normalize_target(raw).as_deref(),
+                Some("example.com"),
+                "{raw} names the whole host"
+            );
+        }
+        // A trailing slash is not a different scope, and a query string
+        // narrows a request rather than a scope.
+        assert_eq!(
+            normalize_target("example.com/shop/?sort=price#top").as_deref(),
+            Some("example.com/shop")
+        );
+    }
+
+    #[test]
+    fn test_normalize_target_rejects_what_has_no_host() {
+        assert_eq!(normalize_target(""), None);
+        assert_eq!(normalize_target("/just/a/path"), None);
+    }
+
+    #[test]
+    fn test_split_target_round_trips_normalize_target() {
+        for (raw, host, path) in [
+            ("example.com", "example.com", None),
+            ("example.com/shop", "example.com", Some("/shop")),
+            ("example.com/a/b", "example.com", Some("/a/b")),
+        ] {
+            let target = normalize_target(raw).unwrap();
+            assert_eq!(split_target(&target), (host, path), "{raw}");
+        }
+    }
 }

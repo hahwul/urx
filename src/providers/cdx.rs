@@ -514,15 +514,11 @@ impl CdxProvider {
         }
     }
 
-    /// The `url=` value: a leading `*.` matches subdomains, a trailing `/*`
-    /// matches the host and all of its paths — the wildcard forms every CDX
-    /// server urx queries honours.
+    /// The `url=` value: a leading `*.` matches subdomains, a trailing `*`
+    /// makes the rest a prefix — the wildcard forms every CDX server urx
+    /// queries honours. See [`super::cdx_url_pattern`].
     fn url_pattern(&self, domain: &str) -> String {
-        if self.include_subdomains {
-            format!("*.{domain}/*")
-        } else {
-            format!("{domain}/*")
-        }
+        super::cdx_url_pattern(domain, self.include_subdomains)
     }
 
     /// The query without pagination parameters, in `dialect`.
@@ -601,6 +597,12 @@ impl CdxProvider {
 }
 
 impl Provider for CdxProvider {
+    /// A CDX query carries the path scope itself; see
+    /// [`super::cdx_url_pattern`].
+    fn accepts_path_scope(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }

@@ -54,12 +54,12 @@ fn cli_domain_inputs(args: &Args, announce: bool) -> Result<Vec<String>> {
     Ok(domains)
 }
 
-/// Reduce each target to a bare host so a pasted full URL or trailing path
-/// doesn't silently corrupt provider queries (a common copy/paste footgun).
-/// Inputs with no recoverable host drop out.
+/// Reduce each target to `host` or `host/path` so a pasted full URL doesn't
+/// silently corrupt provider queries (a common copy/paste footgun) while a
+/// deliberate path scope survives. Inputs with no recoverable host drop out.
 fn normalize_domains(raw: &[String]) -> Vec<String> {
     raw.iter()
-        .filter_map(|d| cli::normalize_domain(d))
+        .filter_map(|d| cli::normalize_target(d))
         .collect()
 }
 
@@ -81,6 +81,33 @@ pub fn collect_domains(args: &Args) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     normalized.retain(|d| seen.insert(d.clone()));
     Ok(normalized)
+}
+
+/// The one-line advisory for a run whose targets carry a path scope, or `None`
+/// when none do.
+///
+/// A path in a target used to be discarded, so `urx https://example.com/shop`
+/// scanned the whole site; it now scans `/shop`. That is the point of the
+/// feature, but it is also a silent narrowing for anyone who habitually pastes
+/// a full URL as the target, and "why did this return 40 URLs" is an expensive
+/// question to have to work out. Saying it once, up front, costs a line.
+pub fn path_scope_note(domains: &[String]) -> Option<String> {
+    let scoped: Vec<&String> = domains
+        .iter()
+        .filter(|d| cli::split_target(d).1.is_some())
+        .collect();
+    if scoped.is_empty() {
+        return None;
+    }
+    let listed: Vec<&str> = scoped.iter().take(3).map(|d| d.as_str()).collect();
+    let more = match scoped.len().saturating_sub(listed.len()) {
+        0 => String::new(),
+        n => format!(" (+{n} more)"),
+    };
+    Some(format!(
+        "[urx] scoped to a path: {}{more} — only URLs under it are collected. Pass just the host for the whole site.",
+        listed.join(", "),
+    ))
 }
 
 /// Read URLs from every `--files` path, or `None` when the flag wasn't used.
@@ -126,12 +153,16 @@ pub fn read_urls_from_files(args: &Args) -> Result<Option<Vec<String>>> {
 /// The domains are normalized exactly the way the fetch targets were, so the
 /// validator's hosts line up with what was actually queried.
 pub fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
-    if !args.strict_enabled() {
-        return Ok(None);
-    }
     let domains = normalize_domains(&cli_domain_inputs(args, false)?);
     if domains.is_empty() {
         return Ok(None);
+    }
+    if !args.strict_enabled() {
+        // `--no-strict` waives the *host* check, not the target's path scope:
+        // `urx example.com/shop --no-strict` still asked for /shop, and a path
+        // prefix is part of what the target is rather than a filter over it.
+        // With no path anywhere, there is nothing left to check.
+        return Ok(HostValidator::paths_only(&domains));
     }
     Ok(Some(HostValidator::new(&domains, args.subs)))
 }
@@ -336,10 +367,15 @@ pub fn apply_url_filters(
             // subdomains under a bare apex query.
             let drops_most = before > 0 && (sorted_urls.is_empty() || removed * 2 > before);
             if drops_most && !args.silent && !args.subs {
-                eprintln!(
-                    "[urx] strict host validation removed {removed}/{before} URLs; \
-                     pass --subs to keep subdomains or --no-strict to keep all hosts"
-                );
+                // With a path scope in play, part of what was removed fell
+                // outside the *path*, and --no-strict does not widen a path
+                // scope — so offering it would send the reader in a circle.
+                let hint = if host_validator.has_path_scopes() {
+                    "pass --subs to keep subdomains, or drop the path from the target to scan the whole site"
+                } else {
+                    "pass --subs to keep subdomains or --no-strict to keep all hosts"
+                };
+                eprintln!("[urx] strict host validation removed {removed}/{before} URLs; {hint}");
             }
 
             verbose_print(
@@ -1211,15 +1247,25 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_domains_normalizes_pasted_urls() -> Result<()> {
+    fn test_collect_domains_keeps_a_path_as_scope_but_drops_the_rest() -> Result<()> {
         let mut args = build_test_args();
         args.domains = vec![
-            "https://example.com/some/path?q=1".to_string(),
+            // A path is scope and survives; the query string and fragment
+            // narrow a request rather than a scope, and go.
+            "https://example.com/some/path?q=1#frag".to_string(),
+            // A bare host, and the two spellings of "the whole host", all
+            // reduce to the same target.
             "example.com".to_string(),
+            "https://example.com/".to_string(),
+            "example.com/?utm=x".to_string(),
+            // A trailing slash does not make a different scope.
+            "example.com/some/path/".to_string(),
         ];
 
-        // Both spellings reduce to the same host, so only one target remains.
-        assert_eq!(collect_domains(&args)?, vec!["example.com"]);
+        assert_eq!(
+            collect_domains(&args)?,
+            vec!["example.com/some/path", "example.com"]
+        );
         Ok(())
     }
 

@@ -476,9 +476,18 @@ pub async fn process_domains(
                         let reporter = Some(reporter);
 
                         // Fetch URLs for this domain using this provider.
+                        // A `host/path` target reaches only the providers whose
+                        // query can express the scope; the rest are handed the
+                        // bare host and their results are narrowed afterwards by
+                        // host validation. See `Provider::accepts_path_scope`.
+                        let query = if provider.accepts_path_scope() {
+                            domain.as_str()
+                        } else {
+                            crate::cli::split_target(&domain).0
+                        };
                         let fetch_start = std::time::Instant::now();
                         let fetch_result = provider
-                            .fetch_urls_with_progress(&domain, reporter.clone())
+                            .fetch_urls_with_progress(query, reporter.clone())
                             .await;
                         let fetch_elapsed = fetch_start.elapsed();
                         match fetch_result {
@@ -1507,5 +1516,75 @@ mod tests {
         .await;
 
         assert!(result.urls.contains_key("https://example.com/page1"));
+    }
+
+    /// Records the exact string each provider was asked to fetch, so a test
+    /// can prove which half of a `host/path` target reached it.
+    #[derive(Clone)]
+    struct QueryRecordingProvider {
+        accepts_path_scope: bool,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Provider for QueryRecordingProvider {
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(self.clone())
+        }
+        fn accepts_path_scope(&self) -> bool {
+            self.accepts_path_scope
+        }
+        fn fetch_urls<'a>(
+            &'a self,
+            domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
+            Box::pin(async move {
+                self.seen.lock().unwrap().push(domain.to_string());
+                Ok(vec![])
+            })
+        }
+        fn with_subdomains(&mut self, _include: bool) {}
+        fn with_proxy(&mut self, _proxy: Option<String>) {}
+        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
+        fn with_timeout(&mut self, _seconds: u64) {}
+        fn with_retries(&mut self, _count: u32) {}
+        fn with_random_agent(&mut self, _enabled: bool) {}
+        fn with_insecure(&mut self, _enabled: bool) {}
+        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    }
+
+    #[tokio::test]
+    async fn a_path_scope_reaches_only_the_providers_that_can_express_it() {
+        // A provider that takes a hostname handed `example.com/shop` would
+        // build a malformed query and quietly return nothing, so the split
+        // has to happen before the call, not inside each provider.
+        let scoped = Arc::new(Mutex::new(Vec::new()));
+        let host_only = Arc::new(Mutex::new(Vec::new()));
+
+        let providers: Vec<Box<dyn Provider>> = vec![
+            Box::new(QueryRecordingProvider {
+                accepts_path_scope: true,
+                seen: Arc::clone(&scoped),
+            }),
+            Box::new(QueryRecordingProvider {
+                accepts_path_scope: false,
+                seen: Arc::clone(&host_only),
+            }),
+        ];
+        let names = vec!["cdx-like".to_string(), "api-like".to_string()];
+        let args = crate::test_support::build_test_args();
+        let progress = ProgressManager::new(true);
+
+        process_domains(
+            vec!["example.com/shop".to_string()],
+            &args,
+            &progress,
+            &providers,
+            &names,
+            None,
+        )
+        .await;
+
+        assert_eq!(scoped.lock().unwrap().as_slice(), ["example.com/shop"]);
+        assert_eq!(host_only.lock().unwrap().as_slice(), ["example.com"]);
     }
 }

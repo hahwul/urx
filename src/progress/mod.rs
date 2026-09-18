@@ -261,10 +261,25 @@ pub struct Notifier {
     sink: NoteSink,
 }
 
+/// Whether a note aimed at `multi` has to go straight to stderr instead.
+///
+/// `MultiProgress::println` draws through the region's draw target, and
+/// indicatif hides that target when stderr is not a terminal — so every
+/// advisory sent that way vanished the moment output was piped, which is
+/// exactly when a scripted run needs to read them. A hidden region is also one
+/// with no line tracking left to desync, which is the reason `println` is
+/// otherwise mandatory here, so the bypass is safe precisely when it is needed.
+fn note_bypasses_region(multi: &MultiProgress) -> bool {
+    multi.is_hidden()
+}
+
 impl Notifier {
     /// Write one line above the live region (or to stderr when there is none).
     pub fn note(&self, msg: impl AsRef<str>) {
         match &self.sink {
+            NoteSink::Region(multi) if note_bypasses_region(multi) => {
+                eprintln!("{}", msg.as_ref())
+            }
             NoteSink::Region(multi) => {
                 let _ = multi.println(msg.as_ref());
             }
@@ -718,5 +733,15 @@ mod tests {
 
         // Test finishing hidden bar
         bar.finish();
+    }
+
+    #[test]
+    fn a_hidden_region_sends_notes_straight_to_stderr() {
+        // The regression this guards: a piped run hides indicatif's draw
+        // target, and `MultiProgress::println` then writes nowhere at all, so
+        // every `[urx] ...` advisory was silently dropped for exactly the
+        // callers that read stderr from a script.
+        let hidden = MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        assert!(note_bypasses_region(&hidden));
     }
 }

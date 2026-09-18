@@ -292,6 +292,32 @@ pub fn normalize_cdx_timestamp(input: &str, end_of_range: bool) -> Option<String
     Some(format!("{year:04}{month}{day}{tail}"))
 }
 
+/// The `url=` value for a CDX query over `target`, which is a bare host or a
+/// `host/path` scope.
+///
+/// A path scope is pushed into the query itself wherever the query can carry
+/// it, which is what makes `urx example.com/shop` cheaper than collecting the
+/// whole site and filtering afterwards: the archive never sends the rows.
+///
+/// Two deliberate imprecisions, both resolved by
+/// [`crate::filters::HostValidator`] afterwards:
+///
+/// - The prefix is spelled `{host}{path}*`, not `{host}{path}/*`, so a capture
+///   of `/shop` itself is returned alongside `/shop/…`. The cost is that
+///   sibling paths sharing the prefix (`/shopping`) come back too. Over-fetching
+///   is a filtering problem; under-fetching would be a missing result.
+/// - With `--subs` the prefix is left out entirely. A leading `*.` selects
+///   `matchType=domain`, which no CDX server combines with a path, so asking
+///   for both would produce an undefined query rather than a narrower one.
+pub fn cdx_url_pattern(target: &str, include_subdomains: bool) -> String {
+    let (host, path) = crate::cli::split_target(target);
+    match (include_subdomains, path) {
+        (true, _) => format!("*.{host}/*"),
+        (false, Some(path)) => format!("{host}{path}*"),
+        (false, None) => format!("{host}/*"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +523,24 @@ mod tests {
         assert!(normalize_cdx_timestamp("1995", false).is_none());
         // Not a date at all
         assert!(normalize_cdx_timestamp("oops", false).is_none());
+    }
+
+    #[test]
+    fn test_cdx_url_pattern_pushes_a_path_scope_into_the_query() {
+        // No scope: byte-identical to what urx has always sent.
+        assert_eq!(cdx_url_pattern("example.com", false), "example.com/*");
+        assert_eq!(cdx_url_pattern("example.com", true), "*.example.com/*");
+
+        // A scope becomes a prefix match, so the archive never sends the rows
+        // outside it.
+        assert_eq!(
+            cdx_url_pattern("example.com/shop", false),
+            "example.com/shop*"
+        );
+
+        // With --subs the prefix is dropped: `*.` selects matchType=domain,
+        // which no CDX server combines with a path. Host validation applies
+        // the scope to the results instead.
+        assert_eq!(cdx_url_pattern("example.com/shop", true), "*.example.com/*");
     }
 }

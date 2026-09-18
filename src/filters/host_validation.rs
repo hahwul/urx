@@ -1,10 +1,35 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
-/// Validates whether URLs have the same host as the provided domains
+/// Validates that a URL is inside the run's targets: on one of their hosts,
+/// and — when a target named a path prefix — under that prefix.
 pub struct HostValidator {
-    domains: HashSet<String>,
+    /// Host to the path prefixes that host was scoped to. An empty list means
+    /// the whole host is in scope, which is the ordinary case.
+    domains: HashMap<String, Vec<String>>,
     include_subdomains: bool,
+    /// Whether the host itself is checked. False only under `--no-strict` with
+    /// a path-scoped target, where the user waived the host check but the path
+    /// scope still stands. A URL on an unrecognised host then passes.
+    enforce_host: bool,
+}
+
+/// Split a target into its host and its optional path prefix, normalising the
+/// host exactly as [`normalize_domain`] does.
+fn split(target: &str) -> Option<(String, Option<String>)> {
+    let (host, path) = crate::cli::split_target(target);
+    Some((normalize_domain(host)?, path.map(str::to_string)))
+}
+
+/// Whether `path` is at or under `prefix`.
+///
+/// `/shop` is in scope for the prefix `/shop`, and so is `/shop/x`; `/shopping`
+/// is not. A prefix match on the raw string alone would accept it, which is
+/// the classic way a path scope leaks — so the boundary has to be a separator
+/// or the end of the path.
+fn path_in_scope(path: &str, prefix: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path == prefix || path.starts_with(&format!("{prefix}/"))
 }
 
 /// Put a target domain into the exact form [`Url::host_str`] would report for
@@ -34,55 +59,127 @@ pub(super) fn normalize_domain(domain: &str) -> Option<String> {
 }
 
 impl HostValidator {
-    /// Create a new host validator with the given domains that can include subdomains
+    /// Create a new host validator with the given targets, which may be bare
+    /// hosts or `host/path` scopes, and which can include subdomains.
     pub fn new(domains: &[String], include_subdomains: bool) -> Self {
-        let normalized_domains: HashSet<String> = domains
-            .iter()
-            .filter_map(|domain| normalize_domain(domain))
-            .collect();
-
         HostValidator {
-            domains: normalized_domains,
+            domains: Self::index(domains),
             include_subdomains,
+            enforce_host: true,
         }
     }
 
-    /// Validate that the URL's host matches one of the provided domains
-    pub fn is_valid_host(&self, url_str: &str) -> bool {
-        if let Ok(url) = Url::parse(url_str) {
-            if let Some(host) = url.host_str() {
-                // Normalize the host for comparison (lowercase and strip trailing dot)
-                let normalized_host = host.to_lowercase();
-                let host_stripped = normalized_host.trim_end_matches('.');
+    /// A validator that enforces only the targets' path scopes, for
+    /// `--no-strict`. `None` when no target named a path, because there is
+    /// then nothing left to check and the caller should skip validation
+    /// entirely.
+    pub fn paths_only(domains: &[String]) -> Option<Self> {
+        let indexed = Self::index(domains);
+        if indexed.values().all(Vec::is_empty) {
+            return None;
+        }
+        Some(HostValidator {
+            domains: indexed,
+            // A path-scoped target implies its subdomains are out of scope
+            // only if the host check runs at all, which here it does not.
+            include_subdomains: false,
+            enforce_host: false,
+        })
+    }
 
-                // Check if the host exactly matches any of our domains
-                if self.domains.contains(host_stripped) {
-                    return true;
+    /// Group the targets by host, collecting each host's path prefixes. A host
+    /// named both bare and with a path is in scope entirely: the broader of
+    /// two overlapping targets wins, exactly as two `--scope-file` includes do.
+    fn index(domains: &[String]) -> HashMap<String, Vec<String>> {
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        let mut unscoped: HashSet<String> = HashSet::new();
+        for target in domains {
+            let Some((host, path)) = split(target) else {
+                continue;
+            };
+            match path {
+                None => {
+                    unscoped.insert(host.clone());
+                    out.insert(host, Vec::new());
                 }
+                Some(path) => {
+                    if unscoped.contains(&host) {
+                        continue;
+                    }
+                    out.entry(host).or_default().push(path);
+                }
+            }
+        }
+        for host in unscoped {
+            out.insert(host, Vec::new());
+        }
+        out
+    }
 
-                if self.include_subdomains {
-                    // If subdomains are allowed, accept any subdomain of a target.
-                    for domain in &self.domains {
-                        if host_stripped.ends_with(&format!(".{domain}")) {
-                            return true;
-                        }
-                    }
-                } else {
-                    // Even in strict (apex-only) mode, treat the conventional
-                    // `www.` host as the apex itself: a site served entirely on
-                    // www.<domain> must not return zero results for a bare
-                    // `<domain>` query. Other subdomains still require --subs.
-                    for domain in &self.domains {
-                        if host_stripped == format!("www.{domain}") {
-                            return true;
-                        }
-                    }
+    /// Whether any target narrowed its host to a path.
+    ///
+    /// Read by the advisory that fires when validation discards most of a
+    /// result: with a path scope in play, "pass --no-strict to keep all hosts"
+    /// is wrong advice, because --no-strict does not widen a path scope.
+    pub fn has_path_scopes(&self) -> bool {
+        self.domains.values().any(|paths| !paths.is_empty())
+    }
+
+    /// Whether `url`'s path is inside the scopes recorded for `host`.
+    fn path_allowed(&self, host: &str, url: &Url) -> bool {
+        match self.domains.get(host) {
+            // An unrecognised host only reaches here with the host check off.
+            None => true,
+            Some(prefixes) if prefixes.is_empty() => true,
+            Some(prefixes) => prefixes
+                .iter()
+                .any(|prefix| path_in_scope(url.path(), prefix)),
+        }
+    }
+
+    /// Validate that the URL is inside one of the run's targets: on a target
+    /// host (unless `--no-strict` waived that) and under that target's path
+    /// prefix, when it named one.
+    pub fn is_valid_host(&self, url_str: &str) -> bool {
+        let Ok(url) = Url::parse(url_str) else {
+            // If we can't parse the URL, consider it invalid
+            return false;
+        };
+        let Some(host) = url.host_str() else {
+            // ...and likewise when it has no host at all
+            return false;
+        };
+        // Normalize the host for comparison (lowercase and strip trailing dot)
+        let normalized_host = host.to_lowercase();
+        let host_stripped = normalized_host.trim_end_matches('.');
+
+        // Check if the host exactly matches any of our domains
+        if self.domains.contains_key(host_stripped) {
+            return self.path_allowed(host_stripped, &url);
+        }
+
+        if self.include_subdomains {
+            // If subdomains are allowed, accept any subdomain of a target.
+            for domain in self.domains.keys() {
+                if host_stripped.ends_with(&format!(".{domain}")) {
+                    return self.path_allowed(domain, &url);
+                }
+            }
+        } else {
+            // Even in strict (apex-only) mode, treat the conventional
+            // `www.` host as the apex itself: a site served entirely on
+            // www.<domain> must not return zero results for a bare
+            // <domain> query. Other subdomains still require --subs.
+            for domain in self.domains.keys() {
+                if host_stripped == format!("www.{domain}") {
+                    return self.path_allowed(domain, &url);
                 }
             }
         }
 
-        // If we can't parse the URL or it has no host, consider it invalid
-        false
+        // An unrecognised host: out of scope in strict mode, and in
+        // paths-only mode nothing was claimed about it either way.
+        !self.enforce_host
     }
 }
 
@@ -247,5 +344,95 @@ mod tests {
         assert!(validator.is_valid_host("https://test.org"));
         assert!(validator.is_valid_host("https://sub.test.org"));
         assert!(validator.is_valid_host("https://sub.test.org."));
+    }
+
+    #[test]
+    fn a_path_scoped_target_admits_only_urls_under_that_path() {
+        let validator = HostValidator::new(&["example.com/shop".to_string()], false);
+
+        // At the prefix, and under it.
+        assert!(validator.is_valid_host("https://example.com/shop"));
+        assert!(validator.is_valid_host("https://example.com/shop/"));
+        assert!(validator.is_valid_host("https://example.com/shop/item?id=1"));
+
+        // The classic way a path scope leaks: a sibling sharing the prefix.
+        // The CDX query returns these (it asks for `example.com/shop*`), so
+        // this check is what actually enforces the scope.
+        assert!(!validator.is_valid_host("https://example.com/shopping"));
+        assert!(!validator.is_valid_host("https://example.com/shop-admin"));
+
+        // Elsewhere on the same host, and on other hosts.
+        assert!(!validator.is_valid_host("https://example.com/about"));
+        assert!(!validator.is_valid_host("https://example.com/"));
+        assert!(!validator.is_valid_host("https://other.test/shop"));
+    }
+
+    #[test]
+    fn a_path_scope_is_case_sensitive_even_though_the_host_is_not() {
+        let validator = HostValidator::new(&["example.com/Shop".to_string()], false);
+        assert!(validator.is_valid_host("https://EXAMPLE.com/Shop/x"));
+        assert!(!validator.is_valid_host("https://example.com/shop/x"));
+    }
+
+    #[test]
+    fn the_broader_of_two_overlapping_targets_wins() {
+        // Naming the host both ways means the whole host was asked for; the
+        // narrower target must not silently cancel the broader one.
+        let validator = HostValidator::new(
+            &["example.com/shop".to_string(), "example.com".to_string()],
+            false,
+        );
+        assert!(validator.is_valid_host("https://example.com/about"));
+
+        // Order must not matter.
+        let validator = HostValidator::new(
+            &["example.com".to_string(), "example.com/shop".to_string()],
+            false,
+        );
+        assert!(validator.is_valid_host("https://example.com/about"));
+    }
+
+    #[test]
+    fn two_scopes_on_one_host_are_a_union() {
+        let validator = HostValidator::new(
+            &[
+                "example.com/shop".to_string(),
+                "example.com/api".to_string(),
+            ],
+            false,
+        );
+        assert!(validator.is_valid_host("https://example.com/shop/x"));
+        assert!(validator.is_valid_host("https://example.com/api/x"));
+        assert!(!validator.is_valid_host("https://example.com/blog"));
+    }
+
+    #[test]
+    fn a_path_scope_applies_to_subdomains_too() {
+        // --subs cannot push the prefix into the CDX query, so everything
+        // under every subdomain comes back and this is the only thing
+        // enforcing the scope.
+        let validator = HostValidator::new(&["example.com/shop".to_string()], true);
+        assert!(validator.is_valid_host("https://cdn.example.com/shop/x"));
+        assert!(!validator.is_valid_host("https://cdn.example.com/about"));
+    }
+
+    #[test]
+    fn paths_only_waives_the_host_check_but_not_the_scope() {
+        // `--no-strict` says "don't drop off-host URLs". It does not say
+        // "ignore the /shop I asked for".
+        let validator =
+            HostValidator::paths_only(&["example.com/shop".to_string()]).expect("a scope exists");
+        assert!(validator.is_valid_host("https://example.com/shop/x"));
+        assert!(!validator.is_valid_host("https://example.com/about"));
+        // An unrecognised host was never claimed either way, so it passes.
+        assert!(validator.is_valid_host("https://other.test/anything"));
+    }
+
+    #[test]
+    fn paths_only_is_nothing_at_all_when_no_target_named_a_path() {
+        // With no scope to enforce there is nothing left to check, and the
+        // caller should skip validation entirely rather than run an
+        // always-true predicate over every URL.
+        assert!(HostValidator::paths_only(&["example.com".to_string()]).is_none());
     }
 }
