@@ -333,6 +333,11 @@ pub fn cdx_url_pattern(target: &str, include_subdomains: bool) -> String {
 /// non-ASCII scope survives at all — and re-encoding its `%` would turn
 /// `/%C3%BCber` into a request for a path literally spelled `%C3%BCber`.
 /// `/` is likewise left alone: it is the path separator the archive matches on.
+///
+/// That the server decodes what we send here is not an assumption: querying
+/// web.archive.org for `url=hahwul.com/%63ullinan*` returns the same rows as
+/// `url=hahwul.com/cullinan*`, so a `%26` in this value reaches the index as
+/// an `&` inside the path rather than as a parameter separator.
 fn encode_url_pattern_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for ch in path.chars() {
