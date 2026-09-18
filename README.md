@@ -247,7 +247,7 @@ Filter Options:
       --strict
           Enforce exact host validation (default)
       --no-strict
-          Disable host validation entirely (keep every URL a provider returns). Wins over --strict
+          Disable host validation (keep URLs on any host a provider returns). Wins over --strict. A target's path scope still applies: only the *host* check is waived
       --scope-file <FILE>
           Bug-bounty scope file: one host pattern per line, `!` to exclude, `*.example.com` for a wildcard (which covers the apex too), `#` for a comment. Repeatable and unioned; exclusions always win. See "Scope Files" below
       --meta-first-seen-after <DATE>

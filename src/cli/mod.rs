@@ -367,8 +367,10 @@ pub struct Args {
     #[clap(long, default_value = "true")]
     pub strict: bool,
 
-    /// Disable host validation entirely (keep every URL a provider returns,
-    /// regardless of host). Convenience inverse of `--strict`; wins over it.
+    /// Disable host validation (keep URLs on any host a provider returns).
+    /// Convenience inverse of `--strict`; wins over it. A target's path scope
+    /// still applies: `example.com/shop` asked for /shop, and only the *host*
+    /// check is waived.
     #[clap(help_heading = "Filter Options")]
     #[clap(long)]
     pub no_strict: bool,

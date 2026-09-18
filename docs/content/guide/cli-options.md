@@ -92,7 +92,7 @@ Filter Options:
       --min-length <MIN_LENGTH>              Minimum URL length
       --max-length <MAX_LENGTH>              Maximum URL length
       --strict                               Enforce exact host validation (default)
-      --no-strict                            Disable host validation entirely (wins over --strict)
+      --no-strict                            Disable host validation; a target's path scope still applies (wins over --strict)
       --scope-file <FILE>                    Bug-bounty scope file of host patterns (`!` excludes, `*.host` wildcard); repeatable
       --meta-first-seen-after <DATE>         Keep URLs whose oldest archived capture is on or after DATE
       --meta-first-seen-before <DATE>        Keep URLs whose oldest archived capture is on or before DATE
