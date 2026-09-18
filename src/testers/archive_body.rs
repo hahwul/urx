@@ -736,6 +736,43 @@ mod tests {
         replay.assert();
     }
 
+    #[test]
+    fn what_counts_as_a_text_body_worth_keeping() {
+        use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+
+        fn typed(ct: &str, url: &str) -> bool {
+            let mut headers = HeaderMap::new();
+            headers.insert(CONTENT_TYPE, HeaderValue::from_str(ct).unwrap());
+            is_text_like(&headers, &Url::parse(url).unwrap())
+        }
+        fn typeless(url: &str) -> bool {
+            is_text_like(&HeaderMap::new(), &Url::parse(url).unwrap())
+        }
+
+        // A declared type decides, and decides against the extension: the
+        // server knows what it served.
+        assert!(typed("text/html; charset=utf-8", "https://e.com/a.png"));
+        assert!(typed("application/json", "https://e.com/a"));
+        assert!(typed("image/svg+xml", "https://e.com/a"));
+        assert!(!typed("image/png", "https://e.com/a.html"));
+        assert!(!typed("font/woff2", "https://e.com/a.css"));
+        assert!(!typed("video/mp4", "https://e.com/a"));
+
+        // No type at all: the extension decides instead.
+        assert!(typeless("https://e.com/app.js"));
+        assert!(typeless("https://e.com/config.json"));
+        assert!(typeless("https://e.com/style.css"));
+        assert!(typeless("https://e.com/notes.txt"));
+        assert!(!typeless("https://e.com/logo.png"));
+        assert!(!typeless("https://e.com/movie.mp4"));
+        assert!(!typeless("https://e.com/bundle.zip"));
+
+        // No type and no extension is a server-rendered page, which is what an
+        // extensionless archived URL almost always is.
+        assert!(typeless("https://e.com/checkout"));
+        assert!(typeless("https://e.com/"));
+    }
+
     // --- archived JS ---
 
     #[tokio::test]
