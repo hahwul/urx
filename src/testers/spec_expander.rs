@@ -31,6 +31,7 @@ use yaml_rust2::yaml::{Yaml, YamlLoader};
 use super::shared::path_extension;
 use super::Tester;
 use crate::network::client::{read_body_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 
 /// Cap on bytes read from one document before parsing.
@@ -552,6 +553,9 @@ pub(super) fn expand_spec_body(url: &Url, kind: BodyKind, body: &str) -> Vec<Str
 pub struct SpecExpander {
     proxy: Option<String>,
     proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
+    /// target itself, so the user's headers belong on those requests.
+    headers: CustomHeaders,
     timeout: u64,
     retries: u32,
     random_agent: bool,
@@ -581,6 +585,7 @@ impl SpecExpander {
         SpecExpander {
             proxy: None,
             proxy_auth: None,
+            headers: CustomHeaders::default(),
             timeout: 30,
             retries: 3,
             random_agent: false,
@@ -611,6 +616,7 @@ impl SpecExpander {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: self.headers.clone(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -745,6 +751,10 @@ impl Tester for SpecExpander {
 
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
+    }
+
+    fn with_headers(&mut self, headers: CustomHeaders) {
+        self.headers = headers;
     }
 }
 

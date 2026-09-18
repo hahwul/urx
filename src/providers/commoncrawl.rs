@@ -9,6 +9,7 @@ use super::cdx::{walk_block_pages, CdxSession};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{Provider, UrlRecord};
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -113,6 +114,7 @@ impl CommonCrawlProvider {
     /// Build an `HttpClientConfig` from the current provider settings.
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,

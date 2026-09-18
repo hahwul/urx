@@ -51,4 +51,14 @@ pub trait Tester: Send + Sync {
 
     /// Set the proxy authentication credentials (username:password)
     fn with_proxy_auth(&mut self, auth: Option<String>);
+
+    /// Send the user's `-H` / `--cookie` / `--user-agent` headers.
+    ///
+    /// The default does nothing, and that is the right default: it is taken by
+    /// every component whose requests go to an *archive* or a third-party API
+    /// rather than to the target. Handing a target's `Authorization` header to
+    /// web.archive.org would mail the user's credentials to a service that
+    /// keeps what it receives, so only the components that fetch from the
+    /// target itself override this. See [`crate::network::CustomHeaders`].
+    fn with_headers(&mut self, _headers: crate::network::CustomHeaders) {}
 }

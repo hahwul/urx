@@ -470,6 +470,29 @@ pub struct Args {
     #[clap(long)]
     pub random_agent: bool,
 
+    /// Extra request header, as "Name: value". Repeatable. Sent only on
+    /// requests urx makes to the *target* — --check-status, --extract-links,
+    /// --extract-js-endpoints, --expand-specs, and the robots/sitemap
+    /// providers — so a session cookie or bearer token for the target is
+    /// never handed to web.archive.org or any other archive.
+    #[clap(help_heading = "Network Options")]
+    #[clap(short = 'H', long = "header", value_name = "NAME: VALUE", action = clap::ArgAction::Append)]
+    pub header: Vec<String>,
+
+    /// Cookie header sent with requests to the target, e.g.
+    /// "session=abc; role=admin". Shorthand for -H "Cookie: ...".
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, value_name = "COOKIES")]
+    pub cookie: Option<String>,
+
+    /// User-Agent sent with requests to the target, overriding urx's default
+    /// and --random-agent for those requests. Shorthand for
+    /// -H "User-Agent: ...", and applies to the same components -H does;
+    /// archive queries keep the tool's own User-Agent either way.
+    #[clap(help_heading = "Network Options")]
+    #[clap(long, value_name = "STRING")]
+    pub user_agent: Option<String>,
+
     /// Request timeout in seconds
     #[clap(help_heading = "Network Options")]
     #[clap(long, default_value = "120", value_parser = validate_positive_timeout)]

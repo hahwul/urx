@@ -53,6 +53,7 @@ use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
 use super::spec_expander::{expand_spec_body, spec_body_kind};
 use super::{JsEndpointExtractor, Tester};
 use crate::network::client::{read_body_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::providers::archived::{replay_url, WAYBACK_ORIGIN};
 
@@ -227,6 +228,7 @@ impl ArchiveBodyExtractor {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -537,6 +539,11 @@ impl Tester for ArchiveBodyExtractor {
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
     }
+
+    /// Deliberately not implemented beyond the no-op default: every request
+    /// this tester makes goes to the Wayback Machine, never to the target, and
+    /// the user's `-H` may well carry the target's session cookie.
+    fn with_headers(&mut self, _headers: CustomHeaders) {}
 }
 
 #[cfg(test)]

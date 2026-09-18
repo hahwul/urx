@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::network::client::{read_body_capped, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 use crate::providers::archived::{
@@ -31,6 +32,9 @@ pub struct RobotsProvider {
     random_agent: bool,
     proxy: Option<String>,
     proxy_auth: Option<String>,
+    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
+    /// target itself, so the user's headers belong on those requests.
+    headers: CustomHeaders,
     insecure: bool,
     rate_limit: Option<RateLimiter>,
     /// When set, this instance reads the *archived* versions of robots.txt
@@ -51,6 +55,7 @@ impl RobotsProvider {
             random_agent: false,
             proxy: None,
             proxy_auth: None,
+            headers: CustomHeaders::default(),
             insecure: false,
             rate_limit: None,
             archived: None,
@@ -88,6 +93,7 @@ impl RobotsProvider {
 
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: self.headers.clone(),
             timeout: self.timeout.as_secs(),
             insecure: self.insecure,
             random_agent: self.random_agent,
@@ -440,6 +446,10 @@ impl Provider for RobotsProvider {
     }
     fn with_proxy_auth(&mut self, auth: Option<String>) {
         self.proxy_auth = auth;
+    }
+
+    fn with_headers(&mut self, headers: CustomHeaders) {
+        self.headers = headers;
     }
     fn with_timeout(&mut self, seconds: u64) {
         self.timeout = Duration::from_secs(seconds);

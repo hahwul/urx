@@ -319,6 +319,10 @@ pub struct NetworkConfig {
     pub proxy_auth: Option<String>,
     pub insecure: Option<bool>,
     pub random_agent: Option<bool>,
+    /// `-H`: `header = ["Name: value", ...]`, or a single string.
+    pub header: Option<OneOrMany>,
+    pub cookie: Option<String>,
+    pub user_agent: Option<String>,
     pub timeout: Option<u64>,
     pub retries: Option<u32>,
     pub parallel: Option<u32>,
@@ -863,6 +867,27 @@ impl Config {
 
         if !args.random_agent && self.network.random_agent.unwrap_or(false) {
             args.random_agent = true;
+        }
+
+        // Headers are additive nowhere: a config file that sets them is a
+        // default, and any -H on the command line replaces the set wholesale,
+        // so a run can always be made anonymous again without editing a file.
+        if args.header.is_empty() {
+            if let Some(header) = &self.network.header {
+                args.header = header.clone().into_vec();
+            }
+        }
+
+        if args.cookie.is_none() {
+            if let Some(cookie) = &self.network.cookie {
+                args.cookie = Some(cookie.clone());
+            }
+        }
+
+        if args.user_agent.is_none() {
+            if let Some(ua) = &self.network.user_agent {
+                args.user_agent = Some(ua.clone());
+            }
         }
 
         if !provided.has("timeout") {
@@ -2040,4 +2065,43 @@ mod tests {
         assert_eq!(args.meta_last_seen_before.as_deref(), Some("2024"));
     }
     // --- end result-filters ---
+
+    #[test]
+    fn test_header_settings_load_from_config_and_yield_to_the_cli() {
+        let content = r#"
+            [network]
+            header = ["X-Env: staging", "X-Team: appsec"]
+            cookie = "session=from-config"
+            user_agent = "urx-config/1"
+        "#;
+        let file = create_temp_config_file(content);
+
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &provided);
+        assert_eq!(args.header, vec!["X-Env: staging", "X-Team: appsec"]);
+        assert_eq!(args.cookie.as_deref(), Some("session=from-config"));
+        assert_eq!(args.user_agent.as_deref(), Some("urx-config/1"));
+
+        // A -H on the command line replaces the configured set wholesale, so a
+        // run can always be made anonymous again without editing the file.
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) =
+            crate::cli::parse_args_from(["urx", "-H", "X-Only: cli", "example.com"]);
+        config.apply_to_args(&mut args, &provided);
+        assert_eq!(args.header, vec!["X-Only: cli"]);
+    }
+
+    #[test]
+    fn test_a_single_header_string_is_accepted_too() {
+        let content = r#"
+            [network]
+            header = "X-Env: staging"
+        "#;
+        let file = create_temp_config_file(content);
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = crate::cli::parse_args_from(["urx", "example.com"]);
+        config.apply_to_args(&mut args, &provided);
+        assert_eq!(args.header, vec!["X-Env: staging"]);
+    }
 }

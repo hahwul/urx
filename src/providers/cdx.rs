@@ -38,6 +38,7 @@ use super::filters::{ArchiveFilters, CdxDialect};
 use super::wayback::split_page;
 use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
 use crate::network::client::{get_with_retry, HttpClientConfig};
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -504,6 +505,7 @@ impl CdxProvider {
     /// Build an `HttpClientConfig` from the current provider settings.
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,

@@ -148,6 +148,9 @@ pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings:
     provider.with_retries(settings.retries);
     provider.with_random_agent(settings.random_agent);
     provider.with_insecure(settings.insecure);
+    // A no-op for every provider that queries an archive; see
+    // `Provider::with_headers`.
+    provider.with_headers(settings.headers.clone());
 
     if let Some(proxy) = &settings.proxy {
         provider.with_proxy(Some(proxy.clone()));

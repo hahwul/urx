@@ -6,6 +6,7 @@ use super::cdx::{walk_resume_key, CdxSession, CLASSIC_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{CaptureMeta, Provider, UrlRecord};
 use crate::network::client::HttpClientConfig;
+use crate::network::CustomHeaders;
 use crate::network::RateLimiter;
 use crate::progress::ProgressReporter;
 
@@ -148,6 +149,7 @@ impl WaybackMachineProvider {
     /// Build an `HttpClientConfig` from the current provider settings.
     fn client_config(&self) -> HttpClientConfig {
         HttpClientConfig {
+            headers: CustomHeaders::default(),
             timeout: self.timeout,
             insecure: self.insecure,
             random_agent: self.random_agent,

@@ -387,7 +387,19 @@ async fn main() -> Result<()> {
         return cache::run_command(&args, command).await;
     }
 
-    let network_settings = NetworkSettings::from_args(&args);
+    let network_settings = NetworkSettings::from_args(&args)?;
+    if !network_settings.headers.is_empty() {
+        // Confirming the headers took effect is the whole reason a user runs
+        // with -v after adding one, and where they go is the part that
+        // surprises people.
+        verbose_print(
+            &args,
+            format!(
+                "Sending {} custom header(s) on requests to the target (archives are queried without them)",
+                network_settings.headers.len()
+            ),
+        );
+    }
     let progress_manager = ProgressManager::new(args.no_progress || args.silent);
 
     // Built before the scan so a rejected option combination fails immediately

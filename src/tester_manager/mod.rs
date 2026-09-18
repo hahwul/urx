@@ -63,6 +63,7 @@ pub fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &Netw
     tester.with_retries(settings.retries);
     tester.with_random_agent(settings.random_agent);
     tester.with_insecure(settings.insecure);
+    tester.with_headers(settings.headers.clone());
 
     if let Some(proxy) = &settings.proxy {
         tester.with_proxy(Some(proxy.clone()));
@@ -812,5 +813,78 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"https://example.com/page2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn custom_headers_reach_the_target_but_never_the_archive() {
+        use crate::network::CustomHeaders;
+        use crate::testers::{ArchiveBodyExtractor, ArchiveCapture, LinkExtractor};
+
+        let settings = NetworkSettings::new().with_headers(
+            CustomHeaders::parse(
+                &["X-Trace: urx".to_string()],
+                Some("session=secret"),
+                Some("urx-test/1"),
+            )
+            .unwrap(),
+        );
+
+        // The link extractor requests URLs from the target, so it must send
+        // them...
+        let mut server = mockito::Server::new_async().await;
+        let target = server
+            .mock("GET", "/page")
+            .match_header("x-trace", "urx")
+            .match_header("cookie", "session=secret")
+            .match_header("user-agent", "urx-test/1")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="/found">x</a>"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut extractor = LinkExtractor::new();
+        apply_network_settings_to_tester(&mut extractor, &settings);
+        let links = extractor
+            .test_url(&format!("{}/page", server.url()))
+            .await
+            .unwrap();
+        assert_eq!(links, vec![format!("{}/found", server.url())]);
+        // Mockito answers 501 when no mock matches, so a missed header would
+        // have produced no links at all. `assert` pins the reason.
+        target.assert();
+
+        // ...and the archive replayer must not: its requests go to the Wayback
+        // Machine, and `session=secret` is the *target's* credential.
+        let mut archive = mockito::Server::new_async().await;
+        let replay = archive
+            .mock("GET", mockito::Matcher::Any)
+            .match_header("cookie", mockito::Matcher::Missing)
+            .match_header("x-trace", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="/archived">x</a>"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut replayer = ArchiveBodyExtractor::new(
+            [(
+                "https://example.com/gone".to_string(),
+                ArchiveCapture {
+                    timestamp: "20200101000000".to_string(),
+                    digest: Some("D1".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            10,
+        );
+        apply_network_settings_to_tester(&mut replayer, &settings);
+        replayer.with_origin(archive.url());
+        let found = replayer.test_url("https://example.com/gone").await.unwrap();
+        assert_eq!(found, vec!["https://example.com/archived".to_string()]);
+        replay.assert();
     }
 }
