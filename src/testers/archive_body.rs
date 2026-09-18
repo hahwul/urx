@@ -466,8 +466,16 @@ impl Tester for ArchiveBodyExtractor {
                         // the user asked for a corpus — JSON, CSS and plain
                         // text hold the comments and credentials that no
                         // extractor looks for — but an image never is.
+                        // `script` is included on its own: `classify` reaches
+                        // that verdict for a `.js` served as
+                        // `application/octet-stream` (misconfigured static
+                        // hosts are full of them), which `is_text_like` refuses
+                        // on the strength of the declared type. Mining a body
+                        // and then leaving it out of the corpus would lose
+                        // exactly the file whose endpoints the run just
+                        // reported.
                         let keep = self.body_archive.is_some()
-                            && is_text_like(response.headers(), &base_url);
+                            && (script || is_text_like(response.headers(), &base_url));
                         if !script && !html && !keep {
                             return Ok(Vec::new());
                         }
@@ -961,6 +969,43 @@ mod tests {
             .await
             .unwrap();
         assert!(links.is_empty(), "{links:?}");
+        assert_eq!(archive.written(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_mined_script_is_stored_even_when_its_declared_type_is_loose() {
+        // Misconfigured static hosts serve bundles as octet-stream. The
+        // extension still makes it script, so it gets mined — and a corpus
+        // missing the very file whose endpoints the run just reported would be
+        // a confusing gap.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/octet-stream")
+            .with_body(r#"fetch("/api/v2/orders");"#)
+            .create_async()
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Arc::new(BodyArchive::create(dir.path().to_path_buf()).unwrap());
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/app.a3f9c2.js",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_extract_js_endpoints(true);
+        ex.with_body_archive(Some(Arc::clone(&archive)));
+
+        let found = ex
+            .test_url("https://example.com/app.a3f9c2.js")
+            .await
+            .unwrap();
+        assert_eq!(found, vec!["https://example.com/api/v2/orders".to_string()]);
         assert_eq!(archive.written(), 1);
     }
 
