@@ -27,9 +27,26 @@ fn split(target: &str) -> Option<(String, Option<String>)> {
 /// is not. A prefix match on the raw string alone would accept it, which is
 /// the classic way a path scope leaks — so the boundary has to be a separator
 /// or the end of the path.
+///
+/// The comparison ignores ASCII case, which is not a guess about the target's
+/// filesystem: a CDX server canonicalises the *whole* URL to lower case when
+/// it builds a urlkey, so `url=example.com/Shop*` and `url=example.com/shop*`
+/// return exactly the same rows — all of them spelled in lower case
+/// (verified against web.archive.org). A case-sensitive check here would
+/// therefore discard every row the archive just returned for a mixed-case
+/// target, and `urx example.com/Shop` would silently produce nothing at all.
+/// Matching the index's own semantics keeps the two ends of the query
+/// agreeing; on a site that really does serve `/Shop` and `/shop` separately,
+/// the cost is that scoping to one also collects the other.
 fn path_in_scope(path: &str, prefix: &str) -> bool {
-    let path = path.trim_end_matches('/');
-    path == prefix || path.starts_with(&format!("{prefix}/"))
+    let path = path.trim_end_matches('/').as_bytes();
+    let prefix = prefix.as_bytes();
+    if path.len() == prefix.len() {
+        return path.eq_ignore_ascii_case(prefix);
+    }
+    path.len() > prefix.len()
+        && path[prefix.len()] == b'/'
+        && path[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
 /// Put a target domain into the exact form [`Url::host_str`] would report for
@@ -368,10 +385,15 @@ mod tests {
     }
 
     #[test]
-    fn a_path_scope_is_case_sensitive_even_though_the_host_is_not() {
+    fn a_path_scope_ignores_case_because_the_cdx_index_does() {
+        // A CDX server lower-cases the whole URL when it builds a urlkey, so
+        // `url=example.com/Shop*` returns rows spelled `/shop...`. Rejecting
+        // those here would make a mixed-case target return nothing at all.
         let validator = HostValidator::new(&["example.com/Shop".to_string()], false);
         assert!(validator.is_valid_host("https://EXAMPLE.com/Shop/x"));
-        assert!(!validator.is_valid_host("https://example.com/shop/x"));
+        assert!(validator.is_valid_host("https://example.com/shop/x"));
+        // The boundary still holds, whatever the case.
+        assert!(!validator.is_valid_host("https://example.com/shopping"));
     }
 
     #[test]

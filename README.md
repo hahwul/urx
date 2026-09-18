@@ -559,8 +559,11 @@ are the results of a `--subs` run, where the `*.host` form and a path prefix
 cannot be combined in one CDX query.
 
 Scope means *at or under* the path: `/shop` and `/shop/cart` are in, `/shopping`
-is not. Paths are matched case-sensitively, unlike hosts. A query string or
-fragment in the target is dropped — those narrow a request, not a scope.
+is not. Case is ignored, because a CDX server lower-cases the whole URL when it
+builds its index key — `example.com/Shop*` and `example.com/shop*` return the
+same rows, all spelled in lower case, so a case-sensitive check would throw
+away everything the archive just returned. A query string or fragment in the
+target is dropped — those narrow a request, not a scope.
 
 > Note: urx used to discard the path from a target, so
 > `urx https://example.com/shop` scanned the whole of `example.com`. It now

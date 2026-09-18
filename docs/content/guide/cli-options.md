@@ -474,7 +474,10 @@ Details worth knowing:
   applied to the results instead.
 - Scope means *at or under* the path: `/shop` and `/shop/cart` are in,
   `/shopping` is not.
-- Paths are matched case-sensitively; hosts are not.
+- Case is ignored. A CDX server lower-cases the whole URL when it builds its
+  index key, so `example.com/Shop*` and `example.com/shop*` return the same
+  rows — all spelled in lower case. Matching case-sensitively here would
+  discard every one of them.
 - A query string or fragment in the target is dropped. Those narrow a request,
   not a scope.
 - `--no-strict` waives the *host* check, not the path scope: it was asked for
