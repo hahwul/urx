@@ -123,17 +123,29 @@ fn meta_refresh_target(element: &Element) -> Option<&str> {
         return None;
     }
 
-    let target = element
-        .attr("content")?
-        .split(';')
-        // The delay carries no '=', so it falls out here without being skipped
-        // positionally — some pages omit it entirely.
-        .find_map(|part| {
-            let (key, value) = part.split_once('=')?;
-            key.trim().eq_ignore_ascii_case("url").then(|| value.trim())
-        })?;
+    let content = element.attr("content")?.trim();
+    // The first semicolon separates the optional delay from the URL. Every
+    // later semicolon belongs to the URL itself (`/page;version=2` is valid),
+    // so splitting the whole value would silently truncate the target.
+    let target = content.split_once(';').map_or(content, |(first, rest)| {
+        // Some pages omit the delay and start directly with `url=`. In that
+        // form, a later semicolon is part of the URL just as it is after the
+        // delay form.
+        let starts_with_url = first
+            .split_once('=')
+            .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("url"));
+        if starts_with_url {
+            content
+        } else {
+            rest.trim()
+        }
+    });
+    let (key, value) = target.split_once('=')?;
+    if !key.trim().eq_ignore_ascii_case("url") {
+        return None;
+    }
 
-    Some(target.trim_matches(['"', '\'']))
+    Some(value.trim().trim_matches(['"', '\'']))
 }
 
 /// HTML link extractor that finds URLs in web pages
@@ -615,6 +627,23 @@ mod tests {
                 LinkExtractor::extract_links(&base_url, html),
                 vec!["https://example.com/next".to_string()],
                 "markup: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_meta_refresh_url_preserves_semicolons_in_target() {
+        let base_url = Url::parse("https://example.com/start").unwrap();
+        for content in [
+            "0; url=/next;version=2",
+            "url=/next;version=2",
+            "0; url='/next;version=2'",
+        ] {
+            let html = format!(r#"<meta http-equiv="refresh" content="{content}">"#);
+            assert_eq!(
+                LinkExtractor::extract_links(&base_url, &html),
+                vec!["https://example.com/next;version=2".to_string()],
+                "content: {content}"
             );
         }
     }

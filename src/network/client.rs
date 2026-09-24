@@ -114,8 +114,10 @@ impl HttpClientConfig {
             let mut proxy = reqwest::Proxy::all(proxy_url)?;
 
             if let Some(auth) = &self.proxy_auth {
-                let username = auth.split(':').next().unwrap_or("");
-                let password = auth.split(':').nth(1).unwrap_or("");
+                // A colon cannot appear in the username, but it can appear in
+                // the password. Split once so `user:p:a:ss` reaches the proxy
+                // intact instead of silently becoming `user:p`.
+                let (username, password) = auth.split_once(':').unwrap_or((auth, ""));
                 proxy = proxy.basic_auth(username, password);
             }
 
@@ -418,6 +420,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reported.status(), 302);
+    }
+
+    #[tokio::test]
+    async fn proxy_auth_preserves_colons_in_the_password() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let proxy = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let n = stream.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let config = HttpClientConfig {
+            proxy: Some(format!("http://{address}")),
+            proxy_auth: Some("user:pass:word".into()),
+            ..Default::default()
+        };
+        let response = config
+            .build_client()
+            .unwrap()
+            .get("http://example.invalid/resource")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+        let request = proxy.await.unwrap();
+        let authorization = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("proxy-authorization")
+                .then_some(value.trim())
+        });
+        assert!(
+            authorization == Some("Basic dXNlcjpwYXNzOndvcmQ="),
+            "proxy did not receive the full user:password credential: {request:?}"
+        );
     }
 
     #[tokio::test]
