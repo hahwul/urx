@@ -325,7 +325,7 @@ async fn read_title(mut response: Response, content_type: Option<&str>) -> Optio
             // rather than throwing away a title we may already hold.
             _ => break,
         }
-        if find_ascii_ci(&body, b"</title").is_some() {
+        if find_html_tag(&body, b"</title").is_some() {
             break;
         }
     }
@@ -341,15 +341,33 @@ fn find_ascii_ci(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
+/// Find a tag prefix only when the tag name ends here. Without the boundary,
+/// `<title-widget>` and `</title-widget>` were mistaken for title tags because
+/// their bytes start with the same prefix.
+fn find_html_tag(haystack: &[u8], tag: &[u8]) -> Option<usize> {
+    let mut offset = 0;
+    while offset <= haystack.len().saturating_sub(tag.len()) {
+        let found = offset + find_ascii_ci(&haystack[offset..], tag)?;
+        if haystack
+            .get(found + tag.len())
+            .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+        {
+            return Some(found);
+        }
+        offset = found + 1;
+    }
+    None
+}
+
 /// The text of the first `<title>` element, whitespace collapsed, entities
 /// decoded, cut to [`TITLE_MAX_CHARS`]. `None` when there is no complete title
 /// element or it holds nothing but whitespace.
 fn extract_html_title(body: &[u8]) -> Option<String> {
-    let open = find_ascii_ci(body, b"<title")?;
+    let open = find_html_tag(body, b"<title")?;
     // `<title>` may carry attributes, so the text starts after the tag's own
     // closing angle bracket, not at a fixed offset.
     let text_start = open + body[open..].iter().position(|b| *b == b'>')? + 1;
-    let text_end = text_start + find_ascii_ci(&body[text_start..], b"</title")?;
+    let text_end = text_start + find_html_tag(&body[text_start..], b"</title")?;
 
     let raw = String::from_utf8_lossy(&body[text_start..text_end]);
     let collapsed = decode_entities(&raw)
@@ -776,6 +794,16 @@ mod tests {
         assert_eq!(extract_html_title(b"<html><body>no head</body>"), None);
         assert_eq!(extract_html_title(b"<title>never closed"), None);
         assert_eq!(extract_html_title(b"<title>   </title>"), None);
+    }
+
+    #[test]
+    fn test_extract_html_title_requires_a_tag_name_boundary() {
+        assert_eq!(
+            extract_html_title(
+                b"<title-widget>not the page title</title-widget><title>Actual title</title>"
+            ),
+            Some("Actual title".to_string())
+        );
     }
 
     #[test]
