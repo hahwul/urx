@@ -20,7 +20,7 @@ impl FileReader for TextFileReader {
         // Bounded like every other reader: `--files` takes whatever it is
         // pointed at, and a plain-text list is the densest possible source of
         // URL lines.
-        let (urls, url_capped, byte_capped) =
+        let (urls, url_capped, byte_capped, _, line_capped) =
             super::collect_capped(file, super::MAX_FILE_URLS, super::MAX_FILE_BYTES, |line| {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -39,6 +39,7 @@ impl FileReader for TextFileReader {
             file_path,
             url_capped,
             byte_capped,
+            line_capped,
             super::MAX_FILE_URLS,
             super::MAX_FILE_BYTES,
         );
@@ -90,6 +91,19 @@ mod tests {
             urls,
             vec!["https://example.com/first", "https://example.com/second"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_oversized_url_line_is_skipped_instead_of_returning_a_prefix() -> Result<()> {
+        let mut temp_file = NamedTempFile::new()?;
+        temp_file.write_all(b"https://example.com/")?;
+        temp_file.write_all(&vec![b'a'; super::super::MAX_LINE_BYTES + 1])?;
+        temp_file.write_all(b"\nhttps://example.net/complete\n")?;
+        temp_file.flush()?;
+
+        let urls = TextFileReader::new().read_urls(temp_file.path())?;
+        assert_eq!(urls, vec!["https://example.net/complete"]);
         Ok(())
     }
 

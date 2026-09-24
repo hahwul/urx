@@ -20,11 +20,16 @@ const BOM: &[u8] = b"\xef\xbb\xbf";
 
 /// Call `f` for each line of `reader`, decoding lossily so binary content
 /// (common inside WARC response bodies) doesn't abort the whole read the way
-/// `BufRead::lines()` does on invalid UTF-8. Lines longer than
-/// `MAX_LINE_BYTES` are truncated and the remainder skipped.
-fn for_each_line_lossy<R: BufRead>(mut reader: R, mut f: impl FnMut(&str)) -> std::io::Result<()> {
+/// `BufRead::lines()` does on invalid UTF-8. The boolean says whether the line
+/// ended with a newline. Overlong lines are skipped whole instead of exposing
+/// a truncated prefix to URL extraction.
+fn for_each_line_lossy<R: BufRead>(
+    mut reader: R,
+    mut f: impl FnMut(&str, bool),
+) -> std::io::Result<bool> {
     let mut buf = Vec::with_capacity(8 * 1024);
     let mut first_line = true;
+    let mut line_capped = false;
     loop {
         buf.clear();
         let n = reader
@@ -34,7 +39,8 @@ fn for_each_line_lossy<R: BufRead>(mut reader: R, mut f: impl FnMut(&str)) -> st
         if n == 0 {
             break;
         }
-        let hit_cap = n == MAX_LINE_BYTES && buf.last() != Some(&b'\n');
+        let terminated = buf.last() == Some(&b'\n');
+        let hit_cap = n == MAX_LINE_BYTES && !terminated;
         let mut bytes = &buf[..];
         if first_line {
             first_line = false;
@@ -46,12 +52,15 @@ fn for_each_line_lossy<R: BufRead>(mut reader: R, mut f: impl FnMut(&str)) -> st
             }
         }
         let line = String::from_utf8_lossy(bytes);
-        f(line.trim_end_matches(['\n', '\r']));
+        if !hit_cap {
+            f(line.trim_end_matches(['\n', '\r']), terminated);
+        }
         if hit_cap {
+            line_capped = true;
             skip_to_newline(&mut reader)?;
         }
     }
-    Ok(())
+    Ok(line_capped)
 }
 
 /// Discard input up to and including the next newline (or EOF).
@@ -92,43 +101,108 @@ pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// number of bytes consumed. `extract` turns one line into a URL, or `None` if
 /// the line carries none.
 ///
-/// Returns the URLs plus flags for whether the URL cap or the byte cap was hit,
-/// so the caller can tell the user the results were truncated instead of
-/// silently returning a partial list.
+/// Returns the URLs, cap flags, and whether an accepted URL came from an
+/// unterminated final line. The last flag lets compressed readers discard that
+/// one URL if decompression later reports that the stream was damaged.
 ///
 /// The byte bound is enforced with `Read::take`, which caps the stream no matter
-/// how a compressed source expands — that is the decompression-bomb guard. One
-/// byte past the cap is allowed so a file that is *exactly* `max_bytes` long
-/// isn't falsely flagged.
+/// how a compressed source expands — that is the decompression-bomb guard. When
+/// the limit is reached, one additional byte is probed only to distinguish an
+/// exact-size input from a truncated one; that byte is never parsed.
 pub(crate) fn collect_capped<R: Read>(
-    src: R,
+    mut src: R,
     max_urls: usize,
     max_bytes: u64,
     mut extract: impl FnMut(&str) -> Option<String>,
-) -> std::io::Result<(Vec<String>, bool, bool)> {
-    let mut limited = src.take(max_bytes.saturating_add(1));
+) -> std::io::Result<(Vec<String>, bool, bool, bool, bool)> {
     let mut urls = Vec::new();
     let mut url_capped = false;
 
-    for_each_line_lossy(std::io::BufReader::new(&mut limited), |line| {
+    let mut collect_line = |line: &str| -> bool {
         if let Some(url) = extract(line) {
             if urls.len() >= max_urls {
-                // Stop collecting; the `take` bound still drains the rest so we
-                // never read more than `max_bytes (+1)` total. The flag is set
-                // only once a real URL is dropped — testing the cap before
-                // extraction reported "truncated" for a file that merely ended
-                // in a blank or comment line.
+                // Stop collecting; the byte bound still drains the rest so we
+                // never parse beyond `max_bytes`. The flag is set only once a
+                // real URL is dropped — testing before extraction reported
+                // "truncated" for a trailing blank line.
                 url_capped = true;
-                return;
+                false
+            } else {
+                urls.push(url);
+                true
             }
-            urls.push(url);
+        } else {
+            false
         }
-    })?;
+    };
 
-    // `limit()` is the unused remainder of the (max_bytes + 1) allowance; a
-    // remainder of 0 means the source ran past the cap and was truncated.
-    let byte_capped = limited.limit() == 0;
-    Ok((urls, url_capped, byte_capped))
+    let (reached_byte_limit, final_fragment, line_capped) = {
+        let mut limited = src.by_ref().take(max_bytes);
+        let mut final_fragment = None;
+        let line_capped =
+            for_each_line_lossy(std::io::BufReader::new(&mut limited), |line, terminated| {
+                if terminated {
+                    let _ = collect_line(line);
+                } else {
+                    // The last fragment may be a real final line without a newline,
+                    // or merely the part of a line cut off at the byte cap. Decide
+                    // after probing the source once beyond the cap.
+                    final_fragment = Some(line.to_string());
+                }
+            })?;
+        (limited.limit() == 0, final_fragment, line_capped)
+    };
+
+    let byte_capped = if reached_byte_limit {
+        let mut probe = [0u8; 1];
+        src.read(&mut probe)? != 0
+    } else {
+        false
+    };
+    let mut final_fragment_url = false;
+    if !byte_capped {
+        if let Some(line) = final_fragment {
+            final_fragment_url = collect_line(&line);
+        }
+    }
+
+    Ok((
+        urls,
+        url_capped,
+        byte_capped,
+        final_fragment_url,
+        line_capped,
+    ))
+}
+
+/// Turn a decompression error into EOF while retaining the error for a warning.
+/// This keeps complete records decoded before a damaged gzip trailer.
+pub(crate) struct StopOnDecodeError<R> {
+    inner: R,
+    error: Option<std::io::Error>,
+}
+
+impl<R: Read> StopOnDecodeError<R> {
+    pub(crate) fn new(inner: R) -> Self {
+        Self { inner, error: None }
+    }
+}
+
+impl<R: Read> Read for StopOnDecodeError<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.error.is_some() {
+            return Ok(0);
+        }
+        match self.inner.read(buf) {
+            Ok(n) => Ok(n),
+            // Interrupted is retryable and not a decode failure.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Err(e),
+            Err(e) => {
+                self.error = Some(e);
+                Ok(0)
+            }
+        }
+    }
 }
 
 /// Tell the user on stderr when a read stopped early. Truncation is rare and
@@ -137,6 +211,7 @@ pub(crate) fn warn_if_truncated(
     file_path: &Path,
     url_capped: bool,
     byte_capped: bool,
+    line_capped: bool,
     max_urls: usize,
     max_bytes: u64,
 ) {
@@ -146,11 +221,19 @@ pub(crate) fn warn_if_truncated(
             file_path.display(),
             max_urls
         );
-    } else if byte_capped {
+    }
+    if byte_capped {
         eprintln!(
             "[urx] {}: stopped after {} bytes read (possible decompression bomb); results truncated",
             file_path.display(),
             max_bytes
+        );
+    }
+    if line_capped {
+        eprintln!(
+            "[urx] {}: skipped one or more lines longer than {} bytes; results may be incomplete",
+            file_path.display(),
+            MAX_LINE_BYTES
         );
     }
 }
@@ -171,26 +254,26 @@ pub enum FileFormat {
 
 /// Auto-detect file format based on file extension and content
 pub fn detect_file_format(file_path: &Path) -> Result<FileFormat> {
-    // First try to detect based on file extension
+    let filename = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Explicit format extensions take precedence over filename clues.
     if let Some(extension) = file_path.extension() {
         let ext = extension.to_string_lossy().to_lowercase();
 
         match ext.as_str() {
             "warc" => return Ok(FileFormat::Warc),
             "gz" | "bz2" => {
-                // For compressed files, check if it's likely URLTeam format
-                // URLTeam files typically have names containing "urlteam" or similar patterns
-                let filename = file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-
-                if filename.contains("urlteam") || filename.contains("url_team") {
-                    return Ok(FileFormat::UrlTeam);
+                // Compression extensions do not identify the archive format.
+                // Use the WARC filename clue before the URLTeam default.
+                if filename.contains("warc") {
+                    return Ok(FileFormat::Warc);
                 }
 
-                // For other .gz/.bz2 files, default to URLTeam format
+                // Compressed files without a WARC clue default to URLTeam.
                 return Ok(FileFormat::UrlTeam);
             }
             "txt" | "list" => return Ok(FileFormat::Text),
@@ -198,13 +281,7 @@ pub fn detect_file_format(file_path: &Path) -> Result<FileFormat> {
         }
     }
 
-    // If extension doesn't help, check filename patterns
-    let filename = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
+    // For unknown or missing extensions, fall back to filename patterns.
     if filename.contains("warc") {
         return Ok(FileFormat::Warc);
     }
@@ -252,6 +329,15 @@ mod tests {
 
         let path = PathBuf::from("some_warc_file.dat");
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+
+        let path = PathBuf::from("some_warc_file.gz");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+
+        let path = PathBuf::from("foo.warc.gz");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+
+        let path = PathBuf::from("crawl-warc.dat");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
     }
 
     #[test]
@@ -274,6 +360,12 @@ mod tests {
         let path = PathBuf::from("list.list");
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
 
+        let path = PathBuf::from("warc-targets.txt");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+
+        let path = PathBuf::from("my_warc_urls.list");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+
         let path = PathBuf::from("unknown_file");
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
     }
@@ -284,24 +376,27 @@ mod tests {
         // the read; subsequent valid lines still come through.
         let data = b"https://example.com/a\n\xff\xfe\x00binary\nhttps://example.com/b\n";
         let mut lines = Vec::new();
-        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        for_each_line_lossy(&data[..], |line, _| lines.push(line.to_string())).unwrap();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], "https://example.com/a");
         assert_eq!(lines[2], "https://example.com/b");
     }
 
     #[test]
-    fn test_for_each_line_lossy_caps_long_lines() {
-        // One enormous "line" is truncated at the cap and skipped to the next
-        // newline instead of buffering it all in memory.
+    fn test_for_each_line_lossy_skips_overlong_lines() {
+        // One enormous "line" is skipped whole instead of exposing a truncated
+        // prefix to the URL extractor or buffering the rest in memory.
         let mut data = vec![b'x'; MAX_LINE_BYTES * 2];
         data.push(b'\n');
         data.extend_from_slice(b"https://example.com/after\n");
         let mut lines = Vec::new();
-        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].len(), MAX_LINE_BYTES);
-        assert_eq!(lines[1], "https://example.com/after");
+        let line_capped =
+            for_each_line_lossy(&data[..], |line, _| lines.push(line.to_string())).unwrap();
+        assert_eq!(lines, vec!["https://example.com/after"]);
+        assert!(
+            line_capped,
+            "the skipped line should be reported to the caller"
+        );
     }
 
     #[test]
@@ -311,7 +406,7 @@ mod tests {
         // reader dropped that URL without a word.
         let data = b"\xef\xbb\xbfhttps://example.com/a\nhttps://example.com/b\n";
         let mut lines = Vec::new();
-        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        for_each_line_lossy(&data[..], |line, _| lines.push(line.to_string())).unwrap();
         assert_eq!(
             lines,
             vec!["https://example.com/a", "https://example.com/b"]
@@ -323,7 +418,7 @@ mod tests {
         // A BOM-looking sequence later in the file is data, not a marker.
         let data = "a\n\u{feff}b\n".as_bytes();
         let mut lines = Vec::new();
-        for_each_line_lossy(data, |line| lines.push(line.to_string())).unwrap();
+        for_each_line_lossy(data, |line, _| lines.push(line.to_string())).unwrap();
         assert_eq!(lines, vec!["a", "\u{feff}b"]);
     }
 
@@ -333,7 +428,7 @@ mod tests {
         // exactly `max_urls` URLs followed by a blank or comment line reported
         // "results truncated" while nothing had been dropped.
         let data = b"https://example.com/a\nhttps://example.com/b\n\n# done\n";
-        let (urls, url_capped, _) = collect_capped(&data[..], 2, MAX_FILE_BYTES, |line| {
+        let (urls, url_capped, _, _, _) = collect_capped(&data[..], 2, MAX_FILE_BYTES, |line| {
             let t = line.trim();
             (t.starts_with("http://") || t.starts_with("https://")).then(|| t.to_string())
         })
@@ -343,7 +438,7 @@ mod tests {
 
         // A third URL past the cap is a genuine truncation.
         let data = b"https://example.com/a\nhttps://example.com/b\nhttps://example.com/c\n";
-        let (urls, url_capped, _) = collect_capped(&data[..], 2, MAX_FILE_BYTES, |line| {
+        let (urls, url_capped, _, _, _) = collect_capped(&data[..], 2, MAX_FILE_BYTES, |line| {
             let t = line.trim();
             (t.starts_with("http://") || t.starts_with("https://")).then(|| t.to_string())
         })
@@ -353,10 +448,99 @@ mod tests {
     }
 
     #[test]
+    fn test_byte_cap_drops_an_unterminated_partial_url() {
+        let complete = b"https://example.com/complete\n";
+        let partial = b"https://example.net/partial\n";
+        let mut data = complete.to_vec();
+        data.extend_from_slice(partial);
+        let max_bytes = (complete.len() + 12) as u64;
+
+        let (urls, _, byte_capped, _, _) = collect_capped(&data[..], 10, max_bytes, |line| {
+            let trimmed = line.trim();
+            (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+                .then(|| trimmed.to_string())
+        })
+        .unwrap();
+
+        assert!(byte_capped);
+        assert_eq!(urls, vec!["https://example.com/complete"]);
+    }
+
+    #[test]
+    fn test_exact_byte_cap_keeps_an_unterminated_final_url() {
+        let data = b"https://example.com/final";
+        let (urls, url_capped, byte_capped, final_fragment_url, _) =
+            collect_capped(&data[..], 10, data.len() as u64, |line| {
+                let trimmed = line.trim();
+                (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+                    .then(|| trimmed.to_string())
+            })
+            .unwrap();
+
+        assert_eq!(urls, vec!["https://example.com/final"]);
+        assert!(!url_capped);
+        assert!(!byte_capped);
+        assert!(final_fragment_url);
+    }
+
+    #[test]
+    fn test_compressed_warc_uses_warc_extraction_rules() -> Result<()> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let first_record = concat!(
+            "WARC/1.0\n",
+            "WARC-Type: response\n",
+            "WARC-Target-URI: https://example.com/archive\n",
+            "Content-Length: 80\n\n",
+            "body text mentioning https://example.net/inline\n",
+        );
+        let second_record = concat!(
+            "WARC/1.0\n",
+            "WARC-Type: response\n",
+            "WARC-Target-URI: https://example.org/second\n\n",
+        );
+        let warc = format!("{first_record}{second_record}");
+        let plain = tempfile::Builder::new().suffix(".warc").tempfile()?;
+        std::fs::write(plain.path(), &warc)?;
+        let compressed = tempfile::Builder::new().suffix(".warc.gz").tempfile()?;
+        let mut compressed_members = Vec::new();
+        for record in [first_record, second_record] {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(record.as_bytes())?;
+            compressed_members.extend_from_slice(&encoder.finish()?);
+        }
+        std::fs::write(compressed.path(), compressed_members)?;
+
+        let plain_urls = read_urls_from_file(plain.path())?;
+        let compressed_urls = read_urls_from_file(compressed.path())?;
+        assert_eq!(compressed_urls, plain_urls);
+        assert_eq!(
+            plain_urls,
+            vec!["https://example.com/archive", "https://example.org/second"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_compressed_warc_bzip2_is_reported_as_unsupported() -> Result<()> {
+        let compressed = tempfile::Builder::new().suffix(".warc.bz2").tempfile()?;
+        std::fs::write(compressed.path(), b"BZh91AY&SY\0\0\0\0")?;
+
+        assert_eq!(detect_file_format(compressed.path())?, FileFormat::Warc);
+        let error = read_urls_from_file(compressed.path()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("bzip2 WARC input is not supported"));
+        Ok(())
+    }
+
+    #[test]
     fn test_for_each_line_lossy_no_trailing_newline() {
         let data = b"https://example.com/a\nhttps://example.com/b";
         let mut lines = Vec::new();
-        for_each_line_lossy(&data[..], |line| lines.push(line.to_string())).unwrap();
+        for_each_line_lossy(&data[..], |line, _| lines.push(line.to_string())).unwrap();
         assert_eq!(
             lines,
             vec!["https://example.com/a", "https://example.com/b"]

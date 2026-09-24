@@ -5,43 +5,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use super::{MAX_FILE_BYTES, MAX_FILE_URLS};
-
-/// Turns a mid-stream read failure into a clean end of input, remembering it so
-/// the caller can say what happened.
-///
-/// A truncated `.gz` — an interrupted download, an archive cut short — used to
-/// abort the whole read with "unexpected end of file", discarding every URL
-/// already decoded. The bytes that *did* decompress are perfectly good results;
-/// the same goes for trailing junk after the final gzip member, which
-/// [`MultiGzDecoder`] reports as a bad header rather than ignoring.
-struct StopOnDecodeError<R> {
-    inner: R,
-    error: Option<std::io::Error>,
-}
-
-impl<R: Read> StopOnDecodeError<R> {
-    fn new(inner: R) -> Self {
-        Self { inner, error: None }
-    }
-}
-
-impl<R: Read> Read for StopOnDecodeError<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.error.is_some() {
-            return Ok(0);
-        }
-        match self.inner.read(buf) {
-            Ok(n) => Ok(n),
-            // Interrupted is retryable and not a decode failure.
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Err(e),
-            Err(e) => {
-                self.error = Some(e);
-                Ok(0)
-            }
-        }
-    }
-}
+use super::{StopOnDecodeError, MAX_FILE_BYTES, MAX_FILE_URLS};
 
 /// Reader for URLTeam compressed files (typically gzip format)
 pub struct UrlTeamFileReader {
@@ -102,7 +66,7 @@ impl UrlTeamFileReader {
         src: R,
         max_urls: usize,
         max_bytes: u64,
-    ) -> std::io::Result<(Vec<String>, bool, bool)> {
+    ) -> std::io::Result<(Vec<String>, bool, bool, bool, bool)> {
         super::collect_capped(src, max_urls, max_bytes, |line| {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -126,7 +90,7 @@ impl FileReader for UrlTeamFileReader {
         let file = File::open(file_path)
             .with_context(|| format!("Failed to open URLTeam file: {}", file_path.display()))?;
 
-        let (urls, url_capped, byte_capped) = if Self::is_gzip(file_path)? {
+        let (urls, url_capped, byte_capped, _, line_capped) = if Self::is_gzip(file_path)? {
             // File is gzip compressed: bound the *decompressed* stream.
             //
             // MultiGzDecoder, not GzDecoder: gzip members concatenate, and both
@@ -135,13 +99,23 @@ impl FileReader for UrlTeamFileReader {
             // returned the first record's URLs and silently dropped the rest.
             let mut src = StopOnDecodeError::new(MultiGzDecoder::new(file));
             let collected = Self::collect_capped(&mut src, self.max_urls, self.max_bytes);
-            if let Some(e) = src.error {
-                eprintln!(
-                    "[urx] {}: gzip stream ended early ({e}); keeping the URLs decoded so far",
-                    file_path.display()
-                );
-            }
-            collected
+            let decode_error = src.error;
+            collected.map(
+                |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
+                if let Some(error) = decode_error {
+                    eprintln!(
+                        "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
+                        file_path.display()
+                    );
+                    // A URL without its terminating newline may be the partial
+                    // record at the damaged end of the compressed stream.
+                    if final_fragment_url {
+                        urls.pop();
+                    }
+                }
+                    (urls, url_capped, byte_capped, false, line_capped)
+                },
+            )
         } else {
             // File is not compressed, read as plain text.
             Self::collect_capped(file, self.max_urls, self.max_bytes)
@@ -152,6 +126,7 @@ impl FileReader for UrlTeamFileReader {
             file_path,
             url_capped,
             byte_capped,
+            line_capped,
             self.max_urls,
             self.max_bytes,
         );
@@ -349,6 +324,20 @@ mod tests {
     }
 
     #[test]
+    fn test_truncated_gzip_discards_a_partial_final_url() -> Result<()> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"https://example.com/complete\nhttps://example.com/partial")?;
+        let full = encoder.finish()?;
+        let truncated = NamedTempFile::new()?;
+        // Drop part of the gzip trailer after all URL bytes were produced.
+        std::fs::write(truncated.path(), &full[..full.len() - 4])?;
+
+        let urls = UrlTeamFileReader::new().read_urls(truncated.path())?;
+        assert_eq!(urls, vec!["https://example.com/complete"]);
+        Ok(())
+    }
+
+    #[test]
     fn test_trailing_garbage_after_the_last_member_is_not_fatal() -> Result<()> {
         // MultiGzDecoder reports junk after the final member as a bad header;
         // that must not lose the members that decoded cleanly.
@@ -422,8 +411,9 @@ mod tests {
             interrupts_left: 0,
         });
 
-        let (urls, _, _) = UrlTeamFileReader::collect_capped(&mut src, MAX_FILE_URLS, 1 << 20)
-            .expect("a decode failure must not surface as an error");
+        let (urls, _, _, _, _) =
+            UrlTeamFileReader::collect_capped(&mut src, MAX_FILE_URLS, 1 << 20)
+                .expect("a decode failure must not surface as an error");
         assert_eq!(
             urls,
             vec!["https://example.com/a", "https://example.com/b"],
@@ -485,13 +475,13 @@ mod tests {
     #[test]
     fn test_no_truncation_when_under_caps() -> Result<()> {
         // A small, legitimate file under both caps is read in full and not
-        // falsely flagged (the +1 byte allowance guards the exact-size edge).
+        // falsely flagged (the one-byte probe only observes data after the cap).
         let mut temp_file = NamedTempFile::new()?;
         writeln!(temp_file, "https://example.com/a")?;
         writeln!(temp_file, "https://example.com/b")?;
         temp_file.flush()?;
 
-        let (urls, url_capped, byte_capped) =
+        let (urls, url_capped, byte_capped, _, _) =
             UrlTeamFileReader::collect_capped(File::open(temp_file.path())?, 1000, 1024)?;
         assert_eq!(urls.len(), 2);
         assert!(!url_capped);

@@ -88,8 +88,10 @@ impl PlainFormatter {
 
 impl Formatter for PlainFormatter {
     fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
+        let url = escape_plain_field(&url_data.url);
         let mut line = match &url_data.status {
             Some(status) => {
+                let status = escape_plain_field(status);
                 let status_code_str = status.split_whitespace().next().unwrap_or("");
                 let colored_status = match status_code_str.parse::<u16>() {
                     Ok(code) => match code {
@@ -101,12 +103,13 @@ impl Formatter for PlainFormatter {
                     },
                     Err(_) => status.normal(),
                 };
-                format!("{} [{}]", url_data.url, colored_status)
+                format!("{url} [{colored_status}]")
             }
-            None => url_data.url.clone(),
+            None => url,
         };
         if !url_data.sources.is_empty() {
-            line.push_str(&format!(" [{}]", url_data.sources.join(",").cyan()));
+            let sources = escape_plain_field(&url_data.sources.join(","));
+            line.push_str(&format!(" [{}]", sources.cyan()));
         }
         // Only reached when `--show-meta` asked for it: the caller leaves these
         // fields empty otherwise, so plain output stays a stable pipeline
@@ -251,12 +254,31 @@ fn plain_meta(url_data: &UrlData) -> String {
     ];
     let mut parts: Vec<String> = fields
         .iter()
-        .filter_map(|(name, value)| value.map(|v| format!("{name}={v}")))
+        .filter_map(|(name, value)| value.map(|v| format!("{name}={}", escape_plain_field(v))))
         .collect();
     if let Some(title) = &url_data.title {
         parts.push(format!("title={title:?}"));
     }
     parts.join(" ")
+}
+
+/// Keep plain output to one record per physical line even when an input URL,
+/// response status, or header contains raw control characters.
+fn escape_plain_field(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if c.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(escaped, "\\u{{{:x}}}", c as u32);
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 /// The optional CSV columns, in output order. `url` is always first and is not
@@ -771,6 +793,20 @@ mod tests {
         let formatter = PlainFormatter::new();
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(formatter.format(&url_data, true), "https://example.com\n");
+    }
+
+    #[test]
+    fn test_plain_output_escapes_line_breaks_in_untrusted_fields() {
+        let formatter = PlainFormatter::new();
+        let mut data = UrlData::with_status(
+            "https://example.com/path\nhttps://injected.example/".to_string(),
+            "200 OK\r\n500 Injected".to_string(),
+        );
+        data.content_type = Some("text/html\ninjected=value".to_string());
+
+        let output = formatter.format(&data, true);
+        assert_eq!(output.matches('\n').count(), 1, "{output:?}");
+        assert!(!output[..output.len() - 1].contains('\r'), "{output:?}");
     }
 
     /// A record carrying everything a live `--check-status` response reports.
