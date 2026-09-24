@@ -260,33 +260,20 @@ pub fn detect_file_format(file_path: &Path) -> Result<FileFormat> {
         .unwrap_or("")
         .to_lowercase();
 
-    // WARC filename clues must be checked before the generic compressed
-    // archive rule below, or a compressed WARC is sent through URLTeam token
-    // parsing.
-    if filename.contains("warc") {
-        return Ok(FileFormat::Warc);
-    }
-
-    // First try to detect based on file extension
+    // Explicit format extensions take precedence over filename clues.
     if let Some(extension) = file_path.extension() {
         let ext = extension.to_string_lossy().to_lowercase();
 
         match ext.as_str() {
             "warc" => return Ok(FileFormat::Warc),
             "gz" | "bz2" => {
-                // For compressed files, check if it's likely URLTeam format
-                // URLTeam files typically have names containing "urlteam" or similar patterns
-                let filename = file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-
-                if filename.contains("urlteam") || filename.contains("url_team") {
-                    return Ok(FileFormat::UrlTeam);
+                // Compression extensions do not identify the archive format.
+                // Use the WARC filename clue before the URLTeam default.
+                if filename.contains("warc") {
+                    return Ok(FileFormat::Warc);
                 }
 
-                // For other .gz/.bz2 files, default to URLTeam format
+                // Compressed files without a WARC clue default to URLTeam.
                 return Ok(FileFormat::UrlTeam);
             }
             "txt" | "list" => return Ok(FileFormat::Text),
@@ -294,7 +281,11 @@ pub fn detect_file_format(file_path: &Path) -> Result<FileFormat> {
         }
     }
 
-    // If extension doesn't help, check filename patterns
+    // For unknown or missing extensions, fall back to filename patterns.
+    if filename.contains("warc") {
+        return Ok(FileFormat::Warc);
+    }
+
     if filename.contains("urlteam") || filename.contains("url_team") {
         return Ok(FileFormat::UrlTeam);
     }
@@ -341,6 +332,12 @@ mod tests {
 
         let path = PathBuf::from("some_warc_file.gz");
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+
+        let path = PathBuf::from("foo.warc.gz");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+
+        let path = PathBuf::from("crawl-warc.dat");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
     }
 
     #[test]
@@ -361,6 +358,12 @@ mod tests {
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
 
         let path = PathBuf::from("list.list");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+
+        let path = PathBuf::from("warc-targets.txt");
+        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+
+        let path = PathBuf::from("my_warc_urls.list");
         assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
 
         let path = PathBuf::from("unknown_file");
