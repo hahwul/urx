@@ -20,7 +20,10 @@ urx -c /path/to/config.toml example.com
 urx example.com
 ```
 
-Command-line flags always take precedence over config file values.
+Command-line flags always take precedence over config file values. This also
+applies to output views: a view selected on the command line replaces any
+configured `show_only_*` view. The three `show_only_*` config keys are
+mutually exclusive, and the config is rejected if more than one is `true`.
 
 ### Full Configuration Reference
 
