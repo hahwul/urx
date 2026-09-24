@@ -38,9 +38,11 @@
 //!   scope except what it excludes.
 //!
 //! Anything else — a port, a path, a wildcard in the middle — is a startup
-//! error. That is the deliberate choice: this filter decides which hosts a user
-//! is willing to touch, so a line urx cannot honour has to stop the run rather
-//! than be dropped into a wider scope than the file describes.
+//! error. IPv6 literals must use URL brackets, for example `[2001:db8::1]`, and
+//! can only be listed exactly. That is the deliberate choice: this filter
+//! decides which hosts a user is willing to touch, so a line urx cannot honour
+//! has to stop the run rather than be dropped into a wider scope than the file
+//! describes.
 //!
 //! # Relationship to `--strict`
 //!
@@ -123,8 +125,19 @@ fn parse_line(line: &str) -> Result<(bool, HostPattern)> {
     if host.contains('*') {
         bail!("'*' is only supported as a leading '*.' wildcard, or on its own");
     }
-    if host.contains(':') {
-        bail!("a port is not part of a host; drop the ':port' suffix");
+    let bracketed_ipv6 = host.starts_with('[') && host.ends_with(']');
+    if host.contains(':') && !bracketed_ipv6 {
+        bail!("a port is not part of a host; drop the ':port' suffix (IPv6 literals must be bracketed)");
+    }
+    if bracketed_ipv6 {
+        if wildcard {
+            bail!("wildcards are not supported for IP addresses");
+        }
+        let parsed = Url::parse(&format!("https://{host}/"))
+            .with_context(|| format!("{host:?} is not a valid bracketed IPv6 host"))?;
+        if !matches!(parsed.host(), Some(url::Host::Ipv6(_))) {
+            bail!("{host:?} is not a valid bracketed IPv6 host");
+        }
     }
 
     let host = normalize_domain(host).with_context(|| format!("{host:?} is not a host"))?;
@@ -367,6 +380,21 @@ mod tests {
         // IDN: the scope line is Unicode, the URL's host is punycode.
         assert!(m.is_in_scope("https://xn--caf-dma.com/a"));
         assert!(m.is_in_scope("https://café.com/a"));
+    }
+
+    #[test]
+    fn a_bracketed_ipv6_literal_is_not_mistaken_for_a_port() {
+        let m = matcher("[2001:db8::1]\n");
+
+        assert!(m.is_in_scope("https://[2001:db8::1]/a"));
+        assert!(!m.is_in_scope("https://[2001:db8::2]/a"));
+    }
+
+    #[test]
+    fn an_ipv6_literal_must_be_valid_and_cannot_be_wildcarded() {
+        assert!(scope_error("2001:db8::1\n").contains("IPv6 literals must be bracketed"));
+        assert!(scope_error("[not:ipv6]\n").contains("valid bracketed IPv6"));
+        assert!(scope_error("*.[2001:db8::1]\n").contains("wildcards are not supported"));
     }
 
     #[test]

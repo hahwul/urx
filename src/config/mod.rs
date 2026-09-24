@@ -430,6 +430,22 @@ impl Config {
         let config: Config = toml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", path.as_ref().display()))?;
 
+        let output_views = [
+            ("show_only_host", config.filter.show_only_host),
+            ("show_only_path", config.filter.show_only_path),
+            ("show_only_param", config.filter.show_only_param),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| value.unwrap_or(false).then_some(name))
+        .collect::<Vec<_>>();
+        if output_views.len() > 1 {
+            anyhow::bail!(
+                "Conflicting [filter] output views in {}: {} are mutually exclusive",
+                path.as_ref().display(),
+                output_views.join(", ")
+            );
+        }
+
         Ok(config)
     }
 
@@ -538,7 +554,7 @@ impl Config {
 
         self.apply_output_config(args, provided);
         self.apply_provider_config(args, provided);
-        self.apply_filter_config(args);
+        self.apply_filter_config(args, provided);
         self.apply_network_config(args, provided);
         self.apply_testing_config(args, provided);
         self.apply_cache_config(args, provided);
@@ -694,23 +710,32 @@ impl Config {
             }
         }
 
-        // Handle robots.txt and sitemap.xml discovery options
-        if !args.exclude_robots && self.provider.exclude_robots.unwrap_or(false) {
+        // Explicit CLI choices take precedence over config, while exclusion
+        // wins when both include and exclude are enabled at the same layer.
+        if !provided.has("include_robots")
+            && !provided.has("exclude_robots")
+            && !args.exclude_robots
+            && self.provider.exclude_robots.unwrap_or(false)
+        {
             args.exclude_robots = true;
         }
 
-        if !args.exclude_sitemap && self.provider.exclude_sitemap.unwrap_or(false) {
+        if !provided.has("include_sitemap")
+            && !provided.has("exclude_sitemap")
+            && !args.exclude_sitemap
+            && self.provider.exclude_sitemap.unwrap_or(false)
+        {
             args.exclude_sitemap = true;
         }
 
         // Only apply include_* if exclude_* is not set (exclude takes precedence)
-        if !args.exclude_robots && args.include_robots {
+        if !provided.has("include_robots") && !args.exclude_robots && args.include_robots {
             if let Some(include_robots) = self.provider.include_robots {
                 args.include_robots = include_robots;
             }
         }
 
-        if !args.exclude_sitemap && args.include_sitemap {
+        if !provided.has("include_sitemap") && !args.exclude_sitemap && args.include_sitemap {
             if let Some(include_sitemap) = self.provider.include_sitemap {
                 args.include_sitemap = include_sitemap;
             }
@@ -727,7 +752,7 @@ impl Config {
         }
     }
 
-    fn apply_filter_config(&self, args: &mut Args) {
+    fn apply_filter_config(&self, args: &mut Args, provided: &CliProvided) {
         // Filter options
         if args.preset.is_empty() {
             if let Some(preset) = &self.filter.preset {
@@ -771,16 +796,32 @@ impl Config {
             }
         }
 
-        if !args.show_only_host && self.filter.show_only_host.unwrap_or(false) {
-            args.show_only_host = true;
-        }
+        // These flags select one output view. A view explicitly chosen on the
+        // CLI must replace the configured view as a whole; otherwise a config
+        // `show_only_host = true` silently strips the query before `--params`
+        // can inventory it.
+        let cli_selected_output_view = [
+            "show_only_host",
+            "show_only_path",
+            "show_only_param",
+            "params",
+            "params_by_endpoint",
+            "fuzz_placeholder",
+        ]
+        .iter()
+        .any(|id| provided.has(id));
+        if !cli_selected_output_view {
+            if !args.show_only_host && self.filter.show_only_host.unwrap_or(false) {
+                args.show_only_host = true;
+            }
 
-        if !args.show_only_path && self.filter.show_only_path.unwrap_or(false) {
-            args.show_only_path = true;
-        }
+            if !args.show_only_path && self.filter.show_only_path.unwrap_or(false) {
+                args.show_only_path = true;
+            }
 
-        if !args.show_only_param && self.filter.show_only_param.unwrap_or(false) {
-            args.show_only_param = true;
+            if !args.show_only_param && self.filter.show_only_param.unwrap_or(false) {
+                args.show_only_param = true;
+            }
         }
 
         if args.min_length.is_none() && self.filter.min_length.is_some() {
@@ -1603,6 +1644,53 @@ mod tests {
         assert_eq!(args.parallel, Some(2));
         assert_eq!(args.cache_type, "redis");
         assert_eq!(args.cache_ttl, 60);
+    }
+
+    #[test]
+    fn test_cli_discovery_includes_override_config_excludes() {
+        let file =
+            create_temp_config_file("[provider]\nexclude_robots = true\nexclude_sitemap = true\n");
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = parse_args_from([
+            "urx",
+            "--include-robots",
+            "--include-sitemap",
+            "example.com",
+        ]);
+        assert!(provided.has("include_robots"));
+        assert!(provided.has("include_sitemap"));
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert_eq!(
+            (args.should_use_robots(), args.should_use_sitemap()),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn test_cli_parameter_view_overrides_config_show_only_view() {
+        let file = create_temp_config_file("[filter]\nshow_only_host = true\n");
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "--params", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(args.params);
+        assert!(!args.show_only_host);
+    }
+
+    #[test]
+    fn test_config_rejects_multiple_show_only_views() {
+        let file =
+            create_temp_config_file("[filter]\nshow_only_host = true\nshow_only_path = true\n");
+
+        let error = Config::from_file(file.path()).expect_err("mutually exclusive views");
+
+        assert!(
+            error.to_string().contains("mutually exclusive"),
+            "{error:#}"
+        );
     }
 
     #[test]

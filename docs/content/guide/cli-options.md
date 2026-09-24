@@ -93,7 +93,7 @@ Filter Options:
       --max-length <MAX_LENGTH>              Maximum URL length
       --strict                               Enforce exact host validation (default)
       --no-strict                            Disable host validation; a target's path scope still applies (wins over --strict)
-      --scope-file <FILE>                    Bug-bounty scope file of host patterns (`!` excludes, `*.host` wildcard); repeatable
+      --scope-file <FILE>                    Bug-bounty host scope file (`!` excludes, `*.host` wildcard, `[2001:db8::1]` exact IPv6); repeatable
       --meta-first-seen-after <DATE>         Keep URLs whose oldest archived capture is on or after DATE
       --meta-first-seen-before <DATE>        Keep URLs whose oldest archived capture is on or before DATE
       --meta-last-seen-after <DATE>          Keep URLs whose newest archived capture is on or after DATE ("still alive as of")
@@ -559,10 +559,12 @@ The rules:
 * A file with no include lines at all is a pure deny-list: everything is in
   scope except what it excludes.
 
-Anything else — a port, a path, a wildcard in the middle — is a startup error
-naming the file and the line. This filter decides which hosts you are willing
-to touch, so a line urx cannot honour has to stop the run rather than quietly
-leave the scope wider than the file describes.
+IPv6 literals must be bracketed, for example `[2001:db8::1]`; they are exact
+hosts and cannot be wildcarded. Anything else — a port, a path, a wildcard in
+the middle — is a startup error naming the file and the line. This filter
+decides which hosts you are willing to touch, so a line urx cannot honour has
+to stop the run rather than quietly leave the scope wider than the file
+describes.
 
 `--scope-file` and `--strict` are separate gates and a URL must pass both. Host
 validation answers "does this URL belong to a domain I queried?"; a scope file
@@ -731,7 +733,10 @@ name is precisely what has to survive verbatim to be worth fuzzing.
 
 All three views need the complete result set, so they cannot be combined with
 `--stream`. They are mutually exclusive with each other and with the
-`--show-only-*` views.
+`--show-only-*` views. The three `--show-only-*` views are also mutually
+exclusive with each other. A command-line view replaces any configured
+`show_only_*` view; a config file that sets more than one of those keys to
+`true` is rejected.
 
 ## Wordlist Output
 

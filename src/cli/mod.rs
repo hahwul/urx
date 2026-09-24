@@ -339,17 +339,17 @@ pub struct Args {
 
     /// Only show the host part of the URLs
     #[clap(help_heading = "Filter Options")]
-    #[clap(long)]
+    #[clap(long, conflicts_with_all = ["show_only_path", "show_only_param"])]
     pub show_only_host: bool,
 
     /// Only show the path part of the URLs
     #[clap(help_heading = "Filter Options")]
-    #[clap(long)]
+    #[clap(long, conflicts_with_all = ["show_only_host", "show_only_param"])]
     pub show_only_path: bool,
 
     /// Only show the parameters part of the URLs
     #[clap(help_heading = "Filter Options")]
-    #[clap(long)]
+    #[clap(long, conflicts_with_all = ["show_only_host", "show_only_path"])]
     pub show_only_param: bool,
 
     /// Minimum URL length to include
@@ -377,11 +377,12 @@ pub struct Args {
 
     // --- result-filters ---
     /// Bug-bounty scope file: one host pattern per line, `!` to exclude,
-    /// `*.example.com` for a wildcard (which covers the apex too), `#` for a
-    /// comment. Exclusions always win. Repeat the flag to union several files;
-    /// a file of only `!` lines acts as a deny-list. Applies to every provider
-    /// and to extracted links. Combines with --strict rather than replacing it,
-    /// so wildcard hosts still need --subs.
+    /// `*.example.com` for a wildcard (which covers the apex too), bracketed
+    /// IPv6 literals such as `[2001:db8::1]`, and `#` for a comment. Exclusions
+    /// always win. Repeat the flag to union several files; a file of only `!`
+    /// lines acts as a deny-list. Applies to every provider and to extracted
+    /// links. Combines with --strict rather than replacing it, so wildcard
+    /// hosts still need --subs.
     #[clap(help_heading = "Filter Options")]
     #[clap(long = "scope-file", value_name = "FILE", action = clap::ArgAction::Append)]
     pub scope_file: Vec<std::path::PathBuf>,
@@ -1111,6 +1112,20 @@ mod tests {
         ]);
         assert_eq!(args.extensions, vec!["js", "php"]);
         assert_eq!(args.exclude_extensions, vec!["html", "css"]);
+    }
+
+    #[test]
+    fn test_show_only_views_conflict_with_each_other() {
+        for (left, right) in [
+            ("--show-only-host", "--show-only-path"),
+            ("--show-only-host", "--show-only-param"),
+            ("--show-only-path", "--show-only-param"),
+        ] {
+            assert!(
+                Args::try_parse_from(["urx", left, right, "example.com"]).is_err(),
+                "{left} and {right} are mutually exclusive output views"
+            );
+        }
     }
 
     #[test]

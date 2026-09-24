@@ -249,7 +249,7 @@ Filter Options:
       --no-strict
           Disable host validation (keep URLs on any host a provider returns). Wins over --strict. A target's path scope still applies: only the *host* check is waived
       --scope-file <FILE>
-          Bug-bounty scope file: one host pattern per line, `!` to exclude, `*.example.com` for a wildcard (which covers the apex too), `#` for a comment. Repeatable and unioned; exclusions always win. See "Scope Files" below
+          Bug-bounty scope file: one host pattern per line, `!` to exclude, `*.example.com` for a wildcard (which covers the apex too), bracketed IPv6 literals such as `[2001:db8::1]`, `#` for a comment. Repeatable and unioned; exclusions always win. See "Scope Files" below
       --meta-first-seen-after <DATE>
           Keep URLs whose oldest archived capture is on or after DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
       --meta-first-seen-before <DATE>
@@ -614,11 +614,12 @@ urx --domain-list targets.txt --subs --scope-file scope-a.txt --scope-file scope
 `*.example.com` matches the apex as well as everything under it (the
 bug-bounty reading, which is what a platform's scope table means); a bare host
 matches exactly that host; a lone `*` makes the file a pure deny-list;
-exclusions always win; `#` starts a comment. Anything urx cannot honour — a
-port, a path, a wildcard in the middle — is a startup error naming the file and
-line rather than a silently wider scope. The filter applies to every provider
-and to extracted links, and it combines with `--strict` rather than replacing
-it, so a `*.example.com` scope line still needs `--subs`.
+exclusions always win; `#` starts a comment. Exact IPv6 hosts use brackets,
+such as `[2001:db8::1]`; IPv6 wildcards are not supported. Anything urx cannot
+honour — a port, a path, a wildcard in the middle — is a startup error naming
+the file and line rather than a silently wider scope. The filter applies to
+every provider and to extracted links, and it combines with `--strict` rather
+than replacing it, so a `*.example.com` scope line still needs `--subs`.
 
 ### Archive Metadata Filters
 
@@ -712,7 +713,10 @@ urx example.com --fuzz-placeholder FUZZ | dalfox pipe
 ```
 
 All three need the complete result set, so they are batch-only and mutually
-exclusive with each other and with the `--show-only-*` views.
+exclusive with each other and with the `--show-only-*` views. The three
+`--show-only-*` views are also mutually exclusive with each other. A command
+line view replaces any configured `show_only_*` view; a config file that sets
+more than one of those keys to `true` is rejected.
 
 ### Wordlist Output
 
