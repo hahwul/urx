@@ -340,6 +340,14 @@ pub(crate) async fn walk_block_pages(
     session: &CdxSession<'_>,
     query_base: &str,
 ) -> Result<Vec<UrlRecord>> {
+    walk_block_pages_with_limit(session, query_base, MAX_PAGES).await
+}
+
+async fn walk_block_pages_with_limit(
+    session: &CdxSession<'_>,
+    query_base: &str,
+    page_limit: usize,
+) -> Result<Vec<UrlRecord>> {
     let count_url = format!("{query_base}&showNumPages=true");
     let pages = match session.get(&count_url).await {
         Some(Ok(body)) => serde_json::from_str::<PageInfo>(body.trim())
@@ -362,7 +370,10 @@ pub(crate) async fn walk_block_pages(
     if pages == 0 {
         return Ok(Vec::new());
     }
-    let pages = pages.min(MAX_PAGES);
+    if pages > page_limit {
+        session.mark_partial();
+    }
+    let pages = pages.min(page_limit);
 
     // The index is capture-level: a URL crawled repeatedly appears once per
     // capture, so rows are folded per URL as they arrive.
@@ -852,6 +863,65 @@ mod tests {
         count.assert();
         page0.assert();
         page1.assert();
+    }
+
+    #[tokio::test]
+    async fn block_page_ceiling_marks_results_partial_when_index_reports_more() {
+        let mut server = mockito::Server::new_async().await;
+        let count = server
+            .mock("GET", "/cdx")
+            .match_query(Matcher::UrlEncoded("showNumPages".into(), "true".into()))
+            .with_body("{\"pages\":3}")
+            .expect(1)
+            .create_async()
+            .await;
+        let page0 = server
+            .mock("GET", "/cdx")
+            .match_query(Matcher::UrlEncoded("page".into(), "0".into()))
+            .with_body("{\"url\":\"https://example.com/a\"}\n")
+            .expect(1)
+            .create_async()
+            .await;
+        let page1 = server
+            .mock("GET", "/cdx")
+            .match_query(Matcher::UrlEncoded("page".into(), "1".into()))
+            .with_body("{\"url\":\"https://example.com/b\"}\n")
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/cdx")
+            .match_query(Matcher::UrlEncoded("page".into(), "2".into()))
+            .with_body("{\"url\":\"https://example.com/c\"}\n")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let origin = server.url();
+        let query_base = format!("{origin}/cdx?url=example.com/*&output=json");
+        let client = Client::new();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let session = CdxSession {
+            client: &client,
+            retries: 0,
+            limiter: None,
+            reporter: Some(&reporter),
+            endpoint: &origin,
+        };
+
+        let records = walk_block_pages_with_limit(&session, &query_base, 2)
+            .await
+            .unwrap();
+
+        assert_eq!(records.len(), 2);
+        assert!(
+            reporter.is_partial(),
+            "the page ceiling truncates this crawl"
+        );
+        count.assert();
+        page0.assert();
+        page1.assert();
+        page2.assert();
     }
 
     #[tokio::test]

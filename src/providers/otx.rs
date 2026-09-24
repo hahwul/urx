@@ -31,6 +31,8 @@ pub struct OTXProvider {
     insecure: bool,
     rate_limit: Option<RateLimiter>,
     base_url: String,
+    #[cfg(test)]
+    page_limit: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,6 +84,8 @@ impl OTXProvider {
             insecure: false,
             rate_limit: None,
             base_url: "https://otx.alienvault.com".to_string(),
+            #[cfg(test)]
+            page_limit: OTX_MAX_PAGES,
         }
     }
 
@@ -176,6 +180,10 @@ impl Provider for OTXProvider {
             let mut page = 0;
             let client = self.client_config().build_client()?;
             let limiter = self.rate_limit.as_ref();
+            #[cfg(test)]
+            let page_limit = self.page_limit;
+            #[cfg(not(test))]
+            let page_limit = OTX_MAX_PAGES;
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -349,7 +357,12 @@ impl Provider for OTXProvider {
                 }
 
                 page += 1;
-                if page >= OTX_MAX_PAGES {
+                if page >= page_limit {
+                    // Reaching the safety ceiling means another page may
+                    // remain; do not present the capped result as complete.
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
                     break;
                 }
             }
@@ -691,6 +704,53 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"http://example.com/1".to_string()));
         assert!(urls.contains(&"http://example.com/2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_page_limit_marks_results_partial_when_otx_has_more() {
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"has_next":true,"url_list":[{"url":"http://example.com/a"}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=2",
+            )
+            .with_status(200)
+            .with_body(r#"{"has_next":false,"url_list":[]}"#)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = OTXProvider::new();
+        provider.with_base_url(server.url());
+        provider.page_limit = 1;
+        provider.with_retries(0);
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(urls, vec!["http://example.com/a"]);
+        assert!(
+            reporter.is_partial(),
+            "the page ceiling truncates this crawl"
+        );
+        page1.assert();
+        page2.assert();
     }
 
     #[tokio::test]

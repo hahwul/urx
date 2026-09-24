@@ -24,6 +24,8 @@ pub struct ZoomEyeProvider {
     rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
+    #[cfg(test)]
+    page_limit: u32,
 }
 
 /// ZoomEye v2 returns HTTP 200 for business-logic errors too; only this `code`
@@ -92,6 +94,8 @@ impl ZoomEyeProvider {
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://api.zoomeye.ai".to_string(),
+            #[cfg(test)]
+            page_limit: ZOOMEYE_MAX_PAGES,
         }
     }
 
@@ -167,6 +171,10 @@ impl Provider for ZoomEyeProvider {
             // server sent, not from the page size we asked for — see the stop
             // condition at the bottom of the loop.
             let mut rows_received: u64 = 0;
+            #[cfg(test)]
+            let page_limit = self.page_limit;
+            #[cfg(not(test))]
+            let page_limit = ZOOMEYE_MAX_PAGES;
 
             loop {
                 let request_body = ZoomEyeRequest {
@@ -302,7 +310,14 @@ impl Provider for ZoomEyeProvider {
                 // below what we asked for (plan limits, or its own cap) made urx
                 // believe it had seen `page * 100` results and stop after a
                 // fraction of them.
-                if page_was_empty || rows_received >= total || page >= ZOOMEYE_MAX_PAGES {
+                if page_was_empty || rows_received >= total {
+                    break;
+                }
+
+                if page >= page_limit {
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
                     break;
                 }
 
@@ -740,6 +755,49 @@ mod tests {
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls.len(), 25, "walk stopped early: {}", urls.len());
         assert!(urls.contains(&"https://example.com/24".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_page_limit_marks_results_partial_when_zoomeye_reports_more() {
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock("POST", "/v2/search")
+            .match_body(mockito::Matcher::PartialJsonString(r#"{"page":1}"#.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"code":60000,"total":2,"data":[{"url":"https://example.com/a"}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("POST", "/v2/search")
+            .match_body(mockito::Matcher::PartialJsonString(r#"{"page":2}"#.into()))
+            .with_status(200)
+            .with_body(r#"{"code":60000,"total":2,"data":[]}"#)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = ZoomEyeProvider::new("key".to_string());
+        provider.with_base_url(server.url());
+        provider.page_limit = 1;
+        provider.with_retries(0);
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(urls, vec!["https://example.com/a"]);
+        assert!(
+            reporter.is_partial(),
+            "the page ceiling truncates this crawl"
+        );
+        page1.assert();
+        page2.assert();
     }
 
     #[tokio::test]
