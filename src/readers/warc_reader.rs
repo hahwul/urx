@@ -1,5 +1,8 @@
 use super::FileReader;
 use anyhow::{Context, Result};
+use flate2::read::MultiGzDecoder;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 /// Reader for WARC (Web ARChive) files
@@ -9,6 +12,14 @@ pub struct WarcFileReader;
 impl WarcFileReader {
     pub fn new() -> Self {
         Self
+    }
+
+    fn magic(file_path: &Path) -> Result<[u8; 3]> {
+        let mut file = File::open(file_path)
+            .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
+        let mut magic = [0u8; 3];
+        let _ = file.read(&mut magic);
+        Ok(magic)
     }
 }
 
@@ -40,8 +51,14 @@ fn extract_url_from_line(line: &str) -> Option<String> {
 
 impl FileReader for WarcFileReader {
     fn read_urls(&self, file_path: &Path) -> Result<Vec<String>> {
-        use std::fs::File;
-
+        let magic = Self::magic(file_path)?;
+        if &magic == b"BZh" {
+            anyhow::bail!(
+                "{}: bzip2 WARC input is not supported. Decompress it first \
+                 (`bunzip2 -k <file>`) and pass the result to --files.",
+                file_path.display()
+            );
+        }
         let file = File::open(file_path)
             .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
 
@@ -50,18 +67,48 @@ impl FileReader for WarcFileReader {
         // readers, which have capped their input from the start. Lines are read
         // lossily because a WARC embeds raw response bodies: binary content must
         // not abort the read.
-        let (urls, url_capped, byte_capped) = super::collect_capped(
-            file,
-            super::MAX_FILE_URLS,
-            super::MAX_FILE_BYTES,
-            extract_url_from_line,
-        )
+        let (urls, url_capped, byte_capped, _, line_capped) =
+            if magic[0] == 0x1f && magic[1] == 0x8b {
+            // WARC files are often distributed as gzip streams. MultiGzDecoder
+            // also handles record-oriented archives with one member per WARC
+            // record; the decompressed byte cap still applies to the whole file.
+            let mut src = super::StopOnDecodeError::new(MultiGzDecoder::new(file));
+            let collected = super::collect_capped(
+                &mut src,
+                super::MAX_FILE_URLS,
+                super::MAX_FILE_BYTES,
+                extract_url_from_line,
+            );
+            let decode_error = src.error;
+            collected.map(
+                |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
+                if let Some(error) = decode_error {
+                    eprintln!(
+                        "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
+                        file_path.display()
+                    );
+                    if final_fragment_url {
+                        urls.pop();
+                    }
+                }
+                    (urls, url_capped, byte_capped, false, line_capped)
+                },
+            )
+        } else {
+            super::collect_capped(
+                file,
+                super::MAX_FILE_URLS,
+                super::MAX_FILE_BYTES,
+                extract_url_from_line,
+            )
+        }
         .with_context(|| format!("Failed to read WARC file: {}", file_path.display()))?;
 
         super::warn_if_truncated(
             file_path,
             url_capped,
             byte_capped,
+            line_capped,
             super::MAX_FILE_URLS,
             super::MAX_FILE_BYTES,
         );
@@ -117,7 +164,7 @@ mod tests {
         }
         temp_file.flush()?;
 
-        let (urls, url_capped, _) = super::super::collect_capped(
+        let (urls, url_capped, _, _, _) = super::super::collect_capped(
             File::open(temp_file.path())?,
             10,
             super::super::MAX_FILE_BYTES,
@@ -137,7 +184,7 @@ mod tests {
         }
         temp_file.flush()?;
 
-        let (urls, _, byte_capped) = super::super::collect_capped(
+        let (urls, _, byte_capped, _, _) = super::super::collect_capped(
             File::open(temp_file.path())?,
             super::super::MAX_FILE_URLS,
             200,
@@ -149,6 +196,31 @@ mod tests {
             urls.len() < 2000,
             "read should stop early, got {}",
             urls.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_truncated_gzip_discards_a_partial_final_target_uri() -> Result<()> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut bytes = Vec::new();
+        let mut complete = GzEncoder::new(Vec::new(), Compression::default());
+        complete.write_all(b"WARC/1.0\nWARC-Target-URI: https://example.com/complete\n")?;
+        bytes.extend_from_slice(&complete.finish()?);
+
+        let mut partial = GzEncoder::new(Vec::new(), Compression::default());
+        partial.write_all(b"WARC/1.0\nWARC-Target-URI: https://example.net/partial")?;
+        let partial_member = partial.finish()?;
+        bytes.extend_from_slice(&partial_member[..partial_member.len() - 4]);
+
+        let compressed = tempfile::Builder::new().suffix(".warc.gz").tempfile()?;
+        std::fs::write(compressed.path(), bytes)?;
+
+        assert_eq!(
+            super::super::read_urls_from_file(compressed.path())?,
+            vec!["https://example.com/complete"]
         );
         Ok(())
     }
