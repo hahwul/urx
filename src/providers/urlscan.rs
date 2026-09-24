@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -23,6 +24,8 @@ pub struct UrlscanProvider {
     rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
+    #[cfg(test)]
+    page_limit: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,6 +107,8 @@ impl UrlscanProvider {
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://urlscan.io".to_string(),
+            #[cfg(test)]
+            page_limit: URLSCAN_MAX_PAGES,
         }
     }
 
@@ -244,11 +249,19 @@ impl Provider for UrlscanProvider {
             // paginated, silently capping every domain at 100 URLs.
             let mut all_urls = Vec::new();
             let mut search_after: Option<String> = None;
+            let mut seen_cursors = HashSet::new();
             let mut pages = 0;
+            #[cfg(test)]
+            let page_limit = self.page_limit;
+            #[cfg(not(test))]
+            let page_limit = URLSCAN_MAX_PAGES;
 
             loop {
                 pages += 1;
-                if pages > URLSCAN_MAX_PAGES {
+                if pages > page_limit {
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
                     break;
                 }
 
@@ -277,6 +290,11 @@ impl Provider for UrlscanProvider {
                 };
 
                 if response.results.is_empty() {
+                    if response.has_more {
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
+                    }
                     break;
                 }
 
@@ -307,10 +325,24 @@ impl Provider for UrlscanProvider {
                 }
 
                 match next_cursor {
-                    Some(cursor) => search_after = Some(cursor),
+                    Some(cursor) => {
+                        if !seen_cursors.insert(cursor.clone()) {
+                            if let Some(r) = &reporter {
+                                r.mark_partial();
+                            }
+                            break;
+                        }
+                        search_after = Some(cursor);
+                    }
                     // No usable cursor — can't page further without risking an
-                    // infinite loop re-requesting page one.
-                    None => break,
+                    // infinite loop re-requesting page one. `has_more` was true,
+                    // so this is a truncated result rather than a clean end.
+                    None => {
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -666,6 +698,158 @@ mod tests {
         );
         page1.assert();
         page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_page_limit_marks_results_partial_when_urlscan_has_more() {
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("size=100$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"has_more":true,"results":[{"page":{"domain":"example.com","url":"https://example.com/a"},"sort":[1,"a"]}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "search_after".into(),
+                "1,a".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"has_more":false,"results":[]}"#)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new("k".to_string());
+        provider.with_base_url(server.url());
+        provider.page_limit = 1;
+
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(urls, vec!["https://example.com/a"]);
+        assert!(
+            reporter.is_partial(),
+            "the page ceiling truncates this crawl"
+        );
+        page1.assert_async().await;
+        page2.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_missing_search_after_cursor_marks_results_partial() {
+        let mut server = mockito::Server::new_async().await;
+        let _page1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("size=100$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"has_more":true,"results":[{"page":{"domain":"example.com","url":"https://example.com/a"}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new("k".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(urls, vec!["https://example.com/a"]);
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_empty_page_with_has_more_marks_results_partial() {
+        let mut server = mockito::Server::new_async().await;
+        let _page1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("size=100$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"has_more":true,"results":[]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new("k".to_string());
+        provider.with_base_url(server.url());
+        provider.with_retries(0);
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+        assert!(urls.is_empty());
+        assert!(reporter.is_partial());
+    }
+
+    #[tokio::test]
+    async fn test_repeated_search_after_cursor_stops_and_marks_partial() {
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::Regex("size=100$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"has_more":true,"results":[{"page":{"domain":"example.com","url":"https://example.com/a"},"sort":["A"]}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/api/v1/search/")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "search_after".into(),
+                "A".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"has_more":true,"results":[{"page":{"domain":"example.com","url":"https://example.com/b"},"sort":["A"]}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = UrlscanProvider::new("k".to_string());
+        provider.with_base_url(server.url());
+        provider.page_limit = 3;
+        provider.with_retries(0);
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(urls.len(), 2);
+        assert!(reporter.is_partial());
+        page1.assert_async().await;
+        page2.assert_async().await;
     }
 
     #[tokio::test]

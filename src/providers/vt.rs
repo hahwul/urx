@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -31,6 +32,8 @@ pub struct VirusTotalProvider {
     rate_limit: Option<RateLimiter>,
     #[cfg(test)]
     base_url: String,
+    #[cfg(test)]
+    page_limit: usize,
 }
 
 /// A page of the v3 `/domains/{domain}/urls` response. `data` holds the URL
@@ -91,6 +94,8 @@ impl VirusTotalProvider {
             rate_limit: None,
             #[cfg(test)]
             base_url: "https://www.virustotal.com".to_string(),
+            #[cfg(test)]
+            page_limit: VT_MAX_PAGES,
         }
     }
 
@@ -259,11 +264,19 @@ impl Provider for VirusTotalProvider {
             // large domains.
             let mut urls = Vec::new();
             let mut cursor: Option<String> = None;
+            let mut seen_cursors = HashSet::new();
             let mut pages = 0usize;
+            #[cfg(test)]
+            let page_limit = self.page_limit;
+            #[cfg(not(test))]
+            let page_limit = VT_MAX_PAGES;
 
             loop {
                 pages += 1;
-                if pages > VT_MAX_PAGES {
+                if pages > page_limit {
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
                     break;
                 }
                 // "First request" tracked explicitly: a clean (HTTP 200) but
@@ -304,7 +317,15 @@ impl Provider for VirusTotalProvider {
                 }
 
                 match page.meta.cursor {
-                    Some(c) if !c.is_empty() => cursor = Some(c),
+                    Some(c) if !c.is_empty() => {
+                        if !seen_cursors.insert(c.clone()) {
+                            if let Some(r) = &reporter {
+                                r.mark_partial();
+                            }
+                            break;
+                        }
+                        cursor = Some(c);
+                    }
                     _ => break,
                 }
             }
@@ -665,6 +686,93 @@ mod tests {
                 "https://example.com/b".to_string(),
             ]
         );
+        page1.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_page_limit_marks_results_partial_when_vt_has_more() {
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::Exact("limit=40".into()))
+            .with_status(200)
+            .with_body(
+                r#"{"data":[{"attributes":{"url":"https://example.com/a"}}],"meta":{"cursor":"NEXT"}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::UrlEncoded("cursor".into(), "NEXT".into()))
+            .with_status(200)
+            .with_body(r#"{"data":[],"meta":{}}"#)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let mut provider = VirusTotalProvider::new("key".to_string());
+        provider.with_base_url(server.url());
+        provider.page_limit = 1;
+        provider.with_retries(0);
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(urls, vec!["https://example.com/a"]);
+        assert!(
+            reporter.is_partial(),
+            "the page ceiling truncates this crawl"
+        );
+        page1.assert();
+        page2.assert();
+    }
+
+    #[tokio::test]
+    async fn test_repeated_vt_cursor_stops_early_and_marks_partial() {
+        let mut server = mockito::Server::new_async().await;
+        let page1 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::Exact("limit=40".into()))
+            .with_status(200)
+            .with_body(
+                r#"{"data":[{"attributes":{"url":"https://example.com/a"}}],"meta":{"cursor":"LOOP"}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let page2 = server
+            .mock("GET", "/api/v3/domains/example.com/urls")
+            .match_query(mockito::Matcher::UrlEncoded("cursor".into(), "LOOP".into()))
+            .with_status(200)
+            .with_body(
+                r#"{"data":[{"attributes":{"url":"https://example.com/b"}}],"meta":{"cursor":"LOOP"}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut provider = VirusTotalProvider::new("key".to_string());
+        provider.with_base_url(server.url());
+        provider.page_limit = 3;
+        provider.with_retries(0);
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+
+        let urls = urls_of(
+            provider
+                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .await
+                .unwrap(),
+        );
+
+        assert_eq!(urls.len(), 2);
+        assert!(reporter.is_partial());
         page1.assert();
         page2.assert();
     }
