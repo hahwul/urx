@@ -133,11 +133,10 @@ fn parse_line(line: &str) -> Result<(bool, HostPattern)> {
         if wildcard {
             bail!("wildcards are not supported for IP addresses");
         }
-        let parsed = Url::parse(&format!("https://{host}/"))
+        // URL syntax only permits IPv6 literals in brackets; parsing also
+        // validates the address, so a separate host-kind check is unreachable.
+        Url::parse(&format!("https://{host}/"))
             .with_context(|| format!("{host:?} is not a valid bracketed IPv6 host"))?;
-        if !matches!(parsed.host(), Some(url::Host::Ipv6(_))) {
-            bail!("{host:?} is not a valid bracketed IPv6 host");
-        }
     }
 
     let host = normalize_domain(host).with_context(|| format!("{host:?} is not a host"))?;
@@ -395,6 +394,13 @@ mod tests {
         assert!(scope_error("2001:db8::1\n").contains("IPv6 literals must be bracketed"));
         assert!(scope_error("[not:ipv6]\n").contains("valid bracketed IPv6"));
         assert!(scope_error("*.[2001:db8::1]\n").contains("wildcards are not supported"));
+    }
+
+    #[test]
+    fn a_bracketed_non_ipv6_host_is_rejected_by_url_parsing() {
+        assert!(Url::parse("https://[127.0.0.1]/").is_err());
+        let error = scope_error("[127.0.0.1]\n");
+        assert!(error.contains("not a valid bracketed IPv6 host"), "{error}");
     }
 
     #[test]

@@ -1669,6 +1669,100 @@ mod tests {
     }
 
     #[test]
+    fn test_config_discovery_include_and_exclude_apply_without_cli_flags() {
+        let include_file = create_temp_config_file(
+            "[provider]\ninclude_robots = false\ninclude_sitemap = false\n",
+        );
+        let config = Config::from_file(include_file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(!args.include_robots);
+        assert!(!args.include_sitemap);
+        assert!(!args.should_use_robots());
+        assert!(!args.should_use_sitemap());
+
+        let exclude_file =
+            create_temp_config_file("[provider]\nexclude_robots = true\nexclude_sitemap = true\n");
+        let config = Config::from_file(exclude_file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(args.exclude_robots);
+        assert!(args.exclude_sitemap);
+        assert!(!args.should_use_robots());
+        assert!(!args.should_use_sitemap());
+    }
+
+    #[test]
+    fn test_cli_discovery_excludes_override_config_includes() {
+        let file =
+            create_temp_config_file("[provider]\ninclude_robots = true\ninclude_sitemap = true\n");
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = parse_args_from([
+            "urx",
+            "--exclude-robots",
+            "--exclude-sitemap",
+            "example.com",
+        ]);
+        assert!(provided.has("exclude_robots"));
+        assert!(provided.has("exclude_sitemap"));
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(!args.should_use_robots());
+        assert!(!args.should_use_sitemap());
+    }
+
+    #[test]
+    fn test_config_show_only_path_and_param_apply_without_cli_view() {
+        let host_file = create_temp_config_file("[filter]\nshow_only_host = true\n");
+        let config = Config::from_file(host_file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(args.show_only_host);
+        assert!(!args.show_only_path);
+        assert!(!args.show_only_param);
+
+        let path_file = create_temp_config_file("[filter]\nshow_only_path = true\n");
+        let config = Config::from_file(path_file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(args.show_only_path);
+        assert!(!args.show_only_host);
+        assert!(!args.show_only_param);
+
+        let param_file = create_temp_config_file("[filter]\nshow_only_param = true\n");
+        let config = Config::from_file(param_file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(args.show_only_param);
+        assert!(!args.show_only_host);
+        assert!(!args.show_only_path);
+    }
+
+    #[test]
+    fn test_cli_show_only_path_overrides_a_different_configured_view() {
+        let file = create_temp_config_file("[filter]\nshow_only_host = true\n");
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "--show-only-path", "example.com"]);
+
+        config.apply_to_args(&mut args, &provided);
+
+        assert!(!args.show_only_host);
+        assert!(args.show_only_path);
+        assert!(!args.show_only_param);
+    }
+
+    #[test]
     fn test_cli_parameter_view_overrides_config_show_only_view() {
         let file = create_temp_config_file("[filter]\nshow_only_host = true\n");
         let config = Config::from_file(file.path()).unwrap();
