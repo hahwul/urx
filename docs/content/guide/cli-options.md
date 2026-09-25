@@ -34,7 +34,7 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per URL host into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
-  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist"; an unknown value falls back to plain (under --stream it is an error) [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist" (case-insensitive; anything else is a usage error) [default: plain]
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --normalize-url            Normalize URLs for better deduplication
@@ -597,11 +597,9 @@ on `www.` is not lost; with `--subs`, any subdomain of a target is kept too.
 takes no value: `--no-strict` is the way to turn it off (`--strict false` would
 read `false` as a domain).
 
-Host validation needs the targets on the command line: domains piped through
-stdin are currently not validated at all. Every host a provider returns is kept,
-and a path in a stdin target narrows only the CDX providers' own queries —
-nothing filters the other providers' results to it. Pass targets positionally or
-with `--domain-list` when you want `--strict` and the path scope to apply.
+Host validation and path scopes apply to targets from positional arguments,
+`--domain-list`, and stdin alike. A target path both narrows CDX provider queries
+and filters provider results client-side, including results from other providers.
 
 When validation removes more than half of the URLs that survived the other
 filters and `--subs` is off, urx prints a one-line hint on stderr, even without
