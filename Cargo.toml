@@ -38,7 +38,7 @@ regex = "1.12"
 # vendor the unmaintained unsafe-libyaml) — this parser is fed response bodies
 # from arbitrary, possibly hostile hosts. `default-features = false` drops the
 # `encoding` feature and with it encoding_rs: urx hands it a `String`.
-yaml-rust2 = { version = "0.12", default-features = false }
+yaml-rust2 = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 mockito = "1.7.2"
