@@ -28,24 +28,11 @@ use crate::utils::verbose_print;
 /// between two requests.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CtrlCPhase {
-    ProviderCollection,
-    PostCollection,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CtrlCAction {
-    GracefulStop,
-    ForceExit,
-}
-
-type CtrlCWaiter = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
-
-fn ctrl_c_action(phase: CtrlCPhase) -> CtrlCAction {
-    match phase {
-        CtrlCPhase::ProviderCollection => CtrlCAction::GracefulStop,
-        CtrlCPhase::PostCollection => CtrlCAction::ForceExit,
+/// Resolve on the next Ctrl-C. If signal registration fails, never resolve, so
+/// a run isn't spuriously treated as interrupted.
+async fn next_ctrl_c() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -721,11 +708,7 @@ pub async fn process_domains(
     let join_future = join_all(provider_futures);
     tokio::pin!(join_future);
 
-    let mut ctrl_c_waiter: CtrlCWaiter = Box::pin(async {
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    });
+    let mut ctrl_c = Box::pin(next_ctrl_c());
 
     let run_end = {
         // A deadline that simply never fires when --max-time isn't set.
@@ -739,36 +722,25 @@ pub async fn process_domains(
         tokio::select! {
             _ = &mut join_future => RunEnd::Completed,
             _ = &mut timeout => RunEnd::TimedOut,
-            // First Ctrl-C becomes a graceful stop. If signal registration
-            // fails we fall back to never firing, so the run isn't spuriously
-            // marked interrupted.
-            _ = &mut ctrl_c_waiter => match ctrl_c_action(CtrlCPhase::ProviderCollection) {
-                CtrlCAction::GracefulStop => RunEnd::Interrupted,
-                CtrlCAction::ForceExit => std::process::exit(130),
-            },
+            // First Ctrl-C becomes a graceful stop.
+            _ = &mut ctrl_c => RunEnd::Interrupted,
         }
     };
 
-    // `ctrl_c()` replaces the process's default SIGINT action permanently.
-    // Keep its still-pending waiter alive through testing and output when
-    // collection completed or timed out without consuming a Ctrl-C. If the
-    // collection waiter consumed the graceful first press, replace it so the
-    // second press still force-quits.
-    let post_collection_action = ctrl_c_action(CtrlCPhase::PostCollection);
-    let post_collection_ctrl_c = if matches!(run_end, RunEnd::Interrupted) {
-        Box::pin(async {
-            if tokio::signal::ctrl_c().await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        }) as CtrlCWaiter
+    // `ctrl_c()` replaced the process's default SIGINT action for good, so
+    // once collection is over something must keep listening, or every later
+    // Ctrl-C (during testing and output) is silently swallowed. Any Ctrl-C
+    // from here on force-quits: after a natural finish or --max-time it is the
+    // first press, after a graceful stop it is the second. The still-pending
+    // waiter is reused when collection didn't consume it.
+    let after_collection = if matches!(run_end, RunEnd::Interrupted) {
+        Box::pin(next_ctrl_c())
     } else {
-        ctrl_c_waiter
+        ctrl_c
     };
     tokio::spawn(async move {
-        post_collection_ctrl_c.await;
-        if post_collection_action == CtrlCAction::ForceExit {
-            std::process::exit(130);
-        }
+        after_collection.await;
+        std::process::exit(130);
     });
 
     if !matches!(run_end, RunEnd::Completed) {
@@ -868,18 +840,6 @@ mod tests {
     use crate::utils::UrlTransformer;
     use std::future::Future;
     use std::pin::Pin;
-
-    #[test]
-    fn ctrl_c_is_graceful_during_collection_and_forces_exit_afterward() {
-        assert_eq!(
-            ctrl_c_action(CtrlCPhase::ProviderCollection),
-            CtrlCAction::GracefulStop
-        );
-        assert_eq!(
-            ctrl_c_action(CtrlCPhase::PostCollection),
-            CtrlCAction::ForceExit
-        );
-    }
 
     /// A provider that paginates: it collects one URL every `step`, and honours
     /// the run-wide stop signal the way a real cursor-walking provider is meant
