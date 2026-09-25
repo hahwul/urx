@@ -342,6 +342,11 @@ Notification Options:
       --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
 
+In batch mode, a failed `-o` or `--output-dir` write is reported even with
+`--silent` and makes the run exit 1. When both destinations are set, urx
+attempts both and then attempts configured `--notify` webhooks before returning
+the output error.
+
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
 `<script src>`, `<link href>`, `<form action>`, `<iframe src>`, `<img src>`,
 `<source src>`, `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">`
