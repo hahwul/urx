@@ -50,7 +50,7 @@ urx example.com --stream | httpx -silent
 | `0` | The run completed, including runs where some providers failed, results were partial, the webhook could not be delivered, or the `-o` / `--output-dir` file could not be written (reported on stderr unless `--silent`; under `--stream` an `-o` that cannot be created is an exit-1 startup error) |
 | `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes` |
 | `2` | Invalid command-line usage, such as an unknown flag or `--parallel 0` |
-| `130` | Force-quit by a second Ctrl-C after a first one interrupted the provider phase. Once collection has finished on its own, Ctrl-C is currently ignored for the rest of the run (status checks, extractors, output); stop it with `kill` (SIGTERM) instead |
+| `130` | A Ctrl-C after collection has ended exits immediately. During provider collection, the first Ctrl-C stops fetching gracefully and returns collected URLs; a second Ctrl-C during the remaining pipeline force-quits |
 
 ### With Security Tools
 

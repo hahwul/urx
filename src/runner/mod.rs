@@ -28,6 +28,27 @@ use crate::utils::verbose_print;
 /// between two requests.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CtrlCPhase {
+    ProviderCollection,
+    PostCollection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CtrlCAction {
+    GracefulStop,
+    ForceExit,
+}
+
+type CtrlCWaiter = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+fn ctrl_c_action(phase: CtrlCPhase) -> CtrlCAction {
+    match phase {
+        CtrlCPhase::ProviderCollection => CtrlCAction::GracefulStop,
+        CtrlCPhase::PostCollection => CtrlCAction::ForceExit,
+    }
+}
+
 /// Format an integer with thousands separators (e.g. `12345` → `12,345`) so
 /// large URL counts stay legible in the progress summary.
 fn fmt_count(n: usize) -> String {
@@ -700,6 +721,12 @@ pub async fn process_domains(
     let join_future = join_all(provider_futures);
     tokio::pin!(join_future);
 
+    let mut ctrl_c_waiter: CtrlCWaiter = Box::pin(async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    });
+
     let run_end = {
         // A deadline that simply never fires when --max-time isn't set.
         let timeout = async {
@@ -715,13 +742,34 @@ pub async fn process_domains(
             // First Ctrl-C becomes a graceful stop. If signal registration
             // fails we fall back to never firing, so the run isn't spuriously
             // marked interrupted.
-            _ = async {
-                if tokio::signal::ctrl_c().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            } => RunEnd::Interrupted,
+            _ = &mut ctrl_c_waiter => match ctrl_c_action(CtrlCPhase::ProviderCollection) {
+                CtrlCAction::GracefulStop => RunEnd::Interrupted,
+                CtrlCAction::ForceExit => std::process::exit(130),
+            },
         }
     };
+
+    // `ctrl_c()` replaces the process's default SIGINT action permanently.
+    // Keep its still-pending waiter alive through testing and output when
+    // collection completed or timed out without consuming a Ctrl-C. If the
+    // collection waiter consumed the graceful first press, replace it so the
+    // second press still force-quits.
+    let post_collection_action = ctrl_c_action(CtrlCPhase::PostCollection);
+    let post_collection_ctrl_c = if matches!(run_end, RunEnd::Interrupted) {
+        Box::pin(async {
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }) as CtrlCWaiter
+    } else {
+        ctrl_c_waiter
+    };
+    tokio::spawn(async move {
+        post_collection_ctrl_c.await;
+        if post_collection_action == CtrlCAction::ForceExit {
+            std::process::exit(130);
+        }
+    });
 
     if !matches!(run_end, RunEnd::Completed) {
         // Say why the run is wrapping up before waiting on it, so the grace
@@ -736,17 +784,6 @@ pub async fn process_domains(
                     "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
                 ),
             }
-        }
-
-        // The rest of the pipeline (output, optional testing) can still take a
-        // while, so a second Ctrl-C force-quits. Armed before the grace window
-        // so it also covers the wait itself.
-        if matches!(run_end, RunEnd::Interrupted) {
-            tokio::spawn(async {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    std::process::exit(130);
-                }
-            });
         }
 
         // Cancelling a provider task drops everything it has buffered but not
@@ -831,6 +868,18 @@ mod tests {
     use crate::utils::UrlTransformer;
     use std::future::Future;
     use std::pin::Pin;
+
+    #[test]
+    fn ctrl_c_is_graceful_during_collection_and_forces_exit_afterward() {
+        assert_eq!(
+            ctrl_c_action(CtrlCPhase::ProviderCollection),
+            CtrlCAction::GracefulStop
+        );
+        assert_eq!(
+            ctrl_c_action(CtrlCPhase::PostCollection),
+            CtrlCAction::ForceExit
+        );
+    }
 
     /// A provider that paginates: it collects one URL every `step`, and honours
     /// the run-wide stop signal the way a real cursor-walking provider is meant
