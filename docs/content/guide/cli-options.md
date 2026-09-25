@@ -33,8 +33,8 @@ Input Options:
 
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
-      --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
-  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist" [default: plain]
+      --output-dir <PATH>        Write one file per URL host into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
+  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist"; an unknown value falls back to plain [default: plain]
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --normalize-url            Normalize URLs for better deduplication
@@ -52,8 +52,8 @@ Provider Options:
   --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: latest]
   --cdx-endpoint <URL>                   Query an additional CDX index server (pywb / OutbackCDX / classic) by its API URL; repeatable; id `cdx:<host>` (`cdx:<host>:<port>` with a port)
   --cdx-dialect <DIALECT>                Dialect of the --cdx-endpoint servers: `pywb` or `classic` (unset: probed once, pywb fallback)
-  --from <DATE>                          Restrict CDX providers to captures >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
-  --to <DATE>                            Restrict CDX providers to captures <= DATE (same format as --from)
+  --from <DATE>                          Restrict CDX providers to captures >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss); legacy alias --wayback-from
+  --to <DATE>                            Restrict CDX providers to captures <= DATE (same format as --from); legacy alias --wayback-to
   --archive-status <CODE>                Keep only captures the archive recorded with this status code (a list works on wayback/classic endpoints only)
   --archive-exclude-status <CODES>       Drop captures the archive recorded with these status codes
   --archive-mime <TYPE>                  Keep only captures with this recorded MIME type (a list works on wayback/classic endpoints only)
@@ -277,6 +277,19 @@ Per format:
 * `plain` — unchanged by default (one bare URL per line, for piping); pass
   `--show-meta` to append ` [first_seen=… last_seen=… mime=…]` after the URL.
 
+A URL rewritten by `--normalize-url` or `--merge-endpoint` no longer matches
+what the providers reported, so it carries no `sources` or capture metadata.
+
+### Source Attribution (`--show-sources`)
+
+`--show-sources` names each source by its run label (the name `--stats` prints),
+not by its `--providers` id: `Wayback Machine`, `CC (latest)` or the pinned index
+name (e.g. `CC-MAIN-2026-17`), `OTX`, `Arquivo.pt`, `VirusTotal`, `Urlscan`,
+`ZoomEye`, `GitHub`, `BeVigil`, `Robots.txt`, `Sitemap`, `Robots.txt (archived)`,
+`Sitemap (archived)`, `cdx:<host>`, and `file` for `--files` input. JSON gives a
+`sources` array, plain text a ` [a,b]` suffix, and CSV one `sources` cell joined
+with `|` (e.g. `CC (latest)|Wayback Machine`).
+
 `--show-meta` is incompatible with `--stream`, which prints a URL on first
 sighting — before the captures that would widen its `first_seen`/`last_seen`
 range have arrived.
@@ -295,11 +308,15 @@ code.
 
 | Field | Meaning |
 |-------|---------|
-| `status` | The status the live request returned, as code and reason (`200 OK`) |
+| `status` | The status the live request returned, as code and reason (`200 OK`), or `Status check failed` when the request itself failed (connection refused, timeout, TLS). Such URLs are kept unless `--include-status` is set |
 | `location` | The `Location` header of a 3xx — recorded, never followed |
 | `content_length` | The `Content-Length` header, verbatim |
 | `content_type` | The `Content-Type` header, verbatim |
 | `title` | The HTML `<title>`, only under `--check-title` |
+
+When both `--include-status` and `--exclude-status` are given,
+`--include-status` alone decides and `--exclude-status` is ignored, so use one
+or the other.
 
 `--check-status` deliberately does not follow redirects, so a reported status
 always belongs to the URL that was asked for. `location` is where the 3xx
@@ -385,6 +402,57 @@ few requests — urx reports that as an error naming the endpoint, never as an
 empty result. The UK Web Archive, Library of Congress, Bibliotheca Alexandrina
 and the National Library of Australia CDX APIs are blocked by bot protection or
 redirects and do not work from urx.
+
+### Provider Notes
+
+| Provider | What it queries, and its limits |
+|----------|---------------------------------|
+| `otx` | `/api/v1/indicators/{domain\|hostname}/…/url_list`, 200 URLs per page, at most 1,000 pages. The `hostname` endpoint is used for a non-apex target without `--subs` |
+| `vt` | v3 `domains/{domain}/urls`, 40 per page with cursor pagination. A 404 means no data; a 429 waits for the server's `Retry-After` |
+| `urlscan` | `search/?q=domain:<domain>` with 100 results per page and `search_after` paging. Works without a key |
+| `github` | Code Search for `"<domain>"`; URLs come from the matched text fragments, not whole files. GitHub caps code search at 1,000 results (10 pages × 100). Any personal access token works |
+| `zoomeye` | `api.zoomeye.ai/v2/search` with the dork `site:<domain>` (`site:*.<domain>` under `--subs`), 100 per page |
+| `bevigil` | One request per domain to `osint.bevigil.com/api/<domain>/urls/`, no pagination |
+
+`--subs` changes the query itself only for the CDX providers, OTX, ZoomEye and
+GitHub. VirusTotal, urlscan and BeVigil send the same query either way, and host
+validation then keeps or drops the subdomains they return.
+
+Naming a keyed provider without a key prints `Error: The … provider … requires
+an API key`, skips that provider, and the run carries on (exit code 0).
+
+## Reading URLs from Files
+
+`--files` reads URLs from local files instead of querying providers. Positional
+domains and `--domain-list` are ignored, no provider is queried, and no host
+validation applies, since there is no target to validate against; use
+`--scope-file` or `--match-regex` to restrict hosts. Every URL is attributed to
+`file` in `--show-sources` and `--stats`. The filters, testers and output
+options all work as usual.
+
+**How the format is chosen**, by file name:
+
+- `.warc` → WARC.
+- `.gz` or `.bz2` → WARC if the name contains `warc`, otherwise URLTeam.
+- `.txt` or `.list` → text.
+- Otherwise, a name containing `warc` → WARC, and `urlteam` / `url_team` →
+  URLTeam. Everything else is read as text.
+
+Gzip is detected by its magic bytes and multi-member streams are read in full.
+bzip2 is not supported: the run stops with `bzip2 input is not supported.
+Decompress it first` and exits 1.
+
+**What is extracted.** Text files: each non-blank, non-`#` line that starts with
+`http://` or `https://`. URLTeam: the first `http(s)://` token on each line.
+WARC: the `WARC-Target-URI` headers and bare URL lines in the payloads.
+
+**Limits.** Each file is capped at 1,000,000 URLs and 1 GiB of decompressed
+input, and lines over 1 MiB are skipped; hitting a cap prints a warning.
+
+```bash
+urx --files urls.txt --check-status --include-status 200
+urx --files crawl.warc.gz --scope-file scope.txt -f jsonl
+```
 
 ## Shell Completions and the Man Page
 
@@ -501,6 +569,24 @@ Details worth knowing:
 > `urx https://example.com/shop` scanned the whole of `example.com`. It now
 > scans `/shop`. Pass just the host for the old behaviour; a run whose target
 > carries a path says so on stderr.
+
+## Host Validation
+
+With `--strict` (the default) a URL is kept only when its host is one of the
+targets. `www.<target>` counts as the target itself, so a site served entirely
+on `www.` is not lost; with `--subs`, any subdomain of a target is kept too.
+`--no-strict` waives the host check but keeps a target's path scope. `--strict`
+takes no value: `--no-strict` is the way to turn it off (`--strict false` would
+read `false` as a domain).
+
+When validation removes more than half of the collected URLs and `--subs` is off,
+urx prints a one-line hint on stderr, even without `-v`:
+
+```
+[urx] strict host validation removed 812/1400 URLs; pass --subs to keep subdomains or --no-strict to keep all hosts
+```
+
+`--silent` hides it.
 
 ## Regular-expression Filtering
 
@@ -939,7 +1025,7 @@ real-bundle shape behind each rule:
 | Bare extensions (`.js`, `/.png`) | File-type checks |
 | Regex sources and tag fragments (`/^\/api/(\d+)`, `</div>`) | Excluded by the character class — they never match at all |
 | Strings closed by a different quote (`'/g,"`), trailing `,` `;` `:` | Artifacts of regex literals next to strings |
-| `x/y` with only two bare segments (`react/jsx-runtime`, `en/US`) | Package paths and locale tags; a segment of three or more characters plus three segments, a query, or a file extension is enough evidence to keep |
+| Bare relative paths with no leading `/` or `.` (`react/jsx-runtime`, `en/US`) | Package paths and locale tags; kept only when a segment has three or more characters and there are three or more segments, a query string, or a dot in the last segment (`app/main.js`). `fetch` / `axios` / XHR arguments are exempt |
 | Package and source-tree paths (`@scope/pkg/...`, `node_modules/...`, `./src/...`, `lib/esm/...`) | Import specifiers and webpack module keys |
 | `./x` without a fetchable extension (`require("./utils")`, `{"./zlib/deflate":46}`) | CommonJS module specifiers — a real bundle contributed ~50 of them from jszip and pako alone |
 | Path suffixes after `+` (`"/users/" + id + "/avatar"` → `/avatar`) | Only the prefix is a route; `base + "/api/x"` is still kept |

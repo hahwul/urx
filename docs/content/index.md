@@ -28,6 +28,8 @@ template = "landing.html"
 Domains         <span class="bar">[====================]</span> 1/1 processed
 Wayback Machine <span class="bar">[====================]</span> <span class="done">done</span>
 OTX             <span class="bar">[====================]</span> <span class="done">done</span>
+Robots.txt      <span class="bar">[====================]</span> <span class="done">done</span>
+Sitemap         <span class="bar">[====================]</span> <span class="done">done</span>
 Filtering       <span class="bar">[====================]</span> 199 URLs
 Testing         <span class="bar">[====================]</span> 199/199 complete
 

@@ -65,20 +65,32 @@ urx example.com --retries 1
 urx example.com --retries 5
 ```
 
-`--retries` (default 2) is the number of extra attempts after the first. The
-archive indexes (wayback, cc, arquivo, `--cdx-endpoint`, archived discovery) and
-bevigil retry network errors and HTTP `408`, `429` and `5xx`, backing off
-linearly (0.5 s, 1 s, …) or waiting for the server's `Retry-After`, capped at
-60 s. vt, urlscan, zoomeye, github and otx also retry other non-2xx answers. The
-testers (`--check-status`, the extractors, `--archive-body`) retry only network
-errors, 0.5 s apart, because the HTTP status is their answer.
+`--retries` (default 2) is the number of extra attempts after the first:
+
+- The archive indexes (wayback, cc, arquivo, `--cdx-endpoint`, and the
+  archived-discovery listings) retry network errors and HTTP `408`, `429` and
+  `5xx`, backing off linearly (0.5 s, 1 s, …) unless the server sends
+  `Retry-After` (seconds, capped at 60 s), which replaces the back-off.
+- bevigil retries network errors, `429` and `5xx` the same way; any other error
+  status fails at once.
+- vt, urlscan, zoomeye and github retry any non-2xx answer (except vt's 404 and
+  github's 422, which mean no data) with the same back-off, first waiting out a
+  429's `Retry-After`.
+- otx retries any failure a flat 1 s apart.
+- The testers (`--check-status`, the extractors, `--expand-specs`,
+  `--archive-body`) retry only network errors, 0.5 s apart, because the HTTP
+  status is their answer.
+- The live robots.txt / sitemap.xml probes make a single attempt.
 
 #### Network Scope
 `--network-scope` decides which components get the network settings: timeout,
 retries, proxy, `--insecure`, `--random-agent`, the rate limit, and the `-H` /
 `--cookie` / `--user-agent` headers (sent only to the target: the testers and the
-robots/sitemap probes). It does not change `--parallel`, and the `--notify`
-webhook always uses `--proxy`, `--timeout` and `--insecure` whatever the scope.
+robots/sitemap probes). It does not change `--parallel`. Components outside the
+scope use their built-in defaults (3 retries, a 30 s timeout — 60 s for wayback,
+arquivo and `--cdx-endpoint`, 10 s for cc — the default User-Agent, and any
+`HTTP(S)_PROXY` / system proxy). The `--notify` webhook takes only `--proxy`,
+`--timeout` and `--insecure`, whatever the scope, and makes a single attempt.
 
 ```bash
 # Apply to all components (default)
@@ -119,8 +131,9 @@ urx example.com --rate-limit 10
 urx example.com --rate-limit-by vt=1,wayback=10
 ```
 
-The rate applies per provider. It also paces `--extract-js-endpoints`,
-`--expand-specs` and `--archive-body`.
+The rate applies per provider, and may be fractional: `--rate-limit-by vt=0.066`
+is about 4 requests a minute, VirusTotal's public-API quota. It also paces
+`--extract-js-endpoints`, `--expand-specs` and `--archive-body`.
 
 #### API Key Rotation
 Distribute load across multiple API keys to bypass rate limits:
@@ -182,8 +195,8 @@ urx example.com --stream | httpx -silent
 
 The progress bar is drawn on stderr and hidden automatically when stderr is not
 a terminal, so scripts need no `--no-progress`. `--silent` suppresses **all**
-output, including results on stdout, so use it only together with `-o` or
-`--notify`.
+output, including results on stdout (except under `--stream`), so use it only
+together with `-o` or `--notify`.
 
 Batch output is held in memory until the run ends, whether it goes to `-o` or to
 stdout. `--stream` writes each provider's URLs as soon as it finishes a domain,

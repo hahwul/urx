@@ -92,7 +92,7 @@ urx example.com --providers bevigil
 
 #### URX_NOTIFY_URL
 Webhook URL(s) for `--notify`. Comma-separate several to fan out. The URL is
-treated as a secret: urx never prints more than its host, so the environment
+treated as a secret: urx never prints more than its scheme, host and port, so the environment
 is the recommended place for it.
 
 ```bash

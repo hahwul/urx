@@ -137,7 +137,7 @@ parallel = 5                           # default; domains fetched concurrently p
 [testing]
 check_status = false
 include_status = ["200", "30x"]
-exclude_status = ["404", "50x"]
+# exclude_status = ["404", "50x"]   # ignored when include_status is set
 extract_links = false
 extract_js_endpoints = false   # Mine collected JavaScript for endpoints
 max_js_files = 500             # default; cap on files --extract-js-endpoints fetches (0 = unlimited)
@@ -227,7 +227,9 @@ redis_url = "redis://cache-server:6379"
 cache_ttl = 43200
 ```
 
-> Run this with `--silent` on the command line. Several flags are CLI-only and
+> Add `--silent` on the command line only together with `-o` or `--notify` (it
+> suppresses the results on stdout too); otherwise use `--no-progress`. Several
+> flags are CLI-only and
 > have no config file equivalent; setting them in the file only produces the
 > "unrecognised key" warning:
 >

@@ -199,7 +199,7 @@ fn warn_about_inert_archive_filters(
     }
     eprintln!(
         "Warning: {} accept only a single value for {} (their index matches exactly, with no OR); \
-         that filter is skipped for them and applied on wayback only.",
+         that filter is skipped for them and applied on wayback and classic-dialect endpoints only.",
         affected.join(" and "),
         unsupported.join(" / ")
     );

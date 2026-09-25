@@ -27,10 +27,12 @@ Results go to stdout; the progress bar, warnings and errors go to stderr, and th
 progress bar hides itself when stderr is not a terminal. Two things to keep in
 mind in a pipe:
 
-- `--silent` suppresses **all** output, results included. Use it only with `-o`
-  or `--notify`; to quiet a pipe, use `--no-progress` instead.
-- `-v` / `--verbose` prints most of its messages to stdout, where the next tool
-  would read them as URLs. Leave it off in pipelines.
+- `--silent` suppresses **all** output, results included (except under
+  `--stream`, which still writes results and only loses its diagnostics). Use it
+  only with `-o` or `--notify`; to quiet a pipe, use `--no-progress` instead.
+- `-v` / `--verbose` writes its setup and stage messages to stdout, mixed into
+  the URL list, where the next tool would read them as URLs (its per-provider
+  progress and errors go to stderr). Leave it off in pipelines.
 
 For JSON consumers, `-f jsonl` writes one object per line, while `-f json` writes
 a single array. `--stream` starts writing before the run ends, so the next tool
@@ -45,7 +47,7 @@ urx example.com --stream | httpx -silent
 
 | Code | Meaning |
 |------|---------|
-| `0` | The run completed, including runs where some providers failed, results were partial, the webhook could not be delivered, or the `-o` / `--output-dir` file could not be written (reported on stderr) |
+| `0` | The run completed, including runs where some providers failed, results were partial, the webhook could not be delivered, or the `-o` / `--output-dir` file could not be written (reported on stderr unless `--silent`; under `--stream` an `-o` that cannot be created is an exit-1 startup error) |
 | `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes` |
 | `2` | Invalid command-line usage, such as an unknown flag or `--parallel 0` |
 | `130` | Interrupted by a second Ctrl-C |

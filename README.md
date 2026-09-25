@@ -22,8 +22,8 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
 * Plug in any other CDX index server — national web archives, a private pywb, OutbackCDX — with `--cdx-endpoint URL`, no code change needed
 * Keyless by default: Wayback, Common Crawl, OTX, Arquivo.pt, and URLScan (anonymous) all work without an API key
 * BeVigil provider: URLs extracted from unpacked Android apps — endpoints no web archive ever crawled
-* API key rotation support for VirusTotal and URLScan providers to mitigate rate limits
-* Authenticated testing: `-H`, `--cookie` and `--user-agent` apply to every request urx makes to the target (`--check-status`, `--extract-links`, `--extract-js-endpoints`, `--expand-specs`) and are deliberately never sent to an archive
+* API key rotation for every keyed provider (VirusTotal, URLScan, ZoomEye, GitHub, BeVigil) to mitigate rate limits
+* Authenticated testing: `-H`, `--cookie` and `--user-agent` apply to every request urx makes to the target (`--check-status`, `--extract-links`, `--extract-js-endpoints`, `--expand-specs`, and the `robots`/`sitemap` probes) and are deliberately never sent to an archive
 * Filter results by file extensions, substring patterns, or full regular expressions (`--match-regex` / `--filter-regex`)
 * Predefined presets, both by file family ("no-images", "only-js") and by security interest ("only-secrets", "only-backup", "only-config", "only-api")
 * Archive-side filtering: push status code, MIME type, and date range into the CDX query itself, so filtered-out captures never cross the network
@@ -47,9 +47,9 @@ Urx is a command-line tool designed for collecting URLs from OSINT archives, suc
   * Response metadata: `--check-status` also records `Location`, `Content-Length` and `Content-Type`, and `--check-title` adds the HTML `<title>`
 * Archived robots.txt and sitemap.xml discovery (`--archived-discovery`): every distinct version the Wayback Machine holds, so a `Disallow:` from 2015 still names the paths the site has since stopped mentioning
 * Caching and Incremental Scanning:
-  * Local SQLite or remote Redis caching to avoid re-scanning domains
+  * Local SQLite or remote Redis caching to avoid re-scanning domains (Redis needs a build with `--features redis-cache`; packaged builds leave it out)
   * Incremental mode to discover only new URLs since last scan
-  * Configurable cache TTL and automatic cleanup of expired entries
+  * Configurable cache TTL; each scan sweeps entries older than twice the TTL, and `urx cache prune` removes anything past it
   * `urx cache` subcommand to inspect and maintain the cache: `stats`, `list`, `prune`, `drop <domain>`, `clear`
 
 ![Preview](https://raw.githubusercontent.com/hahwul/urx/refs/heads/main/docs/static/images/preview.jpg)
@@ -146,11 +146,11 @@ Options:
 
 Input Options:
       --files <FILES>...        Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
-      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when they name no domains; `#` comments allowed)
+      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when they name no domains; `#` comments allowed) [alias: --dL]
 
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
-      --output-dir <PATH>        Write one file per domain into this directory (extension matches --format). Coexists with --output / stdout.
+      --output-dir <PATH>        Write one file per URL host into this directory (extension matches --format). Coexists with --output / stdout. [alias: --oD]
   -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv", "wordlist" (path segments and parameter names, deduplicated and sorted) [default: plain]
       --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
@@ -184,7 +184,7 @@ Provider Options:
       --to <DATE>
           Restrict every CDX-backed provider to captures at or before DATE (same format as --from). Alias: --wayback-to
       --archive-status <CODE>
-          Keep only captures the archive recorded with this HTTP status code (e.g. "200"). Applied by the CDX index itself, so unlike --include-status it costs no extra requests. A multi-value list works on wayback only — see "Archive-side Filtering" below
+          Keep only captures the archive recorded with this HTTP status code (e.g. "200"). Applied by the CDX index itself, so unlike --include-status it costs no extra requests. A multi-value list works on wayback and classic-dialect endpoints only — see "Archive-side Filtering" below
       --archive-exclude-status <CODES>
           Drop captures the archive recorded with these HTTP status codes (comma-separated, e.g. "404,500"). Multi-value works on every CDX provider
       --archive-mime <TYPE>
@@ -195,6 +195,8 @@ Provider Options:
           API key for VirusTotal (can be used multiple times for rotation, can also use URX_VT_API_KEY environment variable with comma-separated keys)
       --urlscan-api-key <URLSCAN_API_KEY>
           Optional API key for Urlscan; the provider also works anonymously (rate-limited ~30 req/min per IP). Can be used multiple times for rotation, or via URX_URLSCAN_API_KEY (comma-separated keys)
+      --zoomeye-api-key <ZOOMEYE_API_KEY>
+          API key for ZoomEye (can be used multiple times for rotation, can also use URX_ZOOMEYE_API_KEY environment variable with comma-separated keys)
       --github-api-key <GITHUB_API_KEY>
           Personal access token for the GitHub Code Search provider (also reads URX_GITHUB_API_KEY, comma-separated for rotation)
       --bevigil-api-key <BEVIGIL_API_KEY>
@@ -285,13 +287,13 @@ Network Options:
 
 Testing Options:
       --check-status
-          Check HTTP status code of collected URLs [aliases: ----cs]
+          Check HTTP status code of collected URLs [alias: --cs]
       --check-title
           Also record each response's HTML <title> while checking statuses; implies --check-status
       --include-status <INCLUDE_STATUS>
-          Include URLs with specific HTTP status codes or patterns (e.g., --is=200,30x) [aliases: ----is]
+          Include URLs with specific HTTP status codes or patterns (e.g., --is=200,30x) [alias: --is]
       --exclude-status <EXCLUDE_STATUS>
-          Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [aliases: ----es]
+          Exclude URLs with specific HTTP status codes or patterns (e.g., --es=404,50x,5xx) [alias: --es]
       --extract-links
           Extract additional links from collected URLs (requires HTTP requests)
       --extract-js-endpoints
@@ -468,7 +470,8 @@ urx example.com --proxy http://localhost:8080 --timeout 60 --parallel 10 --insec
 urx example.com -e js,php --patterns admin,login --exclude-patterns logout,static --min-length 20
 
 # HTTP Status code based filtering (live requests: urx re-fetches each URL)
-urx example.com --include-status 200,30x,405 --exclude-status 20x
+urx example.com --include-status 200,30x,405
+urx example.com --exclude-status 404,5xx   # use one or the other: with both, --include-status alone decides
 
 # Archive-side filtering (free: the CDX index already knows these)
 # Skip everything the archive recorded as a 404 — no extra requests
@@ -484,7 +487,7 @@ urx example.com --archive-exclude-mime text/html
 urx example.com --from 2023 --to 2024
 
 # Disable host validation
-urx example.com --strict false
+urx example.com --no-strict
 
 # URL normalization and deduplication
 # Normalize URLs by sorting query parameters and removing trailing slashes
@@ -676,8 +679,9 @@ parameter changes the request.
 The survivor of each group is its lexicographically smallest URL, so two runs
 over the same data print the same thing. `--verbose` reports how many URLs were
 collapsed. The option is independent of `--normalize-url` and
-`--merge-endpoint` and combines with either; all three need the complete result
-set, so none of them works with `--stream`.
+`--merge-endpoint` and combines with either. `--merge-endpoint` and
+`--dedup-similar` need the complete result set and cannot be used with
+`--stream`; `--normalize-url` works on one URL at a time and can.
 
 ### Parameter and Fuzz Views
 
@@ -763,7 +767,7 @@ deduplicated. Two things differ:
 * **Scope.** Options that need the complete result set are rejected up front
   (with a message naming each one): `--merge-endpoint`, `--dedup-similar`,
   `--check-status` /
-  `--include-status` / `--exclude-status`, `--extract-links`,
+  `--include-status` / `--exclude-status` / `--check-title`, `--extract-links`,
   `--extract-js-endpoints`, `--archive-body`, `--expand-specs`,
   `--incremental`, `--show-sources`, `--show-meta`, the `--meta-*` filters,
   `--params`, `--params-by-endpoint`, `--fuzz-placeholder`, `--output-dir`, and
@@ -956,7 +960,7 @@ request than one response per URL would.
 Details worth knowing:
 
 - Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
-  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  `cc`, `arquivo`, and any `--cdx-endpoint`) supply one; `--files` input, non-CDX providers, and cached
   results (the cache stores URLs only) have none. urx says so when there is
   nothing to replay — pass `--no-cache` to get fresh captures.
 - The newest capture of each URL is replayed. A timestamp reported by another
@@ -966,7 +970,9 @@ Details worth knowing:
 - Discovered links go through the same filters, host validation, and output
   transforms as everything else, and each body is capped at 10 MiB.
 - `--rate-limit`, `--rate-limit-by wayback=N`, `--parallel`, `--proxy`,
-  `--timeout`, and `--retries` all apply to the replay requests.
+  `--timeout`, and `--retries` all apply to the replay requests. Under
+  `--network-scope providers` the replay requests, being part of the testing
+  stage, are left unconfigured like the other testers.
 - Incompatible with `--stream`, like every option that runs after collection.
 
 ### Expanding API Specifications
@@ -1130,10 +1136,10 @@ yields the HTML-answer error above.
 Urx supports caching to improve performance for repeated scans and incremental scanning to discover only new URLs.
 
 ```bash
-# Enable caching with SQLite (default)
+# SQLite is the default backend; name it and its path explicitly
 urx example.com --cache-type sqlite --cache-path ~/.urx/cache.db
 
-# Use Redis for distributed caching
+# Use Redis for distributed caching (needs: cargo install urx --features redis-cache)
 urx example.com --cache-type redis --redis-url redis://localhost:6379
 
 # Incremental scanning - only show new URLs since last scan
@@ -1190,9 +1196,10 @@ urx target.com --incremental --silent --notify https://hooks.slack.com/services/
 urx target.com --incremental --no-progress | notify-tool
 
 # Efficient domain lists processing
-cat domains.txt | urx --incremental --cache-ttl 3600 > new_urls.txt
+# (keep --cache-ttl above the scan interval: entries older than 2x TTL are swept)
+cat domains.txt | urx --incremental --no-progress > new_urls.txt
 
-# Distributed team scanning with Redis
+# Distributed team scanning with Redis (needs a redis-cache build)
 urx example.com --cache-type redis --redis-url redis://shared-cache:6379
 
 # Fast re-scans during development
@@ -1234,8 +1241,8 @@ urx target.com --incremental --notify-format slack
 - Delivery never changes the exit code. The URLs are already on stdout or in
   `--output` by the time the webhook is called, so a dead webhook is a warning
   on stderr and the run still exits 0. `--verbose` shows the response status.
-- The webhook URL is a credential. urx never prints more than its scheme and
-  host — not in `--verbose`, not in warnings, not in `--stats`. To keep it out
+- The webhook URL is a credential. urx never prints more than its scheme,
+  host and any non-default port — not in `--verbose`, not in warnings, not in `--stats`. To keep it out
   of a config that is checked in, put it in `URX_NOTIFY_URL` or as
   `notify_url` in the provider-config file; `[notify].url` in the main config
   works too. Precedence is CLI/env > provider-config > main config.

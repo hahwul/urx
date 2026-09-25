@@ -73,11 +73,16 @@ urx example.com -f jsonl | jq -r '.url'
 urx example.com -f csv -o results.csv
 ```
 
-### One File per Domain
+### One File per Host
 ```bash
 # out/example.com.json, out/example.org.json, ... plus the combined file
 urx example.com example.org -f json --output-dir out/ -o all.json
 ```
+
+Files are named after each URL's host, so `www.example.com` and, under `--subs`,
+every subdomain get their own file. Output whose lines are not URLs
+(`--show-only-host`, `--show-only-path`, `--show-only-param`, `--params`) goes to
+`_unknown.<ext>`.
 
 ### Streaming Output
 ```bash
@@ -466,6 +471,10 @@ urx example.com --check-status --include-status 200,30x
 # Exclude errors
 urx example.com --check-status --exclude-status 404,50x
 ```
+
+When both are given, `--include-status` alone decides and `--exclude-status` is
+ignored. A URL whose check failed outright (refused, timed out) is printed with
+`[Status check failed]` unless `--include-status` is set.
 
 ## Network Configuration
 

@@ -217,7 +217,7 @@ The exact-by-default rule is deliberate — a substring default would have let
 
 **Machine-readable output.** `-f json` switches every subcommand to JSON (`-f
 jsonl` prints the same document), so cache state can be monitored the same way a
-scan is:
+scan is (other `-f` values print the plain-text view):
 
 ```bash
 urx cache stats -f json | jq '.expired_entries'

@@ -42,7 +42,8 @@ pub struct Args {
     #[clap(short, long, value_parser)]
     pub output: Option<PathBuf>,
 
-    /// Write one file per domain into this directory (e.g. `example.com.json`).
+    /// Write one file per URL host into this directory (e.g. `example.com.json`,
+    /// `www.example.com.json`).
     /// Coexists with --output (which still writes the aggregated file) and
     /// stdout. The directory is created if missing. The extension matches
     /// --format (`json`, `jsonl`, `csv`, or `txt` for plain and wordlist).
@@ -657,7 +658,7 @@ pub struct Args {
     /// POST a run summary to this webhook URL when the run ends (repeatable).
     /// Also read from URX_NOTIFY_URL (comma-separated), the provider-config
     /// file (`notify_url`) and `[notify].url` in the config file. The URL is
-    /// treated as a secret: only its host is ever printed.
+    /// treated as a secret: only its scheme, host and port are ever printed.
     #[clap(help_heading = "Notification Options")]
     #[clap(long, value_name = "URL")]
     pub notify: Vec<String>,
@@ -985,9 +986,10 @@ impl Args {
         self.parse_rate_limit_overrides().0
     }
 
-    /// Effective host-validation setting. `--no-strict` wins over `--strict`,
-    /// so users can disable filtering with the natural flag instead of the
-    /// unusual `--strict false`.
+    /// Effective host-validation setting. `--no-strict` wins over `--strict`.
+    /// `--strict` takes no value, so `--no-strict` is the only way to disable
+    /// host validation from the command line (`--strict false` would parse
+    /// `false` as a domain).
     pub fn strict_enabled(&self) -> bool {
         self.strict && !self.no_strict
     }
