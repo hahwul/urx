@@ -51,11 +51,16 @@ pub struct Args {
     #[clap(long = "output-dir", visible_alias = "oD", value_parser)]
     pub output_dir: Option<PathBuf>,
 
-    /// Output format: "plain", "json" (one array), "jsonl" (one JSON object
-    /// per line — pipeline-friendly and valid while still being written),
-    /// "csv", or "wordlist" (the path segments and parameter names seen)
+    /// Output format: plain text, a JSON array, JSON Lines, CSV, or a URL wordlist.
     #[clap(help_heading = "Output Options")]
-    #[clap(short, long, default_value = "plain", global = true)]
+    #[clap(
+        short,
+        long,
+        default_value = "plain",
+        global = true,
+        ignore_case = true,
+        value_parser = ["plain", "json", "jsonl", "csv", "wordlist"]
+    )]
     pub format: String,
 
     /// Merge endpoints with the same path and merge URL parameters
@@ -1071,6 +1076,27 @@ mod tests {
         assert_eq!(args.domains, vec!["example.com"]);
         assert!(args.output.is_some());
         assert_eq!(args.output.unwrap().to_str().unwrap(), "output.txt");
+        assert_eq!(args.format, "json");
+    }
+
+    #[test]
+    fn test_args_format_accepts_each_value_case_insensitively() {
+        for value in ["plain", "json", "jsonl", "csv", "wordlist"] {
+            let args = Args::try_parse_from(["urx", "example.com", "--format", value])
+                .unwrap_or_else(|error| panic!("{value} should be accepted: {error}"));
+            assert_eq!(args.format, value);
+        }
+
+        let (args, provided) = parse_args_from(["urx", "example.com", "-f", "JSON"]);
+        assert_eq!(args.format, "JSON");
+        assert!(provided.has("format"), "-f should remain CLI-provided");
+    }
+
+    #[test]
+    fn test_args_format_is_global_to_cache_subcommands() {
+        let args = Args::try_parse_from(["urx", "cache", "stats", "-f", "json"])
+            .expect("cache subcommands should accept the global format flag");
+        assert!(args.command.is_some());
         assert_eq!(args.format, "json");
     }
 
