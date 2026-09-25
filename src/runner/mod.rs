@@ -28,6 +28,14 @@ use crate::utils::verbose_print;
 /// between two requests.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Resolve on the next Ctrl-C. If signal registration fails, never resolve, so
+/// a run isn't spuriously treated as interrupted.
+async fn next_ctrl_c() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// Format an integer with thousands separators (e.g. `12345` → `12,345`) so
 /// large URL counts stay legible in the progress summary.
 fn fmt_count(n: usize) -> String {
@@ -700,6 +708,8 @@ pub async fn process_domains(
     let join_future = join_all(provider_futures);
     tokio::pin!(join_future);
 
+    let mut ctrl_c = Box::pin(next_ctrl_c());
+
     let run_end = {
         // A deadline that simply never fires when --max-time isn't set.
         let timeout = async {
@@ -712,16 +722,26 @@ pub async fn process_domains(
         tokio::select! {
             _ = &mut join_future => RunEnd::Completed,
             _ = &mut timeout => RunEnd::TimedOut,
-            // First Ctrl-C becomes a graceful stop. If signal registration
-            // fails we fall back to never firing, so the run isn't spuriously
-            // marked interrupted.
-            _ = async {
-                if tokio::signal::ctrl_c().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            } => RunEnd::Interrupted,
+            // First Ctrl-C becomes a graceful stop.
+            _ = &mut ctrl_c => RunEnd::Interrupted,
         }
     };
+
+    // `ctrl_c()` replaced the process's default SIGINT action for good, so
+    // once collection is over something must keep listening, or every later
+    // Ctrl-C (during testing and output) is silently swallowed. Any Ctrl-C
+    // from here on force-quits: after a natural finish or --max-time it is the
+    // first press, after a graceful stop it is the second. The still-pending
+    // waiter is reused when collection didn't consume it.
+    let after_collection = if matches!(run_end, RunEnd::Interrupted) {
+        Box::pin(next_ctrl_c())
+    } else {
+        ctrl_c
+    };
+    tokio::spawn(async move {
+        after_collection.await;
+        std::process::exit(130);
+    });
 
     if !matches!(run_end, RunEnd::Completed) {
         // Say why the run is wrapping up before waiting on it, so the grace
@@ -736,17 +756,6 @@ pub async fn process_domains(
                     "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
                 ),
             }
-        }
-
-        // The rest of the pipeline (output, optional testing) can still take a
-        // while, so a second Ctrl-C force-quits. Armed before the grace window
-        // so it also covers the wait itself.
-        if matches!(run_end, RunEnd::Interrupted) {
-            tokio::spawn(async {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    std::process::exit(130);
-                }
-            });
         }
 
         // Cancelling a provider task drops everything it has buffered but not
