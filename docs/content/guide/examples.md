@@ -374,7 +374,7 @@ also run on the collected URLs *before* any page is fetched, so a filter such as
 output instead:
 
 ```bash
-# Only the JavaScript the pages reference
+# JavaScript URLs, whether collected or referenced by the pages
 urx example.com --extract-links | grep -E '\.js(\?|$)'
 ```
 
@@ -430,18 +430,21 @@ one request per distinct body rather than one per URL; `--archive-body-limit`
 # Bounded and paced
 urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
-# Only what the archived pages referenced as JavaScript
+# JavaScript URLs, whether collected or referenced by the archived pages
 urx example.com --archive-body --no-cache | grep -E '\.js(\?|$)'
 ```
 
 ### Expand API Specifications
 ```bash
-urx example.com --preset only-api --expand-specs
+urx example.com --expand-specs
 ```
 
 `--expand-specs` opens the OpenAPI, Swagger and GraphQL documents the run
 collected and expands every route they describe into the result set — one
-request buys the whole documented surface. JSON and YAML are both read:
+request buys the whole documented surface. Filters and presets also apply to the
+routes a document expands into, so `--preset only-api` would drop `/users` or
+`/orders/{id}`; `--expand-specs` already opens only the specification documents,
+so no preset is needed to find them. JSON and YAML are both read:
 
 ```bash
 # Bounded and paced
@@ -657,7 +660,6 @@ urx example.com \
 ```bash
 urx target.com \
   --subs \
-  --preset only-api \
   --expand-specs \
   --max-spec-files 25 \
   --check-status \
@@ -681,6 +683,8 @@ urx target.com \
   -p only-js \
   --check-status \
   --include-status 200 \
+  -f jsonl \
+  | jq -r .url \
   | tee js-files.txt \
   | nuclei -t exposures/
 ```

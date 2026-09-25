@@ -71,11 +71,11 @@ urx example.com --retries 5
   archived-discovery listings) retry network errors and HTTP `408`, `429` and
   `5xx`, backing off linearly (0.5 s, 1 s, …) unless the server sends
   `Retry-After` (seconds, capped at 60 s), which replaces the back-off.
-- bevigil retries network errors, `429` and `5xx` the same way; any other error
-  status fails at once.
+- bevigil retries network errors, `429` and `5xx` the same way; a `404` means no
+  data, and any other error status fails at once.
 - vt, urlscan, zoomeye and github retry any non-2xx answer (except vt's 404 and
-  github's 422, which mean no data) with the same back-off, first waiting out a
-  429's `Retry-After`.
+  github's 422, which mean no data) with the same back-off. They first wait out
+  the `Retry-After` of a 429 (and, for github, of a 403 secondary rate limit).
 - otx retries any failure a flat 1 s apart.
 - The testers (`--check-status`, the extractors, `--expand-specs`,
   `--archive-body`) retry only network errors, 0.5 s apart, because the HTTP
@@ -89,8 +89,8 @@ retries, proxy, `--insecure`, `--random-agent`, the rate limit, and the `-H` /
 robots/sitemap probes). It does not change `--parallel`. Components outside the
 scope use their built-in defaults (3 retries, a 30 s timeout — 60 s for wayback,
 arquivo and `--cdx-endpoint`, 10 s for cc — the default User-Agent, and any
-`HTTP(S)_PROXY` / system proxy). The `--notify` webhook takes only `--proxy`,
-`--timeout` and `--insecure`, whatever the scope, and makes a single attempt.
+`HTTP(S)_PROXY` / system proxy). The `--notify` webhook takes only `--proxy`
+(with `--proxy-auth`), `--timeout` and `--insecure`, whatever the scope, and makes a single attempt.
 
 ```bash
 # Apply to all components (default)
@@ -211,7 +211,7 @@ the full result set with sources and metadata. It is unsorted, bypasses the cach
 # Many domains in one run; urx fetches them concurrently itself
 urx --domain-list domains.txt --no-progress -o results.txt
 
-# One output file per domain
+# One output file per host (www. and each subdomain get their own)
 urx --domain-list domains.txt --incremental --output-dir out/
 
 # Lowest memory: stream the results

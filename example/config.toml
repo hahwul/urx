@@ -23,13 +23,16 @@ cc_index = "CC-MAIN-2026-17"         # Common Crawl index (use "latest" to auto-
 # extra HTTP requests. Note: wayback (and classic endpoints) treat values as
 # regexes; cc, arquivo and pywb endpoints match exactly and cannot express a
 # multi-value positive list (see README).
-from = "2023"                        # Captures at or after this date
-to = "2024"                          # Captures at or before this date
+# from = "2023"                      # Captures at or after this date (a pinned cc_index only holds its own crawl's dates)
+# to = "2024"                        # Captures at or before this date
 archive_exclude_status = ["404"]     # Skip what the archive recorded as missing
 archive_exclude_mime = ["text/html"] # Leave assets and endpoints behind
 # archive_status = ["200"]           # Keep only these recorded status codes
 # archive_mime = ["application/json"] # Finds endpoints that carry no extension
 vt_api_key = ""                      # VirusTotal API key (If using VirusTotal)
+# urlscan_api_key = ""               # URLScan API key (optional; urlscan also works anonymously)
+# zoomeye_api_key = ""               # ZoomEye API key
+# github_api_key = ""                # GitHub Code Search personal access token
 # bevigil_api_key = ""               # BeVigil API key (URLs from unpacked Android apps)
 exclude_robots = false               # Exclude robots.txt URLs
 exclude_sitemap = false              # Exclude sitemap.xml URLs
@@ -41,7 +44,7 @@ archived_discovery_limit = 50        # Documents fetched per domain by each arch
 
 # Filter options
 [filter]
-preset = ["no-resources", "no-images"]  # Filter presets
+preset = ["no-images"]                  # Filter presets ("no-resources" also drops js/css, which would empty extensions = ["js", ...] below)
 extensions = ["js", "php", "aspx"]      # Include only these extensions
 exclude_extensions = ["html", "txt"]    # Exclude these extensions
 patterns = ["admin", "api"]             # Only include URLs with these patterns
@@ -82,11 +85,14 @@ timeout = 30                            # Request timeout in seconds
 retries = 3                             # Number of retries for failed requests
 parallel = 5                            # Domains fetched concurrently per provider, and concurrent URL tests
 rate_limit = 10                         # Rate limit (requests per second)
+# header = ["X-Env: staging"]           # Sent to the target only, never to an archive
+# cookie = "session=abc"
+# user_agent = "acme-security-scan/1.0"
 
 # Testing options
 [testing]
 check_status = false            # Check HTTP status code of collected URLs
-include_status = ["200", "30x"] # Include URLs with these status codes
+# include_status = ["200", "30x"] # Keep only these live status codes. Setting this (or exclude_status) runs the live check on every URL even with check_status = false
 # exclude_status = ["404", "50x"] # Exclude URLs with these status codes (ignored when include_status is set)
 extract_links = false           # Extract additional links from collected URLs
 extract_js_endpoints = false    # Fetch collected JavaScript and extract the endpoints in it
@@ -95,6 +101,7 @@ archive_body = false            # Extract links from the *archived* bodies of co
 archive_body_limit = 500        # Distinct archived bodies fetched per run (duplicates never count)
 expand_specs = false            # Expand collected OpenAPI/Swagger/GraphQL documents into routes
 max_spec_files = 50             # Cap on specification documents fetched (0 = unlimited)
+# archive_body_dir = "./corpus"   # Keep replayed bodies + index.jsonl (requires archive_body = true)
 
 # Cache options
 [cache]

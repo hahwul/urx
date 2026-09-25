@@ -24,7 +24,7 @@ template = "landing.html"
     <div class="term">
       <div class="term-bar"><span class="dot" aria-hidden="true"></span> urx &#183; recon</div>
       <div class="term-body"><pre><span class="prompt">$</span> urx dalfox.hahwul.com <span class="flag">--providers</span> wayback,otx <span class="flag">--check-status</span>
-
+<span></span>
 Domains         <span class="bar">[====================]</span> 1/1 processed
 Wayback Machine <span class="bar">[====================]</span> <span class="done">done</span>
 OTX             <span class="bar">[====================]</span> <span class="done">done</span>
@@ -32,13 +32,13 @@ Robots.txt      <span class="bar">[====================]</span> <span class="don
 Sitemap         <span class="bar">[====================]</span> <span class="done">done</span>
 Filtering       <span class="bar">[====================]</span> 199 URLs
 Testing         <span class="bar">[====================]</span> 199/199 complete
-
+<span></span>
 https://dalfox.hahwul.com/                         <span class="ok">[200 OK]</span>
 https://dalfox.hahwul.com/.well-known/security.txt <span class="ok">[200 OK]</span>
-https://dalfox.hahwul.com/llms.txt                 <span class="ok">[200 OK]</span>
-https://dalfox.hahwul.com/sitemap.xml              <span class="ok">[200 OK]</span>
+https://dalfox.hahwul.com/admin                    <span class="gone">[404 Not Found]</span>
 https://dalfox.hahwul.com/advanced/config/         <span class="gone">[404 Not Found]</span>
-https://dalfox.hahwul.com/admin                    <span class="gone">[404 Not Found]</span></pre></div>
+https://dalfox.hahwul.com/llms.txt                 <span class="ok">[200 OK]</span>
+https://dalfox.hahwul.com/sitemap.xml              <span class="ok">[200 OK]</span></pre></div>
     </div>
   </div>
 </section>
@@ -131,9 +131,9 @@ https://dalfox.hahwul.com/admin                    <span class="gone">[404 Not F
         <pre><span class="prompt">$</span> urx target.com \
     -e js,php \
     --patterns api,v1
-
-<span class="muted">https://target.com/api/v1/auth.js
-https://target.com/api/config.php
+<span></span>
+<span class="muted">https://target.com/api/config.php
+https://target.com/api/v1/auth.js
 https://target.com/v1/users.js</span></pre>
       </div>
       <div class="cell">

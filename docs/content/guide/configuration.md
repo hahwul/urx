@@ -25,7 +25,7 @@ given, `~/.config/urx/config.toml` is not read at all.
 
 ### How Settings Combine
 
-Command-line flags take precedence over config file values, with two caveats:
+Command-line flags take precedence over config file values, with three caveats:
 
 - **Boolean keys can only switch a feature on.** A `true` in the config (say
   `subs`, `check_status`, `random_agent`, `incremental` or `no_cache`) cannot be
@@ -36,6 +36,11 @@ Command-line flags take precedence over config file values, with two caveats:
 - **Lists given on the command line replace the configured list** rather than
   extending it. Any `-H` replaces the whole configured `header` set, for example,
   and `--providers` replaces `providers`.
+- **A configured `include_status` beats `--exclude-status` on the command
+  line.** The two are separate lists, and whenever an include list is present it
+  alone decides; pass `--include-status` to replace it. Either list in the
+  config also runs the live status check on every run and makes `--stream`
+  refuse to run.
 
 This also applies to output views: a view selected on the command line replaces
 any configured `show_only_*` view. The three `show_only_*` config keys are
@@ -96,7 +101,7 @@ archived_discovery_limit = 50         # default; documents fetched per domain by
 
 # ─── Filters ─────────────────────────────────────────────
 [filter]
-preset = ["no-resources", "no-images"]
+preset = ["no-images"]            # "no-resources" would also drop js/css, emptying extensions below
 extensions = ["js", "php", "aspx"]
 exclude_extensions = ["html", "txt"]
 patterns = ["admin", "api"]
@@ -136,7 +141,7 @@ parallel = 5                           # default; domains fetched concurrently p
 # ─── Testing ─────────────────────────────────────────────
 [testing]
 check_status = false
-include_status = ["200", "30x"]
+# include_status = ["200", "30x"]  # setting this (or exclude_status) runs the live check even with check_status = false
 # exclude_status = ["404", "50x"]   # ignored when include_status is set
 extract_links = false
 extract_js_endpoints = false   # Mine collected JavaScript for endpoints
@@ -198,10 +203,9 @@ subs = true
 
 [filter]
 patterns = ["api", "graphql", "rest", "v1", "v2"]
-extensions = ["json", "xml"]
 
 [testing]
-expand_specs = true          # open the OpenAPI/Swagger/GraphQL documents this finds
+expand_specs = true          # open the specs this finds; [filter] also applies to the routes they expand into
 max_spec_files = 25
 
 [network]

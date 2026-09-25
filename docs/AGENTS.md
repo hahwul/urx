@@ -128,8 +128,9 @@ Templates use Jinja2 syntax. Key variables:
 
 - `static/css/style.css` — shared tokens, theme system, top nav, docs shell, prose, code, footer.
 - `static/css/landing.css` — landing-only sections (hero, terminal, providers, bento, pipeline, install).
-- Light/dark via CSS variables. Default follows `@media (prefers-color-scheme: dark)`; a header toggle overrides it and persists to `localStorage` (`urx-theme`), read by a no-flash inline script in `header.html`.
-- One accent color: ignition orange (`--ignition: #ff5b29`). Code blocks stay dark in both themes by design (embedded-terminal look).
+- Light/dark via `light-dark()` tokens and `color-scheme: light dark` on `:root`, so the OS decides by default; the header toggle sets `data-theme` and persists it to `localStorage` (`urx-theme`), read by a no-flash inline script in `header.html`.
+- One accent color: amber (`--accent: #FCA428`), with `--accent-text` (`#9C5A0A` light / `#FCA428` dark) for any amber text. Code blocks stay dark in both themes by design (embedded-terminal look).
+- Raw HTML in `content/index.md`: never leave a blank line inside a `<pre>` (or any HTML block). A blank line ends the markdown HTML block and the processor wraps the rest in `<p>`; use a line holding only `<span></span>` instead.
 - Responsive: sidebar hidden on mobile with a toggle button.
 
 ## Notes for AI Agents

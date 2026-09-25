@@ -34,7 +34,7 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per URL host into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
-  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist"; an unknown value falls back to plain [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist"; an unknown value falls back to plain (under --stream it is an error) [default: plain]
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --normalize-url            Normalize URLs for better deduplication
@@ -288,15 +288,18 @@ name (e.g. `CC-MAIN-2026-17`), `OTX`, `Arquivo.pt`, `VirusTotal`, `Urlscan`,
 `ZoomEye`, `GitHub`, `BeVigil`, `Robots.txt`, `Sitemap`, `Robots.txt (archived)`,
 `Sitemap (archived)`, `cdx:<host>`, and `file` for `--files` input. JSON gives a
 `sources` array, plain text a ` [a,b]` suffix, and CSV one `sources` cell joined
-with `|` (e.g. `CC (latest)|Wayback Machine`).
+with `|` (e.g. `CC (latest)|Wayback Machine`). A URL served from the cache, or
+found by `--extract-links`, `--extract-js-endpoints`, `--archive-body` or
+`--expand-specs`, has no sources.
 
-`--show-meta` is incompatible with `--stream`, which prints a URL on first
-sighting — before the captures that would widen its `first_seen`/`last_seen`
+`--show-sources` and `--show-meta` are incompatible with `--stream`, which
+prints a URL on first sighting — before later providers could report it too, and
+before the captures that would widen its `first_seen`/`last_seen`
 range have arrived.
 
 ```bash
 urx example.com --providers wayback -f jsonl
-urx example.com -f jsonl | jq -r 'select(.last_seen < "20100101000000") | .url'
+urx example.com -f jsonl | jq -r 'select(.last_seen and .last_seen < "20100101000000") | .url'
 urx example.com --providers wayback --show-meta
 ```
 
@@ -407,19 +410,28 @@ redirects and do not work from urx.
 
 | Provider | What it queries, and its limits |
 |----------|---------------------------------|
-| `otx` | `/api/v1/indicators/{domain\|hostname}/…/url_list`, 200 URLs per page, at most 1,000 pages. The `hostname` endpoint is used for a non-apex target without `--subs` |
-| `vt` | v3 `domains/{domain}/urls`, 40 per page with cursor pagination. A 404 means no data; a 429 waits for the server's `Retry-After` |
+| `otx` | `/api/v1/indicators/{domain\|hostname}/…/url_list`, 200 URLs per page, at most 1,000 pages. The `hostname` endpoint is used for a target with three or more labels (`sub.example.com`, but also `example.co.uk`) without `--subs`; it excludes `www.` and other subdomains |
+| `vt` | v3 `domains/{domain}/urls`, 40 per page with cursor pagination. A 404 means no data; a 429 waits for the server's `Retry-After` (at most 60 s) before retrying |
 | `urlscan` | `search/?q=domain:<domain>` with 100 results per page and `search_after` paging. Works without a key |
 | `github` | Code Search for `"<domain>"`; URLs come from the matched text fragments, not whole files. GitHub caps code search at 1,000 results (10 pages × 100). Any personal access token works |
 | `zoomeye` | `api.zoomeye.ai/v2/search` with the dork `site:<domain>` (`site:*.<domain>` under `--subs`), 100 per page |
 | `bevigil` | One request per domain to `osint.bevigil.com/api/<domain>/urls/`, no pagination |
 
-`--subs` changes the query itself only for the CDX providers, OTX, ZoomEye and
-GitHub. VirusTotal, urlscan and BeVigil send the same query either way, and host
-validation then keeps or drops the subdomains they return.
+`--subs` changes the query itself only for the CDX providers, ZoomEye
+(`site:*.<domain>`), and OTX when the target has three or more labels (it then
+switches from the `hostname` to the `domain` endpoint). GitHub sends the same
+search either way but keeps subdomain URLs from the matched fragments only under
+`--subs`; without it GitHub keeps URLs on exactly the target host, not even
+`www.`. VirusTotal, urlscan, BeVigil and the `robots` / `sitemap` fetchers send
+the same query either way, and host validation then keeps or drops the
+subdomains they return.
 
-Naming a keyed provider without a key prints `Error: The … provider … requires
-an API key`, skips that provider, and the run carries on (exit code 0).
+Naming a keyed provider without a key prints `Error: The … provider (…) requires
+an API key…` (not under `--silent` or `--all-providers`) and skips that
+provider. The run carries on with exit code 0 as long as another provider
+remains, including the default `robots` / `sitemap` probes. If the keyed
+provider was the only one, the run fails with `No valid providers specified`
+and exits 1.
 
 ## Reading URLs from Files
 
@@ -428,7 +440,9 @@ domains and `--domain-list` are ignored, no provider is queried, and no host
 validation applies, since there is no target to validate against; use
 `--scope-file` or `--match-regex` to restrict hosts. Every URL is attributed to
 `file` in `--show-sources` and `--stats`. The filters, testers and output
-options all work as usual.
+options all work as usual; `--stream` is rejected, and the cache and
+`--incremental` are not used. `--files` takes several paths, so a positional
+domain placed after it is read as another file.
 
 **How the format is chosen**, by file name:
 
@@ -438,9 +452,13 @@ options all work as usual.
 - Otherwise, a name containing `warc` → WARC, and `urlteam` / `url_team` →
   URLTeam. Everything else is read as text.
 
-Gzip is detected by its magic bytes and multi-member streams are read in full.
-bzip2 is not supported: the run stops with `bzip2 input is not supported.
-Decompress it first` and exits 1.
+Files read as WARC or URLTeam are checked for gzip by their magic bytes, and
+multi-member streams are read in full. A file read as text (`.txt`, `.list`, or
+any other name) is never decompressed: a gzip or bzip2 file with such a name
+yields no URLs and no error, so give it a `.gz` extension or decompress it
+first. bzip2 is not supported in the WARC or URLTeam readers: the run stops with
+`bzip2 input is not supported. Decompress it first` (`bzip2 WARC input…` for a
+WARC) and exits 1.
 
 **What is extracted.** Text files: each non-blank, non-`#` line that starts with
 `http://` or `https://`. URLTeam: the first `http(s)://` token on each line.
@@ -579,14 +597,24 @@ on `www.` is not lost; with `--subs`, any subdomain of a target is kept too.
 takes no value: `--no-strict` is the way to turn it off (`--strict false` would
 read `false` as a domain).
 
-When validation removes more than half of the collected URLs and `--subs` is off,
-urx prints a one-line hint on stderr, even without `-v`:
+Host validation needs the targets on the command line: domains piped through
+stdin are currently not validated at all (every host a provider returns is
+kept, and a path scope is ignored), so pass them positionally or with
+`--domain-list` when you want `--strict` to apply.
+
+When validation removes more than half of the URLs that survived the other
+filters and `--subs` is off, urx prints a one-line hint on stderr, even without
+`-v`:
 
 ```
 [urx] strict host validation removed 812/1400 URLs; pass --subs to keep subdomains or --no-strict to keep all hosts
 ```
 
-`--silent` hides it.
+When a target carries a path, the advice is to drop the path instead of
+`--no-strict`, and under `--no-strict` the line reads `[urx] the target's path
+scope removed …`. The hint is printed for batch output only (not under
+`--stream`), and counts the URLs that survived the other filters. `--silent`
+hides it.
 
 ## Regular-expression Filtering
 

@@ -84,6 +84,23 @@ The compiled binary will be available at `target/release/urx`.
 
 [ghcr.io/hahwul/urx](https://github.com/hahwul/urx/pkgs/container/urx)
 
+```bash
+docker pull ghcr.io/hahwul/urx:latest
+# the image has no entrypoint, so name the binary before its arguments
+docker run --rm ghcr.io/hahwul/urx:latest ./urx example.com
+```
+
+### From the AUR
+
+```bash
+yay -S urx
+```
+
+### From GitHub Releases
+
+Prebuilt binaries for Linux, macOS and Windows (each with a `.sha256`) are
+attached to every [release](https://github.com/hahwul/urx/releases/latest).
+
 ### Shell Completions
 
 `urx` generates its own completion script, so it always matches the flags of
@@ -176,7 +193,7 @@ Provider Options:
       --cc-index <CC_INDEX>
           Common Crawl index to use; accepts comma-separated list to query multiple indexes in parallel (e.g. `CC-MAIN-2026-17,CC-MAIN-2025-51`). `latest` (the default) resolves the newest via collinfo.json. [default: latest]
       --cdx-endpoint <URL>
-          Query an additional CDX index server (any pywb, OutbackCDX, or classic Internet-Archive-style CDX API) by its full API URL, e.g. https://vefsafn.is/cdx. Repeatable. Each endpoint becomes a provider with id `cdx:<host>` and honours --subs, --from/--to and the --archive-* filters. See "Custom CDX Endpoints" below
+          Query an additional CDX index server (any pywb, OutbackCDX, or classic Internet-Archive-style CDX API) by its full API URL, e.g. https://vefsafn.is/cdx. Repeatable. Each endpoint becomes a provider with id `cdx:<host>` (`cdx:<host>:<port>` with a port) and honours --subs, --from/--to and the --archive-* filters. See "Custom CDX Endpoints" below
       --cdx-dialect <DIALECT>
           Which CDX dialect the --cdx-endpoint servers speak: `pywb` or `classic`. Unset: urx probes each endpoint once and falls back to pywb when the answer is ambiguous
       --from <DATE>
@@ -533,8 +550,9 @@ urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
 # A target-specific wordlist instead of a URL list
 urx example.com --subs -f wordlist -o words.txt
 
-# Open the API specifications the sweep found and expand every route in them
-urx example.com -p only-api --expand-specs
+# Open the API specifications the run collected and expand every route in them
+# (no preset: -p only-api would also filter the expanded routes, dropping /users)
+urx example.com --expand-specs
 
 # Status checks also keep the response head; --check-title adds the <title>
 urx example.com --check-status -f jsonl
@@ -823,7 +841,7 @@ urx example.com --providers wayback -f jsonl
 #  "digest":"HT2DYGA5UKZCPBSFVCV3JOBXGW2G5UUA"}
 
 # Triage by age: everything last captured before 2010
-urx example.com -f jsonl | jq -r 'select(.last_seen < "20100101000000") | .url'
+urx example.com -f jsonl | jq -r 'select(.last_seen and .last_seen < "20100101000000") | .url'
 
 # Opt plain output into the metadata
 urx example.com --providers wayback --show-meta
@@ -861,9 +879,10 @@ urx example.com --check-status --is 30x -f jsonl | jq -r '.url + " -> " + .locat
 
 Exposure follows the rule the archive metadata already set: `json`/`jsonl`/`csv`
 always carry the fields (absent keys are omitted, and the CSV columns are
-appended after the existing ones), while plain text stays one bare URL per line
-unless `--show-meta` asks otherwise. In plain output the title is quoted, since
-it is the one value that routinely contains spaces.
+appended after the existing ones). Plain text prints the URL and its
+` [status]`; `--check-title` appends ` [title="…"]`, and `--show-meta` adds
+`location`, `content_length` and `content_type` to that same bracket. The title
+is quoted, since it is the one value that routinely contains spaces.
 
 
 ### Authenticated and Custom Requests
@@ -985,7 +1004,7 @@ they describe into the result set — one request buys the whole documented
 surface, exact and already parameterised.
 
 ```bash
-urx example.com -p only-api --expand-specs
+urx example.com --expand-specs
 urx example.com --expand-specs --max-spec-files 10 --rate-limit 2
 
 # Recover an API the live host no longer serves: read the archived document
@@ -1099,7 +1118,7 @@ urx example.com --cdx-endpoint https://vefsafn.is/cdx --cdx-endpoint http://loca
   --rate-limit-by cdx:vefsafn.is=1
 ```
 
-* The provider id is `cdx:<host>` (`cdx:vefsafn.is`), which is what
+* The provider id is `cdx:<host>` (`cdx:vefsafn.is`), or `cdx:<host>:<port>` when the URL names a port (`cdx:localhost:8080`), which is what
   `--exclude-providers`, `--rate-limit-by`, `--stats` and `--show-sources` use.
   Naming an endpoint enables it; no `--providers` entry is needed, and
   `--providers cdx:vefsafn.is` runs it alone. `--list-providers` shows the
@@ -1154,7 +1173,7 @@ urx example.com --no-cache
 # Combine incremental scanning with filters
 urx example.com --incremental -e js,php --patterns api
 
-# Configuration file with caching settings
+# Load every option from a config file (the example writes to results.txt instead of stdout; review it before use)
 urx -c example/config.toml example.com
 ```
 
