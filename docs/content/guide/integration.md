@@ -47,10 +47,15 @@ urx example.com --stream | httpx -silent
 
 | Code | Meaning |
 |------|---------|
-| `0` | The run completed, including runs where some providers failed, results were partial, the webhook could not be delivered, or the `-o` / `--output-dir` file could not be written (reported on stderr unless `--silent`; under `--stream` an `-o` that cannot be created is an exit-1 startup error) |
-| `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes` |
+| `0` | The run completed, including runs where some providers failed, results were partial, or the webhook could not be delivered (an unwritable `-o` under `--stream` is caught earlier as an exit-1 startup error) |
+| `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes`, or a failed `-o` / `--output-dir` write |
 | `2` | Invalid command-line usage, such as an unknown flag or `--parallel 0` |
 | `130` | Force-quit by a second Ctrl-C after a first one interrupted the provider phase. Once collection has finished on its own, Ctrl-C is currently ignored for the rest of the run (status checks, extractors, output); stop it with `kill` (SIGTERM) instead |
+
+In batch mode, urx attempts both `-o` and `--output-dir` when both are set. It
+then attempts configured `--notify` webhooks before returning any output error,
+which exits 1 and is reported even with `--silent`. Stdout-only runs keep their
+existing behavior: a closed pipe is treated as successful output completion.
 
 ### With Security Tools
 
@@ -219,8 +224,8 @@ docker run --rm \
 
 The container runs as uid 100 (`app`). On Linux, make the mounted directory
 writable by it, or run with `--user "$(id -u):$(id -g)" -e HOME=/tmp` (the
-`HOME` override keeps the cache writable). A failed write is only reported on
-stderr; the exit code stays 0.
+`HOME` override keeps the cache writable). A failed `-o` or `--output-dir`
+write is reported on stderr and exits 1, including under `--silent`.
 
 #### Docker Compose for Monitoring Stack
 

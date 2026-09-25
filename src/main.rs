@@ -321,8 +321,9 @@ fn wants_capture_meta(args: &Args) -> bool {
 }
 
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
-fn write_output(args: &Args, final_urls: &[output::UrlData]) {
+fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     let outputter = create_outputter(&args.format);
+    let mut errors = Vec::new();
     match outputter.output(final_urls, args.output.clone(), args.silent) {
         Ok(()) => {
             if let Some(path) = &args.output {
@@ -330,25 +331,35 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) {
             }
         }
         Err(e) => {
-            if !args.silent {
+            if args.output.is_some() {
+                errors.push(format!("Error writing output: {e:#}"));
+            } else if !args.silent {
+                // Preserve the existing best-effort behavior for stdout-only
+                // output. Outputters already treat a broken pipe as success,
+                // so `urx ... | head` remains successful.
                 eprintln!("Error writing output: {e}");
             }
         }
     }
 
-    let Some(dir) = &args.output_dir else {
-        return;
-    };
-    match write_per_domain_output(final_urls, dir, &args.format, args.silent) {
-        Ok(()) => verbose_print(
-            args,
-            format!("Per-domain results written under: {}", dir.display()),
-        ),
-        Err(e) => {
-            if !args.silent {
-                eprintln!("Error writing per-domain output to {}: {e}", dir.display());
-            }
+    if let Some(dir) = &args.output_dir {
+        match write_per_domain_output(final_urls, dir, &args.format, args.silent) {
+            Ok(()) => verbose_print(
+                args,
+                format!("Per-domain results written under: {}", dir.display()),
+            ),
+            Err(e) => errors.push(format!(
+                "Error writing per-domain output to {}: {e:#}",
+                dir.display()
+            )),
         }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        // Report all failed file destinations after stats and notifications.
+        anyhow::bail!("{}", errors.join("\n"));
     }
 }
 
@@ -486,7 +497,10 @@ async fn main() -> Result<()> {
     // the URL list printed below.
     progress_manager.clear();
 
-    write_output(&args, &final_urls);
+    // Record file write failures, but finish the run summary and webhook first.
+    // This keeps notifications descriptive of the completed run even when an
+    // output destination failed, while still making the run fail.
+    let output_result = write_output(&args, &final_urls);
 
     if args.stats && !args.silent {
         print_provider_stats(&run_result.stats);
@@ -504,6 +518,7 @@ async fn main() -> Result<()> {
     );
     notify::send_notifications(&args, &network_settings, &summary).await;
 
+    output_result?;
     Ok(())
 }
 
@@ -692,6 +707,59 @@ mod tests {
             .urls
             .values()
             .all(|entry| entry.sources.contains("file")));
+    }
+
+    #[test]
+    fn file_output_failure_is_returned_even_when_silent_and_other_output_is_attempted() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("per-domain");
+        let missing_parent_output = temp_dir.path().join("missing").join("results.txt");
+        let args = Args::parse_from([
+            "urx",
+            "--silent",
+            "-o",
+            missing_parent_output.to_str().unwrap(),
+            "--output-dir",
+            output_dir.to_str().unwrap(),
+            "example.com",
+        ]);
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        let err = write_output(&args, &urls).expect_err("failed -o must fail the run");
+
+        assert!(err.to_string().contains("Error writing output"), "{err:#}");
+        assert!(output_dir.join("example.com.txt").exists());
+    }
+
+    #[test]
+    fn output_dir_failure_is_returned_even_when_silent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_at_parent = temp_dir.path().join("not-a-directory");
+        std::fs::write(&file_at_parent, "block directory creation").unwrap();
+        let output_dir = file_at_parent.join("per-domain");
+        let args = Args::parse_from([
+            "urx",
+            "--silent",
+            "--output-dir",
+            output_dir.to_str().unwrap(),
+            "example.com",
+        ]);
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        let err = write_output(&args, &urls).expect_err("failed --output-dir must fail the run");
+
+        assert!(
+            err.to_string().contains("Error writing per-domain output"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn silent_stdout_only_output_remains_successful() {
+        let args = Args::parse_from(["urx", "--silent", "example.com"]);
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        assert!(write_output(&args, &urls).is_ok());
     }
 
     /// `URX_NOTIFY_URL` sits at the CLI's precedence level: it fills an empty

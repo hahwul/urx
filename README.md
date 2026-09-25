@@ -346,6 +346,11 @@ Strict host validation and target path scopes apply to targets supplied as
 arguments, through `--domain-list`, or via stdin. Path scopes filter provider
 results as well as narrowing CDX queries; see the CLI guide for details.
 
+In batch mode, a failed `-o` or `--output-dir` write is reported even with
+`--silent` and makes the run exit 1. When both destinations are set, urx
+attempts both and then attempts configured `--notify` webhooks before returning
+the output error.
+
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
 `<script src>`, `<link href>`, `<form action>`, `<iframe src>`, `<img src>`,
 `<source src>`, `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">`
