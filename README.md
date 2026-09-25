@@ -168,7 +168,7 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per URL host into this directory (extension matches --format). Coexists with --output / stdout. [alias: --oD]
-  -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv", "wordlist" (path segments and parameter names, deduplicated and sorted) [default: plain]
+  -f, --format <FORMAT>          Output format: "plain", "json" (one array), "jsonl" (one JSON object per line), "csv", "wordlist" (path segments and parameter names, deduplicated and sorted); anything else is a usage error [default: plain]
       --stream           Write URLs as each provider reports them instead of once at the end (unsorted; bypasses cache; rejects options needing the full result set)
       --merge-endpoint   Merge endpoints with the same path and merge URL parameters
       --normalize-url    Normalize URLs for better deduplication (sorts query parameters, removes trailing slashes)
@@ -341,6 +341,15 @@ Notification Options:
       --notify-on <NOTIFY_ON>          When to send: new (only if URLs were emitted), always, or never [default: new]
       --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
+
+Strict host validation and target path scopes apply to targets supplied as
+arguments, through `--domain-list`, or via stdin. Path scopes filter provider
+results as well as narrowing CDX queries; see the CLI guide for details.
+
+In batch mode, a failed `-o` or `--output-dir` write is reported even with
+`--silent` and makes the run exit 1. When both destinations are set, urx
+attempts both and then attempts configured `--notify` webhooks before returning
+the output error.
 
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
 `<script src>`, `<link href>`, `<form action>`, `<iframe src>`, `<img src>`,

@@ -26,7 +26,7 @@ use app::keys::seed_api_keys_from_env;
 use app::pipeline::{
     apply_meta_filters, apply_url_filters, apply_url_transformations, build_archive_body_extractor,
     build_extracted_link_filter, build_stream_sink, build_testers, collect_domains,
-    read_urls_from_files, should_check_status, validate_result_filters,
+    read_urls_from_files, should_check_status, validate_result_filters, validate_stream_options,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::{initialize_providers, validate_selection_flags};
@@ -91,18 +91,12 @@ fn seed_notify_urls_from_env(args: &mut Args) -> bool {
 /// together with the bars.
 async fn collect_urls(
     args: &Args,
+    domains: Vec<String>,
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
     stream_sink: Option<&Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
 ) -> Result<(ProviderRunResult, Vec<String>)> {
-    // Ahead of the `--files` short-circuit below, which never reaches
-    // `initialize_providers`. `--preset` is applied to file input just like
-    // provider output, so a misspelled preset used to be dropped in silence
-    // there and emit an unfiltered run that looked like the filter had matched
-    // everything — the exact failure this validation exists to prevent.
-    validate_selection_flags(args)?;
-
     // File input skips provider processing entirely. Every URL is attributed to
     // "file" so downstream `--show-sources` stays consistent.
     let read_started = std::time::Instant::now();
@@ -145,7 +139,6 @@ async fn collect_urls(
         ));
     }
 
-    let domains = collect_domains(args)?;
     if domains.is_empty() {
         // A usage error, not a successful empty run: reported through the
         // `Result` so the process exits non-zero. Printing it and returning
@@ -201,6 +194,7 @@ async fn collect_urls(
 /// them unchanged.
 async fn run_testers(
     args: &Args,
+    domains: &[String],
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
     run_result: &ProviderRunResult,
@@ -239,7 +233,7 @@ async fn run_testers(
         progress_manager,
         testers,
         should_check_status(args),
-        build_extracted_link_filter(args)?,
+        build_extracted_link_filter(args, domains)?,
     )
     .await;
 
@@ -327,8 +321,9 @@ fn wants_capture_meta(args: &Args) -> bool {
 }
 
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
-fn write_output(args: &Args, final_urls: &[output::UrlData]) {
+fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     let outputter = create_outputter(&args.format);
+    let mut errors = Vec::new();
     match outputter.output(final_urls, args.output.clone(), args.silent) {
         Ok(()) => {
             if let Some(path) = &args.output {
@@ -336,25 +331,35 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) {
             }
         }
         Err(e) => {
-            if !args.silent {
+            if args.output.is_some() {
+                errors.push(format!("Error writing output: {e:#}"));
+            } else if !args.silent {
+                // Preserve the existing best-effort behavior for stdout-only
+                // output. Outputters already treat a broken pipe as success,
+                // so `urx ... | head` remains successful.
                 eprintln!("Error writing output: {e}");
             }
         }
     }
 
-    let Some(dir) = &args.output_dir else {
-        return;
-    };
-    match write_per_domain_output(final_urls, dir, &args.format, args.silent) {
-        Ok(()) => verbose_print(
-            args,
-            format!("Per-domain results written under: {}", dir.display()),
-        ),
-        Err(e) => {
-            if !args.silent {
-                eprintln!("Error writing per-domain output to {}: {e}", dir.display());
-            }
+    if let Some(dir) = &args.output_dir {
+        match write_per_domain_output(final_urls, dir, &args.format, args.silent) {
+            Ok(()) => verbose_print(
+                args,
+                format!("Per-domain results written under: {}", dir.display()),
+            ),
+            Err(e) => errors.push(format!(
+                "Error writing per-domain output to {}: {e:#}",
+                dir.display()
+            )),
         }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        // Report all failed file destinations after stats and notifications.
+        anyhow::bail!("{}", errors.join("\n"));
     }
 }
 
@@ -407,16 +412,30 @@ async fn main() -> Result<()> {
     }
     let progress_manager = ProgressManager::new(args.no_progress || args.silent);
 
-    // Built before the scan so a rejected option combination fails immediately
-    // rather than after minutes of fetching.
-    let stream_sink = build_stream_sink(&args)?;
+    // Validate stream combinations before reading stdin, since rejecting an
+    // invalid option must not wait for piped input to close.
+    validate_stream_options(&args)?;
     // Same reason: a --scope-file urx cannot parse, or a --meta-* value it
     // cannot honour, is otherwise only discovered once collection has finished.
     validate_result_filters(&args)?;
+    // Provider selection is independent of the targets, so reject mistakes
+    // before a stdin fallback can block waiting for input.
+    validate_selection_flags(&args)?;
+
+    // Resolve targets once before constructing any result path. The validator
+    // must use the exact targets providers query, including stdin targets.
+    // `--files` has no queried domain by design.
+    let domains = if args.files.is_empty() {
+        collect_domains(&args)?
+    } else {
+        Vec::new()
+    };
+    let stream_sink = build_stream_sink(&args, &domains)?;
 
     let mut header = None;
     let (run_result, domains) = collect_urls(
         &args,
+        domains,
         &network_settings,
         &progress_manager,
         stream_sink.as_ref(),
@@ -449,7 +468,7 @@ async fn main() -> Result<()> {
 
     // URL-only view for filters (they don't care about sources).
     let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
-    let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager)?;
+    let sorted_urls = apply_url_filters(&args, &domains, &all_urls, &progress_manager)?;
     // Before the transformations: --merge-endpoint and --show-only-* rewrite
     // URLs, and a rewritten URL no longer keys into the run result that holds
     // the capture metadata these filters read.
@@ -458,6 +477,7 @@ async fn main() -> Result<()> {
 
     let mut final_urls = run_testers(
         &args,
+        &domains,
         &network_settings,
         &progress_manager,
         &run_result,
@@ -477,7 +497,10 @@ async fn main() -> Result<()> {
     // the URL list printed below.
     progress_manager.clear();
 
-    write_output(&args, &final_urls);
+    // Record file write failures, but finish the run summary and webhook first.
+    // This keeps notifications descriptive of the completed run even when an
+    // output destination failed, while still making the run fail.
+    let output_result = write_output(&args, &final_urls);
 
     if args.stats && !args.silent {
         print_provider_stats(&run_result.stats);
@@ -495,6 +518,7 @@ async fn main() -> Result<()> {
     );
     notify::send_notifications(&args, &network_settings, &summary).await;
 
+    output_result?;
     Ok(())
 }
 
@@ -527,6 +551,7 @@ mod tests {
 
         let err = collect_urls(
             &args,
+            Vec::new(),
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             None,
@@ -607,8 +632,10 @@ mod tests {
     }
 
     async fn run_files(args: &Args) -> Result<ProviderRunResult> {
+        validate_selection_flags(args)?;
         collect_urls(
             args,
+            Vec::new(),
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             None,
@@ -680,6 +707,59 @@ mod tests {
             .urls
             .values()
             .all(|entry| entry.sources.contains("file")));
+    }
+
+    #[test]
+    fn file_output_failure_is_returned_even_when_silent_and_other_output_is_attempted() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("per-domain");
+        let missing_parent_output = temp_dir.path().join("missing").join("results.txt");
+        let args = Args::parse_from([
+            "urx",
+            "--silent",
+            "-o",
+            missing_parent_output.to_str().unwrap(),
+            "--output-dir",
+            output_dir.to_str().unwrap(),
+            "example.com",
+        ]);
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        let err = write_output(&args, &urls).expect_err("failed -o must fail the run");
+
+        assert!(err.to_string().contains("Error writing output"), "{err:#}");
+        assert!(output_dir.join("example.com.txt").exists());
+    }
+
+    #[test]
+    fn output_dir_failure_is_returned_even_when_silent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_at_parent = temp_dir.path().join("not-a-directory");
+        std::fs::write(&file_at_parent, "block directory creation").unwrap();
+        let output_dir = file_at_parent.join("per-domain");
+        let args = Args::parse_from([
+            "urx",
+            "--silent",
+            "--output-dir",
+            output_dir.to_str().unwrap(),
+            "example.com",
+        ]);
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        let err = write_output(&args, &urls).expect_err("failed --output-dir must fail the run");
+
+        assert!(
+            err.to_string().contains("Error writing per-domain output"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn silent_stdout_only_output_remains_successful() {
+        let args = Args::parse_from(["urx", "--silent", "example.com"]);
+        let urls = vec![output::UrlData::new("https://example.com/a".to_string())];
+
+        assert!(write_output(&args, &urls).is_ok());
     }
 
     /// `URX_NOTIFY_URL` sits at the CLI's precedence level: it fills an empty
