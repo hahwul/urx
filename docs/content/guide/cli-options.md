@@ -34,11 +34,7 @@ Input Options:
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per URL host into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
-  -f, --format <FORMAT>
-          Output format: plain text, a JSON array, JSON Lines, CSV, or a URL wordlist
-
-          [default: plain]
-          [possible values: plain, json, jsonl, csv, wordlist]
+  -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist" (case-insensitive; anything else is a usage error) [default: plain]
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --normalize-url            Normalize URLs for better deduplication

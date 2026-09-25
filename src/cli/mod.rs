@@ -51,7 +51,9 @@ pub struct Args {
     #[clap(long = "output-dir", visible_alias = "oD", value_parser)]
     pub output_dir: Option<PathBuf>,
 
-    /// Output format: plain text, a JSON array, JSON Lines, CSV, or a URL wordlist.
+    /// Output format: "plain", "json" (one array), "jsonl" (one JSON object
+    /// per line — pipeline-friendly and valid while still being written),
+    /// "csv", or "wordlist" (the path segments and parameter names seen)
     #[clap(help_heading = "Output Options")]
     #[clap(
         short,
