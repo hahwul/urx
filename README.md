@@ -342,6 +342,10 @@ Notification Options:
       --notify-format <NOTIFY_FORMAT>  Payload shape: json (urx summary), slack ({"text"}), or discord ({"content"}) [default: json]
 ```
 
+Strict host validation and target path scopes apply to targets supplied as
+arguments, through `--domain-list`, or via stdin. Path scopes filter provider
+results as well as narrowing CDX queries; see the CLI guide for details.
+
 `--extract-links` reads every URL-bearing tag, not just anchors: `<a href>`,
 `<script src>`, `<link href>`, `<form action>`, `<iframe src>`, `<img src>`,
 `<source src>`, `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">`

@@ -27,27 +27,21 @@ use crate::testers::{
 use crate::utils::{verbose_print, ParamView, UrlTransformer};
 
 /// Raw targets named directly on the command line: positional args plus every
-/// `--domain-list` file, before host normalization.
-///
-/// stdin is excluded on purpose — it can be drained only once, so
-/// [`build_host_validator`] rebuilds the target list from this subset alone.
-/// `announce` is off for that second pass so the per-file verbose line isn't
-/// printed twice in one run.
-fn cli_domain_inputs(args: &Args, announce: bool) -> Result<Vec<String>> {
+/// `--domain-list` file, before host normalization. stdin is handled as a
+/// fallback by [`collect_domains`].
+fn cli_domain_inputs(args: &Args) -> Result<Vec<String>> {
     let mut domains: Vec<String> = args.domains.clone();
 
     for path in &args.domain_list {
         let file_domains = read_domains_from_file(path)?;
-        if announce {
-            verbose_print(
-                args,
-                format!(
-                    "Loaded {} domains from {}",
-                    file_domains.len(),
-                    path.display()
-                ),
-            );
-        }
+        verbose_print(
+            args,
+            format!(
+                "Loaded {} domains from {}",
+                file_domains.len(),
+                path.display()
+            ),
+        );
         domains.extend(file_domains);
     }
 
@@ -67,14 +61,24 @@ fn normalize_domains(raw: &[String]) -> Vec<String> {
 /// files, and (when both are empty) stdin. Duplicates are removed while
 /// preserving first-seen order so the run order is predictable.
 pub fn collect_domains(args: &Args) -> Result<Vec<String>> {
-    let mut domains = cli_domain_inputs(args, true)?;
+    collect_domains_with_stdin(args, read_domains_from_stdin)
+}
+
+/// Resolve explicit targets first and read stdin only when there are none.
+/// Taking the reader as a closure keeps the fallback rule testable without
+/// replacing the process-wide stdin handle.
+fn collect_domains_with_stdin(
+    args: &Args,
+    read_stdin: impl FnOnce() -> Result<Vec<String>>,
+) -> Result<Vec<String>> {
+    let mut domains = cli_domain_inputs(args)?;
 
     // Only fall back to stdin when no domains were supplied via flags/files,
     // otherwise piped data would silently get appended on every invocation.
     // This check runs on the raw inputs: reading stdin blocks, so a target that
     // merely failed to normalize must not send us looking for one there.
     if domains.is_empty() {
-        domains.extend(read_domains_from_stdin()?);
+        domains.extend(read_stdin()?);
     }
 
     let mut normalized = normalize_domains(&domains);
@@ -158,25 +162,21 @@ pub fn read_urls_from_files(args: &Args) -> Result<Option<Vec<String>>> {
     Ok(Some(all_file_urls))
 }
 
-/// Re-resolve the original target list into a [`HostValidator`], or `None` when
-/// there is nothing to check: no host-bearing target was supplied, or strict
-/// mode is off *and* no target named a path scope.
-///
-/// The domains are normalized exactly the way the fetch targets were, so the
-/// validator's hosts line up with what was actually queried.
-pub fn build_host_validator(args: &Args) -> Result<Option<HostValidator>> {
-    let domains = normalize_domains(&cli_domain_inputs(args, false)?);
+/// Build a [`HostValidator`] from the already resolved fetch targets, or `None`
+/// when there is nothing to check: no host-bearing target was supplied, or
+/// strict mode is off *and* no target named a path scope.
+pub fn build_host_validator(args: &Args, domains: &[String]) -> Option<HostValidator> {
     if domains.is_empty() {
-        return Ok(None);
+        return None;
     }
     if !args.strict_enabled() {
         // `--no-strict` waives the *host* check, not the target's path scope:
         // `urx example.com/shop --no-strict` still asked for /shop, and a path
         // prefix is part of what the target is rather than a filter over it.
         // With no path anywhere, there is nothing left to check.
-        return Ok(HostValidator::paths_only(&domains, args.subs));
+        return HostValidator::paths_only(domains, args.subs);
     }
-    Ok(Some(HostValidator::new(&domains, args.subs)))
+    Some(HostValidator::new(domains, args.subs))
 }
 
 /// Build the URL filter from the `--preset`/extension/pattern/length flags.
@@ -389,9 +389,35 @@ fn drops_most_hint(has_path_scopes: bool, strict: bool) -> &'static str {
     }
 }
 
+/// Build the one-line advisory shown when host or path validation removes
+/// most provider results. Kept separate so stdin-resolved targets follow the
+/// same hint rules as positional targets.
+fn host_validation_hint(
+    before: usize,
+    removed: usize,
+    validator: &HostValidator,
+    args: &Args,
+) -> Option<String> {
+    let drops_most = before > 0 && (removed == before || removed * 2 > before);
+    if !drops_most || args.silent || args.subs {
+        return None;
+    }
+
+    let hint = drops_most_hint(validator.has_path_scopes(), args.strict_enabled());
+    let what = if args.strict_enabled() {
+        "strict host validation"
+    } else {
+        "the target's path scope"
+    };
+    Some(format!(
+        "[urx] {what} removed {removed}/{before} URLs; {hint}"
+    ))
+}
+
 /// Apply URL filtering and, in strict mode, host validation to the batch result.
 pub fn apply_url_filters(
     args: &Args,
+    domains: &[String],
     urls: &HashSet<String>,
     progress_manager: &ProgressManager,
 ) -> Result<Vec<String>> {
@@ -414,7 +440,7 @@ pub fn apply_url_filters(
     // `build_host_validator` directly — applied the scope, so one run gave two
     // different answers depending on the output mode.
     if args.files.is_empty() {
-        if let Some(host_validator) = build_host_validator(args)? {
+        if let Some(host_validator) = build_host_validator(args, domains) {
             verbose_print(
                 args,
                 if args.strict_enabled() {
@@ -427,20 +453,11 @@ pub fn apply_url_filters(
             sorted_urls.retain(|url| host_validator.is_valid_host(url));
             let removed = before - sorted_urls.len();
 
-            // When validation discards most (or all) of what providers returned,
+            // When validation discards most or all of what providers returned,
             // a quiet, much-smaller result looks like a broken provider. Surface
-            // a single hint (even without -v; --silent still suppresses it). With
-            // www. already kept as the apex, the usual remaining cause is other
-            // subdomains under a bare apex query.
-            let drops_most = before > 0 && (sorted_urls.is_empty() || removed * 2 > before);
-            if drops_most && !args.silent && !args.subs {
-                let hint = drops_most_hint(host_validator.has_path_scopes(), args.strict_enabled());
-                let what = if args.strict_enabled() {
-                    "strict host validation"
-                } else {
-                    "the target's path scope"
-                };
-                eprintln!("[urx] {what} removed {removed}/{before} URLs; {hint}");
+            // one hint even without -v; --silent suppresses it.
+            if let Some(hint) = host_validation_hint(before, removed, &host_validator, args) {
+                eprintln!("{hint}");
             }
 
             verbose_print(
@@ -644,9 +661,9 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
 
 /// Construct the streaming sink when `--stream` is set, after rejecting the
 /// option combinations it cannot honour.
-pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>> {
+pub fn validate_stream_options(args: &Args) -> Result<()> {
     if !args.stream {
-        return Ok(None);
+        return Ok(());
     }
 
     let conflicts = streaming_conflicts(args);
@@ -661,6 +678,20 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
 
     if !output::format_supports_streaming(&args.format) {
         anyhow::bail!(output::streaming_format_error(&args.format));
+    }
+
+    Ok(())
+}
+
+/// Construct the streaming sink when `--stream` is set, using the targets
+/// already resolved for provider queries.
+pub fn build_stream_sink(
+    args: &Args,
+    domains: &[String],
+) -> Result<Option<Arc<output::StreamSink>>> {
+    validate_stream_options(args)?;
+    if !args.stream {
+        return Ok(None);
     }
 
     let writer: Box<dyn std::io::Write + Send> = match &args.output {
@@ -680,10 +711,10 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
     Ok(Some(Arc::new(output::StreamSink::new(
         build_url_filter(args)?,
         build_url_transformer(args),
-        // Host validation mirrors the batch path, and returns `None` on its
-        // own when there is nothing to enforce — no target, or `--no-strict`
-        // with no path scope among the targets.
-        build_host_validator(args)?,
+        // Host validation mirrors the batch path, and returns `None` when
+        // there is nothing to enforce — no target, or `--no-strict` with no
+        // path scope among the resolved targets.
+        build_host_validator(args, domains),
         &args.format,
         writer,
     )?)))
@@ -701,6 +732,7 @@ pub fn build_stream_sink(args: &Args) -> Result<Option<Arc<output::StreamSink>>>
 /// off-site link a page happens to point at.
 pub fn build_extracted_link_filter(
     args: &Args,
+    domains: &[String],
 ) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
     // --- spec-expansion --- (`|| args.expand_specs`)
     if !args.extract_links && !args.extract_js_endpoints && !args.archive_body && !args.expand_specs
@@ -710,7 +742,7 @@ pub fn build_extracted_link_filter(
     // File input has no queried domain to validate against, which is why the
     // batch path skips host validation for it too.
     let host_validator = if args.files.is_empty() {
-        build_host_validator(args)?
+        build_host_validator(args, domains)
     } else {
         None
     };
@@ -933,6 +965,10 @@ mod tests {
     use crate::test_support::build_test_args;
     use clap::Parser;
 
+    fn target_domains(args: &Args) -> Vec<String> {
+        normalize_domains(&args.domains)
+    }
+
     #[test]
     fn test_streaming_rejects_options_needing_the_full_result_set() {
         // Each of these is rejected for a concrete reason, and the reason is
@@ -966,7 +1002,8 @@ mod tests {
                 conflicts.iter().any(|(flag, _)| flag.contains(expected)),
                 "{expected} should conflict with --stream, got {conflicts:?}"
             );
-            let err = match build_stream_sink(&args) {
+            let domains = target_domains(&args);
+            let err = match build_stream_sink(&args, &domains) {
                 Err(e) => e.to_string(),
                 Ok(_) => panic!("{expected} should have been rejected"),
             };
@@ -1110,7 +1147,7 @@ mod tests {
             assert!(streaming_conflicts(&args)
                 .iter()
                 .any(|(flag, _)| flag.contains(expected)));
-            match build_stream_sink(&args) {
+            match build_stream_sink(&args, &target_domains(&args)) {
                 Err(e) => assert!(e.to_string().contains(expected), "{e}"),
                 Ok(_) => panic!("{expected} should have been rejected"),
             }
@@ -1131,13 +1168,15 @@ mod tests {
             "example.com",
         ]);
         assert!(streaming_conflicts(&args).is_empty());
-        assert!(build_stream_sink(&args).unwrap().is_some());
+        assert!(build_stream_sink(&args, &target_domains(&args))
+            .unwrap()
+            .is_some());
     }
 
     #[test]
     fn test_streaming_rejects_json_and_points_at_jsonl() {
         let args = Args::parse_from(["urx", "--stream", "-f", "json", "example.com"]);
-        let err = match build_stream_sink(&args) {
+        let err = match build_stream_sink(&args, &target_domains(&args)) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("--format json should have been rejected"),
         };
@@ -1145,14 +1184,19 @@ mod tests {
 
         for format in ["plain", "jsonl", "csv"] {
             let args = Args::parse_from(["urx", "--stream", "-f", format, "example.com"]);
-            assert!(build_stream_sink(&args).is_ok(), "{format} should stream");
+            assert!(
+                build_stream_sink(&args, &target_domains(&args)).is_ok(),
+                "{format} should stream"
+            );
         }
     }
 
     #[test]
     fn test_no_stream_flag_builds_no_sink() {
         let args = Args::parse_from(["urx", "example.com"]);
-        assert!(build_stream_sink(&args).unwrap().is_none());
+        assert!(build_stream_sink(&args, &target_domains(&args))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1168,7 +1212,7 @@ mod tests {
             "--silent",
             "example.com",
         ]);
-        let filter = build_extracted_link_filter(&args)
+        let filter = build_extracted_link_filter(&args, &target_domains(&args))
             .unwrap()
             .expect("--extract-links must build a filter");
 
@@ -1185,7 +1229,9 @@ mod tests {
     #[test]
     fn test_no_extract_links_builds_no_filter() {
         let args = Args::parse_from(["urx", "example.com"]);
-        assert!(build_extracted_link_filter(&args).unwrap().is_none());
+        assert!(build_extracted_link_filter(&args, &target_domains(&args))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1202,7 +1248,7 @@ mod tests {
             "--silent",
             "example.com",
         ]);
-        let filter = build_extracted_link_filter(&args)
+        let filter = build_extracted_link_filter(&args, &target_domains(&args))
             .unwrap()
             .expect("--archive-body must build a filter");
         assert!(filter.accept("https://example.com/app.js").is_some());
@@ -1286,7 +1332,9 @@ mod tests {
         // With --files there is no queried domain to validate against, matching
         // how the batch path treats file input.
         let args = Args::parse_from(["urx", "--extract-links", "--files", "urls.txt", "--silent"]);
-        let filter = build_extracted_link_filter(&args).unwrap().unwrap();
+        let filter = build_extracted_link_filter(&args, &target_domains(&args))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             filter.accept("https://anywhere.test/x").as_deref(),
             Some("https://anywhere.test/x")
@@ -1336,16 +1384,139 @@ mod tests {
     }
 
     #[test]
+    fn stdin_only_targets_are_used_for_batch_host_validation_and_hints() -> Result<()> {
+        use std::cell::Cell;
+
+        let mut args = build_test_args();
+        args.strict = true;
+        args.silent = false;
+        let stdin_reads = Cell::new(0);
+        let domains = collect_domains_with_stdin(&args, || {
+            stdin_reads.set(stdin_reads.get() + 1);
+            Ok(vec!["example.com".to_string()])
+        })?;
+
+        assert_eq!(stdin_reads.get(), 1, "stdin is resolved once");
+        assert_eq!(domains, vec!["example.com"]);
+
+        let validator = build_host_validator(&args, &domains).unwrap();
+        let hint = host_validation_hint(3, 2, &validator, &args).unwrap();
+        assert!(hint.starts_with("[urx] strict host validation removed 2/3 URLs;"));
+
+        let urls = HashSet::from([
+            "https://example.com/page".to_string(),
+            "http://evil.test/x".to_string(),
+            "https://other.test/y".to_string(),
+        ]);
+        args.silent = true;
+        assert_eq!(
+            apply_url_filters(&args, &domains, &urls, &ProgressManager::new(true))?,
+            vec!["https://example.com/page"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stdin_path_scope_filters_batch_results_and_is_announced() -> Result<()> {
+        let mut args = build_test_args();
+        args.strict = true;
+        let domains = collect_domains_with_stdin(&args, || {
+            Ok(vec!["https://example.com/shop?from=stdin".to_string()])
+        })?;
+        assert_eq!(domains, vec!["example.com/shop"]);
+
+        let urls = HashSet::from([
+            "https://example.com/shop/item".to_string(),
+            "https://example.com/other".to_string(),
+            "https://evil.test/shop/item".to_string(),
+        ]);
+        assert_eq!(
+            apply_url_filters(&args, &domains, &urls, &ProgressManager::new(true))?,
+            vec!["https://example.com/shop/item"]
+        );
+
+        let note = path_scope_note(&domains, args.subs).unwrap();
+        assert!(note.contains("example.com/shop"), "{note}");
+        Ok(())
+    }
+
+    #[test]
+    fn comment_only_domain_list_falls_back_to_stdin() -> Result<()> {
+        use std::cell::Cell;
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new()?;
+        writeln!(file, "# targets are listed below\n  # still no targets\n  ")?;
+        let mut args = build_test_args();
+        args.domain_list.push(file.path().to_path_buf());
+
+        let stdin_reads = Cell::new(0);
+        let domains = collect_domains_with_stdin(&args, || {
+            stdin_reads.set(stdin_reads.get() + 1);
+            Ok(vec!["fallback.example".to_string()])
+        })?;
+        assert_eq!(stdin_reads.get(), 1);
+        assert_eq!(domains, vec!["fallback.example"]);
+        Ok(())
+    }
+
+    #[test]
+    fn stdin_targets_reach_the_stream_sink_host_validator() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let output_path = temp.path().join("stream.txt");
+        let mut args = build_test_args();
+        args.strict = true;
+        args.stream = true;
+        args.output = Some(output_path.clone());
+
+        let domains =
+            collect_domains_with_stdin(&args, || Ok(vec!["example.com/shop".to_string()]))?;
+        let sink = build_stream_sink(&args, &domains)?.unwrap();
+        let records = [
+            crate::providers::UrlRecord::bare("https://example.com/shop/item".to_string()),
+            crate::providers::UrlRecord::bare("https://example.com/other".to_string()),
+            crate::providers::UrlRecord::bare("https://evil.test/shop/item".to_string()),
+        ];
+        assert_eq!(sink.emit(&records)?, 1);
+        assert_eq!(
+            std::fs::read_to_string(output_path)?
+                .lines()
+                .collect::<Vec<_>>(),
+            vec!["https://example.com/shop/item"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stdin_targets_reach_the_extracted_link_host_validator() -> Result<()> {
+        let mut args = build_test_args();
+        args.strict = true;
+        args.extract_links = true;
+        let domains =
+            collect_domains_with_stdin(&args, || Ok(vec!["example.com/shop".to_string()]))?;
+        let filter = build_extracted_link_filter(&args, &domains)?.unwrap();
+
+        assert_eq!(
+            filter.accept("https://example.com/shop/item").as_deref(),
+            Some("https://example.com/shop/item")
+        );
+        assert!(filter.accept("https://example.com/other").is_none());
+        assert!(filter.accept("https://evil.test/shop/item").is_none());
+        Ok(())
+    }
+
+    #[test]
     fn test_build_host_validator_is_none_without_strict_mode() -> Result<()> {
         let mut args = build_test_args();
         args.domains = vec!["example.com".to_string()];
         args.strict = false;
         args.no_strict = true;
-        assert!(build_host_validator(&args)?.is_none());
+        let domains = target_domains(&args);
+        assert!(build_host_validator(&args, &domains).is_none());
 
         args.strict = true;
         args.no_strict = false;
-        assert!(build_host_validator(&args)?.is_some());
+        assert!(build_host_validator(&args, &domains).is_some());
         Ok(())
     }
 
@@ -1364,14 +1535,12 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_url_filters_errors_when_domain_list_cannot_be_read() {
-        let urls = HashSet::from(["https://example.com/page1.html".to_string()]);
+    fn test_collect_domains_errors_when_domain_list_cannot_be_read() {
         let mut args = build_test_args();
         args.strict = true;
         args.domain_list = vec![std::path::PathBuf::from("/definitely/missing-domains.txt")];
 
-        let progress_manager = ProgressManager::new(true);
-        let err = apply_url_filters(&args, &urls, &progress_manager).unwrap_err();
+        let err = collect_domains(&args).unwrap_err();
 
         assert!(err.to_string().contains("Failed to open domain list"));
     }
@@ -1389,7 +1558,12 @@ mod tests {
             "https://evil.test/other.js".to_string(),
         ]);
 
-        let filtered = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        let filtered = apply_url_filters(
+            &args,
+            &target_domains(&args),
+            &urls,
+            &ProgressManager::new(true),
+        )?;
         assert_eq!(filtered, vec!["https://example.com/app.js"]);
         Ok(())
     }
@@ -1489,7 +1663,7 @@ mod tests {
         // same filter must be built for them, including strict host
         // validation (on by default).
         let args = Args::parse_from(["urx", "--extract-js-endpoints", "--silent", "example.com"]);
-        let filter = build_extracted_link_filter(&args)
+        let filter = build_extracted_link_filter(&args, &target_domains(&args))
             .unwrap()
             .expect("--extract-js-endpoints must build a filter");
         assert_eq!(
@@ -1532,7 +1706,7 @@ mod tests {
         // the same filter must be built for them, including strict host
         // validation (on by default).
         let args = Args::parse_from(["urx", "--expand-specs", "--silent", "example.com"]);
-        let filter = build_extracted_link_filter(&args)
+        let filter = build_extracted_link_filter(&args, &target_domains(&args))
             .unwrap()
             .expect("--expand-specs must build a filter");
         assert_eq!(
@@ -1639,7 +1813,7 @@ mod tests {
             "example.com",
         ]);
 
-        let link_filter = build_extracted_link_filter(&args)
+        let link_filter = build_extracted_link_filter(&args, &target_domains(&args))
             .unwrap()
             .expect("--extract-links must build a filter");
         assert_eq!(
@@ -1706,7 +1880,13 @@ mod tests {
         .into_iter()
         .collect();
 
-        let kept = apply_url_filters(&with_subs, &discovered, &ProgressManager::new(true)).unwrap();
+        let kept = apply_url_filters(
+            &with_subs,
+            &target_domains(&with_subs),
+            &discovered,
+            &ProgressManager::new(true),
+        )
+        .unwrap();
         assert_eq!(
             kept,
             urls(&["https://api.example.com/a", "https://example.com/a"])
@@ -1714,8 +1894,13 @@ mod tests {
 
         // Without --subs, host validation removes the subdomain before the
         // scope file ever sees it — the scope does not widen the query.
-        let kept =
-            apply_url_filters(&strict_only, &discovered, &ProgressManager::new(true)).unwrap();
+        let kept = apply_url_filters(
+            &strict_only,
+            &target_domains(&strict_only),
+            &discovered,
+            &ProgressManager::new(true),
+        )
+        .unwrap();
         assert_eq!(kept, urls(&["https://example.com/a"]));
     }
 
@@ -1911,7 +2096,10 @@ mod tests {
                 !streaming_conflicts(&args).is_empty(),
                 "{flag} must not stream"
             );
-            assert!(build_stream_sink(&args).is_err(), "{flag}");
+            assert!(
+                build_stream_sink(&args, &target_domains(&args)).is_err(),
+                "{flag}"
+            );
         }
         for (flag, value) in [
             ("--meta-mime", "text/html"),
@@ -1928,7 +2116,7 @@ mod tests {
 
         // The reason is the one the user needs: the sink has no metadata to read.
         let args = Args::parse_from(["urx", "--stream", "--meta-status", "200", "example.com"]);
-        match build_stream_sink(&args) {
+        match build_stream_sink(&args, &target_domains(&args)) {
             Ok(_) => panic!("--meta-status must not stream"),
             Err(err) => assert!(err.to_string().contains("capture metadata"), "{err}"),
         }
@@ -2037,7 +2225,12 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
 
-        let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        let kept = apply_url_filters(
+            &args,
+            &target_domains(&args),
+            &urls,
+            &ProgressManager::new(true),
+        )?;
         assert!(kept.contains(&"https://example.com/shop/item".to_string()));
         assert!(kept.contains(&"https://other.test/anything".to_string()));
         assert!(!kept.contains(&"https://example.com/about".to_string()));
@@ -2056,7 +2249,12 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let kept = apply_url_filters(&args, &urls, &ProgressManager::new(true))?;
+        let kept = apply_url_filters(
+            &args,
+            &target_domains(&args),
+            &urls,
+            &ProgressManager::new(true),
+        )?;
         assert_eq!(kept, vec!["https://other.test/anything".to_string()]);
         Ok(())
     }
@@ -2072,7 +2270,8 @@ mod tests {
         args.strict = false;
         args.no_strict = true;
 
-        let validator = build_host_validator(&args).unwrap().unwrap();
+        let domains = target_domains(&args);
+        let validator = build_host_validator(&args, &domains).unwrap();
         assert!(validator.has_path_scopes());
         assert!(!args.strict_enabled());
 
@@ -2083,7 +2282,7 @@ mod tests {
         // is still the right thing to offer.
         args.strict = true;
         args.no_strict = false;
-        let validator = build_host_validator(&args).unwrap().unwrap();
+        let validator = build_host_validator(&args, &domains).unwrap();
         let hint = drops_most_hint(validator.has_path_scopes(), args.strict_enabled());
         assert!(hint.contains("--subs"), "{hint}");
 
