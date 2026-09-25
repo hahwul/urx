@@ -597,11 +597,9 @@ on `www.` is not lost; with `--subs`, any subdomain of a target is kept too.
 takes no value: `--no-strict` is the way to turn it off (`--strict false` would
 read `false` as a domain).
 
-Host validation needs the targets on the command line: domains piped through
-stdin are currently not validated at all. Every host a provider returns is kept,
-and a path in a stdin target narrows only the CDX providers' own queries —
-nothing filters the other providers' results to it. Pass targets positionally or
-with `--domain-list` when you want `--strict` and the path scope to apply.
+Host validation and path scopes apply to targets from positional arguments,
+`--domain-list`, and stdin alike. A target path both narrows CDX provider queries
+and filters provider results client-side, including results from other providers.
 
 When validation removes more than half of the URLs that survived the other
 filters and `--subs` is off, urx prints a one-line hint on stderr, even without

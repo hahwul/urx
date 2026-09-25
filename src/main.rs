@@ -26,7 +26,7 @@ use app::keys::seed_api_keys_from_env;
 use app::pipeline::{
     apply_meta_filters, apply_url_filters, apply_url_transformations, build_archive_body_extractor,
     build_extracted_link_filter, build_stream_sink, build_testers, collect_domains,
-    read_urls_from_files, should_check_status, validate_result_filters,
+    read_urls_from_files, should_check_status, validate_result_filters, validate_stream_options,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::{initialize_providers, validate_selection_flags};
@@ -91,18 +91,12 @@ fn seed_notify_urls_from_env(args: &mut Args) -> bool {
 /// together with the bars.
 async fn collect_urls(
     args: &Args,
+    domains: Vec<String>,
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
     stream_sink: Option<&Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
 ) -> Result<(ProviderRunResult, Vec<String>)> {
-    // Ahead of the `--files` short-circuit below, which never reaches
-    // `initialize_providers`. `--preset` is applied to file input just like
-    // provider output, so a misspelled preset used to be dropped in silence
-    // there and emit an unfiltered run that looked like the filter had matched
-    // everything — the exact failure this validation exists to prevent.
-    validate_selection_flags(args)?;
-
     // File input skips provider processing entirely. Every URL is attributed to
     // "file" so downstream `--show-sources` stays consistent.
     let read_started = std::time::Instant::now();
@@ -145,7 +139,6 @@ async fn collect_urls(
         ));
     }
 
-    let domains = collect_domains(args)?;
     if domains.is_empty() {
         // A usage error, not a successful empty run: reported through the
         // `Result` so the process exits non-zero. Printing it and returning
@@ -201,6 +194,7 @@ async fn collect_urls(
 /// them unchanged.
 async fn run_testers(
     args: &Args,
+    domains: &[String],
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
     run_result: &ProviderRunResult,
@@ -239,7 +233,7 @@ async fn run_testers(
         progress_manager,
         testers,
         should_check_status(args),
-        build_extracted_link_filter(args)?,
+        build_extracted_link_filter(args, domains)?,
     )
     .await;
 
@@ -407,16 +401,30 @@ async fn main() -> Result<()> {
     }
     let progress_manager = ProgressManager::new(args.no_progress || args.silent);
 
-    // Built before the scan so a rejected option combination fails immediately
-    // rather than after minutes of fetching.
-    let stream_sink = build_stream_sink(&args)?;
+    // Validate stream combinations before reading stdin, since rejecting an
+    // invalid option must not wait for piped input to close.
+    validate_stream_options(&args)?;
     // Same reason: a --scope-file urx cannot parse, or a --meta-* value it
     // cannot honour, is otherwise only discovered once collection has finished.
     validate_result_filters(&args)?;
+    // Provider selection is independent of the targets, so reject mistakes
+    // before a stdin fallback can block waiting for input.
+    validate_selection_flags(&args)?;
+
+    // Resolve targets once before constructing any result path. The validator
+    // must use the exact targets providers query, including stdin targets.
+    // `--files` has no queried domain by design.
+    let domains = if args.files.is_empty() {
+        collect_domains(&args)?
+    } else {
+        Vec::new()
+    };
+    let stream_sink = build_stream_sink(&args, &domains)?;
 
     let mut header = None;
     let (run_result, domains) = collect_urls(
         &args,
+        domains,
         &network_settings,
         &progress_manager,
         stream_sink.as_ref(),
@@ -449,7 +457,7 @@ async fn main() -> Result<()> {
 
     // URL-only view for filters (they don't care about sources).
     let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
-    let sorted_urls = apply_url_filters(&args, &all_urls, &progress_manager)?;
+    let sorted_urls = apply_url_filters(&args, &domains, &all_urls, &progress_manager)?;
     // Before the transformations: --merge-endpoint and --show-only-* rewrite
     // URLs, and a rewritten URL no longer keys into the run result that holds
     // the capture metadata these filters read.
@@ -458,6 +466,7 @@ async fn main() -> Result<()> {
 
     let mut final_urls = run_testers(
         &args,
+        &domains,
         &network_settings,
         &progress_manager,
         &run_result,
@@ -527,6 +536,7 @@ mod tests {
 
         let err = collect_urls(
             &args,
+            Vec::new(),
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             None,
@@ -607,8 +617,10 @@ mod tests {
     }
 
     async fn run_files(args: &Args) -> Result<ProviderRunResult> {
+        validate_selection_flags(args)?;
         collect_urls(
             args,
+            Vec::new(),
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             None,
