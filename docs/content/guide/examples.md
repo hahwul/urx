@@ -87,7 +87,8 @@ urx example.com --stream | httpx -silent
 
 `--stream` output is unsorted, bypasses the cache, and supports `plain`, `jsonl`
 and `csv`. Options that need the complete result set (`--incremental`,
-`--check-status`, the extractors, `--merge-endpoint`, `--dedup-similar`,
+`--check-status` / `--include-status` / `--exclude-status` / `--check-title`,
+the extractors, `--archive-body`, `--expand-specs`, `--merge-endpoint`, `--dedup-similar`,
 `--show-sources`, `--show-meta`, `--output-dir`, the parameter views, the
 `--meta-*` filters, `--files`) are rejected with it.
 
@@ -234,10 +235,12 @@ urx example.com --min-length 50 --max-length 200
 
 ### Specific Providers
 ```bash
-# Only Wayback Machine and OTX
+# Wayback Machine and OTX (plus the live robots.txt / sitemap.xml probes, and
+# any keyed provider whose URX_*_API_KEY is set; --exclude-providers keeps one out)
 urx example.com --providers wayback,otx
 
-# Keyless archives only (no API keys needed) — incl. Arquivo.pt and anonymous URLScan
+# Keyless sources (no API keys needed) — incl. Arquivo.pt and anonymous URLScan.
+# Same caveat: a set URX_*_API_KEY still adds its provider
 urx example.com --providers wayback,cc,otx,arquivo,urlscan
 
 # All available providers (vt, zoomeye, github and bevigil need their
@@ -255,7 +258,18 @@ urx example.is --cdx-endpoint https://vefsafn.is/cdx --rate-limit-by cdx:vefsafn
 
 # What is available, and which providers need a key
 urx --list-providers
+
+# Query two specific Common Crawl indexes in parallel
+urx example.com --providers cc --cc-index CC-MAIN-2026-17,CC-MAIN-2025-51
 ```
+
+### Using a Config File
+```bash
+# Load a profile; the provider-config file holds only the API keys
+urx -c ~/.config/urx/bugbounty.toml --provider-config ~/.config/urx/keys.toml example.com
+```
+
+See [Configuration](/guide/configuration/) for every key.
 
 ### With API Keys
 
@@ -349,11 +363,14 @@ It reads every URL-bearing tag, not just anchors: `<a href>`, `<script src>`,
 `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">` targets.
 Relative URLs resolve against the page (honouring `<base href>`), duplicates
 are collapsed, and the discovered links go through exactly the same filters,
-host validation, and output transforms as the rest of the run:
+host validation, and output transforms as the rest of the run. Those filters
+also run on the collected URLs *before* any page is fetched, so a filter such as
+`-e js` would remove the HTML pages there is nothing to extract from. Filter the
+output instead:
 
 ```bash
 # Only the JavaScript the pages reference
-urx example.com --extract-links -e js
+urx example.com --extract-links | grep -E '\.js(\?|$)'
 ```
 
 ### Extract Endpoints from JavaScript
@@ -378,12 +395,16 @@ urx example.com --extract-js-endpoints --max-js-files 100
 
 # The extractors all run over the collected URLs in one pass, so scripts that
 # --extract-links discovers are not mined in the same run. Chain two runs:
-urx example.com --extract-links -e js -o bundles.txt
+urx example.com --extract-links | grep -E '\.js(\?|$)' > bundles.txt
 urx --files bundles.txt --extract-js-endpoints --max-js-files 100
 
-# Keep the API-looking paths and probe them
-urx example.com --extract-js-endpoints --patterns api,graphql --check-status --include-status 200,401,403
+# Keep the API-looking paths (filter the output: --patterns would drop the
+# bundles before they are read)
+urx example.com --extract-js-endpoints | grep -E 'api|graphql'
 ```
+
+Discovered endpoints are not status-checked; `--check-status` covers the
+collected URLs only.
 
 Leave `-e js` off when using this option: discovered endpoints pass through
 your filters too, so `-e js` would keep only the `.js` files it found rather
@@ -405,7 +426,7 @@ one request per distinct body rather than one per URL; `--archive-body-limit`
 urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
 # Only what the archived pages referenced as JavaScript
-urx example.com --archive-body -e js --no-cache
+urx example.com --archive-body --no-cache | grep -E '\.js(\?|$)'
 ```
 
 ### Expand API Specifications
@@ -427,7 +448,7 @@ urx example.com --archive-body --expand-specs
 
 ### Record Response Titles
 ```bash
-# --check-title implies --check-status; --show-meta shows the extra fields in plain text
+# --check-title implies --check-status; --show-meta adds the response-head fields
 urx example.com --check-title --show-meta
 
 # Everything the response head carried, as JSON Lines
@@ -510,6 +531,20 @@ urx example.com --normalize-url
 ### With Endpoint Merging
 ```bash
 urx example.com --normalize-url --merge-endpoint
+```
+
+### Show Only One Part of Each URL
+```bash
+# Hosts (handy with --subs), paths, or query strings
+urx example.com --subs --show-only-host
+urx example.com --show-only-path
+urx example.com --show-only-param
+```
+
+### Off-Host URLs
+```bash
+# Keep URLs on any host a provider returned (a path-scoped target still applies)
+urx example.com --no-strict
 ```
 
 ## Caching & Incremental Scanning
@@ -637,7 +672,6 @@ urx target.com \
   -p only-js \
   --check-status \
   --include-status 200 \
-  --extract-links \
   | tee js-files.txt \
   | nuclei -t exposures/
 ```

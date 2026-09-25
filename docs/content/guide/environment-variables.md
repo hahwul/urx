@@ -129,11 +129,15 @@ archive queries still go through `HTTPS_PROXY` if it is set.
 HTTPS_PROXY=http://127.0.0.1:8080 urx example.com
 ```
 
+On macOS and Windows the operating system's proxy settings are honoured the same
+way.
+
 ### Config Locations
 
 urx does not read `XDG_CONFIG_HOME`. The default config and provider-config
 files live under `$HOME/.config/urx/` (`%APPDATA%\urx\` on Windows), and the
-default SQLite cache is `$HOME/.urx/cache.db`. See
+default SQLite cache is `$HOME/.urx/cache.db` on every platform (`./.urx/cache.db`
+when `HOME` is unset). See
 [Configuration](/guide/configuration/#config-file-location).
 
 ### Summary
@@ -148,7 +152,8 @@ default SQLite cache is `$HOME/.urx/cache.db`. See
 | `URX_NOTIFY_URL` | — | Webhook URL(s) for `--notify`, comma-separated |
 | `NO_COLOR` | — | Any value disables ANSI color, as `--no-color` does |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` | — | System proxy, used when no `--proxy` applies |
-| `HOME` (`APPDATA` on Windows) | — | Base of the default config, provider-config and cache paths |
+| `HOME` | — | Base of the default cache path (`$HOME/.urx/cache.db`, else `./.urx/cache.db`) on every platform, and of the config / provider-config paths on Linux/macOS |
+| `APPDATA` | — | Base of the config / provider-config paths on Windows |
 
 ### Usage Notes
 

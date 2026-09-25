@@ -65,15 +65,20 @@ urx example.com --retries 1
 urx example.com --retries 5
 ```
 
-`--retries` (default 2) re-sends a request only after a network error or an HTTP
-`408`, `429` or `5xx`, with a growing back-off between attempts. A `Retry-After`
-header from the server is honoured (up to 60 seconds).
+`--retries` (default 2) is the number of extra attempts after the first. The
+archive indexes (wayback, cc, arquivo, `--cdx-endpoint`, archived discovery) and
+bevigil retry network errors and HTTP `408`, `429` and `5xx`, backing off
+linearly (0.5 s, 1 s, …) or waiting for the server's `Retry-After`, capped at
+60 s. vt, urlscan, zoomeye, github and otx also retry other non-2xx answers. The
+testers (`--check-status`, the extractors, `--archive-body`) retry only network
+errors, 0.5 s apart, because the HTTP status is their answer.
 
 #### Network Scope
 `--network-scope` decides which components get the network settings: timeout,
-retries, proxy, `--insecure`, `--random-agent`, the rate limit, and (for the
-testers) the `-H` / `--cookie` / `--user-agent` headers. It does not change
-`--parallel`.
+retries, proxy, `--insecure`, `--random-agent`, the rate limit, and the `-H` /
+`--cookie` / `--user-agent` headers (sent only to the target: the testers and the
+robots/sitemap probes). It does not change `--parallel`, and the `--notify`
+webhook always uses `--proxy`, `--timeout` and `--insecure` whatever the scope.
 
 ```bash
 # Apply to all components (default)
@@ -141,7 +146,7 @@ urx example.com --from 2023 --to 2024
 # Only what the archive recorded as 200 / as JSON
 urx example.com --archive-status 200 --archive-mime application/json
 
-# A path-scoped target only asks for that path
+# A path-scoped target: the CDX archives only ask for that path
 urx example.com/api
 ```
 
@@ -181,8 +186,9 @@ output, including results on stdout, so use it only together with `-o` or
 `--notify`.
 
 Batch output is held in memory until the run ends, whether it goes to `-o` or to
-stdout. `--stream` writes each URL as it arrives and skips the in-memory result
-set; it is unsorted, bypasses the cache, supports only `plain`, `jsonl` and
+stdout. `--stream` writes each provider's URLs as soon as it finishes a domain,
+and keeps only the set of URLs already written (for de-duplication) instead of
+the full result set with sources and metadata. It is unsorted, bypasses the cache, supports only `plain`, `jsonl` and
 `csv`, and rejects options that need the complete result set (see
 [CLI Options](/guide/cli-options/)).
 
@@ -226,6 +232,10 @@ For a cache shared across machines, add `--cache-type redis --redis-url …`
 (needs a `redis-cache` build; see [Caching](/guide/caching/)).
 
 ### Comprehensive Discovery
+
+vt and zoomeye need `URX_VT_API_KEY` / `URX_ZOOMEYE_API_KEY` (or the matching
+flags); without a key they report an error and are skipped.
+
 ```bash
 urx example.com \
   --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye \
@@ -258,7 +268,7 @@ urx example.com \
 6. For many domains, increase `--parallel`
 
 ### High Memory Usage
-1. Use `--stream`, which skips the in-memory result set
+1. Use `--stream`, which keeps only the written URLs rather than the full result set
 2. Decrease `--parallel` value
 3. Process fewer domains per run
 4. Narrow the fetch with `--from` / `--to` or the `--archive-*` filters

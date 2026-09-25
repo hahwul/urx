@@ -8,7 +8,7 @@ url="https://github.com/hahwul/urx"
 license=('MIT')
 depends=('gcc-libs')
 makedepends=('cargo')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/hahwul/urx/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/hahwul/urx/archive/refs/tags/$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {

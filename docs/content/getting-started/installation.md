@@ -45,11 +45,11 @@ binaries, each with a `.sha256` checksum beside it:
 
 | Platform | Asset |
 |----------|-------|
-| Linux x86_64 | `urx-vX.Y.Z-linux-x86_64.tar.gz` |
-| Linux aarch64 | `urx-vX.Y.Z-linux-aarch64.tar.gz` |
-| macOS Intel | `urx-vX.Y.Z-macos-x86_64.tar.gz` |
-| macOS Apple Silicon | `urx-vX.Y.Z-macos-aarch64.tar.gz` |
-| Windows x86_64 | `urx-vX.Y.Z-windows-x86_64.zip` |
+| Linux x86_64 | `urx-X.Y.Z-linux-x86_64.tar.gz` |
+| Linux aarch64 | `urx-X.Y.Z-linux-aarch64.tar.gz` |
+| macOS Intel | `urx-X.Y.Z-macos-x86_64.tar.gz` |
+| macOS Apple Silicon | `urx-X.Y.Z-macos-aarch64.tar.gz` |
+| Windows x86_64 | `urx-X.Y.Z-windows-x86_64.zip` |
 
 Unpack the archive and put the `urx` binary somewhere on your `$PATH`.
 

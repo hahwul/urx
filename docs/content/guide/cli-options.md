@@ -21,7 +21,7 @@ Arguments:
 
 Options:
   -c, --config <CONFIG>           Config file to load
-      --provider-config <PATH>    Separate provider config holding only API keys (default: ~/.config/urx/provider-config.toml; %APPDATA%\urx\ on Windows)
+      --provider-config <PATH>    Separate provider config holding only API keys (default: ~/.config/urx/provider-config.toml; %APPDATA%\urx\provider-config.toml on Windows)
       --completions <SHELL>       Print a shell completion script (bash, zsh, fish, powershell, elvish) to stdout and exit
       --manpage                   Print the roff man page to stdout and exit
   -h, --help             Print help
@@ -29,14 +29,14 @@ Options:
 
 Input Options:
       --files <FILES>...     Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
-      --domain-list <PATH>   File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when neither is given; `#` comments allowed) [alias: --dL]
+      --domain-list <PATH>   File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when they name no domains; `#` comments allowed) [alias: --dL]
 
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
       --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
   -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist" [default: plain]
-      --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
+      --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --normalize-url            Normalize URLs for better deduplication
       --dedup-similar            Collapse URLs differing only in ids, hashes, dates, or query values
       --params                   Replace the URL list with every query parameter name the run saw, once each
@@ -54,9 +54,9 @@ Provider Options:
   --cdx-dialect <DIALECT>                Dialect of the --cdx-endpoint servers: `pywb` or `classic` (unset: probed once, pywb fallback)
   --from <DATE>                          Restrict CDX providers to captures >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
   --to <DATE>                            Restrict CDX providers to captures <= DATE (same format as --from)
-  --archive-status <CODES>               Keep only captures the archive recorded with these status codes
+  --archive-status <CODE>                Keep only captures the archive recorded with this status code (a list works on wayback/classic endpoints only)
   --archive-exclude-status <CODES>       Drop captures the archive recorded with these status codes
-  --archive-mime <TYPES>                 Keep only captures with these recorded MIME types
+  --archive-mime <TYPE>                  Keep only captures with this recorded MIME type (a list works on wayback/classic endpoints only)
   --archive-exclude-mime <TYPES>         Drop captures with these recorded MIME types
   --vt-api-key <VT_API_KEY>             API key for VirusTotal
   --urlscan-api-key <URLSCAN_API_KEY>   Optional API key for Urlscan (also works anonymously)
@@ -122,7 +122,6 @@ Network Options:
 
 Testing Options:
   --check-status                     Check HTTP status code of collected URLs [alias: --cs]
-  --check-title                      Also record each response's HTML <title>; implies --check-status
   --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x); implies the status check [alias: --is]
   --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x); implies the status check [alias: --es]
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
@@ -133,6 +132,7 @@ Testing Options:
   --archive-body-dir <DIR>           Keep every replayed body in DIR with an index.jsonl mapping it back to its URL
   --expand-specs                     Fetch collected OpenAPI/Swagger/GraphQL documents and expand every route they describe (see "API Specification Expansion" below)
   --max-spec-files <N>               Maximum number of specification documents --expand-specs will fetch (0 = unlimited) [default: 50]
+  --check-title                      Also record each response's HTML <title>; implies --check-status
 
 Cache Options:
   --incremental              Only return new URLs compared to previous scans
@@ -295,7 +295,7 @@ code.
 
 | Field | Meaning |
 |-------|---------|
-| `status` | The status code the live request returned |
+| `status` | The status the live request returned, as code and reason (`200 OK`) |
 | `location` | The `Location` header of a 3xx — recorded, never followed |
 | `content_length` | The `Content-Length` header, verbatim |
 | `content_type` | The `Content-Type` header, verbatim |
@@ -307,9 +307,10 @@ pointed, without urx ever going there.
 
 `--check-title` is the one field that is not free: a title needs the response
 *body*, so it sits behind its own flag. The read is bounded twice — at most
-64 KiB, and it stops at the closing tag — and skipped entirely for a body the
+64 KiB (checked between chunks), and it stops at the closing tag — and skipped entirely for a body the
 server declared as non-HTML, so a JSON API or an image costs nothing. The title
-itself is whitespace-collapsed, entity-decoded and cut to 200 characters.
+itself is whitespace-collapsed, entity-decoded and cut to 200 characters (with a
+trailing `…` when it was longer).
 `--check-title` implies `--check-status`; without that request there is nothing
 to read a title from.
 
@@ -320,16 +321,17 @@ Exposure follows the same rule the archive metadata does:
   established consumer sees its columns unmoved. A title is chosen by the host
   being checked, so it goes through the same spreadsheet-formula escaping the
   URL does.
-* `plain` — the URL and its ` [status]` per line; `--show-meta` appends the
-  extra fields in a further ` […]`. The title is quoted, since it is
-  the one value that routinely contains spaces.
+* `plain` — the URL and its ` [status]` per line. `--check-title` appends
+  ` [title="…"]`; `--show-meta` adds `location`, `content_length` and
+  `content_type` to that same bracket. The title is quoted, since it is the one
+  value that routinely contains spaces.
 
 ```bash
 # Status plus the response head, as JSON Lines
 urx example.com --check-status -f jsonl
 
-# Titles too, in plain text
-urx example.com --check-title --show-meta
+# Titles too, in plain text (add --show-meta for the response-head fields)
+urx example.com --check-title
 
 # Where did the redirects point?
 urx example.com --check-status --is 30x -f jsonl | jq -r '.url + " -> " + .location'
@@ -439,7 +441,8 @@ preset. Singular spellings (e.g. `no-image`, `only-font`) are accepted too.
 ### Security Presets
 
 These four go beyond file extensions: a URL qualifies when it carries a listed
-extension **or** when its path has a listed shape. That is what lets
+extension **or** when it has a listed shape (shape rules that look for a
+substring are checked against the whole lower-cased URL, query included). That is what lets
 `only-secrets` catch `/.env` (a dotfile with no extension at all) and
 `only-backup` catch `/index.php~` (an ordinary name with an editor suffix).
 
@@ -509,7 +512,7 @@ equivalents and behave differently in three ways:
 |---|---|---|
 | Matching | substring | full regex syntax |
 | Case | insensitive (both sides lower-cased) | **sensitive** — prefix `(?i)` to opt out |
-| Multiple values | one comma-separated flag | repeat the flag; commas are never split |
+| Multiple values | comma-separated (the flag may also be repeated) | repeat the flag; commas are never split |
 
 The expression is applied to the whole URL string as collected — scheme, host,
 path, and query — so `^https://` and `\.js$` both work. Several
@@ -867,14 +870,17 @@ Details worth knowing:
 - Duplicates are collapsed, so a logo referenced from a dozen places is
   reported once.
 - Discovered links go through the same filters, host validation, and output
-  transforms as URLs that came from a provider — `--extract-links -e js`
-  returns only JavaScript.
+  transforms as URLs that came from a provider. Those filters also run on the
+  collected URLs *before* any page is fetched, so `--extract-links -e js` drops
+  the HTML pages first and finds nothing; filter the output instead.
+- Discovered links are not status-checked: `--check-status` covers the
+  collected URLs only.
 - Only responses that succeeded and look like markup are parsed, and each body
   is capped at 10 MiB.
 
 ```bash
 # Crawl one hop deeper and keep only JavaScript
-urx example.com --extract-links -e js
+urx example.com --extract-links | grep -E '\.js(\?|$)'
 
 # Extraction obeys the network settings too
 urx example.com --extract-links --proxy http://localhost:8080 --timeout 20
@@ -895,8 +901,9 @@ certainly not script (images, fonts, CSS, archives, `.json`, `.map`, ...).
 Everything else is requested and classified by `Content-Type`: JavaScript
 types are scanned whole; HTML is scanned for its inline `<script>` blocks
 only; a `.js`/`.mjs`/`.cjs`/`.jsx`/`.ts`/`.tsx` URL served as `text/plain` or
-`application/octet-stream` is still treated as script. Anything else is
-discarded unread.
+`application/octet-stream`, or with no `Content-Type` at all is still treated as
+script. Any other response with no `Content-Type` is scanned for inline
+`<script>` blocks like HTML. Any other type is discarded unread.
 
 **What is extracted.**
 
@@ -932,7 +939,7 @@ real-bundle shape behind each rule:
 | Bare extensions (`.js`, `/.png`) | File-type checks |
 | Regex sources and tag fragments (`/^\/api/(\d+)`, `</div>`) | Excluded by the character class — they never match at all |
 | Strings closed by a different quote (`'/g,"`), trailing `,` `;` `:` | Artifacts of regex literals next to strings |
-| `x/y` with only two bare segments (`react/jsx-runtime`, `en/US`) | Package paths and locale tags; three segments, a query, or a file extension is enough evidence to keep |
+| `x/y` with only two bare segments (`react/jsx-runtime`, `en/US`) | Package paths and locale tags; a segment of three or more characters plus three segments, a query, or a file extension is enough evidence to keep |
 | Package and source-tree paths (`@scope/pkg/...`, `node_modules/...`, `./src/...`, `lib/esm/...`) | Import specifiers and webpack module keys |
 | `./x` without a fetchable extension (`require("./utils")`, `{"./zlib/deflate":46}`) | CommonJS module specifiers — a real bundle contributed ~50 of them from jszip and pako alone |
 | Path suffixes after `+` (`"/users/" + id + "/avatar"` → `/avatar`) | Only the prefix is a route; `base + "/api/x"` is still kept |
@@ -950,15 +957,17 @@ drops off-site URLs, and `--no-strict` keeps them. Note that because
 discovered endpoints pass through your filters, combining this option with
 `-e js` keeps only the `.js` endpoints it found — the extractor already
 selects JavaScript by itself, so leave `-e js` off when you want the API paths.
-`--extract-js-endpoints` needs the complete result set and cannot be combined
-with `--stream`.
+`--check-status` checks the collected URLs only; discovered endpoints are
+emitted without a status. `--extract-js-endpoints` needs the complete result set
+and cannot be combined with `--stream`.
 
 ```bash
 # Mine every collected script for API paths
 urx example.com --extract-js-endpoints
 
-# Keep the discovered paths that look like an API, and check they respond
-urx example.com --extract-js-endpoints --patterns api,graphql --check-status
+# Keep the discovered paths that look like an API (filter the output:
+# --patterns would drop the bundles before they are read)
+urx example.com --extract-js-endpoints | grep -E 'api|graphql'
 
 # Bound the run: at most 50 bundles, one request per second
 urx example.com --extract-js-endpoints --max-js-files 50 --rate-limit 1
@@ -980,7 +989,8 @@ already parameterised — which is a far better exchange rate than mining
 minified bundles.
 
 ```bash
-# Find the specs and expand them in the same run
+# Find the specs and expand them in the same run (only-api also filters the
+# expanded routes; drop it to keep every documented path)
 urx example.com --preset only-api --expand-specs
 
 # Bound and pace it
@@ -1073,7 +1083,7 @@ urx example.com --archive-body
 urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
 # Only the JavaScript those pages referenced back then
-urx example.com --archive-body -e js
+urx example.com --archive-body | grep -E '\.js(\?|$)'
 ```
 
 ### Why this needs far fewer requests than waymore

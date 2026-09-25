@@ -165,11 +165,14 @@ urx/
 │   ├── providers/      # URL data providers
 │   ├── filters/        # URL filtering, presets, scope files
 │   ├── testers/        # Status checks, link / JS / spec extraction
+│   ├── runner/         # Concurrent provider runs, --max-time, Ctrl-C
 │   ├── tester_manager/ # Runs the testers over collected URLs
 │   ├── readers/        # --files readers (WARC, URLTeam, text)
 │   ├── cache/          # SQLite / Redis cache and the `urx cache` subcommand
 │   ├── output/         # Output formats and --stream
 │   ├── notify/         # Webhook notifications
+│   ├── progress/       # Progress bars
+│   ├── utils/          # URL transforms and helpers
 │   └── network/        # HTTP client, proxy, headers, rate limiting
 ├── tests/              # Integration tests
 ├── docs/               # Documentation (Hwaro site)

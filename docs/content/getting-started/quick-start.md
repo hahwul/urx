@@ -20,8 +20,9 @@ urx example.com
 This retrieves URLs from the default providers (Wayback Machine, Common Crawl and
 OTX), plus the target's live `robots.txt` and `sitemap.xml` (turn those off with
 `--exclude-robots` / `--exclude-sitemap`), and prints them to the console.
-Providers that need an API key join automatically when their key is set; see
-[Environment Variables](/guide/environment-variables/).
+Any provider that takes an API key (vt, urlscan, zoomeye, github, bevigil) joins
+automatically when its key is set, even alongside an explicit `--providers`
+list; see [Environment Variables](/guide/environment-variables/).
 
 ### Multiple Domains
 

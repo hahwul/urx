@@ -84,7 +84,9 @@ Redis provides a shared cache accessible from multiple machines.
 > with `cargo install urx --features redis-cache` to enable it.
 
 Machines sharing one Redis cache only share entries when they run with the same
-flags and the same provider API keys, since both are part of the cache key.
+flags and the same keyed providers enabled. A provider with a key joins the
+cache key, but the key's value does not, so different keys for the same provider
+share entries.
 
 ```bash
 urx example.com --cache-type redis --redis-url redis://localhost:6379
@@ -105,9 +107,14 @@ entries older than the TTL. An incremental baseline that ages out this way is
 gone, and the next incremental run reports everything again, so set the TTL
 comfortably above your scan interval.
 
+The sweep uses the TTL of the run doing it. One run with `--cache-ttl 300`
+deletes every entry older than 10 minutes in that database, including other
+targets' incremental baselines, so give short-TTL experiments their own
+`--cache-path`.
+
 ```bash
-# Short TTL for frequently changing targets (5 minutes)
-urx example.com --cache-ttl 300
+# Short TTL for frequently changing targets (5 minutes), in its own cache
+urx example.com --cache-ttl 300 --cache-path ~/.urx/short-ttl.db
 
 # Medium TTL for daily scans (12 hours)
 urx example.com --cache-ttl 43200
@@ -131,15 +138,20 @@ ignored: every URL is printed.
 
 - The cache stores the host-validated URLs the providers returned, before
   filters run. Filters and output views are applied afterwards, on hits and
-  misses alike.
+  misses alike. The host check applies even under `--no-strict`, so a cache hit
+  or an `--incremental` run never returns the off-host URLs that `--no-strict`
+  would otherwise keep.
 - It stores URLs only. A cache hit carries no provider attribution and no archive
   capture metadata, so on a hit `--show-sources` has nothing to show, JSON/CSV
   lack `first_seen` / `last_seen` / `mime` / `archive_status` / `digest`, the
-  `--meta-*` filters drop everything, `--archive-body` has nothing to replay and
+  positive `--meta-*` filters drop everything (`--meta-exclude-*` drop nothing), `--archive-body` has nothing to replay and
   `--stats` stays empty. Add `--no-cache` when you need those.
 - `--stream` and `--files` bypass the cache.
-- A run cut short by `--max-time`, Ctrl-C or provider errors is cached like any
-  other, so its partial result is what the next run within the TTL gets.
+- A normal run cut short by `--max-time`, Ctrl-C or provider errors is cached
+  like any other, so the next run within the TTL gets its partial result. A
+  domain that returned no URLs at all is not cached. An `--incremental` run
+  always stores what it got as the new baseline, even a partial or empty set, so
+  the run after it reports the missing URLs as new again.
 - A cache backend that cannot be opened (an unreachable Redis server, say) is a
   fatal error rather than a silent fallback.
 
@@ -226,7 +238,9 @@ Details worth knowing:
   `--redis-url` before printing the location. Keys are `urx:cache:<sha256>` and
   `urx:meta:<sha256>`; urx manages expiry itself and sets no Redis `EXPIRE`.
 - `urx cache` reads `-c` / `--config` and the `[cache]` section like a scan does,
-  and ignores `--no-cache`.
+  and ignores `no_cache` / `--no-cache` (the flag is only accepted before
+  `cache`, unlike `--cache-type`, `--cache-path`, `--redis-url`, `--cache-ttl`
+  and `-f`).
 
 ### Combined Examples
 
@@ -242,8 +256,9 @@ urx target.com --incremental --no-progress | notify-tool
 # Distributed scanning with shared Redis cache (needs a redis-cache build)
 urx example.com --cache-type redis --redis-url redis://shared-cache:6379
 
-# Rapid iterations with short cache TTL
-urx test-domain.com --cache-ttl 300
+# Rapid iterations with short cache TTL, in a cache of their own (a short TTL
+# sweeps every older entry in the database it runs against)
+urx test-domain.com --cache-ttl 300 --cache-path /tmp/urx-scratch.db
 
 # Incremental scan with filtering
 urx example.com --incremental -e js,php --patterns api

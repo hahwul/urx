@@ -31,6 +31,8 @@ Command-line flags take precedence over config file values, with two caveats:
   `subs`, `check_status`, `random_agent`, `incremental` or `no_cache`) cannot be
   turned off from the command line, because there is no `--no-…` counterpart.
   Keep such keys out of a shared default config, or switch profiles with `-c`.
+  (`exclude_robots` / `exclude_sitemap` are the exception: `--include-robots` /
+  `--include-sitemap` override them.)
 - **Lists given on the command line replace the configured list** rather than
   extending it. Any `-H` replaces the whole configured `header` set, for example,
   and `--providers` replaces `providers`.
@@ -43,7 +45,8 @@ Keys urx does not recognise, including a misspelled section such as `[filters]`,
 are ignored with a `Warning: ignoring unrecognised key(s) …` message. An invalid
 value for `format`, `network_scope`, `cache_type`, `[notify].on` or
 `[notify].format`, and a `timeout` or `parallel` of `0`, are likewise ignored
-with a warning and the built-in default is used.
+with an `Ignoring [section].key=… in config` message and the built-in default is
+used. Nothing is printed under `--silent`.
 
 ### Full Configuration Reference
 
@@ -210,7 +213,7 @@ timeout = 60
 
 Redis support is an optional feature: the prebuilt binaries, the Docker image
 and a plain `cargo install urx` leave it out, and a `cache_type = "redis"` config
-fails with `Redis cache support is not compiled in`. Build with
+fails with `Redis cache support not compiled in`. Build with
 `cargo install urx --features redis-cache` to use it.
 
 ```toml

@@ -20,8 +20,8 @@ cat domains.txt | urx | grep "api"
 urx --domain-list domains.txt | grep "api"
 ```
 
-Standard input is read only when no domains are given on the command line and no
-`--domain-list` is set.
+Standard input is read only when the command line and any `--domain-list` files
+name no domains at all.
 
 Results go to stdout; the progress bar, warnings and errors go to stderr, and the
 progress bar hides itself when stderr is not a terminal. Two things to keep in
@@ -29,8 +29,8 @@ mind in a pipe:
 
 - `--silent` suppresses **all** output, results included. Use it only with `-o`
   or `--notify`; to quiet a pipe, use `--no-progress` instead.
-- `-v` / `--verbose` prints its messages to stdout, where the next tool would
-  read them as URLs. Leave it off in pipelines.
+- `-v` / `--verbose` prints most of its messages to stdout, where the next tool
+  would read them as URLs. Leave it off in pipelines.
 
 For JSON consumers, `-f jsonl` writes one object per line, while `-f json` writes
 a single array. `--stream` starts writing before the run ends, so the next tool
@@ -45,7 +45,7 @@ urx example.com --stream | httpx -silent
 
 | Code | Meaning |
 |------|---------|
-| `0` | The run completed, including runs where some providers failed, results were partial, or the webhook could not be delivered |
+| `0` | The run completed, including runs where some providers failed, results were partial, the webhook could not be delivered, or the `-o` / `--output-dir` file could not be written (reported on stderr) |
 | `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes` |
 | `2` | Invalid command-line usage, such as an unknown flag or `--parallel 0` |
 | `130` | Interrupted by a second Ctrl-C |
@@ -167,7 +167,8 @@ urx example.com --cache-type redis --redis-url redis://central-cache:6379 --incr
 ```
 
 Redis needs a build with `--features redis-cache`, and the machines only share
-cache entries when they run with the same flags and provider API keys. See
+cache entries when they run with the same flags and the same keyed providers
+enabled. See
 [Caching](/guide/caching/).
 
 ### CI/CD Integration
@@ -214,6 +215,11 @@ docker run --rm \
   ./urx example.com -o /data/results.txt
 ```
 
+The container runs as uid 100 (`app`). On Linux, make the mounted directory
+writable by it, or run with `--user "$(id -u):$(id -g)" -e HOME=/tmp` (the
+`HOME` override keeps the cache writable). A failed write is only reported on
+stderr; the exit code stays 0.
+
 #### Docker Compose for Monitoring Stack
 
 The published image is built without Redis support, so keep the SQLite cache on a
@@ -225,7 +231,7 @@ services:
     image: ghcr.io/hahwul/urx:latest
     command: ["./urx", "example.com", "--incremental", "-o", "/data/new-urls.txt"]
     volumes:
-      - urx-cache:/home/app/.urx
+      - urx-cache:/home/app   # a new volume inherits the image's app:app ownership here
       - ./data:/data
 volumes:
   urx-cache:
@@ -265,6 +271,8 @@ spec:
           - name: cache
             persistentVolumeClaim:
               claimName: urx-cache
+          securityContext:
+            fsGroup: 101   # the image's `app` group, so the volume is writable
           restartPolicy: OnFailure
 ```
 

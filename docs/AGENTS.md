@@ -44,7 +44,7 @@ docs/
 │   ├── footer.html          Footer plus the deferred script tags
 │   ├── page.html            Leaf docs page
 │   ├── section.html         Section index page
-│   ├── landing.html         Home page shell (loads landing.css)
+│   ├── landing.html         Home page shell (landing.css comes from header.html)
 │   ├── 404.html
 │   ├── partials/
 │   │   ├── nav.html             Top nav: brand, links, search, theme, GitHub
@@ -117,7 +117,7 @@ Templates use Jinja2 syntax. Key variables:
 
 ### Template Files
 
-- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. Loads the extra `static/css/landing.css`.
+- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. `landing.css` is linked from `header.html` when `page.section == ""` (the home page).
 - **page.html** / **section.html** — Docs templates. Both pull in the shared nav and sidebar partials.
 - **partials/nav.html** — Shared top navigation (brand, links, search, theme toggle, GitHub, mobile menu button).
 - **partials/sidebar.html** — Shared docs sidebar, derived from `site.sections`; there is no hand-kept link list to edit.

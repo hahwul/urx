@@ -146,7 +146,7 @@ Options:
 
 Input Options:
       --files <FILES>...        Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
-      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when neither is given; `#` comments allowed)
+      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when they name no domains; `#` comments allowed)
 
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
@@ -444,16 +444,17 @@ urx --files urls.txt --patterns api,admin -f json
 #  sources, objects, embeds, and meta-refresh targets)
 urx example.com --extract-links
 
-# Discovered links go through the same filters as everything else, so this
-# keeps only the JavaScript the pages reference
-urx example.com --extract-links -e js
+# Discovered links go through the same filters as everything else, but the
+# filters also run before any page is fetched (-e js would drop the HTML
+# pages), so keep only the JavaScript the pages reference by filtering output
+urx example.com --extract-links | grep -E '\.js(\?|$)'
 
 # Read the collected JavaScript and pull out the API paths it calls
-urx example.com --extract-js-endpoints --patterns api
+urx example.com --extract-js-endpoints | grep api
 
 # Chain them: the extractors run over the collected URLs in one pass, so mine
 # the bundles --extract-links discovers in a second run
-urx example.com --extract-links -e js -o bundles.txt
+urx example.com --extract-links | grep -E '\.js(\?|$)' > bundles.txt
 urx --files bundles.txt --extract-js-endpoints --max-js-files 100
 
 # Mine the links inside the *archived* bodies instead — dead pages included.
@@ -906,7 +907,7 @@ urx example.com --archive-body
 urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
 # Only the JavaScript those pages referenced back then
-urx example.com --archive-body -e js
+urx example.com --archive-body | grep -E '\.js(\?|$)'
 ```
 
 **Why this needs far fewer requests than waymore.** Every CDX row carries a
@@ -1195,7 +1196,7 @@ cat domains.txt | urx --incremental --cache-ttl 3600 > new_urls.txt
 urx example.com --cache-type redis --redis-url redis://shared-cache:6379
 
 # Fast re-scans during development
-urx test-domain.com --cache-ttl 300  # 5-minute cache for rapid iterations
+urx test-domain.com --cache-ttl 300 --cache-path /tmp/urx-scratch.db  # 5-minute cache, kept apart (a short TTL sweeps older entries in its database)
 ```
 
 ### Webhook Notifications

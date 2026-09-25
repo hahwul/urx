@@ -31,8 +31,8 @@ pub struct Args {
     pub files: Vec<PathBuf>,
 
     /// File(s) containing newline-separated domains to scan. Repeatable;
-    /// merged with positional DOMAINS (stdin is read only when neither is
-    /// given). Blank lines and `#` comments are ignored.
+    /// merged with positional DOMAINS (stdin is read only when they name no
+    /// domains at all). Blank lines and `#` comments are ignored.
     #[clap(help_heading = "Input Options")]
     #[clap(long = "domain-list", visible_alias = "dL", action = clap::ArgAction::Append, value_parser)]
     pub domain_list: Vec<PathBuf>,
