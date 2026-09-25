@@ -21,12 +21,16 @@ use super::admin::{
 };
 use crate::cli::Args;
 
-/// Top-level subcommands.
-///
-/// The field holding this on [`Args`] is an `Option`, so the historical
-/// `urx [OPTIONS] [DOMAINS]...` invocation — including `cat domains.txt | urx`
-/// — parses exactly as it always did. Only the literal first token `cache`
-/// selects a subcommand.
+// Top-level subcommands.
+//
+// The field holding this on `Args` is an `Option`, so the historical
+// `urx [OPTIONS] [DOMAINS]...` invocation — including `cat domains.txt | urx`
+// — parses exactly as it always did. Only the literal first token `cache`
+// selects a subcommand.
+//
+// Plain comments rather than `///`: clap's derive copies a `Subcommand` enum's
+// doc comment into the parent command's `about`, which put this paragraph at
+// the top of `urx --help` and the man page.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum Command {
     /// Inspect and maintain the URL cache

@@ -15,7 +15,42 @@ Urx reads domains from standard input and outputs URLs to standard output, makin
 
 ```bash
 cat domains.txt | urx | grep "api"
+
+# Or name the file directly (alias --dL); repeatable
+urx --domain-list domains.txt | grep "api"
 ```
+
+Standard input is read only when the command line and any `--domain-list` files
+name no domains at all.
+
+Results go to stdout; the progress bar, warnings and errors go to stderr, and the
+progress bar hides itself when stderr is not a terminal. Two things to keep in
+mind in a pipe:
+
+- `--silent` suppresses **all** output, results included (except under
+  `--stream`, which still writes results and only loses its diagnostics). Use it
+  only with `-o` or `--notify`; to quiet a pipe, use `--no-progress` instead.
+- `-v` / `--verbose` writes its setup and stage messages to stdout, mixed into
+  the URL list, where the next tool would read them as URLs (its per-provider
+  progress and errors go to stderr). Leave it off in pipelines.
+
+For JSON consumers, `-f jsonl` writes one object per line, while `-f json` writes
+a single array. `--stream` starts writing before the run ends, so the next tool
+starts working at once (plain, `jsonl` and `csv` only; unsorted; bypasses the
+cache):
+
+```bash
+urx example.com --stream | httpx -silent
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | The run completed, including runs where some providers failed, results were partial, the webhook could not be delivered, or the `-o` / `--output-dir` file could not be written (reported on stderr unless `--silent`; under `--stream` an `-o` that cannot be created is an exit-1 startup error) |
+| `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes` |
+| `2` | Invalid command-line usage, such as an unknown flag or `--parallel 0` |
+| `130` | Force-quit by a second Ctrl-C after a first one interrupted the provider phase. Once collection has finished on its own, Ctrl-C is currently ignored for the rest of the run (status checks, extractors, output); stop it with `kill` (SIGTERM) instead |
 
 ### With Security Tools
 
@@ -77,7 +112,7 @@ Combine with other URL collection tools:
 urx can POST a run summary itself — no extra tool in the pipe. Paired with
 `--incremental` the webhook fires only when the run finds new URLs:
 ```bash
-# Slack
+# Slack (--silent keeps stdout quiet; the webhook still fires)
 urx target.com --incremental --silent \
   --notify https://hooks.slack.com/services/T000/B000/XXXX --notify-format slack
 
@@ -88,13 +123,13 @@ urx target.com --incremental --silent --notify "$DISCORD_HOOK" --notify-format d
 export URX_NOTIFY_URL=https://n8n.example/webhook/urx
 urx target.com --incremental --silent
 ```
-See [CLI Options → Webhook Notifications](@/guide/cli-options.md#webhook-notifications)
+See [CLI Options → Webhook Notifications](/guide/cli-options/#webhook-notifications)
 for the payload schema, `--notify-on`, and the length limits.
 
 #### Notify
 Send the new URLs themselves, one per message, through an external notifier:
 ```bash
-urx target.com --incremental --silent | notify -silent
+urx target.com --incremental --no-progress | notify -silent
 ```
 
 #### Discord Webhook (per URL)
@@ -109,14 +144,14 @@ done
 #### PostgreSQL
 Store results in a database:
 ```bash
-urx example.com -f json | jq -r '.url' | while read url; do
+urx example.com -f jsonl | jq -r '.url' | while read url; do
   psql -c "INSERT INTO urls (url) VALUES ('$url')"
 done
 ```
 
 #### MongoDB
 ```bash
-urx example.com -f json | mongoimport --db security --collection urls
+urx example.com -f jsonl | mongoimport --db security --collection urls
 ```
 
 ### Continuous Monitoring
@@ -125,13 +160,18 @@ urx example.com -f json | mongoimport --db security --collection urls
 Monitor targets daily for new URLs:
 ```bash
 # Add to crontab
-0 0 * * * /usr/local/bin/urx target.com --incremental --silent >> /var/log/urx.log
+0 0 * * * /usr/local/bin/urx target.com --incremental --no-progress >> /var/log/urx.log 2>/dev/null
 ```
 
 #### With Redis for Distributed Scanning
 ```bash
 urx example.com --cache-type redis --redis-url redis://central-cache:6379 --incremental
 ```
+
+Redis needs a build with `--features redis-cache`, and the machines only share
+cache entries when they run with the same flags and the same keyed providers
+enabled. See
+[Caching](/guide/caching/).
 
 ### CI/CD Integration
 
@@ -147,10 +187,18 @@ jobs:
     steps:
       - name: Install Urx
         run: cargo install urx
+      # Without a persisted cache, every run on a fresh runner is a first run
+      # and --incremental reports everything.
+      - name: Restore URL cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.urx
+          key: urx-cache-${{ github.run_id }}
+          restore-keys: urx-cache-
       - name: Run Discovery
         run: urx example.com --incremental -o results.txt
       - name: Upload Results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: urls
           path: results.txt
@@ -158,30 +206,42 @@ jobs:
 
 ### Docker Integration
 
+The image has no entrypoint: its default command is `./urx`, so arguments
+passed to the container must start with `./urx` (or use `--entrypoint ./urx`).
+
 #### Run in Container
 ```bash
 docker run --rm \
-  -v $(pwd):/data \
+  -v "$(pwd)":/data \
   ghcr.io/hahwul/urx:latest \
-  example.com -o /data/results.txt
+  ./urx example.com -o /data/results.txt
 ```
 
+The container runs as uid 100 (`app`). On Linux, make the mounted directory
+writable by it, or run with `--user "$(id -u):$(id -g)" -e HOME=/tmp` (the
+`HOME` override keeps the cache writable). A failed write is only reported on
+stderr; the exit code stays 0.
+
 #### Docker Compose for Monitoring Stack
+
+The published image is built without Redis support, so keep the SQLite cache on a
+volume instead (the container runs as the `app` user, whose home is `/home/app`):
+
 ```yaml
-version: '3'
 services:
   urx:
     image: ghcr.io/hahwul/urx:latest
-    command: example.com --cache-type redis --redis-url redis://redis:6379 --incremental
-    depends_on:
-      - redis
-  redis:
-    image: redis:alpine
+    command: ["./urx", "example.com", "--incremental", "-o", "/data/new-urls.txt"]
     volumes:
-      - redis-data:/data
+      - urx-cache:/home/app   # a new volume inherits the image's app:app ownership here
+      - ./data:/data
 volumes:
-  redis-data:
+  urx-cache:
 ```
+
+For a shared Redis cache, build your own image with
+`cargo build --release --features redis-cache` and add
+`--cache-type redis --redis-url redis://redis:6379`.
 
 ### Kubernetes CronJob
 
@@ -199,7 +259,22 @@ spec:
           containers:
           - name: urx
             image: ghcr.io/hahwul/urx:latest
-            args: ["example.com", "--incremental", "--silent"]
+            command: ["./urx"]
+            args: ["example.com", "--incremental", "--silent",
+                   "--notify-format", "slack"]
+            env:
+            - name: URX_NOTIFY_URL
+              valueFrom:
+                secretKeyRef: {name: urx-secrets, key: notify-url}
+            volumeMounts:
+            - name: cache
+              mountPath: /home/app/.urx   # keeps the --incremental baseline between runs
+          volumes:
+          - name: cache
+            persistentVolumeClaim:
+              claimName: urx-cache
+          securityContext:
+            fsGroup: 101   # the image's `app` group, so the volume is writable
           restartPolicy: OnFailure
 ```
 

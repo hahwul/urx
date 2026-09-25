@@ -44,7 +44,7 @@ docs/
 │   ├── footer.html          Footer plus the deferred script tags
 │   ├── page.html            Leaf docs page
 │   ├── section.html         Section index page
-│   ├── landing.html         Home page shell (loads landing.css)
+│   ├── landing.html         Home page shell (landing.css comes from header.html)
 │   ├── 404.html
 │   ├── partials/
 │   │   ├── nav.html             Top nav: brand, links, search, theme, GitHub
@@ -117,19 +117,20 @@ Templates use Jinja2 syntax. Key variables:
 
 ### Template Files
 
-- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. Loads the extra `static/css/landing.css` and holds the landing footer plus motion JS.
+- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. `landing.css` is linked from `header.html` when `page.section == ""` (the home page).
 - **page.html** / **section.html** — Docs templates. Both pull in the shared nav and sidebar partials.
-- **_docsnav.html** — Shared top navigation (brand, links, theme toggle, GitHub, mobile menu button).
-- **_sidebar.html** — Shared docs sidebar. Edit this ONE file to change sidebar links.
-- **header.html** — `<head>`: meta, fonts (Space Grotesk / Inter / JetBrains Mono), no-flash theme script, CSS.
-- **footer.html** — Docs footer plus JS for active-link highlighting, the theme toggle, and scroll-reveal.
+- **partials/nav.html** — Shared top navigation (brand, links, search, theme toggle, GitHub, mobile menu button).
+- **partials/sidebar.html** — Shared docs sidebar, derived from `site.sections`; there is no hand-kept link list to edit.
+- **header.html** — `<head>`: meta, self-hosted fonts (Space Grotesk / JetBrains Mono), no-flash theme script, CSS.
+- **footer.html** — Footer plus the deferred script tags: `theme.js` and `search.js` everywhere, `home.js` on the landing page, `toc.js` / `docs.js` / `codecopy.js` on docs pages.
 
 ## Styling
 
 - `static/css/style.css` — shared tokens, theme system, top nav, docs shell, prose, code, footer.
 - `static/css/landing.css` — landing-only sections (hero, terminal, providers, bento, pipeline, install).
-- Light/dark via CSS variables. Default follows `@media (prefers-color-scheme: dark)`; a header toggle overrides it and persists to `localStorage` (`urx-theme`), read by a no-flash inline script in `header.html`.
-- One accent color: ignition orange (`--ignition: #ff5b29`). Code blocks stay dark in both themes by design (embedded-terminal look).
+- Light/dark via `light-dark()` tokens and `color-scheme: light dark` on `:root`, so the OS decides by default; the header toggle sets `data-theme` and persists it to `localStorage` (`urx-theme`), read by a no-flash inline script in `header.html`.
+- One accent color: amber (`--accent: #FCA428`), with `--accent-text` (`#9C5A0A` light / `#FCA428` dark) for any amber text. Code blocks stay dark in both themes by design (embedded-terminal look).
+- Raw HTML in `content/index.md`: never leave a blank line inside a `<pre>` (or any HTML block). A blank line ends the markdown HTML block and the processor wraps the rest in `<p>`; use a line holding only `<span></span>` instead.
 - Responsive: sidebar hidden on mobile with a toggle button.
 
 ## Notes for AI Agents

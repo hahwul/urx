@@ -438,8 +438,8 @@ fn normalize_segment(segment: &str) -> String {
     if is_variable_segment(segment) {
         return VARIABLE_SEGMENT.to_string();
     }
-    // `article-1234.html`: the extension is part of the endpoint's shape while
-    // the stem is the identifier, so only the stem is erased.
+    // `1234.html`: the extension is part of the endpoint's shape while the
+    // stem is the identifier, so only the stem is erased.
     if let Some((stem, extension)) = segment.rsplit_once('.') {
         if is_variable_segment(stem) {
             return format!("{VARIABLE_SEGMENT}.{extension}");
@@ -691,7 +691,7 @@ fn fuzz_one(url_str: &str, placeholder: &str) -> Option<String> {
 /// "Looks like data" is [`is_variable_segment`], the same test `--dedup-similar`
 /// uses — a wordlist full of `4711`, UUIDs and session tokens is worse than no
 /// wordlist, since every one of them is a word that exists on exactly one
-/// target. A segment whose *stem* is an identifier (`article-1234.html`) goes
+/// target. A segment whose *stem* is an identifier (`1234.html`) goes
 /// too: `{id}.html` is not a word either.
 ///
 /// Case is preserved. Path segments are case-sensitive on most origins, so

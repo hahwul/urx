@@ -170,7 +170,8 @@ impl ProviderKeysConfig {
         Ok(parsed)
     }
 
-    /// Default lookup path mirrors the main config: $XDG_CONFIG_HOME/urx or
+    /// Default lookup path mirrors the main config: ~/.config/urx
+    /// (`$HOME/.config`; `$XDG_CONFIG_HOME` is not consulted) or
     /// %APPDATA%\urx. Returns None when neither exists; unlike `Config`, we
     /// do NOT auto-create the file because that would land an empty
     /// "credentials" path the user didn't ask for.

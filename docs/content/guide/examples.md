@@ -1,6 +1,6 @@
 +++
 title = "Examples"
-description = "Worked commands for filtering, provider selection, API keys, link extraction and status checking."
+description = "Worked commands for filtering, provider selection, API keys, link extraction, status checking, streaming and caching."
 toc = true
 weight = 3
 +++
@@ -22,6 +22,19 @@ urx example.com example.org
 #### From Standard Input
 ```bash
 cat domains.txt | urx
+```
+
+#### From a Domain List
+```bash
+# Repeatable; merged with any domains on the command line
+urx --domain-list domains.txt
+urx --dL program-a.txt --dL program-b.txt
+```
+
+#### Path-Scoped Target
+```bash
+# Only URLs under /shop on example.com
+urx example.com/shop
 ```
 
 #### File Input
@@ -49,10 +62,57 @@ urx example.com -o results.txt
 urx example.com -f json -o results.json
 ```
 
+### JSON Lines Format
+```bash
+# One JSON object per line, easy to process with jq
+urx example.com -f jsonl | jq -r '.url'
+```
+
 ### CSV Format
 ```bash
 urx example.com -f csv -o results.csv
 ```
+
+### One File per Host
+```bash
+# out/example.com.json, out/example.org.json, ... plus the combined file
+urx example.com example.org -f json --output-dir out/ -o all.json
+```
+
+Files are named after each URL's host, so `www.example.com` and, under `--subs`,
+every subdomain get their own file. Output whose lines are not URLs
+(`--show-only-host`, `--show-only-path`, `--show-only-param`, `--params`) goes to
+`_unknown.<ext>`.
+
+### Streaming Output
+```bash
+# Write URLs as each provider reports them, so the next tool starts at once
+urx example.com --stream | httpx -silent
+```
+
+`--stream` output is unsorted, bypasses the cache, and supports `plain`, `jsonl`
+and `csv`. Options that need the complete result set (`--incremental`,
+`--check-status` / `--include-status` / `--exclude-status` / `--check-title`,
+the extractors, `--archive-body`, `--expand-specs`, `--merge-endpoint`, `--dedup-similar`,
+`--show-sources`, `--show-meta`, `--output-dir`, the parameter views, the
+`--meta-*` filters, `--files`) are rejected with it.
+
+### Provenance and Run Statistics
+```bash
+# Which providers returned each URL
+urx example.com --show-sources
+
+# Archive capture metadata in plain text
+urx example.com --providers wayback --show-meta
+
+# Per-provider URL counts, errors and timings on stderr
+urx example.com --stats
+```
+
+A repeat run served from the cache carries no sources or archive metadata, and
+`--stats` prints nothing. Add `--no-cache` to these, and to the `--meta-*` and
+`--archive-body` examples below, when the target was scanned within
+`--cache-ttl`.
 
 ### Wordlist
 Every path segment and parameter name the run saw, deduplicated and sorted —
@@ -143,6 +203,35 @@ urx example.com --providers wayback --meta-mime application/json --meta-status 2
 urx example.com --providers wayback --meta-first-seen-after 2020 --meta-first-seen-before 2020
 ```
 
+### Regular Expressions
+```bash
+# Keep versioned API paths (case-insensitive); repeat the flag to OR patterns
+urx example.com --match-regex '(?i)/api/v[0-9]+/'
+
+# Drop static asset directories
+urx example.com --filter-regex '/(assets|static)/'
+```
+
+### Collapsing Near-Duplicates
+```bash
+# /post/1, /post/2 and /post/99999 become one line
+urx example.com --dedup-similar
+```
+
+### Archive-Side Filters
+Applied by the CDX index itself (wayback, cc, arquivo, `--cdx-endpoint`), so they
+cost no extra requests and shrink what is fetched:
+```bash
+# Captures from 2023 onwards that the archive recorded as 200
+urx example.com --from 2023 --archive-status 200
+
+# Endpoints served as JSON, even without a .json extension
+urx example.com --archive-mime application/json
+
+# Skip error pages and HTML
+urx example.com --archive-exclude-status 404,500 --archive-exclude-mime text/html
+```
+
 ### Advanced Filtering
 ```bash
 # Multiple filters
@@ -156,21 +245,41 @@ urx example.com --min-length 50 --max-length 200
 
 ### Specific Providers
 ```bash
-# Only Wayback Machine and OTX
+# Wayback Machine and OTX (plus the live robots.txt / sitemap.xml probes, and
+# any keyed provider whose URX_*_API_KEY is set; --exclude-providers keeps one out)
 urx example.com --providers wayback,otx
 
-# Keyless archives only (no API keys needed) — incl. Arquivo.pt and anonymous URLScan
+# Keyless sources (no API keys needed) — incl. Arquivo.pt and anonymous URLScan.
+# Same caveat: a set URX_*_API_KEY still adds its provider
 urx example.com --providers wayback,cc,otx,arquivo,urlscan
 
-# All available providers (with API keys)
+# All available providers (vt, zoomeye, github and bevigil need their
+# URX_*_API_KEY or --*-api-key set, or they report an error)
 urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github,bevigil
 
 # Or enable everything at once (keyed providers activate only when a key is present)
 urx example.com --all-providers
 
+# Everything except OTX
+urx example.com --all-providers --exclude-providers otx
+
 # Add any other CDX index server (here the Icelandic web archive) — id cdx:vefsafn.is
 urx example.is --cdx-endpoint https://vefsafn.is/cdx --rate-limit-by cdx:vefsafn.is=1
+
+# What is available, and which providers need a key
+urx --list-providers
+
+# Query two specific Common Crawl indexes in parallel
+urx example.com --providers cc --cc-index CC-MAIN-2026-17,CC-MAIN-2025-51
 ```
+
+### Using a Config File
+```bash
+# Load a profile; the provider-config file holds only the API keys
+urx -c ~/.config/urx/bugbounty.toml --provider-config ~/.config/urx/keys.toml example.com
+```
+
+See [Configuration](/guide/configuration/) for every key.
 
 ### With API Keys
 
@@ -185,7 +294,9 @@ urx example.com --zoomeye-api-key=YOUR_KEY --providers zoomeye
 export URX_VT_API_KEY=YOUR_KEY
 export URX_URLSCAN_API_KEY=YOUR_KEY
 export URX_ZOOMEYE_API_KEY=YOUR_KEY
-urx example.com --providers=vt,urlscan,zoomeye
+export URX_GITHUB_API_KEY=YOUR_TOKEN
+export URX_BEVIGIL_API_KEY=YOUR_KEY
+urx example.com --providers=vt,urlscan,zoomeye,github,bevigil
 ```
 
 #### API Key Rotation
@@ -262,11 +373,14 @@ It reads every URL-bearing tag, not just anchors: `<a href>`, `<script src>`,
 `<object data>`, `<embed src>`, and `<meta http-equiv="refresh">` targets.
 Relative URLs resolve against the page (honouring `<base href>`), duplicates
 are collapsed, and the discovered links go through exactly the same filters,
-host validation, and output transforms as the rest of the run:
+host validation, and output transforms as the rest of the run. Those filters
+also run on the collected URLs *before* any page is fetched, so a filter such as
+`-e js` would remove the HTML pages there is nothing to extract from. Filter the
+output instead:
 
 ```bash
-# Only the JavaScript the pages reference
-urx example.com --extract-links -e js
+# JavaScript URLs, whether collected or referenced by the pages
+urx example.com --extract-links | grep -E '\.js(\?|$)'
 ```
 
 ### Extract Endpoints from JavaScript
@@ -286,12 +400,21 @@ is bounded by `--max-js-files`, and the discovered endpoints go through the
 same filters and host validation as the rest of the run.
 
 ```bash
-# Collect the site's bundles with --extract-links, then mine them
-urx example.com --extract-links --extract-js-endpoints --max-js-files 100
+# Bound the number of scripts fetched
+urx example.com --extract-js-endpoints --max-js-files 100
 
-# Keep the API-looking paths and probe them
-urx example.com --extract-js-endpoints --patterns api,graphql --check-status --include-status 200,401,403
+# The extractors all run over the collected URLs in one pass, so scripts that
+# --extract-links discovers are not mined in the same run. Chain two runs:
+urx example.com --extract-links | grep -E '\.js(\?|$)' > bundles.txt
+urx --files bundles.txt --extract-js-endpoints --max-js-files 100
+
+# Keep the API-looking paths (filter the output: --patterns would drop the
+# bundles before they are read)
+urx example.com --extract-js-endpoints | grep -E 'api|graphql'
 ```
+
+Discovered endpoints are not status-checked; `--check-status` covers the
+collected URLs only.
 
 Leave `-e js` off when using this option: discovered endpoints pass through
 your filters too, so `-e js` would keep only the `.js` files it found rather
@@ -312,18 +435,21 @@ one request per distinct body rather than one per URL; `--archive-body-limit`
 # Bounded and paced
 urx example.com --archive-body --archive-body-limit 200 --rate-limit 5
 
-# Only what the archived pages referenced as JavaScript
-urx example.com --archive-body -e js --no-cache
+# JavaScript URLs, whether collected or referenced by the archived pages
+urx example.com --archive-body --no-cache | grep -E '\.js(\?|$)'
 ```
 
 ### Expand API Specifications
 ```bash
-urx example.com --preset only-api --expand-specs
+urx example.com --expand-specs
 ```
 
 `--expand-specs` opens the OpenAPI, Swagger and GraphQL documents the run
 collected and expands every route they describe into the result set — one
-request buys the whole documented surface. JSON and YAML are both read:
+request buys the whole documented surface. Filters and presets also apply to the
+routes a document expands into, so `--preset only-api` would drop `/users` or
+`/orders/{id}`; `--expand-specs` already opens only the specification documents,
+so no preset is needed to find them. JSON and YAML are both read:
 
 ```bash
 # Bounded and paced
@@ -335,7 +461,7 @@ urx example.com --archive-body --expand-specs
 
 ### Record Response Titles
 ```bash
-# --check-title implies --check-status; --show-meta shows the extra fields in plain text
+# --check-title implies --check-status; --show-meta adds the response-head fields
 urx example.com --check-title --show-meta
 
 # Everything the response head carried, as JSON Lines
@@ -353,6 +479,10 @@ urx example.com --check-status --include-status 200,30x
 # Exclude errors
 urx example.com --check-status --exclude-status 404,50x
 ```
+
+When both are given, `--include-status` alone decides and `--exclude-status` is
+ignored. A URL whose check failed outright (refused, timed out) is printed with
+`[Status check failed]` unless `--include-status` is set.
 
 ## Network Configuration
 
@@ -381,6 +511,22 @@ urx example.com --insecure
 urx example.com --random-agent
 ```
 
+### Authenticated and Custom Requests
+Headers go only to the target (status checks, extractors, robots/sitemap), never
+to the archives:
+```bash
+urx example.com --check-status \
+  -H "Authorization: Bearer $TOKEN" \
+  --cookie "session=abc" \
+  --user-agent "acme-security-scan/1.0"
+```
+
+### Rate Limits and Time Budget
+```bash
+# 10 req/s per provider, 1 req/s for VirusTotal, stop collecting after 10 minutes
+urx example.com --rate-limit 10 --rate-limit-by vt=1 --max-time 600
+```
+
 ### Complete Network Configuration
 ```bash
 urx example.com \
@@ -404,6 +550,20 @@ urx example.com --normalize-url
 urx example.com --normalize-url --merge-endpoint
 ```
 
+### Show Only One Part of Each URL
+```bash
+# Hosts (handy with --subs), paths, or query strings
+urx example.com --subs --show-only-host
+urx example.com --show-only-path
+urx example.com --show-only-param
+```
+
+### Off-Host URLs
+```bash
+# Keep URLs on any host a provider returned (a path-scoped target still applies)
+urx example.com --no-strict
+```
+
 ## Caching & Incremental Scanning
 
 ### SQLite Cache (Default)
@@ -413,6 +573,7 @@ urx example.com --cache-type sqlite --cache-path ~/.urx/cache.db
 
 ### Redis Cache
 ```bash
+# Requires a build with: cargo install urx --features redis-cache
 urx example.com --cache-type redis --redis-url redis://localhost:6379
 ```
 
@@ -420,6 +581,9 @@ urx example.com --cache-type redis --redis-url redis://localhost:6379
 ```bash
 # Only return new URLs not seen before
 urx example.com --incremental
+
+# ...and post a summary to Slack only when something new turned up
+urx example.com --incremental --silent --notify "$SLACK_HOOK" --notify-format slack
 ```
 
 ### Custom TTL
@@ -501,7 +665,6 @@ urx example.com \
 ```bash
 urx target.com \
   --subs \
-  --preset only-api \
   --expand-specs \
   --max-spec-files 25 \
   --check-status \
@@ -509,6 +672,11 @@ urx target.com \
   -f jsonl \
   -o api-surface.jsonl
 ```
+
+The expanded routes are not status-checked: `--include-status 200` keeps only
+the collected URLs (the specification documents among them) that answered 200,
+and every route a document expands into is added unchecked, path templates such
+as `/orders/{id}` included.
 
 ### Parameter Discovery for Fuzzing
 ```bash
@@ -525,7 +693,8 @@ urx target.com \
   -p only-js \
   --check-status \
   --include-status 200 \
-  --extract-links \
+  -f jsonl \
+  | jq -r .url \
   | tee js-files.txt \
   | nuclei -t exposures/
 ```

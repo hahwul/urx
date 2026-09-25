@@ -17,7 +17,12 @@ Fetch URLs for a single domain:
 urx example.com
 ```
 
-This will retrieve URLs from default providers (Wayback Machine, Common Crawl, and OTX) and output them to the console.
+This retrieves URLs from the default providers (Wayback Machine, Common Crawl and
+OTX), plus the target's live `robots.txt` and `sitemap.xml` (turn those off with
+`--exclude-robots` / `--exclude-sitemap`), and prints them to the console.
+Any provider that takes an API key (vt, urlscan, zoomeye, github, bevigil) joins
+automatically when its key is set, even alongside an explicit `--providers`
+list; see [Environment Variables](/guide/environment-variables/).
 
 ### Multiple Domains
 
@@ -33,6 +38,9 @@ Read domains from a file or pipeline:
 
 ```bash
 cat domains.txt | urx
+
+# or name the file directly (alias --dL)
+urx --domain-list domains.txt
 ```
 
 ### Save Output to File
