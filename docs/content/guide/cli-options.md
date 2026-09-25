@@ -598,9 +598,10 @@ takes no value: `--no-strict` is the way to turn it off (`--strict false` would
 read `false` as a domain).
 
 Host validation needs the targets on the command line: domains piped through
-stdin are currently not validated at all (every host a provider returns is
-kept, and a path scope is ignored), so pass them positionally or with
-`--domain-list` when you want `--strict` to apply.
+stdin are currently not validated at all. Every host a provider returns is kept,
+and a path in a stdin target narrows only the CDX providers' own queries —
+nothing filters the other providers' results to it. Pass targets positionally or
+with `--domain-list` when you want `--strict` and the path scope to apply.
 
 When validation removes more than half of the URLs that survived the other
 filters and `--subs` is off, urx prints a one-line hint on stderr, even without
@@ -894,7 +895,8 @@ Segments that look like data rather than route names are left out, reusing the
 same test `--dedup-similar` groups on — a wordlist full of `4711`, UUIDs, dates
 and session tokens is worse than no wordlist, since every one of those words
 exists on exactly one target. A segment whose *stem* is an identifier goes too:
-`article-1234.html` is not a word either.
+`1234.html` is not a word either. A name with a number attached, such as
+`article-1234.html`, is kept.
 
 Case is preserved rather than normalised. Path segments are case-sensitive on
 most origins, so lower-casing `WebResource.axd` would produce a word that 404s

@@ -109,6 +109,11 @@ urx example.com --providers wayback --show-meta
 urx example.com --stats
 ```
 
+A repeat run served from the cache carries no sources or archive metadata, and
+`--stats` prints nothing. Add `--no-cache` to these, and to the `--meta-*` and
+`--archive-body` examples below, when the target was scanned within
+`--cache-ttl`.
+
 ### Wordlist
 Every path segment and parameter name the run saw, deduplicated and sorted —
 segments that look like ids, hashes or dates are left out:
@@ -667,6 +672,11 @@ urx target.com \
   -f jsonl \
   -o api-surface.jsonl
 ```
+
+The expanded routes are not status-checked: `--include-status 200` keeps only
+the collected URLs (the specification documents among them) that answered 200,
+and every route a document expands into is added unchecked, path templates such
+as `/orders/{id}` included.
 
 ### Parameter Discovery for Fuzzing
 ```bash

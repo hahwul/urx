@@ -221,7 +221,7 @@ async fn run_testers(
         // reads as "the archive had nothing", which is the opposite of true.
         if extractor.candidate_count() == 0 && !urls.is_empty() && !args.silent {
             progress_manager.note(
-                "[urx] --archive-body: none of the collected URLs carry a capture timestamp, so there is nothing to replay.                  Cached results and --files input have none; a CDX provider (wayback, cc, arquivo) run with --no-cache does.",
+                "[urx] --archive-body: none of the collected URLs carry a capture timestamp, so there is nothing to replay. Cached results and --files input have none; a CDX provider (wayback, cc, arquivo) run with --no-cache does.",
             );
         }
         body_archive = extractor.body_archive();

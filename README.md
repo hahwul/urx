@@ -758,7 +758,7 @@ Segments that look like data rather than route names are left out, reusing the
 test `--dedup-similar` groups on — a wordlist full of `4711`, UUIDs, dates and
 session tokens is worse than no wordlist, since every one of those words exists
 on exactly one target. A segment whose stem is an identifier goes too
-(`article-1234.html`). Case is preserved: path segments are case-sensitive on
+(`1234.html`; `article-1234.html` is a name and stays). Case is preserved: path segments are case-sensitive on
 most origins, so lower-casing `WebResource.axd` would produce a word that 404s
 everywhere it is tried. The union has to be taken over the full set, so the
 format is batch-only.
@@ -1268,8 +1268,9 @@ urx target.com --incremental --notify-format slack
 - The request honours `--proxy`, `--proxy-auth`, `--timeout` and `--insecure`.
   `--network-scope` does not apply: it partitions traffic aimed at the target
   and the archives, and the webhook is your own endpoint.
-- `--silent` still sends (that is the main use case); it only hides the
-  diagnostics.
+- `--silent` still sends (that is the main use case). It suppresses the URL
+  list on stdout as well as the diagnostics, so add `-o` if you also want the
+  results kept.
 
 ## Integration with Other Tools
 

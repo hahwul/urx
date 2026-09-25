@@ -202,10 +202,11 @@ bevigil_api_key = "YOUR_BEVIGIL_KEY"
 subs = true
 
 [filter]
-patterns = ["api", "graphql", "rest", "v1", "v2"]
+patterns = ["api", "graphql", "rest", "v1", "v2", "swagger"]  # "swagger" keeps /swagger.json
 
 [testing]
-expand_specs = true          # open the specs this finds; [filter] also applies to the routes they expand into
+expand_specs = true          # [filter] runs first on the collected URLs, so a spec URL must match
+                             # patterns to be opened, and again on the routes it expands into
 max_spec_files = 25
 
 [network]
