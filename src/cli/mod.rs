@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(name = "urx", version)]
+#[clap(
+    name = "urx",
+    version,
+    about = "Extracts URLs from OSINT Archives for Security Insights"
+)]
 pub struct Args {
     /// Domains to fetch URLs for
     #[clap(name = "DOMAINS")]
@@ -14,7 +18,8 @@ pub struct Args {
     pub config: Option<PathBuf>,
 
     /// Path to a separate provider config file holding only API keys
-    /// (default: $XDG_CONFIG_HOME/urx/provider-config.toml). Keeping keys in
+    /// (default: ~/.config/urx/provider-config.toml, or
+    /// %APPDATA%\urx\provider-config.toml on Windows). Keeping keys in
     /// a dedicated file makes the main config safe to share.
     /// Precedence: CLI/env keys > provider-config > main config.
     #[clap(long = "provider-config", value_parser)]
@@ -26,8 +31,8 @@ pub struct Args {
     pub files: Vec<PathBuf>,
 
     /// File(s) containing newline-separated domains to scan. Repeatable;
-    /// merged with positional DOMAINS and stdin. Blank lines and `#` comments
-    /// are ignored.
+    /// merged with positional DOMAINS (stdin is read only when neither is
+    /// given). Blank lines and `#` comments are ignored.
     #[clap(help_heading = "Input Options")]
     #[clap(long = "domain-list", visible_alias = "dL", action = clap::ArgAction::Append, value_parser)]
     pub domain_list: Vec<PathBuf>,
@@ -40,13 +45,14 @@ pub struct Args {
     /// Write one file per domain into this directory (e.g. `example.com.json`).
     /// Coexists with --output (which still writes the aggregated file) and
     /// stdout. The directory is created if missing. The extension matches
-    /// --format (`json`, `csv`, or `txt` for plain).
+    /// --format (`json`, `jsonl`, `csv`, or `txt` for plain and wordlist).
     #[clap(help_heading = "Output Options")]
     #[clap(long = "output-dir", visible_alias = "oD", value_parser)]
     pub output_dir: Option<PathBuf>,
 
     /// Output format: "plain", "json" (one array), "jsonl" (one JSON object
-    /// per line — pipeline-friendly and valid while still being written), "csv"
+    /// per line — pipeline-friendly and valid while still being written),
+    /// "csv", or "wordlist" (the path segments and parameter names seen)
     #[clap(help_heading = "Output Options")]
     #[clap(short, long, default_value = "plain", global = true)]
     pub format: String,
@@ -230,7 +236,7 @@ pub struct Args {
     /// Wayback Machine holds — every distinct version, not just today's — so
     /// paths a site once listed and has since removed are recovered. Obeys
     /// --exclude-robots / --exclude-sitemap and --from / --to. Archived
-    /// results are attributed to "robots.txt (archived)" / "sitemap.xml
+    /// results are attributed to "Robots.txt (archived)" / "Sitemap
     /// (archived)" under --show-sources and --stats.
     #[clap(long, help_heading = "Discovery Options")]
     pub archived_discovery: bool,

@@ -56,7 +56,9 @@ Found a bug or have a feature request?
 
 5. **Create a feature branch**:
    ```bash
-   git checkout -b feature/your-feature-name
+   git checkout -b features/your-feature-name
+   # or
+   git checkout -b bugfix/issue-description
    ```
 
 #### Making Changes
@@ -68,10 +70,17 @@ Found a bug or have a feature request?
    ```bash
    cargo fmt
    ```
-5. **Run linting**:
+5. **Run the same lints CI runs**:
    ```bash
-   cargo clippy -- --deny warnings
+   cargo fmt --all -- --check
+   cargo clippy --all-targets --all-features -- -D warnings
    ```
+   `--all-targets --all-features` also lints the tests and the optional
+   `redis-cache` code, which a plain `cargo clippy` skips.
+
+If you have [just](https://github.com/casey/just) installed, `just test` runs the
+tests, clippy (on code and tests), the format check and `cargo doc` in one go,
+and `just fix` formats and applies clippy's automatic fixes.
 
 #### Submitting Changes
 
@@ -83,7 +92,7 @@ Found a bug or have a feature request?
 
 2. **Push to your fork**:
    ```bash
-   git push origin feature/your-feature-name
+   git push origin features/your-feature-name
    ```
 
 3. **Create a Pull Request** on GitHub:
@@ -101,6 +110,18 @@ Documentation improvements are always welcome!
 - Improve existing guides
 
 Documentation is in the `docs/content/` directory using Markdown format with TOML front matter.
+The site is built with [Hwaro](https://github.com/hahwul/hwaro):
+
+```bash
+just docs-dependencies   # installs Hwaro (macOS, via Homebrew)
+just docs-serve          # live preview at http://localhost:3000
+```
+
+When you add or change a flag or config key, update both `README.md` and the
+pages under `docs/content/guide/`. The option blocks on
+[CLI Options](/guide/cli-options/) and in the README are copied by hand from
+`urx --help`, so diff them against the built binary's output. New config keys
+also belong in `example/config.toml` and [Configuration](/guide/configuration/).
 
 ## Development Guidelines
 
@@ -136,15 +157,25 @@ Documentation is in the `docs/content/` directory using Markdown format with TOM
 
 ```
 urx/
-├── src/              # Source code
-│   ├── cli/         # CLI argument parsing
-│   ├── providers/   # URL data providers
-│   ├── filters/     # URL filtering logic
-│   ├── testers/     # HTTP testing
-│   └── network/     # Network configuration
-├── docs/            # Documentation (Hwaro site)
-├── example/         # Example configurations
-└── tests/           # Integration tests
+├── src/                # Source code
+│   ├── main.rs         # Entry point
+│   ├── app/            # Run orchestration; catalog.rs is the provider registry
+│   ├── cli/            # CLI argument parsing
+│   ├── config/         # TOML config and provider-config loading
+│   ├── providers/      # URL data providers
+│   ├── filters/        # URL filtering, presets, scope files
+│   ├── testers/        # Status checks, link / JS / spec extraction
+│   ├── tester_manager/ # Runs the testers over collected URLs
+│   ├── readers/        # --files readers (WARC, URLTeam, text)
+│   ├── cache/          # SQLite / Redis cache and the `urx cache` subcommand
+│   ├── output/         # Output formats and --stream
+│   ├── notify/         # Webhook notifications
+│   └── network/        # HTTP client, proxy, headers, rate limiting
+├── tests/              # Integration tests
+├── docs/               # Documentation (Hwaro site)
+├── example/            # Example configurations
+├── aur/                # Arch Linux package
+└── Dockerfile          # Container image
 ```
 
 ## Code of Conduct

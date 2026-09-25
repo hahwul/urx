@@ -117,12 +117,12 @@ Templates use Jinja2 syntax. Key variables:
 
 ### Template Files
 
-- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. Loads the extra `static/css/landing.css` and holds the landing footer plus motion JS.
+- **landing.html** — Full-width landing template (no docs sidebar). The home page (`content/index.md`) opts in via `template = "landing.html"` in its front matter. Loads the extra `static/css/landing.css`.
 - **page.html** / **section.html** — Docs templates. Both pull in the shared nav and sidebar partials.
-- **_docsnav.html** — Shared top navigation (brand, links, theme toggle, GitHub, mobile menu button).
-- **_sidebar.html** — Shared docs sidebar. Edit this ONE file to change sidebar links.
-- **header.html** — `<head>`: meta, fonts (Space Grotesk / Inter / JetBrains Mono), no-flash theme script, CSS.
-- **footer.html** — Docs footer plus JS for active-link highlighting, the theme toggle, and scroll-reveal.
+- **partials/nav.html** — Shared top navigation (brand, links, search, theme toggle, GitHub, mobile menu button).
+- **partials/sidebar.html** — Shared docs sidebar, derived from `site.sections`; there is no hand-kept link list to edit.
+- **header.html** — `<head>`: meta, self-hosted fonts (Space Grotesk / JetBrains Mono), no-flash theme script, CSS.
+- **footer.html** — Footer plus the deferred script tags: `theme.js` and `search.js` everywhere, `home.js` on the landing page, `toc.js` / `docs.js` / `codecopy.js` on docs pages.
 
 ## Styling
 

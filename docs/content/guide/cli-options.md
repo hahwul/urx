@@ -14,13 +14,14 @@ Usage: urx [OPTIONS] [DOMAINS]... [COMMAND]
 
 Commands:
   cache  Inspect and maintain the URL cache (stats, list, prune, drop, clear)
+  help   Print this message or the help of the given subcommand(s)
 
 Arguments:
   [DOMAINS]...  Domains to fetch URLs for
 
 Options:
   -c, --config <CONFIG>           Config file to load
-      --provider-config <PATH>    Separate provider config holding only API keys (default: $XDG_CONFIG_HOME/urx/provider-config.toml)
+      --provider-config <PATH>    Separate provider config holding only API keys (default: ~/.config/urx/provider-config.toml; %APPDATA%\urx\ on Windows)
       --completions <SHELL>       Print a shell completion script (bash, zsh, fish, powershell, elvish) to stdout and exit
       --manpage                   Print the roff man page to stdout and exit
   -h, --help             Print help
@@ -28,13 +29,13 @@ Options:
 
 Input Options:
       --files <FILES>...     Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
-      --domain-list <PATH>   File of newline-separated domains to scan (repeatable; merged with positional DOMAINS and stdin; `#` comments allowed)
+      --domain-list <PATH>   File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when neither is given; `#` comments allowed) [alias: --dL]
 
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
-      --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout.
+      --output-dir <PATH>        Write one file per domain into this directory; extension matches --format. Coexists with --output / stdout. [alias: --oD]
   -f, --format <FORMAT>          Output format: "plain", "json", "jsonl", "csv", "wordlist" [default: plain]
-      --stream                   Write URLs as providers report them (unsorted, bypasses cache)
+      --stream                   Write URLs as providers report them (plain/jsonl/csv only; unsorted; bypasses cache)
       --merge-endpoint           Merge endpoints with the same path and merge URL parameters
       --normalize-url            Normalize URLs for better deduplication
       --dedup-similar            Collapse URLs differing only in ids, hashes, dates, or query values
@@ -49,7 +50,7 @@ Provider Options:
   --list-providers                       List every supported provider then exit
   --subs                                 Include subdomains when searching
   --cc-index <CC_INDEX>                  Common Crawl index(es), comma-separated for parallel queries; `latest` auto-resolves [default: latest]
-  --cdx-endpoint <URL>                   Query an additional CDX index server (pywb / OutbackCDX / classic) by its API URL; repeatable; id `cdx:<host>`
+  --cdx-endpoint <URL>                   Query an additional CDX index server (pywb / OutbackCDX / classic) by its API URL; repeatable; id `cdx:<host>` (`cdx:<host>:<port>` with a port)
   --cdx-dialect <DIALECT>                Dialect of the --cdx-endpoint servers: `pywb` or `classic` (unset: probed once, pywb fallback)
   --from <DATE>                          Restrict CDX providers to captures >= DATE (YYYY/YYYYMM/YYYYMMDD/YYYYMMDDhhmmss)
   --to <DATE>                            Restrict CDX providers to captures <= DATE (same format as --from)
@@ -114,16 +115,16 @@ Network Options:
   --user-agent <STRING>          User-Agent for requests to the target, overriding --random-agent
   --timeout <TIMEOUT>            Request timeout in seconds [default: 120]
   --retries <RETRIES>            Retries for failed requests [default: 2]
-  --parallel <PARALLEL>          Max domains fetched concurrently per provider (rate-limit shared) [default: 5]
+  --parallel <PARALLEL>          Max domains fetched concurrently per provider, and concurrent URL tests (rate-limit shared) [default: 5]
   --rate-limit <RATE_LIMIT>      Requests per second
   --rate-limit-by <PAIRS>        Per-provider rate overrides (e.g. `vt=1,wayback=10`); falls back to --rate-limit for unlisted providers
   --max-time <SECONDS>           Global ceiling on provider enumeration time in seconds; in-flight fetches are aborted at deadline (0 = unlimited) [default: 0]
 
 Testing Options:
-  --check-status                     Check HTTP status code of collected URLs
+  --check-status                     Check HTTP status code of collected URLs [alias: --cs]
   --check-title                      Also record each response's HTML <title>; implies --check-status
-  --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x)
-  --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x)
+  --include-status <INCLUDE_STATUS>  Include specific status codes (e.g., 200,30x); implies the status check [alias: --is]
+  --exclude-status <EXCLUDE_STATUS>  Exclude specific status codes (e.g., 404,50x); implies the status check [alias: --es]
   --extract-links                    Extract additional links from collected URLs (see "Link Extraction" below)
   --extract-js-endpoints             Fetch collected JavaScript and extract the endpoints in its string literals; with --archive-body also mines archived scripts (see "JavaScript Endpoint Extraction" below)
   --max-js-files <N>                 Maximum number of files --extract-js-endpoints will fetch (0 = unlimited) [default: 500]
@@ -184,7 +185,7 @@ urx target.com --incremental --notify https://n8n.example/hook --notify https://
 ```json
 {
   "tool": "urx",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "domains": ["example.com"],
   "incremental": true,
   "url_count": 12,
@@ -201,11 +202,13 @@ urx target.com --incremental --notify https://n8n.example/hook --notify https://
 `providers` carries the same numbers `--stats` prints. `sample` holds at most
 20 emitted URLs, in output order; `sample_truncated` is `true` when the run
 found more. Under `--stream` the URLs were written as they arrived, so the
-payload carries the count and an empty sample.
+payload carries the count and an empty sample (`sample_truncated` is then `true`
+whenever any URL was emitted).
 
 **`slack`** sends `{"text": "..."}`, **`discord`** sends `{"content": "..."}`.
 Both carry a short message: a header line with the count, the targets and the
-elapsed time, one line of provider totals, then the URL sample. Discord caps a
+elapsed time, one line of provider totals, then the URL sample, followed by
+`… N more not shown` when the run found more URLs than the sample holds. Discord caps a
 message at 2000 characters and Slack messages become unreadable past 4000, so
 the text is cut at that limit on a line boundary and ends with
 `[truncated: N lines cut to fit the message limit]`. A URL is never sliced in
@@ -222,13 +225,15 @@ idempotent, and a retry after a slow-but-delivered request posts twice.
 
 ### The URL is a secret
 
-A Slack or Discord webhook URL *is* the credential. urx prints only its scheme
-and host (`https://hooks.slack.com`) anywhere it mentions the destination —
+A Slack or Discord webhook URL *is* the credential. urx prints only its scheme,
+host and any non-default port (`https://hooks.slack.com`) anywhere it mentions the destination —
 verbose output, warnings, error text — and the payload never contains it. To
 keep it out of a config you check in, use the `URX_NOTIFY_URL` environment
 variable or `notify_url` in the provider-config file; `[notify].url` in the
 main config works as well. Precedence is CLI/env > provider-config > main
-config, the same order the API keys follow.
+config, the same order the API keys follow. The `[notify]` section also takes
+`on` and `format`, the config-file equivalents of `--notify-on` and
+`--notify-format`.
 
 ### Network settings
 
@@ -261,7 +266,7 @@ When the same URL arrives from several captures or several archives, the fields
 merge: `first_seen` is the oldest timestamp anyone reported, `last_seen` the
 newest, and `mime`/`archive_status` come from the most recent capture that had
 them. Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`,
-`github`, `robots`, `sitemap`) and `--files` input report the URL alone; no
+`github`, `bevigil`, `robots`, `sitemap`) and `--files` input report the URL alone; no
 values are invented for them, and a domain served from cache has none either
 (the cache stores URLs only).
 
@@ -270,7 +275,7 @@ Per format:
 * `json` / `jsonl` — a key per field, present only when it has a value.
 * `csv` — a column per field, added only when at least one row has a value.
 * `plain` — unchanged by default (one bare URL per line, for piping); pass
-  `--show-meta` to append `first_seen=… last_seen=… mime=…` after the URL.
+  `--show-meta` to append ` [first_seen=… last_seen=… mime=…]` after the URL.
 
 `--show-meta` is incompatible with `--stream`, which prints a URL on first
 sighting — before the captures that would widen its `first_seen`/`last_seen`
@@ -315,8 +320,8 @@ Exposure follows the same rule the archive metadata does:
   established consumer sees its columns unmoved. A title is chosen by the host
   being checked, so it goes through the same spreadsheet-formula escaping the
   URL does.
-* `plain` — one bare URL per line unless `--show-meta` asks otherwise, at which
-  point the fields are appended after the URL. The title is quoted, since it is
+* `plain` — the URL and its ` [status]` per line; `--show-meta` appends the
+  extra fields in a further ` […]`. The title is quoted, since it is
   the one value that routinely contains spaces.
 
 ```bash
@@ -343,9 +348,14 @@ urx example.com --check-status --is 30x -f jsonl | jq -r '.url + " -> " + .locat
 | ZoomEye | `zoomeye` | Yes | `URX_ZOOMEYE_API_KEY` |
 | GitHub Code Search | `github` | Yes | `URX_GITHUB_API_KEY` |
 | BeVigil | `bevigil` | Yes | `URX_BEVIGIL_API_KEY` |
+| robots.txt discovery | `robots` | No | - |
+| sitemap.xml discovery | `sitemap` | No | - |
 | Custom CDX server | `cdx:<host>` (via `--cdx-endpoint URL`) | No | - |
 
-Default providers: `wayback,cc,otx`. Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`). `bevigil` returns URLs that [BeVigil](https://bevigil.com/osint-api) extracted from unpacked Android apps — a source no web archive covers — and requires an API key (`--bevigil-api-key` or `URX_BEVIGIL_API_KEY`).
+Default providers: `wayback,cc,otx`, plus the `robots` and `sitemap` probes of
+the target, which request its live `robots.txt` and `sitemap.xml` unless you pass
+`--exclude-robots`, `--exclude-sitemap` or `--exclude-providers robots,sitemap`
+(`--all-providers` leaves them to those same switches). Providers requiring API keys are automatically enabled when their keys are provided. `arquivo` (the Portuguese web archive) is keyless but opt-in — add it with `--providers` or enable everything with `--all-providers`. URLScan works anonymously without a key (rate-limited to ~30 requests/min per IP); a key only raises those limits and enables rotation. `github` searches GitHub Code Search and requires a personal access token (`--github-api-key` or `URX_GITHUB_API_KEY`). `bevigil` returns URLs that [BeVigil](https://bevigil.com/osint-api) extracted from unpacked Android apps — a source no web archive covers — and requires an API key (`--bevigil-api-key` or `URX_BEVIGIL_API_KEY`).
 
 Run `urx --list-providers` to print the full catalog (id, API-key requirement, and a one-line summary) directly from the binary.
 
@@ -359,7 +369,8 @@ urx example.is --cdx-endpoint https://vefsafn.is/cdx
 urx example.is --cdx-endpoint https://vefsafn.is/cdx --providers cdx:vefsafn.is --rate-limit-by cdx:vefsafn.is=1
 ```
 
-Each endpoint becomes a provider with id `cdx:<host>`, enabled by being named.
+Each endpoint becomes a provider with id `cdx:<host>` (`cdx:<host>:<port>` when
+the URL names a port), enabled by being named.
 It honours `--subs`, `--from`/`--to`, the `--archive-*` filters, pagination and
 rate limiting exactly like `wayback`/`cc`/`arquivo`, and reports capture
 metadata. `--cdx-dialect classic|pywb` fixes the server's dialect; unset, urx
@@ -411,13 +422,13 @@ preset. Singular spellings (e.g. `no-image`, `only-font`) are accepted too.
 
 | Preset | Description |
 |--------|-------------|
-| `no-resources` | Exclude resource files (images, CSS, fonts, documents, videos, audio) |
+| `no-resources` | Exclude resource files (JavaScript and its relatives such as `.json` / `.map`, stylesheets, images, fonts, documents, videos, audio) |
 | `no-images` | Exclude image files |
 | `no-fonts` | Exclude font files |
 | `no-documents` | Exclude document files |
 | `no-videos` | Exclude video files |
 | `no-audio` | Exclude audio files |
-| `only-js` | Only JavaScript files |
+| `only-js` | Only JavaScript and related sources (`js`, `mjs`, `cjs`, `jsx`, `ts`, `tsx`, `vue`, `svelte`, `json`, `map`, …) |
 | `only-style` | Only stylesheet files |
 | `only-fonts` | Only font files |
 | `only-documents` | Only document files |
@@ -665,8 +676,10 @@ runs over the same data produce identical output. `--verbose` reports how many
 URLs were collapsed.
 
 `--dedup-similar`, `--normalize-url`, and `--merge-endpoint` are independent and
-can be combined; they run in that order of increasing aggressiveness. All three
-need the complete result set, so none of them can be used with `--stream`.
+can be combined; they run in the order `--normalize-url` → `--merge-endpoint` →
+`--dedup-similar`. `--merge-endpoint` and `--dedup-similar` need the complete
+result set and cannot be used with `--stream`; `--normalize-url` works on one URL
+at a time and can.
 
 ```bash
 urx example.com --dedup-similar --verbose
@@ -810,6 +823,11 @@ session cookie would mail a credential to a service that keeps what it
 receives, for no gain. Archive queries keep urx's own User-Agent, which
 `--random-agent` still rotates.
 
+The headers also follow `--network-scope`: under `--network-scope providers`
+the testers get none (an authenticated `--check-status` would then go out
+anonymous), and under `--network-scope testers` the `robots` and `sitemap`
+providers get none.
+
 They can also be set in the config file:
 
 ```toml
@@ -876,7 +894,7 @@ literals.
 certainly not script (images, fonts, CSS, archives, `.json`, `.map`, ...).
 Everything else is requested and classified by `Content-Type`: JavaScript
 types are scanned whole; HTML is scanned for its inline `<script>` blocks
-only; a `.js`/`.mjs`/`.jsx`/`.ts` URL served as `text/plain` or
+only; a `.js`/`.mjs`/`.cjs`/`.jsx`/`.ts`/`.tsx` URL served as `text/plain` or
 `application/octet-stream` is still treated as script. Anything else is
 discarded unread.
 
@@ -1115,12 +1133,14 @@ than one response per URL would.
 
 An unwritable directory stops the run at start-up rather than after an hour of
 replaying, and a failure on an individual file is reported without discarding
-the links the run is collecting.
+the links the run is collecting. `--archive-body-dir` without `--archive-body`
+(including an `archive_body_dir` set only in the config file) is rejected at
+start-up too.
 
 ### Details
 
 - Only URLs with a capture timestamp qualify. The CDX providers (`wayback`,
-  `cc`, `arquivo`) supply one; `--files` input, non-CDX providers, and cached
+  `cc`, `arquivo`, and any `--cdx-endpoint`) supply one; `--files` input, non-CDX providers, and cached
   results (the cache stores URLs only) have none. urx says so when there is
   nothing to replay; pass `--no-cache` to get fresh captures.
 - The newest capture of each URL is replayed, and the digest of *that* capture

@@ -7,7 +7,7 @@ template = "landing.html"
 <section class="hero">
   <div class="wrap">
     <h1>Extract every <span class="hot">URL</span> a domain ever exposed.</h1>
-    <p class="hero-sub">A fast Rust CLI that queries nine OSINT archives in parallel, then filters and validates what comes back.</p>
+    <p class="hero-sub">A fast Rust CLI that queries up to nine OSINT sources in parallel, then filters and validates what comes back.</p>
     <div class="hero-cta">
       <a href="/getting-started/" class="btn btn-primary">
         Get started
@@ -29,15 +29,14 @@ Domains         <span class="bar">[====================]</span> 1/1 processed
 Wayback Machine <span class="bar">[====================]</span> <span class="done">done</span>
 OTX             <span class="bar">[====================]</span> <span class="done">done</span>
 Filtering       <span class="bar">[====================]</span> 199 URLs
-Testing URLs    <span class="bar">[====================]</span> 199/199 complete
+Testing         <span class="bar">[====================]</span> 199/199 complete
 
 https://dalfox.hahwul.com/                         <span class="ok">[200 OK]</span>
 https://dalfox.hahwul.com/.well-known/security.txt <span class="ok">[200 OK]</span>
 https://dalfox.hahwul.com/llms.txt                 <span class="ok">[200 OK]</span>
 https://dalfox.hahwul.com/sitemap.xml              <span class="ok">[200 OK]</span>
 https://dalfox.hahwul.com/advanced/config/         <span class="gone">[404 Not Found]</span>
-https://dalfox.hahwul.com/admin                    <span class="gone">[404 Not Found]</span>
-<span class="muted">199 URLs &#183; 61 live &#183; 138 gone</span></pre></div>
+https://dalfox.hahwul.com/admin                    <span class="gone">[404 Not Found]</span></pre></div>
     </div>
   </div>
 </section>
@@ -59,13 +58,13 @@ https://dalfox.hahwul.com/admin                    <span class="gone">[404 Not F
       <div class="provider">
         <span class="p-name">Common Crawl</span>
         <span class="p-flag">cc</span>
-        <span class="p-desc">The monthly Common Crawl URL index.</span>
+        <span class="p-desc">The monthly Common Crawl URL index, enabled by default.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
         <span class="p-name">OTX</span>
         <span class="p-flag">otx</span>
-        <span class="p-desc">AlienVault Open Threat Exchange passive DNS and URLs.</span>
+        <span class="p-desc">AlienVault Open Threat Exchange passive DNS and URLs, enabled by default.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
@@ -143,12 +142,12 @@ https://target.com/v1/users.js</span></pre>
       <div class="cell">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5M14 3l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 13h8M8 17h5"/></svg></span>
         <h3>Flexible output</h3>
-        <p>Plain text, JSON, CSV or a ready-made wordlist, streamed to the console, a file, or the next tool in the pipe.</p>
+        <p>Plain text, JSON, JSON Lines, CSV or a ready-made wordlist, written to the console, a file, or streamed into the next tool in the pipe.</p>
       </div>
       <div class="cell cell-wide">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span>
         <h3>Caching and incremental scanning</h3>
-        <p>A local SQLite or remote Redis cache skips domains you already covered, and incremental mode returns only what has appeared since the last run.</p>
+        <p>A local SQLite cache (or a shared Redis one, in builds with the <code>redis-cache</code> feature) reuses recent scans, and incremental mode returns only what has appeared since the last run.</p>
       </div>
     </div>
   </div>
@@ -180,7 +179,7 @@ https://target.com/v1/users.js</span></pre>
       <div class="stage">
         <span class="s-flag">-f json &#183; -o</span>
         <h3>Output</h3>
-        <p>Write text, JSON, CSV or a wordlist to a file, or pipe it straight into the next tool.</p>
+        <p>Write text, JSON, JSON Lines, CSV or a wordlist to a file, or pipe it straight into the next tool.</p>
       </div>
     </div>
   </div>
@@ -190,7 +189,7 @@ https://target.com/v1/users.js</span></pre>
   <div class="wrap">
     <div class="install rv">
       <h2>Install urx and start collecting.</h2>
-      <p>Available on Cargo, Homebrew and as a container image. No account, no key to get going.</p>
+      <p>Available on Cargo, Homebrew, the AUR, as prebuilt release binaries and as a container image. No account, no key to get going.</p>
       <div class="install-cmds">
         <div class="cmd"><span class="prompt">$</span> cargo install urx <span class="via">Cargo</span></div>
         <div class="cmd"><span class="prompt">$</span> brew install urx <span class="via">Homebrew</span></div>

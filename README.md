@@ -138,7 +138,7 @@ Arguments:
 
 Options:
   -c, --config <CONFIG>           Config file to load
-      --provider-config <PATH>    Separate provider config file holding only API keys (default: $XDG_CONFIG_HOME/urx/provider-config.toml). CLI/env > provider-config > main config.
+      --provider-config <PATH>    Separate provider config file holding only API keys (default: ~/.config/urx/provider-config.toml; %APPDATA%\urx\ on Windows). CLI/env > provider-config > main config.
       --completions <SHELL>       Print a shell completion script (bash, zsh, fish, powershell, elvish) to stdout and exit
       --manpage                   Print the roff man page to stdout and exit
   -h, --help             Print help
@@ -146,7 +146,7 @@ Options:
 
 Input Options:
       --files <FILES>...        Read URLs directly from files (supports WARC, URLTeam compressed, and text files)
-      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS and stdin; `#` comments allowed)
+      --domain-list <PATH>      File of newline-separated domains to scan (repeatable; merged with positional DOMAINS; stdin is read only when neither is given; `#` comments allowed)
 
 Output Options:
   -o, --output <OUTPUT>          Output file to write results
@@ -451,8 +451,10 @@ urx example.com --extract-links -e js
 # Read the collected JavaScript and pull out the API paths it calls
 urx example.com --extract-js-endpoints --patterns api
 
-# Chain them: collect the site's bundles, then mine those for endpoints
-urx example.com --extract-links --extract-js-endpoints --max-js-files 100
+# Chain them: the extractors run over the collected URLs in one pass, so mine
+# the bundles --extract-links discovers in a second run
+urx example.com --extract-links -e js -o bundles.txt
+urx --files bundles.txt --extract-js-endpoints --max-js-files 100
 
 # Mine the links inside the *archived* bodies instead — dead pages included.
 # One request per distinct body; the limit bounds bodies, not URLs
@@ -1183,7 +1185,8 @@ redacted before it is printed).
 urx target.com --incremental --silent --notify https://hooks.slack.com/services/... --notify-format slack
 
 # ...or hand the new URLs to an external notifier
-urx target.com --incremental --silent | notify-tool
+# (--silent would suppress stdout too; --no-progress only hides the progress bar)
+urx target.com --incremental --no-progress | notify-tool
 
 # Efficient domain lists processing
 cat domains.txt | urx --incremental --cache-ttl 3600 > new_urls.txt

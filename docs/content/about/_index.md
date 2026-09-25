@@ -1,8 +1,8 @@
 +++
 title = "About"
-description = "What urx is, how it is licensed, and how to contribute."
+description = "How to report issues and contribute to urx."
 weight = 3
 sort_by = "weight"
 +++
 
-Version history, contributing guidelines, and project information.
+Contributing guidelines and project information. Release notes live in [CHANGELOG.md](https://github.com/hahwul/urx/blob/main/CHANGELOG.md).

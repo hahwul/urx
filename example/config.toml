@@ -74,13 +74,13 @@ max_length = 500                        # Maximum URL length to include
 # Network options
 [network]
 network_scope = "all"                   # Options: all, providers, testers, providers,testers
-proxy = "http://proxy.example.com:8080" # HTTP proxy
-proxy_auth = "username:password"        # Proxy authentication
+# proxy = "http://proxy.example.com:8080" # HTTP proxy
+# proxy_auth = "username:password"        # Proxy authentication
 insecure = false                        # Skip SSL certificate verification
 random_agent = true                     # Use random User-Agent
 timeout = 30                            # Request timeout in seconds
 retries = 3                             # Number of retries for failed requests
-parallel = 5                            # Maximum number of parallel requests
+parallel = 5                            # Domains fetched concurrently per provider, and concurrent URL tests
 rate_limit = 10                         # Rate limit (requests per second)
 
 # Testing options
@@ -100,7 +100,7 @@ max_spec_files = 50             # Cap on specification documents fetched (0 = un
 [cache]
 incremental = false             # Enable incremental scanning mode
 cache_type = "sqlite"           # Cache backend: sqlite or redis
-cache_path = "~/.urx/cache.db"  # Path for SQLite cache database
+# cache_path = "/home/me/.urx/cache.db"  # SQLite cache database (default: $HOME/.urx/cache.db; `~` is not expanded)
 redis_url = "redis://localhost:6379"  # Redis connection URL (for redis cache_type)
 cache_ttl = 86400              # Cache time-to-live in seconds (24 hours)
 no_cache = false               # Disable caching entirely

@@ -1,6 +1,6 @@
 +++
 title = "Installation"
-description = "Install urx with Cargo, Homebrew, Docker or from source, then add shell completions and the man page."
+description = "Install urx with Cargo, Homebrew, the AUR, a release binary, Docker or from source, then add shell completions and the man page."
 toc = true
 weight = 1
 +++
@@ -23,7 +23,35 @@ For macOS and Linux users with Homebrew:
 
 ```bash
 brew install urx
+
+# or from the project's own tap
+brew install hahwul/urx/urx
 ```
+
+### From the AUR
+
+For Arch Linux, with an AUR helper:
+
+```bash
+yay -S urx
+# or
+paru -S urx
+```
+
+### From GitHub Releases
+
+Every [release](https://github.com/hahwul/urx/releases/latest) ships prebuilt
+binaries, each with a `.sha256` checksum beside it:
+
+| Platform | Asset |
+|----------|-------|
+| Linux x86_64 | `urx-vX.Y.Z-linux-x86_64.tar.gz` |
+| Linux aarch64 | `urx-vX.Y.Z-linux-aarch64.tar.gz` |
+| macOS Intel | `urx-vX.Y.Z-macos-x86_64.tar.gz` |
+| macOS Apple Silicon | `urx-vX.Y.Z-macos-aarch64.tar.gz` |
+| Windows x86_64 | `urx-vX.Y.Z-windows-x86_64.zip` |
+
+Unpack the archive and put the `urx` binary somewhere on your `$PATH`.
 
 ### From Source
 
@@ -37,6 +65,18 @@ cargo build --release
 
 Binary location: `target/release/urx`
 
+### Optional: Redis Cache Support
+
+The Redis cache backend (`--cache-type redis`) is an optional Cargo feature.
+None of the packaged builds above (crates.io, Homebrew, AUR, release binaries,
+Docker) include it. Build it in yourself:
+
+```bash
+cargo install urx --features redis-cache
+# or, from a source checkout
+cargo build --release --features redis-cache
+```
+
 ### From Docker
 
 Pull the pre-built Docker image:
@@ -45,11 +85,18 @@ Pull the pre-built Docker image:
 docker pull ghcr.io/hahwul/urx:latest
 ```
 
-Run with Docker:
+Run with Docker. The image has no entrypoint, so name the binary (`./urx`)
+before its arguments:
 
 ```bash
-docker run --rm ghcr.io/hahwul/urx:latest example.com
+docker run --rm ghcr.io/hahwul/urx:latest ./urx example.com
+
+# piping domains in needs -i
+cat domains.txt | docker run --rm -i ghcr.io/hahwul/urx:latest ./urx
 ```
+
+Besides `latest`, each release is tagged with its version (e.g. `0.11.0`), and
+`main` tracks the development branch.
 
 ## Verifying Installation
 
@@ -78,6 +125,7 @@ urx --completions fish > ~/.config/fish/completions/urx.fish
 
 # man page
 urx --manpage > ~/.local/share/man/man1/urx.1
+man urx
 ```
 
 `powershell` and `elvish` are supported too. See
