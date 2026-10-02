@@ -9,6 +9,7 @@ mod rate_limiter;
 mod settings;
 pub mod user_agent;
 
+pub use client::NetConfig;
 pub use headers::CustomHeaders;
 pub use rate_limiter::RateLimiter;
 pub use settings::{NetworkScope, NetworkSettings};

@@ -13,22 +13,20 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::cli::Args;
+use crate::output::UrlData;
 use crate::providers::{Provider, UrlRecord};
 use crate::testers::Tester;
 
 /// Strip ANSI escapes so layout assertions hold regardless of the ambient
-/// colour state — cargo runs tests in parallel and both `colored` and
-/// `console` key off process-global toggles.
+/// colour state — cargo runs tests in parallel and `console` keys off
+/// process-global toggles.
 pub fn plain(s: &str) -> String {
     console::strip_ansi_codes(s).to_string()
 }
 
 /// Serializes tests that mutate environment variables. `std::env::set_var` is
 /// process-wide, so without this the parallel test threads race each other.
-pub fn env_mutex() -> &'static Mutex<()> {
-    static INSTANCE: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
-    INSTANCE.get_or_init(|| Mutex::new(()))
-}
+pub static ENV: Mutex<()> = Mutex::new(());
 
 /// Save the current values of `vars`, clear them, and restore them on drop.
 ///
@@ -89,7 +87,7 @@ pub fn build_test_args() -> Args {
         config: None,
         files: vec![],
         output: None,
-        format: "plain".to_string(),
+        format: crate::output::Format::Plain,
         merge_endpoint: false,
         normalize_url: false,
         dedup_similar: false,
@@ -118,7 +116,7 @@ pub fn build_test_args() -> Args {
         max_length: None,
         strict: false,
         no_strict: false,
-        network_scope: "all".to_string(),
+        network_scope: crate::network::NetworkScope::All,
         proxy: None,
         proxy_auth: None,
         insecure: false,
@@ -128,7 +126,7 @@ pub fn build_test_args() -> Args {
         user_agent: None,
         timeout: 30,
         retries: 3,
-        parallel: Some(5),
+        parallel: 5,
         rate_limit: None,
         check_status: false,
         include_status: vec![],
@@ -146,7 +144,7 @@ pub fn build_test_args() -> Args {
         archived_discovery: false,
         archived_discovery_limit: 50,
         incremental: false,
-        cache_type: "sqlite".to_string(),
+        cache_type: crate::cache::CacheType::Sqlite,
         cache_path: None,
         redis_url: None,
         cache_ttl: 86400,
@@ -260,13 +258,7 @@ impl Provider for MockProvider {
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
-    fn with_proxy(&mut self, _proxy: Option<String>) {}
-    fn with_proxy_auth(&mut self, _auth: Option<String>) {}
-    fn with_timeout(&mut self, _seconds: u64) {}
-    fn with_retries(&mut self, _count: u32) {}
-    fn with_random_agent(&mut self, _enabled: bool) {}
-    fn with_insecure(&mut self, _enabled: bool) {}
-    fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    fn with_network(&mut self, _net: crate::network::NetConfig) {}
 }
 
 /// A [`Tester`] that echoes a fixed result list for every URL.
@@ -289,15 +281,8 @@ impl Tester for MockStatusChecker {
     fn test_url<'a>(
         &'a self,
         _url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
-        let results = self.results.clone();
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+        let results = self.results.iter().cloned().map(UrlData::new).collect();
         Box::pin(async move { Ok(results) })
     }
-
-    fn with_timeout(&mut self, _seconds: u64) {}
-    fn with_retries(&mut self, _count: u32) {}
-    fn with_random_agent(&mut self, _enabled: bool) {}
-    fn with_insecure(&mut self, _enabled: bool) {}
-    fn with_proxy(&mut self, _proxy: Option<String>) {}
-    fn with_proxy_auth(&mut self, _auth: Option<String>) {}
 }

@@ -1,51 +1,40 @@
-use super::FileReader;
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::path::Path;
 
-/// Reader for plain text files containing URLs (one per line)
-pub struct TextFileReader;
+/// Read a plain text file containing URLs (one per line).
+pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
+    let file = File::open(file_path)
+        .with_context(|| format!("Failed to open text file: {}", file_path.display()))?;
 
-impl TextFileReader {
-    pub fn new() -> Self {
-        Self
-    }
-}
+    // Bounded like every other reader: `--files` takes whatever it is
+    // pointed at, and a plain-text list is the densest possible source of
+    // URL lines.
+    let (urls, url_capped, byte_capped, _, line_capped) =
+        super::collect_capped(file, super::MAX_FILE_URLS, super::MAX_FILE_BYTES, |line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            // Basic URL validation - must start with http or https
+            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        })
+        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
-impl FileReader for TextFileReader {
-    fn read_urls(&self, file_path: &Path) -> Result<Vec<String>> {
-        let file = File::open(file_path)
-            .with_context(|| format!("Failed to open text file: {}", file_path.display()))?;
+    super::warn_if_truncated(
+        file_path,
+        url_capped,
+        byte_capped,
+        line_capped,
+        super::MAX_FILE_URLS,
+        super::MAX_FILE_BYTES,
+    );
 
-        // Bounded like every other reader: `--files` takes whatever it is
-        // pointed at, and a plain-text list is the densest possible source of
-        // URL lines.
-        let (urls, url_capped, byte_capped, _, line_capped) =
-            super::collect_capped(file, super::MAX_FILE_URLS, super::MAX_FILE_BYTES, |line| {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
-                    return None;
-                }
-                // Basic URL validation - must start with http or https
-                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-                    Some(trimmed.to_string())
-                } else {
-                    None
-                }
-            })
-            .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
-
-        super::warn_if_truncated(
-            file_path,
-            url_capped,
-            byte_capped,
-            line_capped,
-            super::MAX_FILE_URLS,
-            super::MAX_FILE_BYTES,
-        );
-
-        Ok(urls)
-    }
+    Ok(urls)
 }
 
 #[cfg(test)]
@@ -65,8 +54,7 @@ mod tests {
         writeln!(temp_file, "not-a-url")?; // Invalid URL
         temp_file.flush()?;
 
-        let reader = TextFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
@@ -86,7 +74,7 @@ mod tests {
         writeln!(temp_file, "https://example.com/second")?;
         temp_file.flush()?;
 
-        let urls = TextFileReader::new().read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
         assert_eq!(
             urls,
             vec!["https://example.com/first", "https://example.com/second"]
@@ -102,7 +90,7 @@ mod tests {
         temp_file.write_all(b"\nhttps://example.net/complete\n")?;
         temp_file.flush()?;
 
-        let urls = TextFileReader::new().read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
         assert_eq!(urls, vec!["https://example.net/complete"]);
         Ok(())
     }
@@ -111,8 +99,7 @@ mod tests {
     fn test_read_urls_from_empty_file() -> Result<()> {
         let temp_file = NamedTempFile::new()?;
 
-        let reader = TextFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert!(urls.is_empty());
 

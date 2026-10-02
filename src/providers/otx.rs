@@ -6,9 +6,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::{Provider, UrlRecord};
-use crate::network::client::{read_body_capped, HttpClientConfig, MAX_RESPONSE_BYTES};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::send_with_retry;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 // Helper function to deserialize null as default value for i32
@@ -23,15 +22,8 @@ where
 #[derive(Clone)]
 pub struct OTXProvider {
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
+    net: NetConfig,
     base_url: String,
-    #[cfg(test)]
     page_limit: u32,
 }
 
@@ -76,32 +68,9 @@ impl OTXProvider {
     pub fn new() -> Self {
         OTXProvider {
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
+            net: NetConfig::default(),
             base_url: "https://otx.alienvault.com".to_string(),
-            #[cfg(test)]
             page_limit: OTX_MAX_PAGES,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_base_url(&mut self, url: String) {
-        self.base_url = url;
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
         }
     }
 
@@ -158,6 +127,36 @@ fn preview_text(text: &str) -> String {
     format!("{}... (truncated)", &text[..end])
 }
 
+/// Parse an OTX page, falling back to just its `url_list` (and the paging
+/// fields beside it) when the full shape does not match.
+fn parse_otx(text: &str) -> Result<OTXResult> {
+    if let Ok(otx_result) = serde_json::from_str::<OTXResult>(text) {
+        return Ok(otx_result);
+    }
+    let preview = preview_text(text);
+    let json_value = serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
+        anyhow::anyhow!("Failed to parse OTX response as JSON: {e}. Response preview: {preview}")
+    })?;
+    let url_list = json_value.get("url_list").ok_or_else(|| {
+        anyhow::anyhow!("Response is missing url_list field. Response preview: {preview}")
+    })?;
+    let entries = serde_json::from_value::<Vec<OTXUrlEntry>>(url_list.clone()).map_err(|e| {
+        anyhow::anyhow!("Failed to parse url_list entries: {e}. Response preview: {preview}")
+    })?;
+    Ok(OTXResult {
+        has_next: json_value
+            .get("has_next")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        actual_size: json_value
+            .get("actual_size")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32)
+            .unwrap_or(0),
+        url_list: entries,
+    })
+}
+
 impl Provider for OTXProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
@@ -178,12 +177,7 @@ impl Provider for OTXProvider {
         Box::pin(async move {
             let mut all_urls = Vec::new();
             let mut page = 0;
-            let client = self.client_config().build_client()?;
-            let limiter = self.rate_limit.as_ref();
-            #[cfg(test)]
-            let page_limit = self.page_limit;
-            #[cfg(not(test))]
-            let page_limit = OTX_MAX_PAGES;
+            let client = self.net.http.build_client()?;
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -192,158 +186,62 @@ impl Provider for OTXProvider {
             loop {
                 let url = self.format_url(domain, page);
 
-                // Retry logic
-                let mut last_error = None;
-                let mut result = None;
+                let result = send_with_retry(
+                    self.net.retries,
+                    self.net.rate_limit.as_ref(),
+                    |_| true,
+                    || client.get(&url),
+                    |_, text| parse_otx(&text),
+                )
+                .await;
 
-                for attempt in 0..=self.retries {
-                    if let Some(rl) = &limiter {
-                        rl.acquire().await;
-                    }
-                    match client.get(&url).send().await {
-                        Ok(response) => {
-                            if response.status().is_success() {
-                                // Capped: OTX is a third-party host, and an
-                                // unbounded body would be buffered whole before
-                                // serde ever sees it.
-                                match read_body_capped(response, MAX_RESPONSE_BYTES).await {
-                                    Ok(text) => {
-                                        // Try to parse as OTXResult first
-                                        let parse_result = serde_json::from_str::<OTXResult>(&text);
+                match result {
+                    Ok(otx_result) => {
+                        let has_next = otx_result.has_next;
+                        let page_len = otx_result.url_list.len();
 
-                                        if let Ok(otx_result) = parse_result {
-                                            result = Some(otx_result);
-                                            break;
-                                        } else {
-                                            // If that fails, try to parse as a JSON Value and extract the url_list
-                                            match serde_json::from_str::<serde_json::Value>(&text) {
-                                                Ok(json_value) => {
-                                                    if let Some(url_list) =
-                                                        json_value.get("url_list")
-                                                    {
-                                                        match serde_json::from_value::<
-                                                            Vec<OTXUrlEntry>,
-                                                        >(
-                                                            url_list.clone()
-                                                        ) {
-                                                            Ok(entries) => {
-                                                                // Create a new OTXResult with default values for other fields
-                                                                let otx_result = OTXResult {
-                                                                    has_next: json_value
-                                                                        .get("has_next")
-                                                                        .and_then(|v| v.as_bool())
-                                                                        .unwrap_or(false),
-                                                                    actual_size: json_value
-                                                                        .get("actual_size")
-                                                                        .and_then(|v| v.as_i64())
-                                                                        .map(|v| v as i32)
-                                                                        .unwrap_or(0),
-                                                                    url_list: entries,
-                                                                };
-                                                                result = Some(otx_result);
-                                                                break;
-                                                            }
-                                                            Err(e) => {
-                                                                let preview = preview_text(&text);
+                        // Keep only entries with a usable URL — OTX occasionally
+                        // returns rows with an empty `url`, which would otherwise be
+                        // emitted as blank lines.
+                        all_urls.extend(
+                            otx_result
+                                .url_list
+                                .into_iter()
+                                .map(|entry| entry.url)
+                                .filter(|url| !url.is_empty()),
+                        );
 
-                                                                last_error = Some(anyhow::anyhow!(
-                                                                    "Failed to parse url_list entries: {}. Response preview: {}",
-                                                                    e, preview
-                                                                ));
-                                                            }
-                                                        }
-                                                    } else {
-                                                        let preview = preview_text(&text);
-
-                                                        last_error = Some(anyhow::anyhow!(
-                                                            "Response is missing url_list field. Response preview: {}",
-                                                            preview
-                                                        ));
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    let preview = preview_text(&text);
-
-                                                    last_error = Some(anyhow::anyhow!(
-                                                        "Failed to parse OTX response as JSON: {}. Response preview: {}",
-                                                        e, preview
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        last_error = Some(anyhow::anyhow!(
-                                            "Failed to get response text: {}",
-                                            e
-                                        ));
-                                    }
-                                }
-                            } else {
-                                last_error =
-                                    Some(anyhow::anyhow!("HTTP error: {}", response.status()));
-                            }
+                        if let Some(r) = &reporter {
+                            r.detail(format!("{} URLs…", all_urls.len()));
                         }
-                        Err(e) => {
-                            last_error = Some(anyhow::anyhow!("Request error: {}", e));
+
+                        // Stop when this page returned nothing (there is no more
+                        // data, even if the server still claims `has_next`), or when
+                        // the API reports no further pages. A full page with
+                        // `has_next` absent (some responses omit it) is treated as
+                        // "maybe more", so a single trailing empty fetch confirms the
+                        // end rather than truncating at page one.
+                        let page_full = page_len as u32 >= OTX_RESULTS_LIMIT;
+                        if page_len == 0 || (!has_next && !page_full) {
+                            break;
                         }
                     }
-
-                    if result.is_some() {
+                    Err(e) => {
+                        // Best effort: a page that failed after all its retries must
+                        // not discard the pages already collected. Only a failure on
+                        // the very first request — where there is nothing to keep —
+                        // is fatal, matching every other paginating provider.
+                        if all_urls.is_empty() {
+                            return Err(e);
+                        }
+                        // We're returning a truncated result. Flag it so the runner
+                        // marks the line partial and warns, rather than presenting an
+                        // incomplete crawl as a clean success.
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
                         break;
                     }
-
-                    if attempt < self.retries {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                }
-
-                if let Some(otx_result) = result {
-                    let has_next = otx_result.has_next;
-                    let page_len = otx_result.url_list.len();
-
-                    // Keep only entries with a usable URL — OTX occasionally
-                    // returns rows with an empty `url`, which would otherwise be
-                    // emitted as blank lines.
-                    all_urls.extend(
-                        otx_result
-                            .url_list
-                            .into_iter()
-                            .map(|entry| entry.url)
-                            .filter(|url| !url.is_empty()),
-                    );
-
-                    if let Some(r) = &reporter {
-                        r.detail(format!("{} URLs…", all_urls.len()));
-                    }
-
-                    // Stop when this page returned nothing (there is no more
-                    // data, even if the server still claims `has_next`), or when
-                    // the API reports no further pages. A full page with
-                    // `has_next` absent (some responses omit it) is treated as
-                    // "maybe more", so a single trailing empty fetch confirms the
-                    // end rather than truncating at page one.
-                    let page_full = page_len as u32 >= OTX_RESULTS_LIMIT;
-                    if page_len == 0 || (!has_next && !page_full) {
-                        break;
-                    }
-                } else {
-                    // Best effort: a page that failed after all its retries must
-                    // not discard the pages already collected. Only a failure on
-                    // the very first request — where there is nothing to keep —
-                    // is fatal, matching every other paginating provider.
-                    if all_urls.is_empty() {
-                        return Err(last_error.unwrap_or_else(|| {
-                            anyhow::anyhow!("Failed to fetch OTX data after all retries")
-                        }));
-                    }
-                    // We're returning a truncated result. Flag it so the runner
-                    // marks the line partial and warns, rather than presenting an
-                    // incomplete crawl as a clean success.
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
-                    break;
                 }
 
                 // The run asked us to stop (--max-time elapsed, or Ctrl-C).
@@ -357,7 +255,7 @@ impl Provider for OTXProvider {
                 }
 
                 page += 1;
-                if page >= page_limit {
+                if page >= self.page_limit {
                     // Reaching the safety ceiling means another page may
                     // remain; do not present the capped result as complete.
                     if let Some(r) = &reporter {
@@ -375,32 +273,8 @@ impl Provider for OTXProvider {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -438,13 +312,6 @@ mod tests {
     fn test_new_provider() {
         let provider = OTXProvider::new();
         assert!(!provider.include_subdomains);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 30);
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
@@ -452,58 +319,6 @@ mod tests {
         let mut provider = OTXProvider::new();
         provider.with_subdomains(true);
         assert!(provider.include_subdomains);
-    }
-
-    #[test]
-    fn test_with_proxy() {
-        let mut provider = OTXProvider::new();
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let mut provider = OTXProvider::new();
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let mut provider = OTXProvider::new();
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, 60);
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let mut provider = OTXProvider::new();
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let mut provider = OTXProvider::new();
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let mut provider = OTXProvider::new();
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let mut provider = OTXProvider::new();
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
     }
 
     #[test]
@@ -695,7 +510,7 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
+        provider.base_url = url;
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok(), "Failed to fetch URLs: {:?}", result.err());
@@ -732,9 +547,9 @@ mod tests {
             .await;
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         provider.page_limit = 1;
-        provider.with_retries(0);
+        provider.net.retries = 0;
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -774,7 +589,7 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
+        provider.base_url = url;
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
@@ -801,7 +616,7 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
+        provider.base_url = url;
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());
@@ -852,8 +667,8 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
-        provider.with_retries(0);
+        provider.base_url = url;
+        provider.net.retries = 0;
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
@@ -906,8 +721,8 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
-        provider.with_retries(0); // fail fast, don't sleep through back-off
+        provider.base_url = url;
+        provider.net.retries = 0; // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -938,8 +753,8 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
-        provider.with_retries(0);
+        provider.base_url = url;
+        provider.net.retries = 0;
 
         assert!(provider.fetch_urls("example.com").await.is_err());
     }
@@ -962,7 +777,7 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
+        provider.base_url = url;
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["http://example.com/real".to_string()]);
@@ -985,9 +800,9 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
+        provider.base_url = url;
         // Reduce retries to speed up test
-        provider.with_retries(0);
+        provider.net.retries = 0;
 
         let result = provider.fetch_urls("example.com").await;
 
@@ -1011,8 +826,8 @@ mod tests {
             .create();
 
         let mut provider = OTXProvider::new();
-        provider.with_base_url(url);
-        provider.with_retries(0);
+        provider.base_url = url;
+        provider.net.retries = 0;
 
         let result = provider.fetch_urls("example.com").await;
 

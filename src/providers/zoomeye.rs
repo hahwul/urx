@@ -6,25 +6,16 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::{read_json_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::send_with_retry;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 #[derive(Clone)]
 pub struct ZoomEyeProvider {
     api_key_rotator: ApiKeyRotator,
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
-    #[cfg(test)]
+    net: NetConfig,
     base_url: String,
-    #[cfg(test)]
     page_limit: u32,
 }
 
@@ -70,49 +61,13 @@ struct ZoomEyeRequest {
 }
 
 impl ZoomEyeProvider {
-    #[allow(dead_code)]
-    pub fn new(api_key: String) -> Self {
-        if api_key.is_empty() {
-            Self::new_with_keys(vec![])
-        } else {
-            Self::new_with_keys(vec![api_key])
-        }
-    }
-
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
-        let filtered_keys: Vec<String> = api_keys.into_iter().filter(|k| !k.is_empty()).collect();
-
         ZoomEyeProvider {
-            api_key_rotator: ApiKeyRotator::new(filtered_keys),
+            api_key_rotator: ApiKeyRotator::new(api_keys),
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
-            #[cfg(test)]
+            net: NetConfig::default(),
             base_url: "https://api.zoomeye.ai".to_string(),
-            #[cfg(test)]
             page_limit: ZOOMEYE_MAX_PAGES,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
         }
     }
 
@@ -154,14 +109,8 @@ impl Provider for ZoomEyeProvider {
             let dork = self.build_dork(domain);
             let qbase64 = STANDARD.encode(dork.as_bytes());
 
-            #[cfg(test)]
             let api_url = format!("{}/v2/search", self.base_url);
-
-            #[cfg(not(test))]
-            let api_url = "https://api.zoomeye.ai/v2/search".to_string();
-
-            let client = self.client_config().build_client()?;
-            let limiter = self.rate_limit.as_ref();
+            let client = self.net.http.build_client()?;
 
             let mut all_urls: Vec<String> = Vec::new();
             let mut page: u32 = 1;
@@ -171,10 +120,6 @@ impl Provider for ZoomEyeProvider {
             // server sent, not from the page size we asked for — see the stop
             // condition at the bottom of the loop.
             let mut rows_received: u64 = 0;
-            #[cfg(test)]
-            let page_limit = self.page_limit;
-            #[cfg(not(test))]
-            let page_limit = ZOOMEYE_MAX_PAGES;
 
             loop {
                 let request_body = ZoomEyeRequest {
@@ -184,105 +129,57 @@ impl Provider for ZoomEyeProvider {
                     sub_type: "web".to_string(),
                 };
 
-                let mut last_error = None;
-                let mut attempt = 0;
-                let mut page_urls: Vec<String> = Vec::new();
-                let mut page_rows: u64 = 0;
-                let mut total: u64 = 0;
+                let fetched = send_with_retry(
+                    self.net.retries,
+                    self.net.rate_limit.as_ref(),
+                    |_| true,
+                    || {
+                        // Rotate the key per attempt so a rate-limited/quota-hit
+                        // key is retried with a different one when several are
+                        // configured.
+                        let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                        client
+                            .post(&api_url)
+                            .header("API-KEY", api_key)
+                            .json(&request_body)
+                    },
+                    |_, body| {
+                        serde_json::from_str::<ZoomEyeResponse>(&body)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse ZoomEye response: {e}"))
+                    },
+                )
+                .await
+                .and_then(|response| {
+                    // A 200 with a non-success code is an API error (rejected
+                    // key, quota, bad query) — don't mistake it for an empty
+                    // result set.
+                    anyhow::ensure!(
+                        response.code == ZOOMEYE_SUCCESS_CODE,
+                        "ZoomEye API error: code {}",
+                        response.code
+                    );
+                    Ok(response)
+                });
 
-                while attempt <= self.retries {
-                    if attempt > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
-                            .await;
-                    }
-
-                    // Rotate the key per attempt so a rate-limited/quota-hit key
-                    // is retried with a different one when several are configured.
-                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-                    let req = client
-                        .post(&api_url)
-                        .header("API-KEY", &api_key)
-                        .json(&request_body);
-
-                    if let Some(rl) = &limiter {
-                        rl.acquire().await;
-                    }
-                    match req.send().await {
-                        Ok(response) => {
-                            let status = response.status();
-                            if !status.is_success() {
-                                if status.as_u16() == 429 {
-                                    if let Some(d) = crate::network::client::retry_after_delay(
-                                        response.headers(),
-                                    ) {
-                                        tokio::time::sleep(d).await;
-                                    }
-                                }
-                                attempt += 1;
-                                last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                                continue;
-                            }
-
-                            match read_json_capped::<ZoomEyeResponse>(response).await {
-                                Ok(zoomeye_response) => {
-                                    // A 200 with a non-success code is an API
-                                    // error (rejected key, quota, bad query) —
-                                    // don't mistake it for an empty result set.
-                                    if zoomeye_response.code != ZOOMEYE_SUCCESS_CODE {
-                                        last_error = Some(anyhow::anyhow!(
-                                            "ZoomEye API error: code {}",
-                                            zoomeye_response.code
-                                        ));
-                                        break;
-                                    }
-                                    total = zoomeye_response.total;
-                                    page_rows = zoomeye_response.data.len() as u64;
-                                    for entry in zoomeye_response.data {
-                                        if !entry.url.is_empty() {
-                                            page_urls.push(entry.url);
-                                        }
-                                    }
-                                    last_error = None;
-                                    break;
-                                }
-                                Err(e) => {
-                                    attempt += 1;
-                                    last_error = Some(anyhow::anyhow!(
-                                        "Failed to parse ZoomEye response: {}",
-                                        e
-                                    ));
-                                    continue;
-                                }
-                            }
+                let response = match fetched {
+                    Ok(response) => response,
+                    // Best effort: a page that failed after all its retries
+                    // must not discard the pages already collected. Only a
+                    // failure with nothing collected is fatal, matching every
+                    // other paginating provider.
+                    Err(e) if all_urls.is_empty() => return Err(e),
+                    Err(_) => {
+                        // We're returning a truncated result. Flag it so the
+                        // runner marks the line partial and warns instead of
+                        // presenting an incomplete crawl as a clean success.
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
                         }
-                        Err(e) => {
-                            attempt += 1;
-                            last_error = Some(e.into());
-                            continue;
-                        }
+                        break;
                     }
-                }
-
-                if let Some(e) = last_error {
-                    // Best effort: a page that failed after all its retries must
-                    // not discard the pages already collected. Only a failure with
-                    // nothing collected is fatal, matching every other paginating
-                    // provider.
-                    if all_urls.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "Failed after {} attempts: {}",
-                            self.retries + 1,
-                            e
-                        ));
-                    }
-                    // We're returning a truncated result. Flag it so the runner
-                    // marks the line partial and warns instead of presenting an
-                    // incomplete crawl as a clean success.
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
-                    break;
-                }
+                };
+                let total = response.total;
+                let page_rows = response.data.len() as u64;
 
                 // A page that returned no rows means the data is exhausted even
                 // if `total` claims otherwise — stop rather than loop on a stale
@@ -291,7 +188,13 @@ impl Provider for ZoomEyeProvider {
                 // data, and treating it as the end truncated the walk.
                 let page_was_empty = page_rows == 0;
                 rows_received += page_rows;
-                all_urls.extend(page_urls);
+                all_urls.extend(
+                    response
+                        .data
+                        .into_iter()
+                        .map(|entry| entry.url)
+                        .filter(|url| !url.is_empty()),
+                );
 
                 if let Some(r) = &reporter {
                     r.detail(format!("{} URLs…", all_urls.len()));
@@ -314,7 +217,7 @@ impl Provider for ZoomEyeProvider {
                     break;
                 }
 
-                if page >= page_limit {
+                if page >= self.page_limit {
                     if let Some(r) = &reporter {
                         r.mark_partial();
                     }
@@ -332,32 +235,8 @@ impl Provider for ZoomEyeProvider {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -367,29 +246,11 @@ mod tests {
     use crate::providers::urls_of;
 
     #[test]
-    fn test_new_provider() {
-        let api_key = "test_api_key".to_string();
-        let provider = ZoomEyeProvider::new(api_key.clone());
-        assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 1);
-        assert_eq!(provider.api_key_rotator.current_key(), Some(api_key));
-        assert!(!provider.include_subdomains);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 30);
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
-    }
-
-    #[test]
     fn test_new_provider_with_multiple_keys() {
         let api_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let provider = ZoomEyeProvider::new_with_keys(api_keys);
 
         assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 3);
 
         assert_eq!(
             provider.api_key_rotator.next_key(),
@@ -420,7 +281,6 @@ mod tests {
         let provider = ZoomEyeProvider::new_with_keys(api_keys);
 
         assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 2);
         assert_eq!(
             provider.api_key_rotator.next_key(),
             Some("key1".to_string())
@@ -433,87 +293,33 @@ mod tests {
 
     #[test]
     fn test_new_provider_with_empty_key() {
-        let provider = ZoomEyeProvider::new("".to_string());
+        let provider = ZoomEyeProvider::new_with_keys(vec!["".to_string()]);
         assert!(!provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 0);
-        assert_eq!(provider.api_key_rotator.current_key(), None);
     }
 
     #[test]
     fn test_build_dork() {
-        let provider = ZoomEyeProvider::new("key".to_string());
+        let provider = ZoomEyeProvider::new_with_keys(vec!["key".to_string()]);
         assert_eq!(provider.build_dork("example.com"), "site:example.com");
     }
 
     #[test]
     fn test_build_dork_with_subdomains() {
-        let mut provider = ZoomEyeProvider::new("key".to_string());
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["key".to_string()]);
         provider.with_subdomains(true);
         assert_eq!(provider.build_dork("example.com"), "site:*.example.com");
     }
 
     #[test]
     fn test_with_subdomains() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
+        let provider = &mut ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
         provider.with_subdomains(true);
         assert!(provider.include_subdomains);
     }
 
     #[test]
-    fn test_with_proxy() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, 60);
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let provider = &mut ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-    }
-
-    #[test]
     fn test_clone_box() {
-        let provider = ZoomEyeProvider::new("test_api_key".to_string());
+        let provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
         let _cloned = provider.clone_box();
     }
 
@@ -569,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_urls_with_empty_api_key() {
-        let provider = ZoomEyeProvider::new("".to_string());
+        let provider = ZoomEyeProvider::new_with_keys(vec!["".to_string()]);
         let result = provider.fetch_urls("example.com").await;
 
         assert!(result.is_ok(), "Expected success with empty API key");
@@ -590,9 +396,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("expired-key".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["expired-key".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         let err = provider
             .fetch_urls("example.com")
@@ -635,8 +441,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok(), "Expected success with mock API");
@@ -681,9 +487,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
-        provider.with_retries(0); // fail fast, don't sleep through back-off
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
+        provider.net.retries = 0; // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -709,9 +515,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
-        provider.with_retries(0);
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
+        provider.net.retries = 0;
 
         assert!(provider.fetch_urls("example.com").await.is_err());
     }
@@ -749,8 +555,8 @@ mod tests {
                 .await;
         }
 
-        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls.len(), 25, "walk stopped early: {}", urls.len());
@@ -778,10 +584,10 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("key".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["key".to_string()]);
+        provider.base_url = server.url();
         provider.page_limit = 1;
-        provider.with_retries(0);
+        provider.net.retries = 0;
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
 
         let urls = urls_of(
@@ -841,8 +647,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
@@ -889,8 +695,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = ZoomEyeProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
+        let mut provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok());

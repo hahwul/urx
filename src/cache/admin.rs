@@ -142,7 +142,7 @@ pub fn is_expired(timestamp: DateTime<Utc>, ttl_seconds: u64) -> bool {
 /// it already has.
 ///
 /// `--cache-ttl` is an unvalidated `u64`, so the subtraction saturates rather
-/// than wrapping — the same hazard [`super::types::expiry_cutoff`] documents.
+/// than wrapping — so a huge TTL reads as "never expire".
 pub fn ttl_remaining(timestamp: DateTime<Utc>, ttl_seconds: u64) -> Option<i64> {
     let ttl = ttl_seconds.min(i64::MAX as u64) as i64;
     let elapsed = Utc::now().signed_duration_since(timestamp).num_seconds();

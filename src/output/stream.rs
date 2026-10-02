@@ -20,7 +20,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use super::{create_outputter, Outputter, UrlData};
+use super::{Format, UrlData};
 use crate::filters::{HostValidator, UrlFilter};
 use crate::providers::UrlRecord;
 use crate::utils::UrlTransformer;
@@ -37,7 +37,7 @@ pub struct StreamSink {
     /// stream deduplicated despite never holding the full result set.
     seen: Mutex<HashSet<String>>,
     writer: Mutex<Box<dyn Write + Send>>,
-    outputter: Box<dyn Outputter>,
+    format: Format,
     emitted: AtomicUsize,
     /// Set once the destination stops accepting writes — `urx --stream | head`
     /// closes the pipe long before the providers are done. Later batches are
@@ -55,7 +55,7 @@ impl StreamSink {
         filter: UrlFilter,
         transformer: UrlTransformer,
         host_validator: Option<HostValidator>,
-        format: &str,
+        format: Format,
         writer: Box<dyn Write + Send>,
     ) -> Result<Self> {
         let sink = StreamSink {
@@ -64,7 +64,7 @@ impl StreamSink {
             host_validator,
             seen: Mutex::new(HashSet::new()),
             writer: Mutex::new(writer),
-            outputter: create_outputter(format),
+            format,
             emitted: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
         };
@@ -72,7 +72,7 @@ impl StreamSink {
         // CSV needs its header up front. A streamed run carries no status, no
         // sources and no capture metadata (all three require the batch path),
         // so the layout is fixed and can be written before the first row.
-        if format.eq_ignore_ascii_case("csv") {
+        if format == Format::Csv {
             let header = super::formatter::csv_header(&super::formatter::CsvLayout::default());
             let mut w = sink.lock_writer();
             let wrote = w
@@ -146,7 +146,7 @@ impl StreamSink {
         let mut w = self.lock_writer();
         let written = (|| -> std::io::Result<bool> {
             for entry in &batch {
-                let formatted = self.outputter.format(entry, false);
+                let formatted = self.format.format(entry, false);
                 w.write_all(formatted.as_bytes())?;
             }
             w.flush()?;
@@ -188,19 +188,16 @@ fn broken_pipe_is_ok(e: std::io::Error) -> std::io::Result<bool> {
 /// `json` cannot: it wraps entries in one array and separates them with commas,
 /// so the writer must know which entry is last. `jsonl` is the streaming
 /// equivalent and is what the CLI points users to.
-pub fn format_supports_streaming(format: &str) -> bool {
-    matches!(
-        format.to_lowercase().as_str(),
-        "plain" | "jsonl" | "csv" | ""
-    )
+pub fn format_supports_streaming(format: Format) -> bool {
+    matches!(format, Format::Plain | Format::Jsonl | Format::Csv)
 }
 
 /// Why `format` cannot be produced incrementally, phrased as the error the CLI
 /// shows. Lives next to [`format_supports_streaming`] so the list of formats and
 /// the reason each one is out of it stay in one place.
-pub fn streaming_format_error(format: &str) -> String {
-    let reason = match format.to_lowercase().as_str() {
-        "wordlist" => {
+pub fn streaming_format_error(format: Format) -> String {
+    let reason = match format {
+        Format::Wordlist => {
             "it emits each term once across the whole run, so no term can be \
              known to be new until every URL has arrived"
         }
@@ -209,7 +206,11 @@ pub fn streaming_format_error(format: &str) -> String {
              last. Use --format jsonl for line-delimited JSON"
         }
     };
-    format!("--stream cannot produce --format {format}: {reason}.")
+    let name = clap::ValueEnum::to_possible_value(&format).expect("no skipped variants");
+    format!(
+        "--stream cannot produce --format {}: {reason}.",
+        name.get_name()
+    )
 }
 
 #[cfg(test)]
@@ -219,12 +220,12 @@ mod tests {
 
     #[test]
     fn test_wordlist_cannot_be_streamed_and_says_why() {
-        assert!(!format_supports_streaming("wordlist"));
-        let err = streaming_format_error("wordlist");
+        assert!(!format_supports_streaming(Format::Wordlist));
+        let err = streaming_format_error(Format::Wordlist);
         assert!(err.contains("--format wordlist"), "{err}");
         assert!(err.contains("every URL has arrived"), "{err}");
         // The json reason is about the array wrapper, not about term dedup.
-        let json = streaming_format_error("json");
+        let json = streaming_format_error(Format::Json);
         assert!(json.contains("one array"), "{json}");
         assert!(json.contains("--format jsonl"), "{json}");
     }
@@ -257,10 +258,10 @@ mod tests {
         }
     }
 
-    fn sink_with(format: &str, buf: SharedBuf) -> StreamSink {
+    fn sink_with(format: Format, buf: SharedBuf) -> StreamSink {
         StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             format,
             Box::new(buf),
@@ -271,7 +272,7 @@ mod tests {
     #[test]
     fn test_emits_urls_immediately() {
         let buf = SharedBuf::default();
-        let sink = sink_with("plain", buf.clone());
+        let sink = sink_with(Format::Plain, buf.clone());
 
         assert_eq!(sink.emit(&records(&["https://a.com/1"])).unwrap(), 1);
         // Written before any later batch arrives — that is the whole point.
@@ -286,7 +287,7 @@ mod tests {
     fn test_dedupes_across_batches() {
         // Two providers reporting the same URL must not print it twice.
         let buf = SharedBuf::default();
-        let sink = sink_with("plain", buf.clone());
+        let sink = sink_with(Format::Plain, buf.clone());
 
         sink.emit(&records(&["https://a.com/x"])).unwrap();
         let second = sink.emit(&records(&["https://a.com/x"])).unwrap();
@@ -303,9 +304,9 @@ mod tests {
         filter.with_extensions(vec!["js".to_string()]);
         let sink = StreamSink::new(
             filter,
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
-            "plain",
+            Format::Plain,
             Box::new(buf.clone()),
         )
         .unwrap();
@@ -324,13 +325,15 @@ mod tests {
         // With --normalize-url these two collapse to one; the stream must not
         // print both just because the raw strings differ.
         let buf = SharedBuf::default();
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
         let sink = StreamSink::new(
             UrlFilter::new(),
             transformer,
             None,
-            "plain",
+            Format::Plain,
             Box::new(buf.clone()),
         )
         .unwrap();
@@ -347,9 +350,9 @@ mod tests {
         let buf = SharedBuf::default();
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             Some(HostValidator::new(&["a.com".to_string()], false)),
-            "plain",
+            Format::Plain,
             Box::new(buf.clone()),
         )
         .unwrap();
@@ -363,7 +366,7 @@ mod tests {
     #[test]
     fn test_jsonl_emits_one_standalone_object_per_line() {
         let buf = SharedBuf::default();
-        let sink = sink_with("jsonl", buf.clone());
+        let sink = sink_with(Format::Jsonl, buf.clone());
 
         sink.emit(&records(&["https://a.com/1", "https://a.com/2"]))
             .unwrap();
@@ -380,7 +383,7 @@ mod tests {
     #[test]
     fn test_csv_header_written_once_before_rows() {
         let buf = SharedBuf::default();
-        let sink = sink_with("csv", buf.clone());
+        let sink = sink_with(Format::Csv, buf.clone());
 
         sink.emit(&records(&["https://a.com/1"])).unwrap();
         sink.emit(&records(&["https://a.com/2"])).unwrap();
@@ -439,9 +442,9 @@ mod tests {
         // "Failed to write streamed URL: Broken pipe" and fail the whole run.
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
-            "plain",
+            Format::Plain,
             Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),
         )
         .unwrap();
@@ -459,9 +462,9 @@ mod tests {
         // surfaces there rather than on the write.
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
-            "plain",
+            Format::Plain,
             Box::new(FailingWriter::on_flush(std::io::ErrorKind::BrokenPipe)),
         )
         .unwrap();
@@ -475,9 +478,9 @@ mod tests {
     fn test_a_real_write_failure_is_still_reported() {
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
-            "plain",
+            Format::Plain,
             Box::new(FailingWriter::on_write(std::io::ErrorKind::StorageFull)),
         )
         .unwrap();
@@ -495,9 +498,9 @@ mod tests {
         // treatment: `urx target --stream -f csv | head -0` must not error.
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
-            "csv",
+            Format::Csv,
             Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),
         )
         .unwrap();
@@ -506,11 +509,10 @@ mod tests {
 
     #[test]
     fn test_format_supports_streaming() {
-        assert!(format_supports_streaming("plain"));
-        assert!(format_supports_streaming("jsonl"));
-        assert!(format_supports_streaming("csv"));
-        assert!(format_supports_streaming("JSONL"));
+        assert!(format_supports_streaming(Format::Plain));
+        assert!(format_supports_streaming(Format::Jsonl));
+        assert!(format_supports_streaming(Format::Csv));
         // json needs to know the last entry to close its array.
-        assert!(!format_supports_streaming("json"));
+        assert!(!format_supports_streaming(Format::Json));
     }
 }

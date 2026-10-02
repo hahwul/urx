@@ -32,25 +32,15 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::{
-    read_body_capped, retry_after_delay, HttpClientConfig, MAX_RESPONSE_BYTES,
-};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::send_with_retry;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 #[derive(Clone)]
 pub struct BeVigilProvider {
     api_key_rotator: ApiKeyRotator,
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
-    #[cfg(test)]
+    net: NetConfig,
     base_url: String,
 }
 
@@ -126,47 +116,11 @@ pub(crate) fn parse_response(body: &str) -> Result<Vec<String>> {
 
 impl BeVigilProvider {
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
-        let filtered: Vec<String> = api_keys.into_iter().filter(|k| !k.is_empty()).collect();
         BeVigilProvider {
-            api_key_rotator: ApiKeyRotator::new(filtered),
+            api_key_rotator: ApiKeyRotator::new(api_keys),
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
-            #[cfg(test)]
+            net: NetConfig::default(),
             base_url: "https://osint.bevigil.com".to_string(),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
-    fn base_url(&self) -> &str {
-        #[cfg(test)]
-        {
-            &self.base_url
-        }
-        #[cfg(not(test))]
-        {
-            "https://osint.bevigil.com"
         }
     }
 
@@ -174,7 +128,7 @@ impl BeVigilProvider {
     /// percent-encoded rather than spliced in raw.
     fn request_url(&self, domain: &str) -> String {
         let encoded: String = url::form_urlencoded::byte_serialize(domain.as_bytes()).collect();
-        format!("{}/api/{encoded}/urls/", self.base_url())
+        format!("{}/api/{encoded}/urls/", self.base_url)
     }
 }
 
@@ -200,77 +154,48 @@ impl Provider for BeVigilProvider {
                 return Ok(Vec::new());
             }
 
-            let client = self.client_config().build_client()?;
+            let client = self.net.http.build_client()?;
             let url = self.request_url(domain);
-            let limiter = self.rate_limit.as_ref();
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
             }
 
-            let mut last_error: Option<anyhow::Error> = None;
-            let mut next_delay: Option<std::time::Duration> = None;
-
-            for attempt in 0..=self.retries {
-                if attempt > 0 {
-                    let delay = next_delay
-                        .take()
-                        .unwrap_or_else(|| std::time::Duration::from_millis(500 * attempt as u64));
-                    tokio::time::sleep(delay).await;
-                }
-
-                // Rotate per attempt so a throttled key is retried with a
-                // different one when several are configured.
-                let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-                if let Some(rl) = &limiter {
-                    rl.acquire().await;
-                }
-                let response = match client
-                    .get(&url)
-                    .header("X-Access-Token", api_key)
-                    .header("Accept", "application/json")
-                    .send()
-                    .await
-                {
-                    Ok(response) => response,
-                    Err(e) => {
-                        last_error = Some(e.into());
-                        continue;
-                    }
-                };
-
-                let status = response.status();
-                match status.as_u16() {
-                    200..=299 => {
-                        let body = read_body_capped(response, MAX_RESPONSE_BYTES).await?;
-                        let urls = parse_response(&body)?;
-                        return Ok(urls.into_iter().map(UrlRecord::bare).collect());
-                    }
+            let body = send_with_retry(
+                self.net.retries,
+                self.net.rate_limit.as_ref(),
+                |status| status == 429 || status.is_server_error(),
+                || {
+                    // Rotate per attempt so a throttled key is retried with a
+                    // different one when several are configured.
+                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                    client
+                        .get(&url)
+                        .header("X-Access-Token", api_key)
+                        .header("Accept", "application/json")
+                },
+                |status, body| match status.as_u16() {
+                    200..=299 => Ok(Some(body)),
                     // The API's own word for "no such domain in the index".
                     // Assumed, like the schema: a 404 here is treated as an
                     // empty result rather than a failure.
-                    404 => return Ok(Vec::new()),
+                    404 => Ok(None),
                     // A bad or expired token is deterministic; retrying with
                     // the same keys only burns requests.
-                    401 | 403 => {
-                        return Err(anyhow::anyhow!(
-                            "BeVigil rejected the API key (HTTP {status}); check --bevigil-api-key / URX_BEVIGIL_API_KEY"
-                        ));
-                    }
-                    429 => {
-                        next_delay = retry_after_delay(response.headers());
-                        last_error = Some(anyhow::anyhow!("BeVigil rate limit hit (HTTP 429)"));
-                    }
-                    500..=599 => {
-                        last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                    }
-                    _ => {
-                        return Err(anyhow::anyhow!("HTTP error: {status}"));
-                    }
-                }
-            }
-
-            Err(last_error.unwrap_or_else(|| anyhow::anyhow!("BeVigil request failed")))
+                    401 | 403 => Err(anyhow::anyhow!(
+                        "BeVigil rejected the API key (HTTP {status}); check --bevigil-api-key / URX_BEVIGIL_API_KEY"
+                    )),
+                    _ => Err(anyhow::anyhow!("HTTP error: {status}")),
+                },
+            )
+            .await?;
+            // Parsed outside the retry: a body of the wrong shape is
+            // deterministic, and asking again only burns requests.
+            let urls = match body {
+                Some(body) => parse_response(&body)?,
+                None => Vec::new(),
+            };
+            Ok(urls.into_iter().map(UrlRecord::bare).collect())
         })
     }
 
@@ -279,26 +204,9 @@ impl Provider for BeVigilProvider {
         // found under it; host validation downstream applies the scope.
         self.include_subdomains = include;
     }
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -310,8 +218,8 @@ mod tests {
 
     fn provider(server: &mockito::ServerGuard, keys: &[&str]) -> BeVigilProvider {
         let mut p = BeVigilProvider::new_with_keys(keys.iter().map(|k| k.to_string()).collect());
-        p.with_base_url(server.url());
-        p.with_retries(0);
+        p.base_url = server.url();
+        p.net.retries = 0;
         p
     }
 
@@ -459,7 +367,7 @@ mod tests {
             .await;
 
         let mut p = provider(&server, &["bad"]);
-        p.with_retries(3);
+        p.net.retries = 3;
         let err = p.fetch_urls("example.com").await.unwrap_err().to_string();
         assert!(err.contains("rejected the API key"), "{err}");
         assert!(err.contains("URX_BEVIGIL_API_KEY"), "{err}");
@@ -500,7 +408,7 @@ mod tests {
             .await;
 
         let mut p = provider(&server, &["key-1", "key-2"]);
-        p.with_retries(1);
+        p.net.retries = 1;
         let urls = urls_of(p.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/a"]);
         throttled.assert();
@@ -518,34 +426,9 @@ mod tests {
             .await;
 
         let mut p = provider(&server, &["key-1"]);
-        p.with_retries(1);
+        p.net.retries = 1;
         let err = p.fetch_urls("example.com").await.unwrap_err().to_string();
         assert!(err.contains("503"), "{err}");
         mock.assert();
-    }
-
-    #[test]
-    fn network_settings_apply() {
-        let mut p = BeVigilProvider::new_with_keys(vec!["k".to_string(), String::new()]);
-        assert_eq!(p.api_key_rotator.key_count(), 1, "blank keys are dropped");
-        p.with_subdomains(true);
-        p.with_timeout(45);
-        p.with_insecure(true);
-        p.with_random_agent(true);
-        p.with_proxy(Some("http://proxy:8080".to_string()));
-        p.with_proxy_auth(Some("user:pass".to_string()));
-        p.with_rate_limit(Some(2.0));
-        p.with_retries(7);
-
-        let config = p.client_config();
-        assert!(p.include_subdomains);
-        assert_eq!(config.timeout, 45);
-        assert!(config.insecure);
-        assert!(config.random_agent);
-        assert_eq!(config.proxy.as_deref(), Some("http://proxy:8080"));
-        assert_eq!(config.proxy_auth.as_deref(), Some("user:pass"));
-        assert!(p.rate_limit.is_some());
-        assert_eq!(p.retries, 7);
-        let _ = p.clone_box();
     }
 }

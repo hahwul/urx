@@ -19,16 +19,15 @@ use reqwest::Client;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
 
-use super::shared::path_extension;
+use super::shared::{content_type, found, path_extension, send, FetchBudget};
 use super::Tester;
-use crate::network::client::{read_body_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::read_body_capped;
+use crate::network::NetConfig;
+use crate::output::UrlData;
 
 /// Cap on bytes read from one script before scanning.
 ///
@@ -95,12 +94,7 @@ pub(super) fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyK
         .map(|e| JS_EXTENSIONS.contains(&e.as_str()))
         .unwrap_or(false);
 
-    let ct = headers
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_ascii_lowercase());
-
-    match ct.as_deref() {
+    match content_type(headers).as_deref() {
         Some(ct) if ct.contains("javascript") || ct.contains("ecmascript") => BodyKind::Script,
         Some(ct) if ct.contains("typescript") || ct.contains("text/jsx") => BodyKind::Script,
         Some(ct) if ct.contains("html") => BodyKind::Html,
@@ -496,24 +490,9 @@ fn resolve(base: &Url, candidate: &str) -> Option<String> {
 /// the paths and URLs they reference.
 #[derive(Clone)]
 pub struct JsEndpointExtractor {
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
-    /// target itself, so the user's headers belong on those requests.
-    headers: CustomHeaders,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    /// Upper bound on scripts fetched across the whole run; `0` is unlimited.
-    max_files: usize,
-    /// Fetches performed so far, shared across `clone_box` clones so the cap
-    /// is global rather than per worker.
-    fetched: Arc<AtomicUsize>,
-    /// `--rate-limit`, shared across clones for the same reason. Testers did
-    /// not previously honour the rate limit at all; this one does because it
-    /// re-requests a large slice of the result set from the target itself.
-    rate_limiter: Option<RateLimiter>,
+    net: NetConfig,
+    /// Upper bound on scripts fetched across the whole run.
+    budget: FetchBudget,
     /// One HTTP client, built lazily and shared across clones — see the same
     /// field on `LinkExtractor`.
     client: Arc<OnceCell<Client>>,
@@ -527,65 +506,21 @@ impl JsEndpointExtractor {
 
     pub fn new() -> Self {
         JsEndpointExtractor {
-            proxy: None,
-            proxy_auth: None,
-            headers: CustomHeaders::default(),
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            max_files: Self::DEFAULT_MAX_FILES,
-            fetched: Arc::new(AtomicUsize::new(0)),
-            rate_limiter: None,
+            net: NetConfig::default(),
+            budget: FetchBudget::new(Self::DEFAULT_MAX_FILES),
             client: Arc::new(OnceCell::new()),
         }
     }
 
     /// Cap the number of scripts fetched; `0` means no cap.
     pub fn with_max_files(&mut self, max: usize) {
-        self.max_files = max;
-    }
-
-    /// Pace requests at `requests_per_sec`, as `--rate-limit` does for
-    /// providers.
-    pub fn with_rate_limit(&mut self, requests_per_sec: Option<f32>) {
-        self.rate_limiter = RateLimiter::from_rate(requests_per_sec);
-    }
-
-    /// Scripts fetched so far.
-    #[cfg(test)]
-    fn fetched(&self) -> usize {
-        self.fetched.load(Ordering::Relaxed)
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: self.headers.clone(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
+        self.budget.max = max;
     }
 
     async fn client(&self) -> Result<&Client> {
         self.client
-            .get_or_try_init(|| async { self.client_config().build_client() })
+            .get_or_try_init(|| async { self.net.http.build_client() })
             .await
-    }
-
-    /// Reserve one slot under the fetch cap, or `false` if the cap is spent.
-    fn try_reserve_fetch(&self) -> bool {
-        if self.max_files == 0 {
-            self.fetched.fetch_add(1, Ordering::Relaxed);
-            return true;
-        }
-        self.fetched
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < self.max_files).then_some(n + 1)
-            })
-            .is_ok()
     }
 
     /// Mine `script` for endpoints, resolved against `base` and deduplicated
@@ -674,7 +609,7 @@ impl Tester for JsEndpointExtractor {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let base_url =
                 Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
@@ -684,84 +619,43 @@ impl Tester for JsEndpointExtractor {
             }
             // The cap is on requests actually made, so it is checked after the
             // free extension test and before the request.
-            if !self.try_reserve_fetch() {
+            if !self.budget.try_reserve() {
                 return Ok(Vec::new());
             }
 
             let client = self.client().await?;
-            let mut last_error = None;
-
-            for attempt in 0..=self.retries {
-                if let Some(limiter) = &self.rate_limiter {
-                    limiter.acquire().await;
-                }
-                match client.get(url).send().await {
-                    Ok(response) => {
-                        // An error page's inline script is the site's chrome,
-                        // not something this URL revealed.
-                        if !response.status().is_success() {
-                            return Ok(Vec::new());
-                        }
-                        let kind = classify(response.headers(), &base_url);
-                        if kind == BodyKind::Skip {
-                            return Ok(Vec::new());
-                        }
-                        let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                        return Ok(match kind {
-                            BodyKind::Script => Self::extract_endpoints(&base_url, &body),
-                            BodyKind::Html => Self::extract_inline_endpoints(&base_url, &body),
-                            BodyKind::Skip => Vec::new(),
-                        });
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        if attempt < self.retries {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                    }
-                }
+            let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
+                client.get(url)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to extract JS endpoints from {}: {:?}", url, e))?;
+            // An error page's inline script is the site's chrome,
+            // not something this URL revealed.
+            if !response.status().is_success() {
+                return Ok(Vec::new());
             }
-
-            Err(anyhow::anyhow!(
-                "Failed to extract JS endpoints from {}: {:?}",
-                url,
-                last_error
-            ))
+            let kind = classify(response.headers(), &base_url);
+            if kind == BodyKind::Skip {
+                return Ok(Vec::new());
+            }
+            let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+            Ok(found(match kind {
+                BodyKind::Script => Self::extract_endpoints(&base_url, &body),
+                BodyKind::Html => Self::extract_inline_endpoints(&base_url, &body),
+                BodyKind::Skip => Vec::new(),
+            }))
         })
     }
 
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_headers(&mut self, headers: CustomHeaders) {
-        self.headers = headers;
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testers::urls;
 
     fn base() -> Url {
         Url::parse("https://app.example.com/static/js/main.3f2a1b.js").unwrap()
@@ -1138,6 +1032,7 @@ mod tests {
         let got = extractor
             .test_url(&format!("{}/app.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let b = server.url();
         assert_eq!(got, vec![format!("{b}/api/one"), format!("{b}/api/two")]);
@@ -1156,9 +1051,10 @@ mod tests {
         let got = extractor
             .test_url(&format!("{}/logo.png", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert!(got.is_empty());
-        assert_eq!(extractor.fetched(), 0);
+        assert_eq!(extractor.budget.fetched(), 0);
         m.assert();
     }
 
@@ -1184,6 +1080,7 @@ mod tests {
             let got = extractor
                 .test_url(&format!("{}{path}", server.url()))
                 .await
+                .map(urls)
                 .unwrap();
             assert!(got.is_empty(), "{path}: {got:?}");
         }
@@ -1203,6 +1100,7 @@ mod tests {
         let got = extractor
             .test_url(&format!("{}/index.html", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert_eq!(got, vec![format!("{}/api/inline", server.url())]);
     }
@@ -1226,20 +1124,23 @@ mod tests {
         let first = extractor
             .test_url(&format!("{}/1.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let second = clone
             .test_url(&format!("{}/2.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let third = extractor
             .test_url(&format!("{}/3.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 1);
         assert!(third.is_empty(), "third fetch must be refused by the cap");
-        assert_eq!(extractor.fetched(), 2);
+        assert_eq!(extractor.budget.fetched(), 2);
         m.assert();
     }
 
@@ -1260,29 +1161,9 @@ mod tests {
             let got = extractor
                 .test_url(&format!("{}/{i}.js", server.url()))
                 .await
+                .map(urls)
                 .unwrap();
             assert_eq!(got.len(), 1);
         }
-    }
-
-    #[test]
-    fn test_settings_apply() {
-        let mut e = JsEndpointExtractor::new();
-        assert_eq!(e.max_files, JsEndpointExtractor::DEFAULT_MAX_FILES);
-        e.with_timeout(7);
-        e.with_retries(1);
-        e.with_random_agent(true);
-        e.with_insecure(true);
-        e.with_proxy(Some("http://p:1".into()));
-        e.with_proxy_auth(Some("u:p".into()));
-        e.with_rate_limit(Some(2.0));
-        assert_eq!(e.timeout, 7);
-        assert_eq!(e.retries, 1);
-        assert!(e.random_agent && e.insecure);
-        assert_eq!(e.proxy.as_deref(), Some("http://p:1"));
-        assert_eq!(e.proxy_auth.as_deref(), Some("u:p"));
-        assert!(e.rate_limiter.is_some());
-        e.with_rate_limit(None);
-        assert!(e.rate_limiter.is_none());
     }
 }

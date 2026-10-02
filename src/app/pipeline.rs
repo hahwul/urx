@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::cli::{self, read_domains_from_file, read_domains_from_stdin, Args};
+use crate::cli::{self, Args};
 use crate::filters::{
     compile_url_regexes, HostValidator, MetaFilter, MetaFilterStats, ScopeMatcher, UrlFilter,
 };
@@ -33,7 +33,10 @@ fn cli_domain_inputs(args: &Args) -> Result<Vec<String>> {
     let mut domains: Vec<String> = args.domains.clone();
 
     for path in &args.domain_list {
-        let file_domains = read_domains_from_file(path)?;
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open domain list: {}", path.display()))?;
+        let file_domains =
+            cli::read_domains(std::io::BufReader::new(file), &path.display().to_string())?;
         verbose_print(
             args,
             format!(
@@ -61,7 +64,9 @@ fn normalize_domains(raw: &[String]) -> Vec<String> {
 /// files, and (when both are empty) stdin. Duplicates are removed while
 /// preserving first-seen order so the run order is predictable.
 pub fn collect_domains(args: &Args) -> Result<Vec<String>> {
-    collect_domains_with_stdin(args, read_domains_from_stdin)
+    collect_domains_with_stdin(args, || {
+        cli::read_domains(std::io::stdin().lock(), "line from stdin")
+    })
 }
 
 /// Resolve explicit targets first and read stdin only when there are none.
@@ -327,13 +332,13 @@ fn report_meta_filter_stats(
 /// `--merge-endpoint` is deliberately absent — it folds several URLs into one and
 /// so has no single-URL form (see [`UrlTransformer::transform_one`]).
 pub fn build_url_transformer(args: &Args) -> UrlTransformer {
-    let mut transformer = UrlTransformer::new();
-    transformer
-        .with_normalize_url(args.normalize_url)
-        .with_show_only_host(args.show_only_host)
-        .with_show_only_path(args.show_only_path)
-        .with_show_only_param(args.show_only_param);
-    transformer
+    UrlTransformer {
+        normalize_url: args.normalize_url,
+        show_only_host: args.show_only_host,
+        show_only_path: args.show_only_path,
+        show_only_param: args.show_only_param,
+        ..Default::default()
+    }
 }
 
 /// True when any flag that narrows the URL list is set, which is the only case
@@ -505,16 +510,17 @@ pub fn apply_url_transformations(
 
     // The batch path is the one place that can honour --merge-endpoint and
     // --dedup-similar, since it alone holds every URL at once.
-    let mut url_transformer = build_url_transformer(args);
-    url_transformer
-        .with_merge_endpoint(args.merge_endpoint)
-        .with_dedup_similar(args.dedup_similar)
+    let url_transformer = UrlTransformer {
+        merge_endpoint: args.merge_endpoint,
+        dedup_similar: args.dedup_similar,
         // --- output-views ---
         // Set here and not in build_url_transformer(): an inventory view needs
         // the whole list, so only the batch path can honour it. The streaming
         // sink and the extracted-link filter both work one URL at a time and
         // must never see it half-applied — --stream rejects the flags outright.
-        .with_param_view(param_view(args));
+        param_view: param_view(args),
+        ..build_url_transformer(args)
+    };
 
     let (transformed_urls, stats) = url_transformer.transform_with_stats(urls);
 
@@ -676,8 +682,8 @@ pub fn validate_stream_options(args: &Args) -> Result<()> {
         anyhow::bail!("--stream cannot be combined with:\n{detail}");
     }
 
-    if !output::format_supports_streaming(&args.format) {
-        anyhow::bail!(output::streaming_format_error(&args.format));
+    if !output::format_supports_streaming(args.format) {
+        anyhow::bail!(output::streaming_format_error(args.format));
     }
 
     Ok(())
@@ -705,7 +711,7 @@ pub fn build_stream_sink(
     // Colour would be baked into a redirected stream, and streamed rows carry
     // no status to colourise anyway.
     if args.output.is_some() {
-        colored::control::set_override(false);
+        console::set_colors_enabled(false);
     }
 
     Ok(Some(Arc::new(output::StreamSink::new(
@@ -715,7 +721,7 @@ pub fn build_stream_sink(
         // there is nothing to enforce — no target, or `--no-strict` with no
         // path scope among the resolved targets.
         build_host_validator(args, domains),
-        &args.format,
+        args.format,
         writer,
     )?)))
 }
@@ -780,18 +786,20 @@ fn param_view(args: &Args) -> ParamView {
     }
 }
 
-/// Whether the free response facts (`Location`, `Content-Length`,
-/// `Content-Type`) a `--check-status` request already carries should be kept.
+/// Whether per-URL metadata — the archive capture fields, and the free response
+/// facts (`Location`, `Content-Length`, `Content-Type`) a `--check-status`
+/// request already carries — should reach the output.
 ///
-/// Mirrors `wants_capture_meta` in `main.rs`: the structured formats always take
-/// them (absent keys are omitted, so a run that collected none is byte-identical
-/// to before the fields existed), while plain text is a pipeline contract and
-/// keeps one bare URL per line unless `--show-meta` asks otherwise.
-fn wants_response_meta(args: &Args) -> bool {
+/// The structured formats always take it (absent keys are omitted, so a run
+/// that collected none is byte-identical to before the fields existed), while
+/// plain text is a pipeline contract — `urx target.com | httpx` must keep
+/// working — and keeps one bare URL per line unless `--show-meta` asks
+/// otherwise.
+pub fn wants_meta(args: &Args) -> bool {
     args.show_meta
         || matches!(
-            args.format.to_lowercase().as_str(),
-            "json" | "jsonl" | "csv"
+            args.format,
+            output::Format::Json | output::Format::Jsonl | output::Format::Csv
         )
 }
 
@@ -829,7 +837,7 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         }
 
         // --- output-views ---
-        status_checker.with_response_meta(wants_response_meta(args));
+        status_checker.with_response_meta(wants_meta(args));
         status_checker.with_response_title(args.check_title);
         if args.check_title {
             verbose_print(args, "Reading response bodies to record HTML titles");
@@ -851,12 +859,9 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
 
         let mut js_extractor = JsEndpointExtractor::new();
         apply_network_settings_to_tester(&mut js_extractor, network_settings);
+        // --rate-limit arrives with the network settings: this tester
+        // re-requests a large slice of the result set from the target.
         js_extractor.with_max_files(args.max_js_files);
-        // Providers pace themselves with --rate-limit; this tester re-requests
-        // a large slice of the result set from the target, so it must too.
-        if network_settings.scope != NetworkScope::Providers {
-            js_extractor.with_rate_limit(network_settings.rate_limit);
-        }
         testers.push(Box::new(js_extractor));
     }
 
@@ -867,11 +872,6 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         let mut spec_expander = SpecExpander::new();
         apply_network_settings_to_tester(&mut spec_expander, network_settings);
         spec_expander.with_max_files(args.max_spec_files);
-        // Same reasoning as the JS extractor: these requests go to the target,
-        // not to a provider, so --rate-limit has to reach them.
-        if network_settings.scope != NetworkScope::Providers {
-            spec_expander.with_rate_limit(network_settings.rate_limit);
-        }
         testers.push(Box::new(spec_expander));
     }
 
@@ -926,7 +926,7 @@ pub fn build_archive_body_extractor(
     // applies is the one the user set for it — `--rate-limit-by wayback=N`
     // first, the global `--rate-limit` otherwise. The tester scope rule is
     // honoured the way it is for the other settings.
-    if network_settings.scope != crate::network::NetworkScope::Providers {
+    if network_settings.scope != NetworkScope::Providers {
         let rate = args
             .rate_limit_overrides()
             .get("wayback")
@@ -1017,22 +1017,26 @@ mod tests {
         // that collected none is unchanged); plain text is a pipeline contract
         // and stays one bare URL per line unless --show-meta asks otherwise.
         let mut args = build_test_args();
-        args.format = "plain".to_string();
-        assert!(!wants_response_meta(&args));
+        args.format = output::Format::Plain;
+        assert!(!wants_meta(&args));
 
         args.show_meta = true;
-        assert!(wants_response_meta(&args));
+        assert!(wants_meta(&args));
 
         args.show_meta = false;
-        for format in ["json", "jsonl", "csv", "JSON"] {
-            args.format = format.to_string();
-            assert!(wants_response_meta(&args), "{format}");
+        for format in [
+            output::Format::Json,
+            output::Format::Jsonl,
+            output::Format::Csv,
+        ] {
+            args.format = format;
+            assert!(wants_meta(&args), "{format:?}");
         }
 
         // A wordlist carries no per-URL fields at all, so there is nothing to
         // populate them for.
-        args.format = "wordlist".to_string();
-        assert!(!wants_response_meta(&args));
+        args.format = output::Format::Wordlist;
+        assert!(!wants_meta(&args));
     }
 
     #[test]

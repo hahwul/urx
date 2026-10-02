@@ -1,4 +1,5 @@
 /// Standard filter presets for common URL filtering scenarios
+#[derive(Clone, Copy)]
 pub enum FilterPreset {
     /// Excludes common web resource files (js, css, ico, ttf, etc.)
     NoResources,
@@ -53,22 +54,12 @@ pub enum PathRule {
     PathEndsWith(String),
 }
 
-impl PathRule {
-    fn contains(s: &str) -> Self {
-        PathRule::Contains(s.to_string())
-    }
-
-    fn ends_with(s: &str) -> Self {
-        PathRule::PathEndsWith(s.to_string())
-    }
-}
-
 fn rules(contains: &[&str], ends_with: &[&str]) -> Vec<PathRule> {
-    contains
+    let contains = contains.iter().map(|s| PathRule::Contains(s.to_string()));
+    let ends = ends_with
         .iter()
-        .map(|s| PathRule::contains(s))
-        .chain(ends_with.iter().map(|s| PathRule::ends_with(s)))
-        .collect()
+        .map(|s| PathRule::PathEndsWith(s.to_string()));
+    contains.chain(ends).collect()
 }
 
 /// Common file extensions for various resource types
@@ -277,26 +268,33 @@ fn api_path_rules() -> Vec<PathRule> {
     )
 }
 
-/// Canonical preset name for each variant, in the order `--help` should list
-/// them. Used to validate `--preset` and to name the alternatives in the error.
-pub const PRESET_IDS: [&str; 17] = [
-    "no-resources",
-    "no-images",
-    "no-fonts",
-    "no-documents",
-    "no-videos",
-    "no-audio",
-    "only-js",
-    "only-style",
-    "only-fonts",
-    "only-documents",
-    "only-videos",
-    "only-audio",
-    "only-images",
-    "only-secrets",
-    "only-backup",
-    "only-config",
-    "only-api",
+/// Every preset with its canonical `--preset` name and the other spelling it
+/// accepts, in the order `--help` should list them.
+///
+/// Both singular and plural spellings are accepted for every preset, so
+/// `only-image` and `only-images` mean the same thing.
+const PRESETS: [(FilterPreset, &str, &str); 17] = [
+    (FilterPreset::NoResources, "no-resources", "no-resource"),
+    (FilterPreset::NoImages, "no-images", "no-image"),
+    (FilterPreset::NoFonts, "no-fonts", "no-font"),
+    (FilterPreset::NoDocuments, "no-documents", "no-document"),
+    (FilterPreset::NoVideos, "no-videos", "no-video"),
+    (FilterPreset::NoAudio, "no-audio", "no-audios"),
+    (FilterPreset::OnlyJs, "only-js", "only-js"),
+    (FilterPreset::OnlyStyle, "only-style", "only-styles"),
+    (FilterPreset::OnlyFonts, "only-fonts", "only-font"),
+    (
+        FilterPreset::OnlyDocuments,
+        "only-documents",
+        "only-document",
+    ),
+    (FilterPreset::OnlyVideos, "only-videos", "only-video"),
+    (FilterPreset::OnlyAudio, "only-audio", "only-audios"),
+    (FilterPreset::OnlyImages, "only-images", "only-image"),
+    (FilterPreset::OnlySecrets, "only-secrets", "only-secret"),
+    (FilterPreset::OnlyBackup, "only-backup", "only-backups"),
+    (FilterPreset::OnlyConfig, "only-config", "only-configs"),
+    (FilterPreset::OnlyApi, "only-api", "only-apis"),
 ];
 
 /// Reject `--preset` values that name nothing.
@@ -316,126 +314,82 @@ pub fn validate_presets(presets: &[String]) -> anyhow::Result<()> {
     if unknown.is_empty() {
         return Ok(());
     }
+    let ids: Vec<&str> = PRESETS.iter().map(|(_, id, _)| *id).collect();
     Err(anyhow::anyhow!(
         "Unknown preset(s) in --preset: {}. Allowed values: {}",
         unknown.join(", "),
-        PRESET_IDS.join(", ")
+        ids.join(", ")
     ))
 }
 
+type Extensions = &'static [&'static str];
+
 impl FilterPreset {
-    /// Parse a preset string into a FilterPreset enum
-    ///
-    /// Both singular and plural spellings are accepted for every preset, so
-    /// `only-image` and `only-images` mean the same thing — the `no-*` family
-    /// already worked that way and the `only-*` family did not.
+    /// Parse a preset string (case-insensitive, either spelling).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "no-resource" | "no-resources" => Some(FilterPreset::NoResources),
-            "no-image" | "no-images" => Some(FilterPreset::NoImages),
-            "no-font" | "no-fonts" => Some(FilterPreset::NoFonts),
-            "no-document" | "no-documents" => Some(FilterPreset::NoDocuments),
-            "no-video" | "no-videos" => Some(FilterPreset::NoVideos),
-            "no-audio" | "no-audios" => Some(FilterPreset::NoAudio),
-            "only-js" => Some(FilterPreset::OnlyJs),
-            "only-style" | "only-styles" => Some(FilterPreset::OnlyStyle),
-            "only-font" | "only-fonts" => Some(FilterPreset::OnlyFonts),
-            "only-document" | "only-documents" => Some(FilterPreset::OnlyDocuments),
-            "only-video" | "only-videos" => Some(FilterPreset::OnlyVideos),
-            "only-audio" | "only-audios" => Some(FilterPreset::OnlyAudio),
-            "only-image" | "only-images" => Some(FilterPreset::OnlyImages),
-            "only-secret" | "only-secrets" => Some(FilterPreset::OnlySecrets),
-            "only-backup" | "only-backups" => Some(FilterPreset::OnlyBackup),
-            "only-config" | "only-configs" => Some(FilterPreset::OnlyConfig),
-            "only-api" | "only-apis" => Some(FilterPreset::OnlyApi),
-            _ => None,
+        let s = s.to_lowercase();
+        PRESETS
+            .iter()
+            .find(|(_, id, alias)| s == *id || s == *alias)
+            .map(|(preset, _, _)| *preset)
+    }
+
+    /// What this preset does: the extensions it drops, the extensions it
+    /// keeps, and the path shapes it keeps.
+    ///
+    /// Every `only-*` preset *keeps* its family and drops nothing. Returning
+    /// e.g. the image extensions as *exclusions* made `--preset only-images`
+    /// drop every image and keep everything else — the exact inverse of its
+    /// name. Only the security presets have path rules; the extension-family
+    /// presets predate them and must keep behaving exactly as they did.
+    fn spec(&self) -> (&'static [Extensions], Extensions, Vec<PathRule>) {
+        use FilterPreset::*;
+        match self {
+            NoResources => (
+                &[
+                    IMAGE_EXTENSIONS,
+                    FONT_EXTENSIONS,
+                    DOCUMENT_EXTENSIONS,
+                    AUDIO_EXTENSIONS,
+                    VIDEO_EXTENSIONS,
+                    JS_EXTENSIONS,
+                    STYLE_EXTENSIONS,
+                ],
+                &[],
+                vec![],
+            ),
+            NoImages => (&[IMAGE_EXTENSIONS], &[], vec![]),
+            NoFonts => (&[FONT_EXTENSIONS], &[], vec![]),
+            NoDocuments => (&[DOCUMENT_EXTENSIONS], &[], vec![]),
+            NoVideos => (&[VIDEO_EXTENSIONS], &[], vec![]),
+            NoAudio => (&[AUDIO_EXTENSIONS], &[], vec![]),
+            OnlyJs => (&[], JS_EXTENSIONS, vec![]),
+            OnlyStyle => (&[], STYLE_EXTENSIONS, vec![]),
+            OnlyFonts => (&[], FONT_EXTENSIONS, vec![]),
+            OnlyDocuments => (&[], DOCUMENT_EXTENSIONS, vec![]),
+            OnlyVideos => (&[], VIDEO_EXTENSIONS, vec![]),
+            OnlyAudio => (&[], AUDIO_EXTENSIONS, vec![]),
+            OnlyImages => (&[], IMAGE_EXTENSIONS, vec![]),
+            OnlySecrets => (&[], SECRET_EXTENSIONS, secret_path_rules()),
+            OnlyBackup => (&[], BACKUP_EXTENSIONS, backup_path_rules()),
+            OnlyConfig => (&[], CONFIG_EXTENSIONS, config_path_rules()),
+            OnlyApi => (&[], API_EXTENSIONS, api_path_rules()),
         }
     }
 
     /// Get excluded extensions for this preset
     pub fn get_exclude_extensions(&self) -> Vec<String> {
-        match self {
-            FilterPreset::NoResources => {
-                let mut extensions = Vec::new();
-                extensions.extend(IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions.extend(FONT_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions.extend(DOCUMENT_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions.extend(AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions.extend(VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions.extend(JS_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions.extend(STYLE_EXTENSIONS.iter().map(|&s| s.to_string()));
-                extensions
-            }
-            FilterPreset::NoImages => IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::NoFonts => FONT_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::NoDocuments => {
-                DOCUMENT_EXTENSIONS.iter().map(|&s| s.to_string()).collect()
-            }
-            FilterPreset::NoVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::NoAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            // An `only-*` preset narrows the result set with an *inclusion* list
-            // (see `get_extensions`); it excludes nothing.
-            FilterPreset::OnlyJs
-            | FilterPreset::OnlyStyle
-            | FilterPreset::OnlyFonts
-            | FilterPreset::OnlyDocuments
-            | FilterPreset::OnlyVideos
-            | FilterPreset::OnlyAudio
-            | FilterPreset::OnlyImages
-            | FilterPreset::OnlySecrets
-            | FilterPreset::OnlyBackup
-            | FilterPreset::OnlyConfig
-            | FilterPreset::OnlyApi => vec![],
-        }
+        self.spec()
+            .0
+            .concat()
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     /// Get included extensions for this preset
-    ///
-    /// Every `only-*` preset belongs here, not in
-    /// [`FilterPreset::get_exclude_extensions`]. Returning e.g. the image
-    /// extensions as *exclusions* made `--preset only-images` drop every image
-    /// and keep everything else — the exact inverse of its name.
     pub fn get_extensions(&self) -> Vec<String> {
-        match self {
-            FilterPreset::OnlyJs => JS_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyStyle => STYLE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyFonts => FONT_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyDocuments => {
-                DOCUMENT_EXTENSIONS.iter().map(|&s| s.to_string()).collect()
-            }
-            FilterPreset::OnlyVideos => VIDEO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyAudio => AUDIO_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyImages => IMAGE_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlySecrets => SECRET_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyBackup => BACKUP_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyConfig => CONFIG_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::OnlyApi => API_EXTENSIONS.iter().map(|&s| s.to_string()).collect(),
-            FilterPreset::NoResources
-            | FilterPreset::NoImages
-            | FilterPreset::NoFonts
-            | FilterPreset::NoDocuments
-            | FilterPreset::NoVideos
-            | FilterPreset::NoAudio => vec![],
-        }
-    }
-
-    /// Get excluded patterns for this preset
-    ///
-    /// These are merged into the filter's `--exclude-patterns` list, so a URL
-    /// containing any of them is dropped outright.
-    pub fn get_exclude_patterns(&self) -> Vec<String> {
-        vec![]
-    }
-
-    /// Get included patterns for this preset
-    ///
-    /// These land in the filter's `--patterns` list, which is *ANDed* with the
-    /// extension list — a URL has to satisfy both. That is the wrong shape for
-    /// the security presets (a backup is `report.bak` **or** `index.php~`), so
-    /// they express their path matching through [`FilterPreset::get_path_rules`]
-    /// instead and this stays empty for every preset.
-    pub fn get_patterns(&self) -> Vec<String> {
-        vec![]
+        self.spec().1.iter().map(|s| s.to_string()).collect()
     }
 
     /// Path shapes this preset accepts, ORed with [`FilterPreset::get_extensions`].
@@ -444,28 +398,9 @@ impl FilterPreset {
     /// list *or* one of these rules. The two have to be alternatives rather
     /// than requirements: `only-backup` must keep both `db.sql` (extension)
     /// and `index.php~` (path shape), and neither carries the other's marker.
+    /// (`--patterns` would not do: it is *ANDed* with the extension list.)
     pub fn get_path_rules(&self) -> Vec<PathRule> {
-        match self {
-            FilterPreset::OnlySecrets => secret_path_rules(),
-            FilterPreset::OnlyBackup => backup_path_rules(),
-            FilterPreset::OnlyConfig => config_path_rules(),
-            FilterPreset::OnlyApi => api_path_rules(),
-            // The extension-family presets predate path rules and must keep
-            // behaving exactly as they did.
-            FilterPreset::NoResources
-            | FilterPreset::NoImages
-            | FilterPreset::NoFonts
-            | FilterPreset::NoDocuments
-            | FilterPreset::NoVideos
-            | FilterPreset::NoAudio
-            | FilterPreset::OnlyJs
-            | FilterPreset::OnlyStyle
-            | FilterPreset::OnlyFonts
-            | FilterPreset::OnlyDocuments
-            | FilterPreset::OnlyVideos
-            | FilterPreset::OnlyAudio
-            | FilterPreset::OnlyImages => vec![],
-        }
+        self.spec().2
     }
 }
 
@@ -707,18 +642,6 @@ mod tests {
     }
 
     #[test]
-    fn test_preset_ids_cover_every_variant() {
-        // PRESET_IDS drives the error message, so a new preset that isn't listed
-        // there would be accepted by from_str yet absent from the help text.
-        for id in PRESET_IDS {
-            assert!(
-                FilterPreset::from_str(id).is_some(),
-                "{id} is listed but not parseable"
-            );
-        }
-    }
-
-    #[test]
     fn test_security_presets_parse_including_singular_aliases() {
         for (name, alias) in [
             ("only-secrets", "only-secret"),
@@ -749,7 +672,6 @@ mod tests {
             FilterPreset::OnlyApi,
         ] {
             assert!(preset.get_exclude_extensions().is_empty());
-            assert!(preset.get_exclude_patterns().is_empty());
             assert!(!preset.get_path_rules().is_empty());
         }
     }
@@ -758,7 +680,7 @@ mod tests {
     fn test_only_the_security_presets_define_path_rules() {
         // Regression guard: the 13 original presets predate path rules, and
         // adding one to any of them would change what it matches.
-        for id in PRESET_IDS {
+        for (_, id, _) in PRESETS {
             let preset = FilterPreset::from_str(id).expect(id);
             let is_new = matches!(
                 preset,
@@ -775,7 +697,7 @@ mod tests {
     fn test_path_rules_are_lower_case() {
         // They are compared against a lower-cased URL, so an upper-case
         // character in a rule could never match anything.
-        for id in PRESET_IDS {
+        for (_, id, _) in PRESETS {
             for rule in FilterPreset::from_str(id).expect(id).get_path_rules() {
                 let literal = match &rule {
                     PathRule::Contains(s) | PathRule::PathEndsWith(s) => s.clone(),
@@ -789,7 +711,7 @@ mod tests {
     fn test_preset_extension_lists_have_no_leading_dots() {
         // `Path::extension()` never reports the dot, so ".bak" in a table
         // would be a token that can never match.
-        for id in PRESET_IDS {
+        for (_, id, _) in PRESETS {
             let preset = FilterPreset::from_str(id).expect(id);
             for ext in preset
                 .get_extensions()
@@ -867,21 +789,6 @@ mod tests {
             .filter(|e| !seen.insert(**e))
             .collect();
         assert!(dupes.is_empty(), "duplicate image extensions: {dupes:?}");
-    }
-
-    #[test]
-    fn test_filter_preset_patterns() {
-        // Test that patterns are empty by default
-        for preset in [
-            FilterPreset::NoResources,
-            FilterPreset::NoImages,
-            FilterPreset::NoAudio,
-            FilterPreset::OnlyJs,
-            FilterPreset::OnlyStyle,
-        ] {
-            assert!(preset.get_patterns().is_empty());
-            assert!(preset.get_exclude_patterns().is_empty());
-        }
     }
 
     #[test]

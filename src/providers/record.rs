@@ -221,6 +221,7 @@ impl CaptureMeta {
     }
 
     /// Every distinct content digest seen for this URL.
+    #[cfg(test)]
     pub fn digests(&self) -> impl Iterator<Item = &str> {
         self.digests.iter().map(String::as_str)
     }

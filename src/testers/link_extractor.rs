@@ -9,9 +9,11 @@ use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
 
+use super::shared::{content_type, found, send};
 use super::Tester;
-use crate::network::client::{read_body_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
+use crate::network::client::read_body_capped;
+use crate::network::NetConfig;
+use crate::output::UrlData;
 
 /// Cap on bytes read from one page before parsing.
 ///
@@ -30,14 +32,8 @@ pub(crate) const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 /// skipped — running an HTML parser over binary yields nothing but the bytes are
 /// downloaded either way.
 pub(crate) fn is_html_like(headers: &reqwest::header::HeaderMap) -> bool {
-    match headers
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-    {
-        Some(ct) => {
-            let ct = ct.to_ascii_lowercase();
-            ct.contains("html") || ct.contains("xml") || ct.contains("text/plain")
-        }
+    match content_type(headers) {
+        Some(ct) => ct.contains("html") || ct.contains("xml") || ct.contains("text/plain"),
         None => true,
     }
 }
@@ -151,22 +147,14 @@ fn meta_refresh_target(element: &Element) -> Option<&str> {
 /// HTML link extractor that finds URLs in web pages
 #[derive(Clone)]
 pub struct LinkExtractor {
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
-    /// target itself, so the user's headers belong on those requests.
-    headers: CustomHeaders,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
+    net: NetConfig,
     /// One HTTP client, built lazily on first use and reused for every tested
     /// URL. `reqwest::Client` pools connections internally, so building it once
     /// (rather than per URL) lets TLS handshakes and keep-alive connections be
     /// reused across the many URLs an `--extract-links` run can touch. Shared
     /// across `clone_box` clones via `Arc<OnceCell>` so all concurrent workers
     /// share a single connection pool. The cell is populated only after the
-    /// `with_*` setters have applied network settings, so it always reflects
+    /// `with_network` has applied the settings, so it always reflects
     /// the final configuration.
     client: Arc<OnceCell<Client>>,
 }
@@ -175,25 +163,8 @@ impl LinkExtractor {
     /// Creates a new LinkExtractor with default settings
     pub fn new() -> Self {
         LinkExtractor {
-            proxy: None,
-            proxy_auth: None,
-            headers: CustomHeaders::default(),
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
+            net: NetConfig::default(),
             client: Arc::new(OnceCell::new()),
-        }
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: self.headers.clone(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
         }
     }
 
@@ -202,7 +173,7 @@ impl LinkExtractor {
     /// retries rather than caching the error.
     async fn client(&self) -> Result<&Client> {
         self.client
-            .get_or_try_init(|| async { self.client_config().build_client() })
+            .get_or_try_init(|| async { self.net.http.build_client() })
             .await
     }
 
@@ -287,171 +258,53 @@ impl Tester for LinkExtractor {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.client().await?;
 
-            // Perform the request with retries
-            let mut last_error = None;
-
-            for attempt in 0..=self.retries {
-                match client.get(url).send().await {
-                    Ok(response) => {
-                        // Get the base URL for resolving relative URLs
-                        let base_url = match Url::parse(url) {
-                            Ok(parsed_url) => parsed_url,
-                            Err(_) => {
-                                return Err(anyhow::anyhow!("Failed to parse URL: {}", url));
-                            }
-                        };
-
-                        // An error page still has a body, and its nav/footer is
-                        // full of links — mining those would inject the site's
-                        // chrome into the results as if it had been discovered.
-                        // A non-2xx page has no links worth extracting.
-                        if !response.status().is_success() {
-                            return Ok(Vec::new());
-                        }
-
-                        // Nor is there anything to extract from a response that
-                        // isn't markup.
-                        if !is_html_like(response.headers()) {
-                            return Ok(Vec::new());
-                        }
-
-                        // Get the HTML content, bounded so one huge page can't
-                        // exhaust memory.
-                        let html_content = read_body_capped(response, MAX_BODY_BYTES).await?;
-
-                        // Extract links using the helper function
-                        let links = Self::extract_links(&base_url, &html_content);
-
-                        // Return the list of links
-                        return Ok(links);
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        // Back off only when another attempt follows; a sleep
-                        // after the final one is pure latency, paid once per
-                        // unreachable URL (and even with `--retries 0`).
-                        if attempt < self.retries {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        continue;
-                    }
+            // Unpaced: --rate-limit only ever reached the body-mining testers.
+            let response = send(self.net.retries, None, || client.get(url))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to extract links from {}: {:?}", url, e))?;
+            // Get the base URL for resolving relative URLs
+            let base_url = match Url::parse(url) {
+                Ok(parsed_url) => parsed_url,
+                Err(_) => {
+                    return Err(anyhow::anyhow!("Failed to parse URL: {}", url));
                 }
+            };
+
+            // An error page still has a body, and its nav/footer is
+            // full of links — mining those would inject the site's
+            // chrome into the results as if it had been discovered.
+            // A non-2xx page has no links worth extracting.
+            if !response.status().is_success() {
+                return Ok(Vec::new());
             }
 
-            // If we get here, all retries failed
-            Err(anyhow::anyhow!(
-                "Failed to extract links from {}: {:?}",
-                url,
-                last_error
-            ))
+            // Nor is there anything to extract from a response that
+            // isn't markup.
+            if !is_html_like(response.headers()) {
+                return Ok(Vec::new());
+            }
+
+            // Get the HTML content, bounded so one huge page can't
+            // exhaust memory.
+            let html_content = read_body_capped(response, MAX_BODY_BYTES).await?;
+
+            Ok(found(Self::extract_links(&base_url, &html_content)))
         })
     }
 
-    /// Sets the request timeout in seconds
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    /// Sets the number of retry attempts for failed requests
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    /// Enables or disables the use of random User-Agent headers
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    /// Enables or disables SSL certificate verification
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    /// Sets the proxy server for HTTP requests
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    /// Sets the proxy authentication credentials (username:password)
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_headers(&mut self, headers: CustomHeaders) {
-        self.headers = headers;
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_link_extractor_new() {
-        let extractor = LinkExtractor::new();
-        assert_eq!(extractor.timeout, 30);
-        assert_eq!(extractor.retries, 3);
-        assert!(!extractor.random_agent);
-        assert!(!extractor.insecure);
-        assert_eq!(extractor.proxy, None);
-        assert_eq!(extractor.proxy_auth, None);
-    }
-
-    #[test]
-    fn test_link_extractor_with_timeout() {
-        let mut extractor = LinkExtractor::new();
-        extractor.with_timeout(60);
-        assert_eq!(extractor.timeout, 60);
-    }
-
-    #[test]
-    fn test_link_extractor_with_retries() {
-        let mut extractor = LinkExtractor::new();
-        extractor.with_retries(5);
-        assert_eq!(extractor.retries, 5);
-    }
-
-    #[test]
-    fn test_link_extractor_with_random_agent() {
-        let mut extractor = LinkExtractor::new();
-        extractor.with_random_agent(true);
-        assert!(extractor.random_agent);
-    }
-
-    #[test]
-    fn test_link_extractor_with_insecure() {
-        let mut extractor = LinkExtractor::new();
-        extractor.with_insecure(true);
-        assert!(extractor.insecure);
-    }
-
-    #[test]
-    fn test_link_extractor_with_proxy() {
-        let mut extractor = LinkExtractor::new();
-        extractor.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            extractor.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_link_extractor_with_proxy_auth() {
-        let mut extractor = LinkExtractor::new();
-        extractor.with_proxy_auth(Some("username:password".to_string()));
-        assert_eq!(extractor.proxy_auth, Some("username:password".to_string()));
-    }
-
-    #[test]
-    fn test_link_extractor_clone_box() {
-        let extractor = LinkExtractor::new();
-        let _cloned = extractor.clone_box();
-        // Just verifying the method works, actual equality testing would be complex with Box<dyn>
-    }
+    use crate::testers::urls;
 
     #[test]
     fn test_extract_links() {
@@ -723,6 +576,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/index.html", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         let base = server.url();
@@ -825,6 +679,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/gone", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert!(links.is_empty(), "{links:?}");
@@ -846,6 +701,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/photo.jpg", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert!(links.is_empty(), "{links:?}");
@@ -867,6 +723,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/bare", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert_eq!(links, vec!["https://example.com/found".to_string()]);
@@ -897,6 +754,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/big", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert!(
@@ -929,7 +787,10 @@ mod tests {
         // well, so an unreachable page cost half a second even with
         // `--retries 0` — once per URL, across a whole --extract-links run.
         let mut extractor = LinkExtractor::new();
-        extractor.with_retries(0);
+        extractor.with_network(NetConfig {
+            retries: 0,
+            ..Default::default()
+        });
 
         let start = std::time::Instant::now();
         let result = extractor.test_url("http://127.0.0.1:0/nope").await;
@@ -980,10 +841,12 @@ mod tests {
         let first = extractor
             .test_url(&format!("{}/p1", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let second = extractor
             .test_url(&format!("{}/p2", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert_eq!(first, vec!["https://example.com/one".to_string()]);

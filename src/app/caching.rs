@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 
 use crate::app::selection::effective_provider_ids;
-use crate::cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
+use crate::cache::{CacheEntry, CacheFilters, CacheKey, CacheManager, CacheType};
 use crate::cli::Args;
 use crate::filters::HostValidator;
 use crate::progress::ProgressManager;
@@ -25,12 +25,12 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
         return Ok(None);
     }
 
-    match args.cache_type.as_str() {
-        "sqlite" => {
-            let cache_path = args.cache_path.clone().unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                std::path::PathBuf::from(home).join(".urx").join("cache.db")
-            });
+    match args.cache_type {
+        CacheType::Sqlite => {
+            let cache_path = args
+                .cache_path
+                .clone()
+                .unwrap_or_else(crate::cache::default_sqlite_path);
 
             verbose_print(
                 args,
@@ -39,7 +39,7 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
             Ok(Some(CacheManager::new_sqlite(cache_path).await?))
         }
         #[cfg(feature = "redis-cache")]
-        "redis" => {
+        CacheType::Redis => {
             let Some(redis_url) = &args.redis_url else {
                 if !args.silent {
                     eprintln!("Error: Redis cache type selected but no --redis-url provided");
@@ -50,17 +50,11 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
             Ok(Some(CacheManager::new_redis(redis_url).await?))
         }
         #[cfg(not(feature = "redis-cache"))]
-        "redis" => {
+        CacheType::Redis => {
             if !args.silent {
                 eprintln!("Error: Redis cache support not compiled in. Use 'sqlite' or compile with --features redis-cache");
             }
             Err(anyhow::anyhow!("Redis cache not supported"))
-        }
-        other => {
-            if !args.silent {
-                eprintln!("Error: Unknown cache type '{other}'. Use 'sqlite' or 'redis'");
-            }
-            Err(anyhow::anyhow!("Invalid cache type"))
         }
     }
 }
@@ -125,11 +119,6 @@ fn merge_entry(target: &mut HashMap<String, UrlEntry>, url: String, entry: &UrlE
     slot.meta.merge(&entry.meta);
 }
 
-/// Record a URL the cache returned: no provider, no metadata, just the URL.
-fn merge_cached_url(target: &mut HashMap<String, UrlEntry>, url: String) {
-    target.entry(url).or_default();
-}
-
 /// Run every domain, consulting and updating the cache.
 pub async fn process_domains_with_cache(
     domains: Vec<String>,
@@ -159,11 +148,12 @@ pub async fn process_domains_with_cache(
 
         // Incremental runs always re-fetch: the cached set is the baseline they
         // diff against, not a substitute for fetching.
-        if !args.incremental && cache.is_valid(&cache_key, args.cache_ttl).await? {
-            if let Some(cached_entry) = cache.get_cached_urls(&cache_key).await? {
+        if !args.incremental {
+            if let Some(cached_entry) = cache.get_fresh(&cache_key, args.cache_ttl).await? {
                 verbose_print(args, format!("Using cached results for domain: {domain}"));
+                // Cached URLs carry no provider or metadata: an empty entry.
                 for url in cached_entry.urls {
-                    merge_cached_url(&mut final_result.urls, url);
+                    final_result.urls.entry(url).or_default();
                 }
                 continue;
             }
@@ -174,7 +164,7 @@ pub async fn process_domains_with_cache(
 
     if domains_to_process.is_empty() {
         cache
-            .cleanup_expired(args.cache_ttl.saturating_mul(2))
+            .delete_expired(args.cache_ttl.saturating_mul(2))
             .await?;
         return Ok(final_result);
     }
@@ -246,7 +236,7 @@ pub async fn process_domains_with_cache(
     // Saturating: `--cache-ttl` is an unvalidated u64, and `* 2` on a large one
     // overflows (a debug-build panic, a wrap in release).
     cache
-        .cleanup_expired(args.cache_ttl.saturating_mul(2))
+        .delete_expired(args.cache_ttl.saturating_mul(2))
         .await?;
 
     Ok(final_result)
@@ -257,7 +247,7 @@ mod tests {
     use super::*;
     use crate::app::keys::KEYED_PROVIDER_IDS;
     use crate::cache;
-    use crate::test_support::{build_test_args, env_mutex, EnvGuard, MockProvider};
+    use crate::test_support::{build_test_args, EnvGuard, MockProvider, ENV};
 
     struct FailingCacheBackend;
 
@@ -274,33 +264,12 @@ mod tests {
         async fn delete(&self, _key: &CacheKey) -> Result<()> {
             Err(anyhow::anyhow!("cache delete failed"))
         }
-
-        async fn cleanup_expired(&self, _ttl_seconds: u64) -> Result<()> {
-            Err(anyhow::anyhow!("cache cleanup failed"))
-        }
-
-        async fn exists(&self, _key: &CacheKey) -> Result<bool> {
-            Err(anyhow::anyhow!("cache exists failed"))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_cache_manager_invalid_type_errors() {
-        let mut args = build_test_args();
-        args.cache_type = "bogus".to_string();
-
-        match create_cache_manager(&args).await {
-            Ok(_) => panic!("expected an unknown cache type to error"),
-            Err(e) => assert!(e.to_string().contains("Invalid cache type"), "{e}"),
-        }
     }
 
     #[tokio::test]
     async fn test_create_cache_manager_is_none_under_no_cache() {
         let mut args = build_test_args();
         args.no_cache = true;
-        // --no-cache wins even over a cache type that would otherwise error.
-        args.cache_type = "bogus".to_string();
 
         // `CacheManager` isn't `Debug`, so match rather than unwrap.
         match create_cache_manager(&args).await {
@@ -356,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_cache_key_uses_effective_provider_ids() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "env-vt")]);
         let _unset = EnvGuard::unset(&[
             "URX_URLSCAN_API_KEY",
@@ -380,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_cache_key_changes_with_archive_scope() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&[
             "URX_VT_API_KEY",
             "URX_URLSCAN_API_KEY",
@@ -437,14 +406,6 @@ mod tests {
         async fn delete(&self, key: &CacheKey) -> Result<()> {
             self.entries.lock().unwrap().remove(&Self::id(key));
             Ok(())
-        }
-
-        async fn cleanup_expired(&self, _ttl_seconds: u64) -> Result<()> {
-            Ok(())
-        }
-
-        async fn exists(&self, key: &CacheKey) -> Result<bool> {
-            Ok(self.entries.lock().unwrap().contains_key(&Self::id(key)))
         }
     }
 

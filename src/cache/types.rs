@@ -163,21 +163,6 @@ impl CacheFilters {
     }
 }
 
-/// The instant before which an entry counts as expired, for a TTL in seconds.
-///
-/// `--cache-ttl` is an unvalidated `u64` (and callers double it for the cleanup
-/// sweep), so the value routinely exceeds what `chrono::Duration` accepts:
-/// `Duration::seconds` *panics* past its bounds, and casting a huge `u64` to
-/// `i64` wraps negative, which puts the cutoff in the *future* and makes a
-/// cleanup delete the entire cache. Saturating instead means a TTL that large
-/// reads as "never expire": the cutoff falls back to the earliest representable
-/// instant, which no stored entry precedes.
-pub fn expiry_cutoff(ttl_seconds: u64) -> DateTime<Utc> {
-    chrono::Duration::try_seconds(ttl_seconds.min(i64::MAX as u64) as i64)
-        .and_then(|d| Utc::now().checked_sub_signed(d))
-        .unwrap_or(DateTime::<Utc>::MIN_UTC)
-}
-
 /// Cache entry containing URLs and metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -220,11 +205,11 @@ pub trait CacheBackend: Send + Sync {
     /// Delete a cache entry
     async fn delete(&self, key: &CacheKey) -> Result<()>;
 
-    /// Clean up expired entries
-    async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()>;
-
-    /// Check if a key exists in the cache
-    async fn exists(&self, key: &CacheKey) -> Result<bool>;
+    /// The whole-store side of this backend, for the post-run expiry sweep.
+    /// Test backends that only serve a scan leave it `None`.
+    fn admin(&self) -> Option<&dyn super::CacheAdmin> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -306,32 +291,6 @@ mod tests {
         // Simulate old entry
         entry.timestamp = Utc::now() - chrono::Duration::hours(2);
         assert!(entry.is_expired(3600)); // Should be expired
-    }
-
-    #[test]
-    fn test_expiry_cutoff_saturates_instead_of_panicking_or_wrapping() {
-        // `--cache-ttl` is an unvalidated u64 and callers double it. The raw
-        // conversion panics past chrono's bounds, and `u64 as i64` wraps a huge
-        // TTL negative — which puts the cutoff in the *future* and makes a
-        // cleanup sweep delete every entry in the cache.
-        let now = Utc::now();
-        for ttl in [
-            u64::MAX,
-            u64::MAX / 2,
-            10_000_000_000_000_000,
-            i64::MAX as u64,
-        ] {
-            let cutoff = expiry_cutoff(ttl);
-            assert!(
-                cutoff < now,
-                "a huge TTL must never push the cutoff forward: ttl={ttl} cutoff={cutoff}"
-            );
-        }
-
-        // Ordinary TTLs still land where they should.
-        let hour = expiry_cutoff(3600);
-        assert!((now - hour).num_seconds() >= 3599);
-        assert!((now - hour).num_seconds() <= 3601);
     }
 
     #[test]

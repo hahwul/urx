@@ -27,13 +27,13 @@ use app::pipeline::{
     apply_meta_filters, apply_url_filters, apply_url_transformations, build_archive_body_extractor,
     build_extracted_link_filter, build_stream_sink, build_testers, collect_domains,
     read_urls_from_files, should_check_status, validate_result_filters, validate_stream_options,
+    wants_meta,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::{initialize_providers, validate_selection_flags};
 use cli::{Args, CliProvided};
 use config::Config;
 use network::NetworkSettings;
-use output::create_outputter;
 use progress::ProgressManager;
 use runner::{process_domains, ProviderRunResult, ProviderStats};
 use tester_manager::process_urls_with_testers;
@@ -44,24 +44,16 @@ use utils::verbose_print;
 fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
     // Must run before either config layer: afterwards there is no way to tell a
     // key the user supplied from one a config file filled in.
-    let direct = seed_api_keys_from_env(args);
-    let direct_notify = seed_notify_urls_from_env(args);
+    let supplied = config::CliSuppliedKeys {
+        api_keys: seed_api_keys_from_env(args),
+        notify: seed_notify_urls_from_env(args),
+    };
 
     Config::load(args)?.apply_to_args(args, provided);
 
     // The provider-config file is separate from the main config and overrides
     // it, but still loses to anything supplied on the CLI or in the environment.
-    config::ProviderKeysConfig::load(args)?.apply_to_args(
-        args,
-        config::CliSuppliedKeys {
-            vt: direct.vt,
-            urlscan: direct.urlscan,
-            zoomeye: direct.zoomeye,
-            github: direct.github,
-            bevigil: direct.bevigil,
-            notify: direct_notify,
-        },
-    );
+    config::ProviderKeysConfig::load(args)?.apply_to_args(args, supplied);
 
     Ok(())
 }
@@ -73,12 +65,7 @@ fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
 fn seed_notify_urls_from_env(args: &mut Args) -> bool {
     if args.notify.is_empty() {
         if let Ok(raw) = std::env::var("URX_NOTIFY_URL") {
-            args.notify = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|u| !u.is_empty())
-                .map(str::to_string)
-                .collect();
+            args.notify = utils::split_csv(&raw);
         }
     }
     !args.notify.is_empty()
@@ -282,10 +269,7 @@ async fn run_testers(
 fn attach_sources(final_urls: &mut [output::UrlData], run_result: &ProviderRunResult) {
     for entry in final_urls.iter_mut() {
         if let Some(found) = run_result.urls.get(&entry.url) {
-            let mut sources: Vec<String> = found.sources.iter().cloned().collect();
-            sources.sort();
-            sources.dedup();
-            entry.sources = sources;
+            *entry = std::mem::take(entry).with_sources(found.sources.iter().cloned().collect());
         }
     }
 }
@@ -306,25 +290,13 @@ fn attach_capture_meta(final_urls: &mut [output::UrlData], run_result: &Provider
     }
 }
 
-/// Whether capture metadata should reach the output.
-///
-/// The structured formats always take it: they omit absent keys, so a run that
-/// collected none is byte-identical to before the fields existed. Plain text is
-/// a pipeline contract — `urx target.com | httpx` must keep working — so there
-/// it is opt-in via `--show-meta`.
-fn wants_capture_meta(args: &Args) -> bool {
-    args.show_meta
-        || matches!(
-            args.format.to_lowercase().as_str(),
-            "json" | "jsonl" | "csv"
-        )
-}
-
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
 fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
-    let outputter = create_outputter(&args.format);
     let mut errors = Vec::new();
-    match outputter.output(final_urls, args.output.clone(), args.silent) {
+    match args
+        .format
+        .output(final_urls, args.output.clone(), args.silent)
+    {
         Ok(()) => {
             if let Some(path) = &args.output {
                 verbose_print(args, format!("Results written to: {}", path.display()));
@@ -335,7 +307,7 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
                 errors.push(format!("Error writing output: {e:#}"));
             } else if !args.silent {
                 // Preserve the existing best-effort behavior for stdout-only
-                // output. Outputters already treat a broken pipe as success,
+                // output. Output already treats a broken pipe as success,
                 // so `urx ... | head` remains successful.
                 eprintln!("Error writing output: {e}");
             }
@@ -343,7 +315,7 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     }
 
     if let Some(dir) = &args.output_dir {
-        match write_per_domain_output(final_urls, dir, &args.format, args.silent) {
+        match write_per_domain_output(final_urls, dir, args.format, args.silent) {
             Ok(()) => verbose_print(
                 args,
                 format!("Per-domain results written under: {}", dir.display()),
@@ -373,10 +345,10 @@ async fn main() -> Result<()> {
     // config layers, the network, or the domain list — these flags are useful
     // on their own, with no target named.
     if let Some(shell) = args.completions {
-        return app::shell::print_completions(shell);
+        return app::shell::write_stdout(&app::shell::completion_script(shell));
     }
     if args.manpage {
-        return app::shell::print_man_page();
+        return app::shell::write_stdout(&app::shell::man_page()?);
     }
     if args.list_providers {
         print_provider_list(&args);
@@ -488,7 +460,7 @@ async fn main() -> Result<()> {
     if args.show_sources {
         attach_sources(&mut final_urls, &run_result);
     }
-    if wants_capture_meta(&args) {
+    if wants_meta(&args) {
         attach_capture_meta(&mut final_urls, &run_result);
     }
 
@@ -561,22 +533,6 @@ mod tests {
         .expect_err("a run with no resolvable target must not succeed");
 
         assert!(err.to_string().contains("No domains provided"), "{err}");
-    }
-
-    #[test]
-    fn metadata_reaches_structured_formats_but_not_bare_plain_output() {
-        // Plain output is a pipeline contract: `urx target.com | httpx` must
-        // keep seeing one bare URL per line unless the user opts in.
-        let plain = Args::parse_from(["urx", "example.com"]);
-        assert!(!wants_capture_meta(&plain));
-
-        let plain_opt_in = Args::parse_from(["urx", "--show-meta", "example.com"]);
-        assert!(wants_capture_meta(&plain_opt_in));
-
-        for format in ["json", "jsonl", "csv", "JSON"] {
-            let args = Args::parse_from(["urx", "-f", format, "example.com"]);
-            assert!(wants_capture_meta(&args), "{format} should carry metadata");
-        }
     }
 
     #[test]
@@ -767,8 +723,8 @@ mod tests {
     /// the API-key variables.
     #[test]
     fn notify_url_env_var_fills_only_an_empty_flag() {
-        use crate::test_support::{env_mutex, EnvGuard};
-        let _lock = env_mutex().lock().unwrap();
+        use crate::test_support::{EnvGuard, ENV};
+        let _lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[(
             "URX_NOTIFY_URL",
             "https://hooks.example/env1, https://hooks.example/env2,",

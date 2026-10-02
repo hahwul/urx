@@ -49,22 +49,12 @@ pub fn man_page() -> io::Result<Vec<u8>> {
 
 /// Write `bytes` to stdout, treating a reader that hung up (`| head`) as a
 /// clean stop rather than a failure — the same contract the URL writer uses.
-fn write_stdout(bytes: &[u8]) -> Result<()> {
+pub fn write_stdout(bytes: &[u8]) -> Result<()> {
     let mut out = io::stdout();
     match out.write_all(bytes).and_then(|()| out.flush()) {
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         other => Ok(other?),
     }
-}
-
-/// `--completions <SHELL>`: print the script and exit.
-pub fn print_completions(shell: Shell) -> Result<()> {
-    write_stdout(&completion_script(shell))
-}
-
-/// `--manpage`: print the roff source and exit.
-pub fn print_man_page() -> Result<()> {
-    write_stdout(&man_page()?)
 }
 
 #[cfg(test)]

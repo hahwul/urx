@@ -1,10 +1,9 @@
 /// Implements different URL output formatters
 use super::UrlData;
 use crate::utils::url::wordlist_terms;
-use colored::*;
+use console::style;
 use serde::Serialize;
 use std::borrow::Cow;
-use std::fmt;
 
 /// Helper struct for JSON serialization with guaranteed field order
 /// (url, status, sources, the archive metadata, then what a live `--check-status`
@@ -57,182 +56,95 @@ impl<'a> JsonUrlEntry<'a> {
     }
 }
 
-/// Formatter trait for converting URL data to different output formats
-pub trait Formatter: fmt::Debug + Send + Sync {
-    /// Format a URL data entry to a string representation
+/// An output format, chosen by `--format`.
+///
+/// Variants carry `//` rather than doc comments: clap would otherwise turn them
+/// into a per-value list in `--help`, which the flag's own help already gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Format {
+    // One URL per line.
+    Plain,
+    // A single JSON array of entries.
+    Json,
+    // JSON Lines: one independent JSON object per line.
+    Jsonl,
+    // CSV with a `url` column plus whichever optional columns are populated.
+    Csv,
+    // The path segments and parameter names the URLs are built from,
+    // deduplicated across the run, one term per line.
+    Wordlist,
+}
+
+impl Format {
+    /// Format one entry on its own.
     ///
-    /// The is_last parameter indicates whether this is the last item
-    /// in a sequence, which can be important for certain formats like JSON
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String;
-
-    /// Create a boxed clone of this formatter
-    fn clone_box(&self) -> Box<dyn Formatter>;
-}
-
-impl Clone for Box<dyn Formatter> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
-
-/// Plain text formatter that outputs URLs one per line
-#[derive(Debug, Clone)]
-pub struct PlainFormatter;
-
-impl PlainFormatter {
-    /// Create a new plain text formatter
-    pub fn new() -> Self {
-        PlainFormatter
-    }
-}
-
-impl Formatter for PlainFormatter {
-    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        let url = escape_plain_field(&url_data.url);
-        let mut line = match &url_data.status {
-            Some(status) => {
-                let status = escape_plain_field(status);
-                let status_code_str = status.split_whitespace().next().unwrap_or("");
-                let colored_status = match status_code_str.parse::<u16>() {
-                    Ok(code) => match code {
-                        200..=299 => status.green(),
-                        300..=399 => status.yellow(),
-                        400..=499 => status.red(),
-                        500..=599 => status.magenta(),
-                        _ => status.normal(),
-                    },
-                    Err(_) => status.normal(),
-                };
-                format!("{url} [{colored_status}]")
+    /// `is_last` matters only to JSON, whose entries are comma-separated.
+    /// JSON Lines differs exactly there: no entry depends on its position, so
+    /// output stays valid when truncated, appended to, or consumed a line at a
+    /// time. A CSV row carries only the columns this entry has, so it is
+    /// self-consistent (no dangling commas). A wordlist entry renders its own
+    /// terms (sorted, no repeats); the run-wide union is [`Format::output`]'s
+    /// job, which is also why `--format wordlist` is batch-only.
+    pub fn format(self, url_data: &UrlData, is_last: bool) -> String {
+        match self {
+            Format::Plain => plain_line(url_data),
+            Format::Json => {
+                let json = json_entry(url_data);
+                if is_last {
+                    format!("{json}\n")
+                } else {
+                    format!("{json},")
+                }
             }
-            None => url,
-        };
-        if !url_data.sources.is_empty() {
-            let sources = escape_plain_field(&url_data.sources.join(","));
-            line.push_str(&format!(" [{}]", sources.cyan()));
-        }
-        // Only reached when `--show-meta` asked for it: the caller leaves these
-        // fields empty otherwise, so plain output stays a stable pipeline
-        // contract by default.
-        let meta = plain_meta(url_data);
-        if !meta.is_empty() {
-            line.push_str(&format!(" [{}]", meta.blue()));
-        }
-        line.push('\n');
-        line
-    }
-
-    fn clone_box(&self) -> Box<dyn Formatter> {
-        Box::new(self.clone())
-    }
-}
-
-/// JSON formatter that outputs URLs as JSON objects
-#[derive(Debug, Clone)]
-pub struct JsonFormatter;
-
-impl JsonFormatter {
-    /// Create a new JSON formatter
-    pub fn new() -> Self {
-        JsonFormatter
-    }
-}
-
-impl Formatter for JsonFormatter {
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        let json = serde_json::to_string(&JsonUrlEntry::from_data(url_data)).unwrap_or_default();
-
-        if is_last {
-            format!("{json}\n")
-        } else {
-            format!("{json},")
+            Format::Jsonl => format!("{}\n", json_entry(url_data)),
+            Format::Csv => csv_row(url_data, &CsvLayout::for_row(url_data)),
+            Format::Wordlist => {
+                let mut terms = wordlist_terms(&url_data.url);
+                terms.sort();
+                terms.dedup();
+                terms.iter().map(|term| format!("{term}\n")).collect()
+            }
         }
     }
-
-    fn clone_box(&self) -> Box<dyn Formatter> {
-        Box::new(self.clone())
-    }
 }
 
-/// JSON Lines formatter: one self-contained JSON object per line.
-///
-/// Unlike [`JsonFormatter`], no entry depends on its position — there is no
-/// enclosing array and no separating comma — so output stays valid when it is
-/// truncated, appended to, or consumed a line at a time (`jq -c`, `head`, or a
-/// streaming run that cannot know which record is last).
-#[derive(Debug, Clone)]
-pub struct JsonLinesFormatter;
-
-impl JsonLinesFormatter {
-    /// Create a new JSON Lines formatter
-    pub fn new() -> Self {
-        JsonLinesFormatter
-    }
+fn json_entry(url_data: &UrlData) -> String {
+    serde_json::to_string(&JsonUrlEntry::from_data(url_data)).unwrap_or_default()
 }
 
-impl Formatter for JsonLinesFormatter {
-    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        let json = serde_json::to_string(&JsonUrlEntry::from_data(url_data)).unwrap_or_default();
-        format!("{json}\n")
+fn plain_line(url_data: &UrlData) -> String {
+    let url = escape_plain_field(&url_data.url);
+    let mut line = match &url_data.status {
+        Some(status) => {
+            let status = escape_plain_field(status);
+            let status_code_str = status.split_whitespace().next().unwrap_or("");
+            let colored_status = match status_code_str.parse::<u16>() {
+                Ok(code) => match code {
+                    200..=299 => style(status).green(),
+                    300..=399 => style(status).yellow(),
+                    400..=499 => style(status).red(),
+                    500..=599 => style(status).magenta(),
+                    _ => style(status),
+                },
+                Err(_) => style(status),
+            };
+            format!("{url} [{colored_status}]")
+        }
+        None => url,
+    };
+    if !url_data.sources.is_empty() {
+        let sources = escape_plain_field(&url_data.sources.join(","));
+        line.push_str(&format!(" [{}]", style(sources).cyan()));
     }
-
-    fn clone_box(&self) -> Box<dyn Formatter> {
-        Box::new(self.clone())
+    // Only reached when `--show-meta` asked for it: the caller leaves these
+    // fields empty otherwise, so plain output stays a stable pipeline
+    // contract by default.
+    let meta = plain_meta(url_data);
+    if !meta.is_empty() {
+        line.push_str(&format!(" [{}]", style(meta).blue()));
     }
-}
-
-/// CSV formatter that outputs URLs in comma-separated format
-#[derive(Debug, Clone)]
-pub struct CsvFormatter;
-
-impl CsvFormatter {
-    /// Create a new CSV formatter
-    pub fn new() -> Self {
-        CsvFormatter
-    }
-}
-
-impl Formatter for CsvFormatter {
-    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        // Standalone row: include only the columns this entry actually has,
-        // so a single formatted row is self-consistent (no dangling commas).
-        csv_row(url_data, &CsvLayout::for_row(url_data))
-    }
-
-    fn clone_box(&self) -> Box<dyn Formatter> {
-        Box::new(self.clone())
-    }
-}
-
-/// Emits a wordlist rather than URLs: the path segments and query parameter
-/// names a URL is built from, one term per line.
-///
-/// A per-entry formatter cannot deduplicate across the run, so this renders the
-/// terms of the one entry it is given (sorted, no repeats) and
-/// [`super::WordlistOutputter`] does the run-wide union. That is also why
-/// `--format wordlist` is batch-only: a streamed term could not be known to be
-/// new.
-#[derive(Debug, Clone)]
-pub struct WordlistFormatter;
-
-impl WordlistFormatter {
-    /// Create a new wordlist formatter
-    pub fn new() -> Self {
-        WordlistFormatter
-    }
-}
-
-impl Formatter for WordlistFormatter {
-    fn format(&self, url_data: &UrlData, _is_last: bool) -> String {
-        let mut terms = wordlist_terms(&url_data.url);
-        terms.sort();
-        terms.dedup();
-        terms.iter().map(|term| format!("{term}\n")).collect()
-    }
-
-    fn clone_box(&self) -> Box<dyn Formatter> {
-        Box::new(self.clone())
-    }
+    line.push('\n');
+    line
 }
 
 /// Render the archive metadata of one entry, plus whatever a live response
@@ -415,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_plain_formatter() {
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
 
         // Test URL without status
         let url_data = UrlData::new("https://example.com".to_string());
@@ -432,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_plain_formatter_status_coloring() {
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
 
         // Test 2xx status codes (green)
         let url_data_200 =
@@ -492,7 +404,7 @@ mod tests {
             "Invalid Status".to_string(),
         );
 
-        // Note: We can't easily test the exact color output since colored crate renders
+        // Note: We can't easily test the exact color output since console renders
         // terminal color codes, but we can at least verify that the formatting works
         // by checking the output contains the status
 
@@ -546,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_json_formatter() {
-        let formatter = JsonFormatter::new();
+        let formatter = Format::Json;
 
         // Test URL without status
         let url_data = UrlData::new("https://example.com".to_string());
@@ -570,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_csv_formatter() {
-        let formatter = CsvFormatter::new();
+        let formatter = Format::Csv;
 
         // Test URL without status: a lone url is a single column, no dangling comma
         let url_data = UrlData::new("https://example.com".to_string());
@@ -634,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_csv_formatter_with_special_chars() {
-        let formatter = CsvFormatter::new();
+        let formatter = Format::Csv;
         let url_data = UrlData::new("https://example.com/path?a=1,2&b=3".to_string());
         assert_eq!(
             formatter.format(&url_data, false),
@@ -644,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_json_formatter_with_sources() {
-        let formatter = JsonFormatter::new();
+        let formatter = Format::Json;
         let url_data = UrlData::new("https://example.com".to_string()).with_sources(vec![
             "wayback".into(),
             "otx".into(),
@@ -659,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_csv_formatter_with_sources() {
-        let formatter = CsvFormatter::new();
+        let formatter = Format::Csv;
         let url_data =
             UrlData::with_status("https://example.com".to_string(), "200 OK".to_string())
                 .with_sources(vec!["wayback".into(), "cc".into()]);
@@ -672,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_plain_formatter_with_sources() {
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
         let url_data = UrlData::new("https://example.com".to_string())
             .with_sources(vec!["wayback".into(), "cc".into()]);
         let out = formatter.format(&url_data, true);
@@ -681,18 +593,6 @@ mod tests {
         assert!(out.contains("cc"));
         assert!(out.contains("wayback"));
         assert!(out.ends_with('\n'));
-    }
-
-    #[test]
-    fn test_formatter_clone() {
-        let plain_formatter: Box<dyn Formatter> = Box::new(PlainFormatter::new());
-        let cloned_formatter = plain_formatter.clone();
-
-        let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(
-            plain_formatter.format(&url_data, false),
-            cloned_formatter.format(&url_data, false)
-        );
     }
 
     /// A record carrying every archive metadata field.
@@ -710,7 +610,7 @@ mod tests {
     fn test_json_omits_metadata_keys_when_absent() {
         // The contract that keeps existing consumers working: a run that
         // collected no metadata is byte-identical to before the fields existed.
-        let formatter = JsonFormatter::new();
+        let formatter = Format::Json;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(
             formatter.format(&url_data, true),
@@ -720,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_json_emits_every_metadata_field_it_has() {
-        let formatter = JsonFormatter::new();
+        let formatter = Format::Json;
         assert_eq!(
             formatter.format(&with_meta("https://example.com"), true),
             "{\"url\":\"https://example.com\",\
@@ -734,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_json_emits_only_the_metadata_fields_present() {
-        let formatter = JsonLinesFormatter::new();
+        let formatter = Format::Jsonl;
         let mut url_data = UrlData::new("https://example.com".to_string());
         url_data.first_seen = Some("20050101000000".to_string());
         assert_eq!(
@@ -790,14 +690,14 @@ mod tests {
     fn test_plain_output_is_unchanged_without_metadata() {
         // The pipeline contract: `urx target.com | httpx` must keep seeing one
         // bare URL per line.
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(formatter.format(&url_data, true), "https://example.com\n");
     }
 
     #[test]
     fn test_plain_output_escapes_line_breaks_in_untrusted_fields() {
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
         let mut data = UrlData::with_status(
             "https://example.com/path\nhttps://injected.example/".to_string(),
             "200 OK\r\n500 Injected".to_string(),
@@ -821,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_json_carries_the_response_metadata_after_the_archive_metadata() {
-        let formatter = JsonFormatter::new();
+        let formatter = Format::Json;
         assert_eq!(
             formatter.format(&with_response_meta("https://example.com/redir"), true),
             "{\"url\":\"https://example.com/redir\",\
@@ -837,7 +737,7 @@ mod tests {
     fn test_json_omits_response_metadata_keys_when_absent() {
         // Same rule as the archive fields: a run that collected none is
         // byte-identical to before they existed.
-        let formatter = JsonFormatter::new();
+        let formatter = Format::Json;
         let mut url_data =
             UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
         url_data.content_type = Some("text/html".to_string());
@@ -882,7 +782,7 @@ mod tests {
     fn test_plain_output_is_unchanged_without_response_metadata() {
         // `urx target.com --check-status | ...` keeps its shape: the fields are
         // only populated when --show-meta or a structured format asked for them.
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
         let url_data =
             UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
         let out = crate::test_support::plain(&formatter.format(&url_data, true));
@@ -891,7 +791,7 @@ mod tests {
 
     #[test]
     fn test_plain_appends_response_metadata_and_quotes_the_title() {
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
         let mut url_data =
             UrlData::with_status("https://example.com".to_string(), "200 OK".to_string());
         url_data.content_type = Some("text/html".to_string());
@@ -908,7 +808,7 @@ mod tests {
 
     #[test]
     fn test_wordlist_formatter_emits_one_term_per_line() {
-        let formatter = WordlistFormatter::new();
+        let formatter = Format::Wordlist;
         let url_data = UrlData::new("https://example.com/admin/users?id=1&sort=asc".to_string());
         // One entry's terms, sorted and without repeats.
         assert_eq!(
@@ -919,7 +819,7 @@ mod tests {
 
     #[test]
     fn test_wordlist_formatter_skips_data_looking_segments() {
-        let formatter = WordlistFormatter::new();
+        let formatter = Format::Wordlist;
         let url_data = UrlData::new("https://example.com/post/4711/edit".to_string());
         assert_eq!(formatter.format(&url_data, true), "edit\npost\n");
     }
@@ -928,7 +828,7 @@ mod tests {
     fn test_wordlist_formatter_ignores_status_and_sources() {
         // A wordlist is words the target is built from; a status code and a
         // provider name are neither.
-        let formatter = WordlistFormatter::new();
+        let formatter = Format::Wordlist;
         let url_data = UrlData::with_status(
             "https://example.com/admin".to_string(),
             "200 OK".to_string(),
@@ -939,14 +839,14 @@ mod tests {
 
     #[test]
     fn test_wordlist_formatter_of_a_bare_host_is_empty() {
-        let formatter = WordlistFormatter::new();
+        let formatter = Format::Wordlist;
         let url_data = UrlData::new("https://example.com/".to_string());
         assert_eq!(formatter.format(&url_data, true), "");
     }
 
     #[test]
     fn test_plain_appends_metadata_when_the_entry_carries_it() {
-        let formatter = PlainFormatter::new();
+        let formatter = Format::Plain;
         let out = formatter.format(&with_meta("https://example.com"), true);
         assert!(out.starts_with("https://example.com "));
         assert!(out.contains("first_seen=20050101000000"));

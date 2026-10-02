@@ -30,16 +30,14 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::wayback::split_page;
 use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
-use crate::network::client::{get_with_retry, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::get_with_retry;
+use crate::network::{NetConfig, RateLimiter};
 use crate::progress::ProgressReporter;
 
 /// How many rows to ask a resume-key server for per request. A bounded `limit`
@@ -68,21 +66,6 @@ pub(crate) const CLASSIC_FIELDS: &str = "original,timestamp,mimetype,statuscode,
 
 /// The pywb-dialect `fl=` list — same columns, pywb's names.
 pub(crate) const PYWB_FIELDS: &str = "url,timestamp,mime,status,digest";
-
-impl FromStr for CdxDialect {
-    type Err = String;
-
-    /// The `--cdx-dialect` spellings.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "classic" => Ok(CdxDialect::Classic),
-            "pywb" => Ok(CdxDialect::Pywb),
-            other => Err(format!(
-                "Unknown CDX dialect {other:?}. Allowed values: classic, pywb"
-            )),
-        }
-    }
-}
 
 /// One CDXJ / NDJSON row of a pywb-dialect index. Every value arrives as a JSON
 /// string, the status code included, and the metadata is named `status`/`mime`
@@ -335,15 +318,9 @@ pub(crate) async fn walk_resume_key(
 /// rows it sends alongside are the unfiltered result set, not the answer to
 /// the query.
 ///
-/// `query_base` is the full query minus the pagination parameters.
+/// `query_base` is the full query minus the pagination parameters; production
+/// callers pass [`MAX_PAGES`] as `page_limit`.
 pub(crate) async fn walk_block_pages(
-    session: &CdxSession<'_>,
-    query_base: &str,
-) -> Result<Vec<UrlRecord>> {
-    walk_block_pages_with_limit(session, query_base, MAX_PAGES).await
-}
-
-async fn walk_block_pages_with_limit(
     session: &CdxSession<'_>,
     query_base: &str,
     page_limit: usize,
@@ -469,13 +446,7 @@ pub struct CdxProvider {
     /// most once per endpoint per run — not once per domain.
     detected: Arc<OnceCell<CdxDialect>>,
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
+    net: NetConfig,
     /// Server-side CDX predicates (date range, status code, MIME type).
     filters: ArchiveFilters,
 }
@@ -489,13 +460,7 @@ impl CdxProvider {
             dialect,
             detected: Arc::new(OnceCell::new()),
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 60,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
+            net: NetConfig::with_timeout(60),
             filters: ArchiveFilters::default(),
         }
     }
@@ -505,24 +470,6 @@ impl CdxProvider {
     pub fn with_filters(&mut self, filters: ArchiveFilters) -> &mut Self {
         self.filters = filters;
         self
-    }
-
-    /// The endpoint this provider queries.
-    #[cfg(test)]
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
-    }
-
-    /// Build an `HttpClientConfig` from the current provider settings.
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
     }
 
     /// The `url=` value: a leading `*.` matches subdomains, a trailing `*`
@@ -590,10 +537,10 @@ impl CdxProvider {
         }
 
         let probe_url = format!("{}?url={domain}&output=json&limit=1", self.endpoint);
-        if let Some(rl) = &self.rate_limit {
+        if let Some(rl) = &self.net.rate_limit {
             rl.acquire().await;
         }
-        let body = match get_with_retry(client, &probe_url, self.retries).await {
+        let body = match get_with_retry(client, &probe_url, self.net.retries).await {
             Ok(body) => body,
             Err(_) => return Ok(CdxDialect::Pywb),
         };
@@ -631,7 +578,7 @@ impl Provider for CdxProvider {
         reporter: Option<ProgressReporter>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
-            let client = self.client_config().build_client()?;
+            let client = self.net.http.build_client()?;
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -641,15 +588,15 @@ impl Provider for CdxProvider {
             let query_base = self.query_base(dialect, domain);
             let session = CdxSession {
                 client: &client,
-                retries: self.retries,
-                limiter: self.rate_limit.as_ref(),
+                retries: self.net.retries,
+                limiter: self.net.rate_limit.as_ref(),
                 reporter: reporter.as_ref(),
                 endpoint: &self.endpoint,
             };
 
             match dialect {
                 CdxDialect::Classic => walk_resume_key(&session, &query_base).await,
-                CdxDialect::Pywb => walk_block_pages(&session, &query_base).await,
+                CdxDialect::Pywb => walk_block_pages(&session, &query_base, MAX_PAGES).await,
             }
         })
     }
@@ -658,32 +605,8 @@ impl Provider for CdxProvider {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -699,16 +622,8 @@ mod tests {
 
     fn provider(server: &mockito::ServerGuard, dialect: Option<CdxDialect>) -> CdxProvider {
         let mut p = CdxProvider::new(format!("{}/cdx", server.url()), dialect);
-        p.with_retries(0);
+        p.net.retries = 0;
         p
-    }
-
-    #[test]
-    fn dialect_parses_the_documented_spellings() {
-        assert_eq!("classic".parse::<CdxDialect>(), Ok(CdxDialect::Classic));
-        assert_eq!(" PyWB ".parse::<CdxDialect>(), Ok(CdxDialect::Pywb));
-        let err = "wayback".parse::<CdxDialect>().unwrap_err();
-        assert!(err.contains("classic, pywb"), "{err}");
     }
 
     #[test]
@@ -909,9 +824,7 @@ mod tests {
             endpoint: &origin,
         };
 
-        let records = walk_block_pages_with_limit(&session, &query_base, 2)
-            .await
-            .unwrap();
+        let records = walk_block_pages(&session, &query_base, 2).await.unwrap();
 
         assert_eq!(records.len(), 2);
         assert!(
@@ -1172,27 +1085,5 @@ mod tests {
             CdxProvider::classify_probe("com,example)/ 20240101000000 https://example.com/"),
             None
         );
-    }
-
-    #[test]
-    fn network_settings_apply() {
-        let mut p = CdxProvider::new("https://vefsafn.is/cdx".to_string(), None);
-        p.with_timeout(45);
-        p.with_insecure(true);
-        p.with_random_agent(true);
-        p.with_proxy(Some("http://proxy:8080".to_string()));
-        p.with_proxy_auth(Some("user:pass".to_string()));
-        p.with_rate_limit(Some(2.0));
-        p.with_retries(7);
-
-        let config = p.client_config();
-        assert_eq!(config.timeout, 45);
-        assert!(config.insecure);
-        assert!(config.random_agent);
-        assert_eq!(config.proxy.as_deref(), Some("http://proxy:8080"));
-        assert_eq!(config.proxy_auth.as_deref(), Some("user:pass"));
-        assert!(p.rate_limit.is_some());
-        assert_eq!(p.retries, 7);
-        assert_eq!(p.endpoint(), "https://vefsafn.is/cdx");
     }
 }

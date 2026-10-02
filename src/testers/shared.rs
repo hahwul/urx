@@ -6,7 +6,15 @@
 //! specific garbage shapes, and none of that applies to a document that lists
 //! its endpoints outright.
 
+use reqwest::header::{HeaderMap, CONTENT_TYPE};
+use reqwest::{RequestBuilder, Response};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use url::Url;
+
+use crate::network::RateLimiter;
+use crate::output::UrlData;
 
 /// The extension of the last path segment of `url`, lower-cased, if any.
 ///
@@ -22,6 +30,82 @@ pub(super) fn path_extension(url: &Url) -> Option<String> {
         return None;
     }
     Some(ext.to_ascii_lowercase())
+}
+
+/// Discovered URLs as tester results.
+pub(super) fn found(urls: Vec<String>) -> Vec<UrlData> {
+    urls.into_iter().map(UrlData::new).collect()
+}
+
+/// The response's `Content-Type`, lower-cased, if it sent a readable one.
+pub(super) fn content_type(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase())
+}
+
+/// Send `request`, retrying transport errors up to `retries` more times, 500ms
+/// apart, each attempt paced by `limiter`.
+///
+/// Any response ends the loop, whatever its status: a tester reads a non-2xx
+/// as "nothing here", not as a reason to ask again. That is why the testers do
+/// not share [`crate::network::client::send_with_retry`], which retries
+/// statuses and buffers the body before the caller has seen the headers.
+pub(super) async fn send(
+    retries: u32,
+    limiter: Option<&RateLimiter>,
+    request: impl Fn() -> RequestBuilder,
+) -> Result<Response, reqwest::Error> {
+    let mut attempt = 0;
+    loop {
+        if let Some(limiter) = limiter {
+            limiter.acquire().await;
+        }
+        match request().send().await {
+            Err(_) if attempt < retries => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// A run-wide cap on fetches, shared across `clone_box` clones so it holds
+/// globally rather than per worker. `max == 0` is unlimited.
+#[derive(Clone)]
+pub(super) struct FetchBudget {
+    pub(super) max: usize,
+    fetched: Arc<AtomicUsize>,
+}
+
+impl FetchBudget {
+    pub(super) fn new(max: usize) -> Self {
+        FetchBudget {
+            max,
+            fetched: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Reserve one slot under the cap, or `false` if the cap is spent.
+    pub(super) fn try_reserve(&self) -> bool {
+        if self.max == 0 {
+            self.fetched.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        self.fetched
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < self.max).then_some(n + 1)
+            })
+            .is_ok()
+    }
+
+    /// Fetches reserved so far.
+    #[cfg(test)]
+    pub(super) fn fetched(&self) -> usize {
+        self.fetched.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]

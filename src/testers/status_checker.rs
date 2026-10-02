@@ -6,23 +6,16 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
+use super::shared::send;
 use super::Tester;
-use crate::network::client::HttpClientConfig;
-use crate::network::CustomHeaders;
+use crate::filters::status_matches_pattern;
+use crate::network::NetConfig;
 use crate::output::UrlData;
 
 /// HTTP status checker for URLs
 #[derive(Clone)]
 pub struct StatusChecker {
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
-    /// target itself, so the user's headers belong on those requests.
-    headers: CustomHeaders,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
+    net: NetConfig,
     include_status: Option<Vec<String>>,
     exclude_status: Option<Vec<String>>,
     /// Record the response facts that come free with the request the checker is
@@ -37,7 +30,7 @@ pub struct StatusChecker {
     /// reused across the tens of thousands of URLs a `--check-status` run can
     /// touch. Shared across `clone_box` clones via `Arc<OnceCell>` so all
     /// concurrent workers share a single connection pool. The cell is populated
-    /// only after the `with_*` setters have applied network settings, so it
+    /// only after `with_network` has applied the settings, so it
     /// always reflects the final configuration.
     client: Arc<OnceCell<Client>>,
 }
@@ -46,13 +39,7 @@ impl StatusChecker {
     /// Creates a new StatusChecker with default settings
     pub fn new() -> Self {
         StatusChecker {
-            proxy: None,
-            proxy_auth: None,
-            headers: CustomHeaders::default(),
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
+            net: NetConfig::default(),
             include_status: None,
             exclude_status: None,
             response_meta: false,
@@ -84,17 +71,6 @@ impl StatusChecker {
         self.response_title = enabled;
     }
 
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: self.headers.clone(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
     /// Return the shared HTTP client, building it on the first call and reusing
     /// it thereafter. If a build fails the cell stays empty, so a later call
     /// retries rather than caching the error.
@@ -104,36 +80,8 @@ impl StatusChecker {
     /// 3xx that is actually surfaced.
     async fn client(&self) -> Result<&Client> {
         self.client
-            .get_or_try_init(|| async { self.client_config().build_client_no_redirect() })
+            .get_or_try_init(|| async { self.net.http.build_client_no_redirect() })
             .await
-    }
-
-    /// Checks if a status code matches a pattern
-    /// Patterns can be exact (e.g., "200") or wildcard (e.g., "20x", "3xx")
-    fn status_matches_pattern(&self, status_code: u16, pattern: &str) -> bool {
-        if pattern.contains('x') || pattern.contains('X') {
-            let status_str = status_code.to_string();
-            let pattern = pattern.to_lowercase();
-
-            if status_str.len() != pattern.len() {
-                return false;
-            }
-
-            for (s, p) in status_str.chars().zip(pattern.chars()) {
-                if p != 'x' && p != s {
-                    return false;
-                }
-            }
-
-            true
-        } else {
-            // Exact match
-            if let Ok(pattern_code) = pattern.parse::<u16>() {
-                status_code == pattern_code
-            } else {
-                false
-            }
-        }
     }
 
     /// Checks if a status code matches any pattern in the given patterns vector
@@ -142,11 +90,12 @@ impl StatusChecker {
             return false;
         }
 
+        let status_code = status_code.to_string();
         patterns.iter().any(|pattern| {
             // Split the pattern by commas and check if any subpattern matches
             pattern
                 .split(',')
-                .any(|subpattern| self.status_matches_pattern(status_code, subpattern.trim()))
+                .any(|subpattern| status_matches_pattern(&status_code, subpattern.trim()))
         })
     }
 
@@ -183,105 +132,46 @@ impl Tester for StatusChecker {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.client().await?;
 
-            // Perform the request with retries
-            let mut last_error = None;
+            // Unpaced: --rate-limit only ever reached the body-mining testers.
+            let response = send(self.net.retries, None, || client.get(url))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to check status for {}: {:?}", url, e))?;
+            let status = response.status();
+            let status_code = status.as_u16();
 
-            for attempt in 0..=self.retries {
-                match client.get(url).send().await {
-                    Ok(response) => {
-                        let status = response.status();
-                        let status_code = status.as_u16();
-
-                        // Check if this status code should be included in results
-                        if !self.should_include_status(status_code) {
-                            return Ok(vec![]); // Return empty vec if filtered out
-                        }
-
-                        let status_text = format!(
-                            "{} {}",
-                            status_code,
-                            status.canonical_reason().unwrap_or("")
-                        );
-
-                        // Nothing extra was asked for: emit the historical
-                        // `"{url} - {status}"` line, byte for byte.
-                        if !self.response_meta && !self.response_title {
-                            return Ok(vec![format!("{} - {}", url, status_text)]);
-                        }
-
-                        let mut data = UrlData::with_status(url.to_string(), status_text);
-                        let content_type = header(&response, CONTENT_TYPE);
-                        if self.response_meta {
-                            // The redirect target is recorded, never followed —
-                            // see `client()`.
-                            data.location = header(&response, LOCATION);
-                            data.content_length = header(&response, CONTENT_LENGTH);
-                            data.content_type = content_type.clone();
-                        }
-                        if self.response_title {
-                            data.title = read_title(response, content_type.as_deref()).await;
-                        }
-                        return Ok(vec![data.to_tester_line()]);
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        // Back off only when another attempt follows. Sleeping
-                        // after the *last* one bought nothing and cost 500ms per
-                        // unreachable URL — with `--retries 0`, which means "no
-                        // retries", every failure still waited half a second.
-                        if attempt < self.retries {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        continue;
-                    }
-                }
+            // Check if this status code should be included in results
+            if !self.should_include_status(status_code) {
+                return Ok(vec![]); // Return empty vec if filtered out
             }
 
-            // If we get here, all retries failed
-            Err(anyhow::anyhow!(
-                "Failed to check status for {}: {:?}",
-                url,
-                last_error
-            ))
+            let status_text = format!(
+                "{} {}",
+                status_code,
+                status.canonical_reason().unwrap_or("")
+            );
+
+            let mut data = UrlData::with_status(url.to_string(), status_text);
+            let content_type = header(&response, CONTENT_TYPE);
+            if self.response_meta {
+                // The redirect target is recorded, never followed —
+                // see `client()`.
+                data.location = header(&response, LOCATION);
+                data.content_length = header(&response, CONTENT_LENGTH);
+                data.content_type = content_type.clone();
+            }
+            if self.response_title {
+                data.title = read_title(response, content_type.as_deref()).await;
+            }
+            Ok(vec![data])
         })
     }
 
-    /// Sets the request timeout in seconds
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    /// Sets the number of retry attempts for failed requests
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    /// Enables or disables the use of random User-Agent headers
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    /// Enables or disables SSL certificate verification
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    /// Sets the proxy server for HTTP requests
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    /// Sets the proxy authentication credentials (username:password)
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_headers(&mut self, headers: CustomHeaders) {
-        self.headers = headers;
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -405,46 +295,42 @@ mod tests {
 
     #[test]
     fn test_status_matches_pattern() {
-        let checker = StatusChecker::new();
-
         // Exact match test
-        assert!(checker.status_matches_pattern(200, "200"));
-        assert!(!checker.status_matches_pattern(200, "404"));
+        assert!(status_matches_pattern("200", "200"));
+        assert!(!status_matches_pattern("200", "404"));
 
         // Wildcard match test
-        assert!(checker.status_matches_pattern(200, "2xx"));
-        assert!(checker.status_matches_pattern(200, "20x"));
-        assert!(checker.status_matches_pattern(201, "20x"));
-        assert!(checker.status_matches_pattern(404, "4xx"));
-        assert!(!checker.status_matches_pattern(200, "3xx"));
-        assert!(!checker.status_matches_pattern(200, "4xx"));
+        assert!(status_matches_pattern("200", "2xx"));
+        assert!(status_matches_pattern("200", "20x"));
+        assert!(status_matches_pattern("201", "20x"));
+        assert!(status_matches_pattern("404", "4xx"));
+        assert!(!status_matches_pattern("200", "3xx"));
+        assert!(!status_matches_pattern("200", "4xx"));
 
         // Case insensitivity test
-        assert!(checker.status_matches_pattern(200, "2XX"));
-        assert!(checker.status_matches_pattern(404, "4XX"));
+        assert!(status_matches_pattern("200", "2XX"));
+        assert!(status_matches_pattern("404", "4XX"));
     }
 
     #[test]
     fn test_status_matches_pattern_edge_cases() {
-        let checker = StatusChecker::new();
-
         // Wrong length with wildcard
-        assert!(!checker.status_matches_pattern(200, "2x"));
-        assert!(!checker.status_matches_pattern(200, "2xxx"));
-        assert!(!checker.status_matches_pattern(200, "x"));
+        assert!(!status_matches_pattern("200", "2x"));
+        assert!(!status_matches_pattern("200", "2xxx"));
+        assert!(!status_matches_pattern("200", "x"));
 
         // Non-numeric characters in exact match
-        assert!(!checker.status_matches_pattern(200, "20a"));
-        assert!(!checker.status_matches_pattern(200, "abc"));
-        assert!(!checker.status_matches_pattern(200, ""));
+        assert!(!status_matches_pattern("200", "20a"));
+        assert!(!status_matches_pattern("200", "abc"));
+        assert!(!status_matches_pattern("200", ""));
 
         // Non-numeric characters in wildcard patterns
-        assert!(!checker.status_matches_pattern(200, "2ax"));
-        assert!(!checker.status_matches_pattern(200, "abx"));
+        assert!(!status_matches_pattern("200", "2ax"));
+        assert!(!status_matches_pattern("200", "abx"));
 
         // Special chars
-        assert!(!checker.status_matches_pattern(200, "20!"));
-        assert!(!checker.status_matches_pattern(200, "2!x"));
+        assert!(!status_matches_pattern("200", "20!"));
+        assert!(!status_matches_pattern("200", "2!x"));
     }
 
     #[test]
@@ -530,7 +416,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.len(), 1, "{out:?}");
-        assert!(out[0].contains("301"), "{out:?}");
+        assert_eq!(out[0].status.as_deref(), Some("301 Moved Permanently"));
         redirect.assert();
         final_page.assert();
     }
@@ -561,7 +447,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.len(), 1, "--is 30x should keep a redirect: {out:?}");
-        assert!(out[0].contains("302"), "{out:?}");
+        assert_eq!(out[0].status.as_deref(), Some("302 Found"));
     }
 
     #[tokio::test]
@@ -570,7 +456,10 @@ mod tests {
         // too, so even `--retries 0` ("no retries") cost half a second for
         // every unreachable URL.
         let mut checker = StatusChecker::new();
-        checker.with_retries(0);
+        checker.with_network(NetConfig {
+            retries: 0,
+            ..Default::default()
+        });
 
         let start = std::time::Instant::now();
         // Port 0 is never listening, so this fails immediately.
@@ -643,25 +532,25 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(ok_result[0].contains("200"));
-        assert!(missing_result[0].contains("404"));
+        assert_eq!(ok_result[0].status.as_deref(), Some("200 OK"));
+        assert_eq!(missing_result[0].status.as_deref(), Some("404 Not Found"));
         // A single client was built and shared across both requests.
         assert!(checker.client.get().is_some());
         ok.assert();
         missing.assert();
     }
 
-    /// Run one URL through a checker and decode the record it produced.
-    async fn check(checker: &StatusChecker, url: &str) -> crate::output::UrlData {
-        let out = checker.test_url(url).await.unwrap();
+    /// Run one URL through a checker and return the record it produced.
+    async fn check(checker: &StatusChecker, url: &str) -> UrlData {
+        let mut out = checker.test_url(url).await.unwrap();
         assert_eq!(out.len(), 1, "{out:?}");
-        crate::output::UrlData::from_string(out[0].clone())
+        out.remove(0)
     }
 
     #[tokio::test]
     async fn test_response_metadata_is_off_by_default() {
-        // The default line is the historical `"{url} - {status}"` one, so an
-        // existing `--check-status` run is byte-identical to before.
+        // Without --show-meta / a structured format the record carries the
+        // status alone, so an existing `--check-status` run is unchanged.
         let mut server = mockito::Server::new_async().await;
         let _m = server
             .mock("GET", "/x")
@@ -671,11 +560,10 @@ mod tests {
             .create_async()
             .await;
 
-        let out = StatusChecker::new()
-            .test_url(&format!("{}/x", server.url()))
-            .await
-            .unwrap();
-        assert_eq!(out[0], format!("{}/x - 200 OK", server.url()));
+        let data = check(&StatusChecker::new(), &format!("{}/x", server.url())).await;
+        assert_eq!(data.url, format!("{}/x", server.url()));
+        assert_eq!(data.status.as_deref(), Some("200 OK"));
+        assert!(!data.has_response_meta(), "{data:?}");
     }
 
     #[tokio::test]

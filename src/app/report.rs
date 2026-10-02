@@ -11,15 +11,13 @@ use crate::cli::Args;
 use crate::output::{self, UrlData};
 use crate::runner::ProviderStats;
 
-/// Force-disable colour when `--no-color` or the `NO_COLOR` env var is set, for
-/// both the progress UI (`console`, used by indicatif) and the URL output
-/// (`colored`). With neither set, both keep their own TTY auto-detection.
-/// `NO_COLOR` disables on mere presence (any value, including empty), matching
-/// how `console` itself detects it (`env::var("NO_COLOR").is_ok()`), so both
-/// surfaces stay consistent.
+/// Force-disable colour when `--no-color` or the `NO_COLOR` env var is set, on
+/// both stdout (the URL output) and stderr (the progress UI). With neither set,
+/// each keeps `console`'s TTY auto-detection. `NO_COLOR` disables on mere
+/// presence (any value, including empty), matching how `console` itself
+/// detects it (`env::var("NO_COLOR").is_ok()`).
 pub fn configure_colors(args: &Args) {
     if args.no_color || std::env::var_os("NO_COLOR").is_some() {
-        colored::control::set_override(false);
         console::set_colors_enabled(false);
         console::set_colors_enabled_stderr(false);
     }
@@ -30,10 +28,10 @@ pub fn configure_colors(args: &Args) {
 /// section-label tone, then a dimmed teal rule trailing out to a fixed width. No
 /// box corners — it reads as a rule, never an unclosed frame (the header is
 /// transient and cleared when the scan ends). Padding is measured from the plain
-/// text so colour codes never enter the width math; `colored` strips the hues
+/// text so colour codes never enter the width math; `console` strips the hues
 /// automatically when colour is off.
 pub fn render_header(n_domains: usize, n_providers: usize) -> String {
-    use colored::Colorize;
+    use console::style;
     const RAIL_W: usize = 58;
     let dword = if n_domains == 1 { "domain" } else { "domains" };
     let pword = if n_providers == 1 {
@@ -48,9 +46,9 @@ pub fn render_header(n_domains: usize, n_providers: usize) -> String {
     format!(
         "{}{}{}{}",
         "  ",
-        "urx".truecolor(0x5a, 0xd1, 0xcd).bold(),
-        rest.truecolor(0xa7, 0xb6, 0xc2),
-        "─".repeat(pad).truecolor(0x5a, 0xd1, 0xcd).dimmed(),
+        style("urx").true_color(0x5a, 0xd1, 0xcd).bold(),
+        style(rest).true_color(0xa7, 0xb6, 0xc2),
+        style("─".repeat(pad)).true_color(0x5a, 0xd1, 0xcd).dim(),
     )
 }
 
@@ -115,15 +113,13 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
     }
 }
 
-/// Best-effort filename extension matching `--format`. Anything other than
-/// json/jsonl/csv falls back to `.txt`, mirroring how `create_outputter` treats
-/// unknown formats as plain text.
-pub fn output_dir_extension(format: &str) -> &'static str {
-    match format.to_lowercase().as_str() {
-        "json" => "json",
-        "jsonl" => "jsonl",
-        "csv" => "csv",
-        _ => "txt",
+/// Filename extension matching `--format`; plain and wordlist are `.txt`.
+pub fn output_dir_extension(format: output::Format) -> &'static str {
+    match format {
+        output::Format::Json => "json",
+        output::Format::Jsonl => "jsonl",
+        output::Format::Csv => "csv",
+        output::Format::Plain | output::Format::Wordlist => "txt",
     }
 }
 
@@ -133,7 +129,7 @@ pub fn output_dir_extension(format: &str) -> &'static str {
 pub fn write_per_domain_output(
     urls: &[UrlData],
     dir: &Path,
-    format: &str,
+    format: output::Format,
     silent: bool,
 ) -> anyhow::Result<()> {
     if !dir.exists() {
@@ -149,11 +145,10 @@ pub fn write_per_domain_output(
         grouped.entry(host).or_default().push(entry.clone());
     }
 
-    let outputter = output::create_outputter(format);
     let ext = output_dir_extension(format);
 
     for (host, entries) in &grouped {
-        outputter.output(entries, Some(dir.join(format!("{host}.{ext}"))), silent)?;
+        format.output(entries, Some(dir.join(format!("{host}.{ext}"))), silent)?;
     }
     Ok(())
 }
@@ -233,12 +228,12 @@ mod tests {
 
     #[test]
     fn test_output_dir_extension() {
-        assert_eq!(output_dir_extension("json"), "json");
-        assert_eq!(output_dir_extension("JSON"), "json");
-        assert_eq!(output_dir_extension("jsonl"), "jsonl");
-        assert_eq!(output_dir_extension("csv"), "csv");
-        assert_eq!(output_dir_extension("plain"), "txt");
-        assert_eq!(output_dir_extension("anything-else"), "txt");
+        use output::Format;
+        assert_eq!(output_dir_extension(Format::Json), "json");
+        assert_eq!(output_dir_extension(Format::Jsonl), "jsonl");
+        assert_eq!(output_dir_extension(Format::Csv), "csv");
+        assert_eq!(output_dir_extension(Format::Plain), "txt");
+        assert_eq!(output_dir_extension(Format::Wordlist), "txt");
     }
 
     #[test]
@@ -251,7 +246,7 @@ mod tests {
             UrlData::new("not-a-url".to_string()),
         ];
 
-        write_per_domain_output(&urls, dir.path(), "plain", true)?;
+        write_per_domain_output(&urls, dir.path(), output::Format::Plain, true)?;
 
         let example = std::fs::read_to_string(dir.path().join("example.com.txt"))?;
         assert!(example.contains("https://example.com/a"));
@@ -272,7 +267,7 @@ mod tests {
         let nested = base.path().join("nested/output/dir");
         let urls = vec![UrlData::new("https://example.com/a".to_string())];
 
-        write_per_domain_output(&urls, &nested, "json", true)?;
+        write_per_domain_output(&urls, &nested, output::Format::Json, true)?;
 
         assert!(nested.is_dir());
         let example = std::fs::read_to_string(nested.join("example.com.json"))?;

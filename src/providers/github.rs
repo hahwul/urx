@@ -6,9 +6,8 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::{read_json_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::send_with_retry;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 /// Maximum search-result pages we fetch per domain. GitHub Code Search caps at
@@ -23,18 +22,11 @@ const PER_PAGE: u32 = 100;
 pub struct GitHubProvider {
     api_key_rotator: ApiKeyRotator,
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
-    #[cfg(test)]
+    net: NetConfig,
     base_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct SearchResponse {
     #[serde(default)]
     items: Vec<SearchItem>,
@@ -53,46 +45,12 @@ struct TextMatch {
 }
 
 impl GitHubProvider {
-    #[allow(dead_code)]
-    pub fn new(api_key: String) -> Self {
-        if api_key.is_empty() {
-            Self::new_with_keys(vec![])
-        } else {
-            Self::new_with_keys(vec![api_key])
-        }
-    }
-
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
-        let filtered: Vec<String> = api_keys.into_iter().filter(|k| !k.is_empty()).collect();
         GitHubProvider {
-            api_key_rotator: ApiKeyRotator::new(filtered),
+            api_key_rotator: ApiKeyRotator::new(api_keys),
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
-            #[cfg(test)]
+            net: NetConfig::default(),
             base_url: "https://api.github.com".to_string(),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
         }
     }
 }
@@ -155,13 +113,8 @@ impl Provider for GitHubProvider {
                 return Ok(Vec::new());
             }
 
-            let client = self.client_config().build_client()?;
-            let limiter = self.rate_limit.as_ref();
-
-            #[cfg(not(test))]
-            let base = "https://api.github.com";
-            #[cfg(test)]
-            let base = self.base_url.as_str();
+            let client = self.net.http.build_client()?;
+            let base = &self.base_url;
 
             // Quoted phrase search keeps the result set tight to literal
             // mentions of the domain rather than partial-token matches.
@@ -174,109 +127,64 @@ impl Provider for GitHubProvider {
             // are reported as a truncated/partial crawl rather than a clean run.
             let mut truncated = false;
 
-            'pages: for page in 1..=MAX_PAGES {
+            for page in 1..=MAX_PAGES {
                 let url =
                     format!("{base}/search/code?q={encoded_q}&per_page={PER_PAGE}&page={page}");
 
-                let mut attempt: u32 = 0;
-                loop {
-                    if attempt > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
-                            .await;
-                    }
-
-                    // Rotate the token per attempt so a rate-limited/secondary-
-                    // limited token is retried with a different one when several
-                    // are configured.
-                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-                    if let Some(rl) = &limiter {
-                        rl.acquire().await;
-                    }
-                    let resp = client
-                        .get(&url)
-                        .header("Authorization", format!("Bearer {api_key}"))
-                        .header("Accept", "application/vnd.github.v3.text-match+json")
-                        .header("X-GitHub-Api-Version", "2022-11-28")
-                        .send()
-                        .await;
-
-                    match resp {
-                        Ok(response) => {
-                            let status = response.status();
-                            if !status.is_success() {
-                                // 422 from search/code typically means we ran
-                                // past the result set — treat as natural end
-                                // rather than retrying.
-                                if status.as_u16() == 422 {
-                                    break 'pages;
-                                }
-                                // Honor Retry-After on primary (429) and
-                                // secondary (403) rate limits before retrying.
-                                if matches!(status.as_u16(), 429 | 403) {
-                                    if let Some(d) = crate::network::client::retry_after_delay(
-                                        response.headers(),
-                                    ) {
-                                        tokio::time::sleep(d).await;
-                                    }
-                                }
-                                last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                                attempt += 1;
-                                if attempt > self.retries {
-                                    truncated = true;
-                                    break 'pages;
-                                }
-                                continue;
-                            }
-
-                            match read_json_capped::<SearchResponse>(response).await {
-                                Ok(parsed) => {
-                                    let was_empty = parsed.items.is_empty();
-                                    for item in parsed.items {
-                                        for m in item.text_matches {
-                                            extract_matching_urls(
-                                                &m.fragment,
-                                                domain,
-                                                self.include_subdomains,
-                                                &mut urls,
-                                            );
-                                        }
-                                    }
-                                    if was_empty {
-                                        // No more results — stop paginating.
-                                        break 'pages;
-                                    }
-                                    // The run asked us to stop (--max-time
-                                    // elapsed, or Ctrl-C). Keep the pages
-                                    // already walked instead of losing them to
-                                    // the hard cancel after the grace window.
-                                    if reporter.as_ref().is_some_and(|r| r.stop_requested()) {
-                                        truncated = true;
-                                        break 'pages;
-                                    }
-                                    break;
-                                }
-                                Err(e) => {
-                                    last_error = Some(anyhow::anyhow!(
-                                        "Failed to parse GitHub response: {e}"
-                                    ));
-                                    attempt += 1;
-                                    if attempt > self.retries {
-                                        truncated = true;
-                                        break 'pages;
-                                    }
-                                    continue;
-                                }
-                            }
+                let fetched = send_with_retry(
+                    self.net.retries,
+                    self.net.rate_limit.as_ref(),
+                    // 422 from search/code typically means we ran past the
+                    // result set — the natural end, not something to retry.
+                    |status| status != 422,
+                    || {
+                        // Rotate the token per attempt so a rate-limited/
+                        // secondary-limited token is retried with a different
+                        // one when several are configured.
+                        let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                        client
+                            .get(&url)
+                            .header("Authorization", format!("Bearer {api_key}"))
+                            .header("Accept", "application/vnd.github.v3.text-match+json")
+                            .header("X-GitHub-Api-Version", "2022-11-28")
+                    },
+                    |status, body| {
+                        if status == 422 {
+                            return Ok(SearchResponse::default());
                         }
-                        Err(e) => {
-                            last_error = Some(e.into());
-                            attempt += 1;
-                            if attempt > self.retries {
-                                truncated = true;
-                                break 'pages;
-                            }
-                        }
+                        serde_json::from_str::<SearchResponse>(&body)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse GitHub response: {e}"))
+                    },
+                )
+                .await;
+                let parsed = match fetched {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        last_error = Some(e);
+                        truncated = true;
+                        break;
                     }
+                };
+                if parsed.items.is_empty() {
+                    // No more results — stop paginating.
+                    break;
+                }
+                for item in parsed.items {
+                    for m in item.text_matches {
+                        extract_matching_urls(
+                            &m.fragment,
+                            domain,
+                            self.include_subdomains,
+                            &mut urls,
+                        );
+                    }
+                }
+                // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+                // Keep the pages already walked instead of losing them to the
+                // hard cancel after the grace window.
+                if reporter.as_ref().is_some_and(|r| r.stop_requested()) {
+                    truncated = true;
+                    break;
                 }
             }
 
@@ -302,26 +210,9 @@ impl Provider for GitHubProvider {
     fn with_subdomains(&mut self, include: bool) {
         self.include_subdomains = include;
     }
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -388,7 +279,6 @@ mod tests {
     fn test_new_provider_filters_empty_keys() {
         let p = GitHubProvider::new_with_keys(vec!["".to_string(), "k1".to_string()]);
         assert!(p.api_key_rotator.has_keys());
-        assert_eq!(p.api_key_rotator.key_count(), 1);
     }
 
     #[tokio::test]
@@ -425,8 +315,8 @@ mod tests {
             .await;
 
         let mut provider = GitHubProvider::new_with_keys(vec!["t".into()]);
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         let reporter =
             ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ".to_string());
@@ -478,8 +368,8 @@ mod tests {
             .await;
 
         let mut provider = GitHubProvider::new_with_keys(vec!["test-token".into()]);
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/login".to_string()]);

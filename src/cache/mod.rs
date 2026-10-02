@@ -19,6 +19,14 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// `--cache-type`: the backend that holds the cache. `redis` is always
+/// accepted and reports at run time when it was not compiled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CacheType {
+    Sqlite,
+    Redis,
+}
+
 /// Where the SQLite cache lives when `--cache-path` / `[cache].cache_path`
 /// say nothing.
 pub fn default_sqlite_path() -> PathBuf {
@@ -33,8 +41,8 @@ pub fn default_sqlite_path() -> PathBuf {
 /// because `--no-cache` is irrelevant here: it turns caching off for a *scan*,
 /// while `urx cache` is asking about the store itself.
 pub async fn open_admin(args: &crate::cli::Args) -> Result<Box<dyn CacheAdmin>> {
-    match args.cache_type.as_str() {
-        "sqlite" => {
+    match args.cache_type {
+        CacheType::Sqlite => {
             let path = args.cache_path.clone().unwrap_or_else(default_sqlite_path);
             // Looking at the cache must not create one — see [`MissingCache`].
             if !path.exists() {
@@ -45,17 +53,16 @@ pub async fn open_admin(args: &crate::cli::Args) -> Result<Box<dyn CacheAdmin>> 
             Ok(Box::new(SqliteCache::new(path).await?))
         }
         #[cfg(feature = "redis-cache")]
-        "redis" => {
+        CacheType::Redis => {
             let Some(redis_url) = &args.redis_url else {
                 anyhow::bail!("Redis cache type selected but no --redis-url provided");
             };
             Ok(Box::new(RedisCache::new(redis_url).await?))
         }
         #[cfg(not(feature = "redis-cache"))]
-        "redis" => anyhow::bail!(
+        CacheType::Redis => anyhow::bail!(
             "Redis cache support is not compiled in. Rebuild with `--features redis-cache`, or use --cache-type sqlite."
         ),
-        other => anyhow::bail!("Unknown cache type '{other}'. Use 'sqlite' or 'redis'"),
     }
 }
 
@@ -84,29 +91,21 @@ impl CacheManager {
         Ok(Self { backend })
     }
 
-    /// Get cached URLs for a domain and configuration
-    pub async fn get_cached_urls(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {
-        self.backend.get(key).await
+    /// The entry for `key` if it is younger than `ttl_seconds`. An expired
+    /// entry is deleted on the way out and reads as a miss.
+    pub async fn get_fresh(&self, key: &CacheKey, ttl_seconds: u64) -> Result<Option<CacheEntry>> {
+        match self.backend.get(key).await? {
+            Some(entry) if entry.is_expired(ttl_seconds) => {
+                let _ = self.backend.delete(key).await;
+                Ok(None)
+            }
+            fresh => Ok(fresh),
+        }
     }
 
     /// Store URLs in cache
     pub async fn store_urls(&self, key: &CacheKey, entry: &CacheEntry) -> Result<()> {
         self.backend.set(key, entry).await
-    }
-
-    /// Check if cache entry is still valid based on TTL
-    pub async fn is_valid(&self, key: &CacheKey, ttl_seconds: u64) -> Result<bool> {
-        if let Some(entry) = self.backend.get(key).await? {
-            if entry.is_expired(ttl_seconds) {
-                // Remove expired entry proactively
-                let _ = self.backend.delete(key).await;
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        } else {
-            Ok(false)
-        }
     }
 
     /// Get only new URLs compared to cached results (for incremental scanning)
@@ -115,21 +114,23 @@ impl CacheManager {
         key: &CacheKey,
         new_urls: &HashSet<String>,
     ) -> Result<HashSet<String>> {
-        if !self.backend.exists(key).await? {
-            return Ok(new_urls.clone());
-        }
-        if let Some(cached_entry) = self.backend.get(key).await? {
-            let cached_urls: HashSet<String> = cached_entry.urls.into_iter().collect();
-            Ok(new_urls.difference(&cached_urls).cloned().collect())
-        } else {
+        match self.backend.get(key).await? {
+            Some(cached_entry) => {
+                let cached_urls: HashSet<String> = cached_entry.urls.into_iter().collect();
+                Ok(new_urls.difference(&cached_urls).cloned().collect())
+            }
             // No cached data, all URLs are new
-            Ok(new_urls.clone())
+            None => Ok(new_urls.clone()),
         }
     }
 
-    /// Clear expired cache entries
-    pub async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
-        self.backend.cleanup_expired(ttl_seconds).await
+    /// Delete entries older than `ttl_seconds`; a no-op for a backend without
+    /// an admin side.
+    pub async fn delete_expired(&self, ttl_seconds: u64) -> Result<usize> {
+        match self.backend.admin() {
+            Some(admin) => admin.delete_expired(ttl_seconds).await,
+            None => Ok(0),
+        }
     }
 
     #[cfg(test)]
@@ -167,7 +168,7 @@ mod tests {
 
         // Store and retrieve
         cache.store_urls(&key, &entry).await?;
-        let retrieved = cache.get_cached_urls(&key).await?;
+        let retrieved = cache.get_fresh(&key, 3600).await?;
 
         assert!(retrieved.is_some());
         let retrieved_entry = retrieved.unwrap();

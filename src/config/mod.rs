@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::app::keys::{api_keys_mut, KEYED_PROVIDER_IDS};
 use crate::cli::{Args, CliProvided};
+use crate::utils::split_csv;
 
 /// Keys a config section did not recognise.
 ///
@@ -133,16 +136,6 @@ fn warn_about_unknown_keys(unknown: &[String], source: &str, silent: bool) {
     );
 }
 
-/// Split a comma-separated key list into individual keys, trimming each and
-/// dropping blanks. Shared by both config layers so they agree on what
-/// `"k1, k2"` means.
-fn split_csv(s: &str) -> Vec<String> {
-    s.split(',')
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect()
-}
-
 impl ProviderKeysConfig {
     /// Every key in the provider-config file urx does not recognise, sorted.
     pub fn unknown_keys(&self) -> Vec<String> {
@@ -176,28 +169,7 @@ impl ProviderKeysConfig {
     /// do NOT auto-create the file because that would land an empty
     /// "credentials" path the user didn't ask for.
     pub fn default_path() -> Option<PathBuf> {
-        #[cfg(windows)]
-        {
-            if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
-                let p = app_data.join("urx").join("provider-config.toml");
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if let Some(home) = home_dir() {
-                let p = home
-                    .join(".config")
-                    .join("urx")
-                    .join("provider-config.toml");
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-        None
+        Some(urx_config_dir()?.join("provider-config.toml")).filter(|p| p.exists())
     }
 
     /// Load using the same precedence as the main config: --provider-config
@@ -236,29 +208,19 @@ impl ProviderKeysConfig {
             }
         }
 
-        if !supplied.vt {
-            if let Some(keys) = &self.vt_api_key {
-                args.vt_api_key = split_csv(keys);
+        let configured = [
+            &self.vt_api_key,
+            &self.urlscan_api_key,
+            &self.zoomeye_api_key,
+            &self.github_api_key,
+            &self.bevigil_api_key,
+        ];
+        for (id, keys) in KEYED_PROVIDER_IDS.into_iter().zip(configured) {
+            if supplied.api_keys.contains(&id) {
+                continue;
             }
-        }
-        if !supplied.urlscan {
-            if let Some(keys) = &self.urlscan_api_key {
-                args.urlscan_api_key = split_csv(keys);
-            }
-        }
-        if !supplied.zoomeye {
-            if let Some(keys) = &self.zoomeye_api_key {
-                args.zoomeye_api_key = split_csv(keys);
-            }
-        }
-        if !supplied.github {
-            if let Some(keys) = &self.github_api_key {
-                args.github_api_key = split_csv(keys);
-            }
-        }
-        if !supplied.bevigil {
-            if let Some(keys) = &self.bevigil_api_key {
-                args.bevigil_api_key = split_csv(keys);
+            if let Some(keys) = keys {
+                *api_keys_mut(args, id) = split_csv(keys);
             }
         }
     }
@@ -269,16 +231,10 @@ impl ProviderKeysConfig {
 /// only overwrites a slot when its flag here is `false` — otherwise CLI/env
 /// input would be silently replaced by the provider-config file.
 ///
-/// A named struct instead of six positional bools: the six-argument form hit
-/// clippy's `too_many_arguments` the moment BeVigil support added a sixth key,
-/// and positional bools are error-prone at the call site regardless.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CliSuppliedKeys {
-    pub vt: bool,
-    pub urlscan: bool,
-    pub zoomeye: bool,
-    pub github: bool,
-    pub bevigil: bool,
+    /// Keyed provider ids whose `--<id>-api-key` slot is already filled.
+    pub api_keys: Vec<&'static str>,
     pub notify: bool,
 }
 
@@ -368,18 +324,6 @@ pub struct CacheConfig {
     pub unknown: UnknownKeys,
 }
 
-fn normalize_output_format(format: &str) -> Option<String> {
-    match format.trim().to_ascii_lowercase().as_str() {
-        "plain" => Some("plain".to_string()),
-        "json" => Some("json".to_string()),
-        "jsonl" => Some("jsonl".to_string()),
-        "csv" => Some("csv".to_string()),
-        // --- output-views ---
-        "wordlist" => Some("wordlist".to_string()),
-        _ => None,
-    }
-}
-
 /// A single string or a list of them, so `url = "..."` and `url = ["..."]`
 /// both read naturally.
 #[derive(Debug, Deserialize, Clone)]
@@ -410,16 +354,6 @@ pub struct NotifyConfig {
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
-}
-
-fn normalize_network_scope(scope: &str) -> Option<String> {
-    match scope.trim().to_ascii_lowercase().as_str() {
-        "all" => Some("all".to_string()),
-        "providers" => Some("providers".to_string()),
-        "testers" => Some("testers".to_string()),
-        "providers,testers" | "testers,providers" => Some("providers,testers".to_string()),
-        _ => None,
-    }
 }
 
 impl Config {
@@ -457,47 +391,20 @@ impl Config {
     /// If the directory doesn't exist, it will be created.
     /// If the file doesn't exist, an empty config.toml file will be created.
     pub fn default_path() -> Option<PathBuf> {
-        #[cfg(windows)]
-        {
-            if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
-                let config_dir = app_data.join("urx");
-                let config_path = config_dir.join("config.toml");
+        let config_dir = urx_config_dir()?;
+        let config_path = config_dir.join("config.toml");
 
-                // Create directory if it doesn't exist
-                if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
-                    return None;
-                }
-
-                // Create empty config file if it doesn't exist
-                if !config_path.exists() && fs::write(&config_path, "").is_err() {
-                    return None;
-                }
-
-                return Some(config_path);
-            }
+        // Create directory if it doesn't exist
+        if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
+            return None;
         }
 
-        #[cfg(not(windows))]
-        {
-            if let Some(home) = home_dir() {
-                let config_dir = home.join(".config").join("urx");
-                let config_path = config_dir.join("config.toml");
-
-                // Create directory if it doesn't exist
-                if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
-                    return None;
-                }
-
-                // Create empty config file if it doesn't exist
-                if !config_path.exists() && fs::write(&config_path, "").is_err() {
-                    return None;
-                }
-
-                return Some(config_path);
-            }
+        // Create empty config file if it doesn't exist
+        if !config_path.exists() && fs::write(&config_path, "").is_err() {
+            return None;
         }
 
-        None
+        Some(config_path)
     }
 
     /// Load configuration based on command line arguments
@@ -552,70 +459,32 @@ impl Config {
     /// be silently replaced by the config file's value.
     pub fn apply_to_args(self, args: &mut Args, provided: &CliProvided) {
         warn_about_unknown_keys(&self.unknown_keys(), "the config file", args.silent);
+        let (o, p, f, n) = (&self.output, &self.provider, &self.filter, &self.network);
+        let (t, c) = (&self.testing, &self.cache);
 
-        self.apply_output_config(args, provided);
-        self.apply_provider_config(args, provided);
-        self.apply_filter_config(args, provided);
-        self.apply_network_config(args, provided);
-        self.apply_testing_config(args, provided);
-        self.apply_cache_config(args, provided);
-        self.apply_notify_config(args, provided);
-    }
-
-    fn apply_output_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Output options
-        if args.output.is_none() {
-            if let Some(output) = &self.output.output {
-                args.output = Some(PathBuf::from(output));
-            }
-        }
+        // [output]
+        args.output.fill(&o.output.as_ref().map(PathBuf::from));
 
         if !provided.has("format") {
-            if let Some(format) = &self.output.format {
-                if let Some(format) = normalize_output_format(format) {
-                    args.format = format;
-                } else if !args.silent {
-                    eprintln!(
-                        "Ignoring [output].format={format:?} in config: expected plain, json, jsonl, csv, or wordlist"
-                    );
-                }
+            let expected = "plain, json, jsonl, csv, or wordlist";
+            if let Some(v) = parse_enum(&o.format, "[output].format", expected, args.silent) {
+                args.format = v;
             }
         }
 
-        if !args.merge_endpoint && self.output.merge_endpoint.unwrap_or(false) {
-            args.merge_endpoint = true;
-        }
+        args.merge_endpoint.fill(&o.merge_endpoint);
+        args.dedup_similar.fill(&o.dedup_similar);
+        args.stream.fill(&o.stream);
 
-        if !args.dedup_similar && self.output.dedup_similar.unwrap_or(false) {
-            args.dedup_similar = true;
-        }
-
-        if !args.stream && self.output.stream.unwrap_or(false) {
-            args.stream = true;
-        }
-    }
-
-    fn apply_provider_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Provider options
-        if !provided.has("providers") {
-            if let Some(providers) = &self.provider.providers {
-                args.providers = providers.clone();
-            }
-        }
-
-        if !args.subs && self.provider.subs.unwrap_or(false) {
-            args.subs = true;
-        }
+        // [provider]
+        fill_untyped(provided, "providers", &mut args.providers, &p.providers);
+        args.subs.fill(&p.subs);
 
         // Config file still accepts a single string; we split it on commas so
         // users can configure multi-index there too.
         if !provided.has("cc_index") {
-            if let Some(cc_index) = &self.provider.cc_index {
-                let split: Vec<String> = cc_index
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+            if let Some(cc_index) = &p.cc_index {
+                let split = split_csv(cc_index);
                 if !split.is_empty() {
                     args.cc_index = split;
                 }
@@ -624,7 +493,7 @@ impl Config {
 
         // Extra CDX index servers, and the dialect they speak.
         if args.cdx_endpoint.is_empty() {
-            if let Some(endpoints) = &self.provider.cdx_endpoint {
+            if let Some(endpoints) = &p.cdx_endpoint {
                 args.cdx_endpoint = endpoints
                     .iter()
                     .map(|e| e.trim().to_string())
@@ -635,80 +504,34 @@ impl Config {
 
         // An empty string is the documented "unset" spelling, same as `from`.
         if args.cdx_dialect.is_none() {
-            if let Some(dialect) = self.provider.cdx_dialect.as_deref().map(str::trim) {
-                if !dialect.is_empty() {
-                    args.cdx_dialect = Some(dialect.to_string());
-                }
-            }
+            let dialect = p.cdx_dialect.clone().filter(|d| !d.trim().is_empty());
+            let expected = "classic or pywb";
+            args.cdx_dialect =
+                parse_enum(&dialect, "[provider].cdx_dialect", expected, args.silent);
         }
 
-        // Archive-side CDX predicates. Each applies only when the CLI left the
-        // slot untouched, matching how every other provider option resolves.
-        if args.from.is_none() && self.provider.from.is_some() {
-            args.from = self.provider.from.clone();
-        }
-
-        if args.to.is_none() && self.provider.to.is_some() {
-            args.to = self.provider.to.clone();
-        }
-
-        if args.archive_status.is_empty() {
-            if let Some(v) = &self.provider.archive_status {
-                args.archive_status = v.clone();
-            }
-        }
-
-        if args.archive_exclude_status.is_empty() {
-            if let Some(v) = &self.provider.archive_exclude_status {
-                args.archive_exclude_status = v.clone();
-            }
-        }
-
-        if args.archive_mime.is_empty() {
-            if let Some(v) = &self.provider.archive_mime {
-                args.archive_mime = v.clone();
-            }
-        }
-
-        if args.archive_exclude_mime.is_empty() {
-            if let Some(v) = &self.provider.archive_exclude_mime {
-                args.archive_exclude_mime = v.clone();
-            }
-        }
+        // Archive-side CDX predicates.
+        args.from.fill(&p.from);
+        args.to.fill(&p.to);
+        args.archive_status.fill(&p.archive_status);
+        args.archive_exclude_status.fill(&p.archive_exclude_status);
+        args.archive_mime.fill(&p.archive_mime);
+        args.archive_exclude_mime.fill(&p.archive_exclude_mime);
 
         // API keys rotate when several are given, and every other source
         // separates them with commas: the env vars do, and so does the
         // provider-config file. The main config used to push the whole string as
         // a single key, so `vt_api_key = "k1,k2"` became one key literally named
         // "k1,k2" — which simply fails to authenticate, with no hint why.
-        if args.vt_api_key.is_empty() {
-            if let Some(vt_api_key) = &self.provider.vt_api_key {
-                args.vt_api_key = split_csv(vt_api_key);
-            }
-        }
-
-        if args.urlscan_api_key.is_empty() {
-            if let Some(urlscan_api_key) = &self.provider.urlscan_api_key {
-                args.urlscan_api_key = split_csv(urlscan_api_key);
-            }
-        }
-
-        if args.zoomeye_api_key.is_empty() {
-            if let Some(zoomeye_api_key) = &self.provider.zoomeye_api_key {
-                args.zoomeye_api_key = split_csv(zoomeye_api_key);
-            }
-        }
-
-        if args.github_api_key.is_empty() {
-            if let Some(github_api_key) = &self.provider.github_api_key {
-                args.github_api_key = split_csv(github_api_key);
-            }
-        }
-
-        if args.bevigil_api_key.is_empty() {
-            if let Some(bevigil_api_key) = &self.provider.bevigil_api_key {
-                args.bevigil_api_key = split_csv(bevigil_api_key);
-            }
+        let configured = [
+            &p.vt_api_key,
+            &p.urlscan_api_key,
+            &p.zoomeye_api_key,
+            &p.github_api_key,
+            &p.bevigil_api_key,
+        ];
+        for (id, keys) in KEYED_PROVIDER_IDS.into_iter().zip(configured) {
+            api_keys_mut(args, id).fill(&keys.as_deref().map(split_csv));
         }
 
         // Explicit CLI choices take precedence over config, while exclusion
@@ -716,7 +539,7 @@ impl Config {
         if !provided.has("include_robots")
             && !provided.has("exclude_robots")
             && !args.exclude_robots
-            && self.provider.exclude_robots.unwrap_or(false)
+            && p.exclude_robots.unwrap_or(false)
         {
             args.exclude_robots = true;
         }
@@ -724,78 +547,40 @@ impl Config {
         if !provided.has("include_sitemap")
             && !provided.has("exclude_sitemap")
             && !args.exclude_sitemap
-            && self.provider.exclude_sitemap.unwrap_or(false)
+            && p.exclude_sitemap.unwrap_or(false)
         {
             args.exclude_sitemap = true;
         }
 
         // Only apply include_* if exclude_* is not set (exclude takes precedence)
         if !provided.has("include_robots") && !args.exclude_robots && args.include_robots {
-            if let Some(include_robots) = self.provider.include_robots {
+            if let Some(include_robots) = p.include_robots {
                 args.include_robots = include_robots;
             }
         }
 
         if !provided.has("include_sitemap") && !args.exclude_sitemap && args.include_sitemap {
-            if let Some(include_sitemap) = self.provider.include_sitemap {
+            if let Some(include_sitemap) = p.include_sitemap {
                 args.include_sitemap = include_sitemap;
             }
         }
 
-        if !args.archived_discovery && self.provider.archived_discovery.unwrap_or(false) {
-            args.archived_discovery = true;
-        }
+        args.archived_discovery.fill(&p.archived_discovery);
+        fill_untyped(
+            provided,
+            "archived_discovery_limit",
+            &mut args.archived_discovery_limit,
+            &p.archived_discovery_limit,
+        );
 
-        if !provided.has("archived_discovery_limit") {
-            if let Some(limit) = self.provider.archived_discovery_limit {
-                args.archived_discovery_limit = limit;
-            }
-        }
-    }
-
-    fn apply_filter_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Filter options
-        if args.preset.is_empty() {
-            if let Some(preset) = &self.filter.preset {
-                args.preset = preset.clone();
-            }
-        }
-
-        if args.extensions.is_empty() {
-            if let Some(extensions) = &self.filter.extensions {
-                args.extensions = extensions.clone();
-            }
-        }
-
-        if args.exclude_extensions.is_empty() {
-            if let Some(exclude_extensions) = &self.filter.exclude_extensions {
-                args.exclude_extensions = exclude_extensions.clone();
-            }
-        }
-
-        if args.patterns.is_empty() {
-            if let Some(patterns) = &self.filter.patterns {
-                args.patterns = patterns.clone();
-            }
-        }
-
-        if args.exclude_patterns.is_empty() {
-            if let Some(exclude_patterns) = &self.filter.exclude_patterns {
-                args.exclude_patterns = exclude_patterns.clone();
-            }
-        }
-
-        if args.match_regex.is_empty() {
-            if let Some(match_regex) = &self.filter.match_regex {
-                args.match_regex = match_regex.clone();
-            }
-        }
-
-        if args.filter_regex.is_empty() {
-            if let Some(filter_regex) = &self.filter.filter_regex {
-                args.filter_regex = filter_regex.clone();
-            }
-        }
+        // [filter]
+        args.preset.fill(&f.preset);
+        args.extensions.fill(&f.extensions);
+        args.exclude_extensions.fill(&f.exclude_extensions);
+        args.patterns.fill(&f.patterns);
+        args.exclude_patterns.fill(&f.exclude_patterns);
+        args.match_regex.fill(&f.match_regex);
+        args.filter_regex.fill(&f.filter_regex);
 
         // These flags select one output view. A view explicitly chosen on the
         // CLI must replace the configured view as a whole; otherwise a config
@@ -812,128 +597,51 @@ impl Config {
         .iter()
         .any(|id| provided.has(id));
         if !cli_selected_output_view {
-            if !args.show_only_host && self.filter.show_only_host.unwrap_or(false) {
-                args.show_only_host = true;
-            }
-
-            if !args.show_only_path && self.filter.show_only_path.unwrap_or(false) {
-                args.show_only_path = true;
-            }
-
-            if !args.show_only_param && self.filter.show_only_param.unwrap_or(false) {
-                args.show_only_param = true;
-            }
+            args.show_only_host.fill(&f.show_only_host);
+            args.show_only_path.fill(&f.show_only_path);
+            args.show_only_param.fill(&f.show_only_param);
         }
 
-        if args.min_length.is_none() && self.filter.min_length.is_some() {
-            args.min_length = self.filter.min_length;
-        }
-
-        if args.max_length.is_none() && self.filter.max_length.is_some() {
-            args.max_length = self.filter.max_length;
-        }
+        args.min_length.fill(&f.min_length);
+        args.max_length.fill(&f.max_length);
 
         // --- result-filters ---
-        if args.scope_file.is_empty() {
-            if let Some(scope_file) = &self.filter.scope_file {
-                args.scope_file = scope_file.clone();
-            }
-        }
-
-        for (slot, configured) in [
-            (
-                &mut args.meta_first_seen_after,
-                &self.filter.meta_first_seen_after,
-            ),
-            (
-                &mut args.meta_first_seen_before,
-                &self.filter.meta_first_seen_before,
-            ),
-            (
-                &mut args.meta_last_seen_after,
-                &self.filter.meta_last_seen_after,
-            ),
-            (
-                &mut args.meta_last_seen_before,
-                &self.filter.meta_last_seen_before,
-            ),
-        ] {
-            if slot.is_none() {
-                slot.clone_from(configured);
-            }
-        }
-
-        for (slot, configured) in [
-            (&mut args.meta_mime, &self.filter.meta_mime),
-            (&mut args.meta_exclude_mime, &self.filter.meta_exclude_mime),
-            (&mut args.meta_status, &self.filter.meta_status),
-            (
-                &mut args.meta_exclude_status,
-                &self.filter.meta_exclude_status,
-            ),
-        ] {
-            if slot.is_empty() {
-                if let Some(values) = configured {
-                    slot.clone_from(values);
-                }
-            }
-        }
+        args.scope_file.fill(&f.scope_file);
+        args.meta_first_seen_after.fill(&f.meta_first_seen_after);
+        args.meta_first_seen_before.fill(&f.meta_first_seen_before);
+        args.meta_last_seen_after.fill(&f.meta_last_seen_after);
+        args.meta_last_seen_before.fill(&f.meta_last_seen_before);
+        args.meta_mime.fill(&f.meta_mime);
+        args.meta_exclude_mime.fill(&f.meta_exclude_mime);
+        args.meta_status.fill(&f.meta_status);
+        args.meta_exclude_status.fill(&f.meta_exclude_status);
         // --- end result-filters ---
-    }
 
-    fn apply_network_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Network options
+        // [network]
         if !provided.has("network_scope") {
-            if let Some(network_scope) = &self.network.network_scope {
-                if let Some(network_scope) = normalize_network_scope(network_scope) {
-                    args.network_scope = network_scope;
-                } else if !args.silent {
-                    eprintln!(
-                        "Ignoring [network].network_scope={network_scope:?} in config: expected all, providers, testers, or providers,testers"
-                    );
-                }
+            let (key, expected) = (
+                "[network].network_scope",
+                "all, providers, testers, or providers,testers",
+            );
+            if let Some(v) = parse_enum(&n.network_scope, key, expected, args.silent) {
+                args.network_scope = v;
             }
         }
 
-        if args.proxy.is_none() && self.network.proxy.is_some() {
-            args.proxy = self.network.proxy.clone();
-        }
-
-        if args.proxy_auth.is_none() && self.network.proxy_auth.is_some() {
-            args.proxy_auth = self.network.proxy_auth.clone();
-        }
-
-        if !args.insecure && self.network.insecure.unwrap_or(false) {
-            args.insecure = true;
-        }
-
-        if !args.random_agent && self.network.random_agent.unwrap_or(false) {
-            args.random_agent = true;
-        }
+        args.proxy.fill(&n.proxy);
+        args.proxy_auth.fill(&n.proxy_auth);
+        args.insecure.fill(&n.insecure);
+        args.random_agent.fill(&n.random_agent);
 
         // Headers are additive nowhere: a config file that sets them is a
         // default, and any -H on the command line replaces the set wholesale,
         // so a run can always be made anonymous again without editing a file.
-        if args.header.is_empty() {
-            if let Some(header) = &self.network.header {
-                args.header = header.clone().into_vec();
-            }
-        }
-
-        if args.cookie.is_none() {
-            if let Some(cookie) = &self.network.cookie {
-                args.cookie = Some(cookie.clone());
-            }
-        }
-
-        if args.user_agent.is_none() {
-            if let Some(ua) = &self.network.user_agent {
-                args.user_agent = Some(ua.clone());
-            }
-        }
+        args.header.fill(&n.header.clone().map(OneOrMany::into_vec));
+        args.cookie.fill(&n.cookie);
+        args.user_agent.fill(&n.user_agent);
 
         if !provided.has("timeout") {
-            if let Some(timeout) = self.network.timeout {
+            if let Some(timeout) = n.timeout {
                 if timeout > 0 {
                     args.timeout = timeout;
                 } else if !args.silent {
@@ -944,134 +652,67 @@ impl Config {
             }
         }
 
-        if !provided.has("retries") {
-            if let Some(retries) = self.network.retries {
-                args.retries = retries;
-            }
-        }
+        fill_untyped(provided, "retries", &mut args.retries, &n.retries);
 
         if !provided.has("parallel") {
-            if let Some(parallel) = self.network.parallel {
+            if let Some(parallel) = n.parallel {
                 if parallel > 0 {
-                    args.parallel = Some(parallel);
+                    args.parallel = parallel;
                 } else if !args.silent {
                     eprintln!("Ignoring [network].parallel=0 in config: value must be at least 1");
                 }
             }
         }
 
-        if args.rate_limit.is_none() && self.network.rate_limit.is_some() {
-            args.rate_limit = self.network.rate_limit;
-        }
-    }
+        args.rate_limit.fill(&n.rate_limit);
 
-    fn apply_testing_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Testing options
-        if !args.check_status && self.testing.check_status.unwrap_or(false) {
-            args.check_status = true;
-        }
-
-        if args.include_status.is_empty() {
-            if let Some(include_status) = &self.testing.include_status {
-                args.include_status = include_status.clone();
-            }
-        }
-
-        if args.exclude_status.is_empty() {
-            if let Some(exclude_status) = &self.testing.exclude_status {
-                args.exclude_status = exclude_status.clone();
-            }
-        }
-
-        if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
-            args.extract_links = true;
-        }
-
-        if !args.extract_js_endpoints && self.testing.extract_js_endpoints.unwrap_or(false) {
-            args.extract_js_endpoints = true;
-        }
-
-        if !provided.has("max_js_files") {
-            if let Some(max) = self.testing.max_js_files {
-                args.max_js_files = max;
-            }
-        }
-
-        if !args.archive_body && self.testing.archive_body.unwrap_or(false) {
-            args.archive_body = true;
-        }
-
-        if !provided.has("archive_body_limit") {
-            if let Some(limit) = self.testing.archive_body_limit {
-                args.archive_body_limit = limit;
-            }
-        }
-
-        if args.archive_body_dir.is_none() {
-            if let Some(dir) = &self.testing.archive_body_dir {
-                args.archive_body_dir = Some(dir.clone());
-            }
-        }
-
+        // [testing]
+        args.check_status.fill(&t.check_status);
+        args.include_status.fill(&t.include_status);
+        args.exclude_status.fill(&t.exclude_status);
+        args.extract_links.fill(&t.extract_links);
+        args.extract_js_endpoints.fill(&t.extract_js_endpoints);
+        fill_untyped(
+            provided,
+            "max_js_files",
+            &mut args.max_js_files,
+            &t.max_js_files,
+        );
+        args.archive_body.fill(&t.archive_body);
+        fill_untyped(
+            provided,
+            "archive_body_limit",
+            &mut args.archive_body_limit,
+            &t.archive_body_limit,
+        );
+        args.archive_body_dir.fill(&t.archive_body_dir);
         // --- spec-expansion ---
-        if !args.expand_specs && self.testing.expand_specs.unwrap_or(false) {
-            args.expand_specs = true;
-        }
+        args.expand_specs.fill(&t.expand_specs);
+        fill_untyped(
+            provided,
+            "max_spec_files",
+            &mut args.max_spec_files,
+            &t.max_spec_files,
+        );
 
-        if !provided.has("max_spec_files") {
-            if let Some(max) = self.testing.max_spec_files {
-                args.max_spec_files = max;
-            }
-        }
-    }
-
-    fn apply_cache_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Cache options
-        if !args.incremental && self.cache.incremental.unwrap_or(false) {
-            args.incremental = true;
-        }
+        // [cache]
+        args.incremental.fill(&c.incremental);
 
         if !provided.has("cache_type") {
-            if let Some(cache_type) = &self.cache.cache_type {
-                // Mirrors how [output].format and [network].network_scope are
-                // handled: name the bad value at the point it was read, rather
-                // than failing later with an error that doesn't mention the
-                // config file at all.
-                match cache_type.trim().to_ascii_lowercase().as_str() {
-                    valid @ ("sqlite" | "redis") => args.cache_type = valid.to_string(),
-                    _ => {
-                        if !args.silent {
-                            eprintln!(
-                                "Ignoring [cache].cache_type={cache_type:?} in config: expected sqlite or redis"
-                            );
-                        }
-                    }
-                }
+            let expected = "sqlite or redis";
+            if let Some(v) = parse_enum(&c.cache_type, "[cache].cache_type", expected, args.silent)
+            {
+                args.cache_type = v;
             }
         }
 
-        if args.cache_path.is_none() {
-            if let Some(cache_path) = &self.cache.cache_path {
-                args.cache_path = Some(PathBuf::from(cache_path));
-            }
-        }
+        args.cache_path
+            .fill(&c.cache_path.as_ref().map(PathBuf::from));
+        args.redis_url.fill(&c.redis_url);
+        fill_untyped(provided, "cache_ttl", &mut args.cache_ttl, &c.cache_ttl);
+        args.no_cache.fill(&c.no_cache);
 
-        if args.redis_url.is_none() && self.cache.redis_url.is_some() {
-            args.redis_url = self.cache.redis_url.clone();
-        }
-
-        if !provided.has("cache_ttl") {
-            if let Some(cache_ttl) = self.cache.cache_ttl {
-                args.cache_ttl = cache_ttl;
-            }
-        }
-
-        if !args.no_cache && self.cache.no_cache.unwrap_or(false) {
-            args.no_cache = true;
-        }
-    }
-
-    fn apply_notify_config(&self, args: &mut Args, provided: &CliProvided) {
+        // [notify]
         // The URL list is filled from the CLI *or* URX_NOTIFY_URL before the
         // config layers run, and the two are indistinguishable afterwards —
         // so "still empty" is the test, not `provided.has`.
@@ -1090,71 +731,92 @@ impl Config {
             }
         }
 
+        let notify = &self.notify;
         if !provided.has("notify_on") {
-            if let Some(on) = &self.notify.on {
-                match <crate::notify::NotifyOn as clap::ValueEnum>::from_str(on.trim(), true) {
-                    Ok(value) => args.notify_on = value,
-                    Err(_) => {
-                        if !args.silent {
-                            eprintln!(
-                                "Ignoring [notify].on={on:?} in config: expected always, new, or never"
-                            );
-                        }
-                    }
-                }
+            let expected = "always, new, or never";
+            if let Some(v) = parse_enum(&notify.on, "[notify].on", expected, args.silent) {
+                args.notify_on = v;
             }
         }
 
         if !provided.has("notify_format") {
-            if let Some(format) = &self.notify.format {
-                match <crate::notify::NotifyFormat as clap::ValueEnum>::from_str(
-                    format.trim(),
-                    true,
-                ) {
-                    Ok(value) => args.notify_format = value,
-                    Err(_) => {
-                        if !args.silent {
-                            eprintln!(
-                                "Ignoring [notify].format={format:?} in config: expected slack, discord, or json"
-                            );
-                        }
-                    }
-                }
+            let expected = "slack, discord, or json";
+            if let Some(v) = parse_enum(&notify.format, "[notify].format", expected, args.silent) {
+                args.notify_format = v;
             }
         }
     }
 }
 
-#[cfg_attr(windows, allow(dead_code))]
-/// Helper function to get the home directory
-fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).or({
-        #[cfg(windows)]
-        {
-            // On Windows, try USERPROFILE first, then HOMEDRIVE + HOMEPATH
-            if let Some(profile) = env::var_os("USERPROFILE").map(PathBuf::from) {
-                return Some(profile);
-            }
+/// Parse a configured value of a `--flag` enum the way clap would, ignoring
+/// case. A bad value is named at the point it was read — with the config key
+/// it came from — and ignored, rather than failing later with an error that
+/// doesn't mention the config file at all.
+fn parse_enum<T: ValueEnum>(
+    raw: &Option<String>,
+    key: &str,
+    expected: &str,
+    silent: bool,
+) -> Option<T> {
+    let raw = raw.as_ref()?;
+    let parsed = T::from_str(raw.trim(), true).ok();
+    if parsed.is_none() && !silent {
+        eprintln!("Ignoring {key}={raw:?} in config: expected {expected}");
+    }
+    parsed
+}
 
-            match (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
-                (Some(drive), Some(path)) => {
-                    let mut drive_path = PathBuf::from(drive);
-                    drive_path.push(path);
-                    Some(drive_path)
-                }
-                _ => None,
-            }
+/// Fill a CLI slot from the config file only when the CLI left it empty,
+/// unset or false — so CLI input always wins.
+trait Fill<C> {
+    fn fill(&mut self, configured: &C);
+}
+
+impl<T: Clone> Fill<Option<Vec<T>>> for Vec<T> {
+    fn fill(&mut self, configured: &Option<Vec<T>>) {
+        if let (true, Some(values)) = (self.is_empty(), configured) {
+            self.clone_from(values);
         }
+    }
+}
 
-        #[cfg(not(windows))]
-        None
-    })
+impl<T: Clone> Fill<Option<T>> for Option<T> {
+    fn fill(&mut self, configured: &Option<T>) {
+        if self.is_none() {
+            self.clone_from(configured);
+        }
+    }
+}
+
+impl Fill<Option<bool>> for bool {
+    fn fill(&mut self, configured: &Option<bool>) {
+        *self |= configured.unwrap_or(false);
+    }
+}
+
+/// Fill a clap-defaulted slot, whose default can't be told from "unset", unless
+/// `id` was typed on the command line.
+fn fill_untyped<T: Clone>(provided: &CliProvided, id: &str, slot: &mut T, configured: &Option<T>) {
+    if let (false, Some(value)) = (provided.has(id), configured) {
+        slot.clone_from(value);
+    }
+}
+
+/// urx's config directory: `$HOME/.config/urx` (`$XDG_CONFIG_HOME` is not
+/// consulted), or `%APPDATA%\urx` on Windows.
+fn urx_config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"));
+    base.map(|base| base.join("urx"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::parse_args_from;
+    use crate::{cache::CacheType, network::NetworkScope, output::Format, providers::CdxDialect};
     use clap::Parser;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -1240,7 +902,7 @@ mod tests {
         // an inline literal here was a fourth copy of the Args fixture.
         let mut args = Args::parse_from(["urx", "example.com"]);
         assert_eq!(args.output, None);
-        assert_eq!(args.format, "plain");
+        assert_eq!(args.format, Format::Plain);
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
 
         // Apply config to args
@@ -1248,7 +910,7 @@ mod tests {
 
         // Verify args were updated correctly
         assert_eq!(args.output, Some(PathBuf::from("output.txt")));
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, Format::Json);
         assert_eq!(args.providers, vec!["cc"]);
     }
 
@@ -1262,7 +924,7 @@ mod tests {
         config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.timeout, 120);
-        assert_eq!(args.parallel, Some(5));
+        assert_eq!(args.parallel, 5);
     }
 
     #[test]
@@ -1274,8 +936,8 @@ mod tests {
         let mut args = Args::parse_from(["urx", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
 
-        assert_eq!(args.format, "plain");
-        assert_eq!(args.network_scope, "all");
+        assert_eq!(args.format, Format::Plain);
+        assert_eq!(args.network_scope, NetworkScope::All);
     }
 
     #[test]
@@ -1287,8 +949,8 @@ mod tests {
         let mut args = Args::parse_from(["urx", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
 
-        assert_eq!(args.format, "json");
-        assert_eq!(args.network_scope, "providers,testers");
+        assert_eq!(args.format, Format::Json);
+        assert_eq!(args.network_scope, NetworkScope::All);
     }
 
     #[test]
@@ -1368,7 +1030,7 @@ mod tests {
             args.cdx_endpoint,
             vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
         );
-        assert_eq!(args.cdx_dialect.as_deref(), Some("classic"));
+        assert_eq!(args.cdx_dialect, Some(CdxDialect::Classic));
 
         // The CLI wins over the file.
         let config: Config = toml::from_str(toml_src).unwrap();
@@ -1382,7 +1044,7 @@ mod tests {
         ]);
         config.apply_to_args(&mut args, &CliProvided::default());
         assert_eq!(args.cdx_endpoint, vec!["https://example.org/cdx"]);
-        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+        assert_eq!(args.cdx_dialect, Some(CdxDialect::Pywb));
 
         // An empty dialect string, as in the documented template, is unset.
         let config: Config = toml::from_str("[provider]\ncdx_dialect = \"\"").unwrap();
@@ -1437,7 +1099,7 @@ mod tests {
         keys.apply_to_args(
             &mut args,
             CliSuppliedKeys {
-                github: true,
+                api_keys: vec!["github"],
                 ..Default::default()
             },
         );
@@ -1453,14 +1115,18 @@ mod tests {
         config.cache.cache_type = Some("postgres".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
-        assert_eq!(args.cache_type, "sqlite", "invalid value must be ignored");
+        assert_eq!(
+            args.cache_type,
+            CacheType::Sqlite,
+            "invalid value must be ignored"
+        );
 
         // A valid value still applies, case-insensitively.
         let mut config = Config::default();
         config.cache.cache_type = Some("Redis".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
-        assert_eq!(args.cache_type, "redis");
+        assert_eq!(args.cache_type, CacheType::Redis);
     }
 
     #[test]
@@ -1489,7 +1155,7 @@ mod tests {
         cfg.apply_to_args(
             &mut args,
             CliSuppliedKeys {
-                vt: true,
+                api_keys: vec!["vt"],
                 ..Default::default()
             },
         );
@@ -1597,14 +1263,14 @@ mod tests {
             .unwrap()
             .apply_to_args(&mut args, &provided);
 
-        assert_eq!(args.format, "plain");
+        assert_eq!(args.format, Format::Plain);
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
         assert_eq!(args.cc_index, vec!["latest"]);
-        assert_eq!(args.network_scope, "all");
+        assert_eq!(args.network_scope, NetworkScope::All);
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
-        assert_eq!(args.parallel, Some(5));
-        assert_eq!(args.cache_type, "sqlite");
+        assert_eq!(args.parallel, 5);
+        assert_eq!(args.cache_type, CacheType::Sqlite);
         assert_eq!(args.cache_ttl, 86400);
     }
 
@@ -1636,14 +1302,14 @@ mod tests {
             .unwrap()
             .apply_to_args(&mut args, &provided);
 
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, Format::Json);
         assert_eq!(args.providers, vec!["arquivo"]);
         assert_eq!(args.cc_index, vec!["CC-MAIN-2020-05"]);
-        assert_eq!(args.network_scope, "testers");
+        assert_eq!(args.network_scope, NetworkScope::Testers);
         assert_eq!(args.timeout, 30);
         assert_eq!(args.retries, 9);
-        assert_eq!(args.parallel, Some(2));
-        assert_eq!(args.cache_type, "redis");
+        assert_eq!(args.parallel, 2);
+        assert_eq!(args.cache_type, CacheType::Redis);
         assert_eq!(args.cache_ttl, 60);
     }
 

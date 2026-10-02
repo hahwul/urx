@@ -118,19 +118,7 @@ impl BodyArchive {
     /// megabytes far more often than in bytes, and "312651776" tells the
     /// reader nothing about whether their disk is about to fill up.
     pub fn human_bytes(&self) -> String {
-        let bytes = self.bytes() as f64;
-        const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
-        let mut value = bytes;
-        let mut unit = 0;
-        while value >= 1024.0 && unit + 1 < UNITS.len() {
-            value /= 1024.0;
-            unit += 1;
-        }
-        if unit == 0 {
-            format!("{} {}", self.bytes(), UNITS[unit])
-        } else {
-            format!("{value:.1} {}", UNITS[unit])
-        }
+        indicatif::HumanBytes(self.bytes()).to_string()
     }
 
     /// Write one body and record it in the index.
@@ -393,7 +381,7 @@ mod tests {
         archive
             .bytes
             .store(5 * 1024 * 1024 + 512 * 1024, Ordering::Relaxed);
-        assert_eq!(archive.human_bytes(), "5.5 MiB");
+        assert_eq!(archive.human_bytes(), "5.50 MiB");
     }
 
     #[test]

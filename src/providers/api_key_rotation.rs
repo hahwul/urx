@@ -9,10 +9,10 @@ pub struct ApiKeyRotator {
 }
 
 impl ApiKeyRotator {
-    /// Create a new API key rotator with the given keys
+    /// Create a new API key rotator with the given keys; blank keys are dropped.
     pub fn new(keys: Vec<String>) -> Self {
         ApiKeyRotator {
-            keys,
+            keys: keys.into_iter().filter(|k| !k.is_empty()).collect(),
             counter: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -27,26 +27,9 @@ impl ApiKeyRotator {
         Some(self.keys[index].clone())
     }
 
-    /// Get the current key without advancing the rotation
-    #[allow(dead_code)]
-    pub fn current_key(&self) -> Option<String> {
-        if self.keys.is_empty() {
-            return None;
-        }
-
-        let index = self.counter.load(Ordering::Relaxed) % self.keys.len();
-        Some(self.keys[index].clone())
-    }
-
     /// Check if the rotator has any keys
     pub fn has_keys(&self) -> bool {
         !self.keys.is_empty()
-    }
-
-    /// Get the number of available keys
-    #[allow(dead_code)]
-    pub fn key_count(&self) -> usize {
-        self.keys.len()
     }
 }
 
@@ -61,18 +44,16 @@ mod tests {
         let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let rotator = ApiKeyRotator::new(keys.clone());
 
-        assert_eq!(rotator.key_count(), 3);
+        assert_eq!(rotator.keys, keys);
         assert!(rotator.has_keys());
     }
 
     #[test]
     fn test_empty_rotator() {
-        let rotator = ApiKeyRotator::new(vec![]);
+        let rotator = ApiKeyRotator::new(vec![String::new()]);
 
-        assert_eq!(rotator.key_count(), 0);
-        assert!(!rotator.has_keys());
+        assert!(!rotator.has_keys(), "blank keys are dropped");
         assert!(rotator.next_key().is_none());
-        assert!(rotator.current_key().is_none());
     }
 
     #[test]
@@ -97,23 +78,6 @@ mod tests {
         assert_eq!(rotator.next_key(), Some("key3".to_string()));
         assert_eq!(rotator.next_key(), Some("key1".to_string())); // Should wrap around
         assert_eq!(rotator.next_key(), Some("key2".to_string()));
-    }
-
-    #[test]
-    fn test_current_key() {
-        let keys = vec!["key1".to_string(), "key2".to_string()];
-        let rotator = ApiKeyRotator::new(keys);
-
-        // Current key should be key1 initially
-        assert_eq!(rotator.current_key(), Some("key1".to_string()));
-
-        // After next_key(), current should change
-        assert_eq!(rotator.next_key(), Some("key1".to_string()));
-        assert_eq!(rotator.current_key(), Some("key2".to_string()));
-
-        // Call current_key multiple times - should not advance
-        assert_eq!(rotator.current_key(), Some("key2".to_string()));
-        assert_eq!(rotator.current_key(), Some("key2".to_string()));
     }
 
     #[test]

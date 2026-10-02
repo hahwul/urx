@@ -1,13 +1,10 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use reqwest::Client;
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
 
-use crate::network::client::{read_body_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::read_body_capped;
+use crate::network::{CustomHeaders, NetConfig, RateLimiter};
 use crate::progress::ProgressReporter;
 use crate::providers::archived::{
     describe_skipped, list_versions, replay_capture, ArchivedDiscovery, Replay,
@@ -27,41 +24,25 @@ const MAX_ROBOTS_ENTRIES: usize = 100_000;
 
 #[derive(Clone)]
 pub struct RobotsProvider {
-    timeout: Duration,
-    retries: u32,
-    random_agent: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
-    /// target itself, so the user's headers belong on those requests.
-    headers: CustomHeaders,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
+    /// Carries `-H`/`--cookie`/`--user-agent` too: this component requests
+    /// URLs from the target itself, so the user's headers belong on those
+    /// requests.
+    net: NetConfig,
     /// When set, this instance reads the *archived* versions of robots.txt
     /// from the Wayback Machine instead of the live file. See
     /// [`RobotsProvider::archived`].
     archived: Option<ArchivedDiscovery>,
-    #[cfg(test)]
+    /// Origins tests point at mock servers; empty means the live host.
     base_url: String,
-    #[cfg(test)]
     base_url_http: String,
 }
 
 impl RobotsProvider {
     pub fn new() -> Self {
         Self {
-            timeout: Duration::from_secs(30),
-            retries: 3,
-            random_agent: false,
-            proxy: None,
-            proxy_auth: None,
-            headers: CustomHeaders::default(),
-            insecure: false,
-            rate_limit: None,
+            net: NetConfig::default(),
             archived: None,
-            #[cfg(test)]
             base_url: String::new(),
-            #[cfg(test)]
             base_url_http: String::new(),
         }
     }
@@ -79,40 +60,11 @@ impl RobotsProvider {
         provider
     }
 
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    #[cfg(test)]
-    pub fn with_http_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url_http = url;
-        self
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: self.headers.clone(),
-            timeout: self.timeout.as_secs(),
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
-    /// Build the HTTP client via the shared config so it always sends a
-    /// User-Agent (a UA-less request is rejected with 400 by some servers).
-    fn build_client(&self) -> Result<Client> {
-        self.client_config().build_client()
-    }
-
     /// A client for requests that go to an archive rather than the target,
     /// i.e. everything `--archived-discovery` does. See
     /// [`HttpClientConfig::without_headers`].
     fn build_archive_client(&self) -> Result<Client> {
-        self.client_config().without_headers().build_client()
+        self.net.http.clone().without_headers().build_client()
     }
 }
 
@@ -223,7 +175,7 @@ impl RobotsProvider {
         reporter: Option<ProgressReporter>,
     ) -> Result<Vec<UrlRecord>> {
         let client = self.build_archive_client()?;
-        let limiter = self.rate_limit.as_ref();
+        let limiter = self.net.rate_limit.as_ref();
         let note = |msg: String| {
             if let Some(r) = &reporter {
                 r.note(msg);
@@ -237,7 +189,7 @@ impl RobotsProvider {
             &client,
             settings,
             &format!("{domain}/robots.txt"),
-            self.retries,
+            self.net.retries,
             limiter,
         )
         .await?;
@@ -332,7 +284,6 @@ fn resolve_sitemap_value(protocol: &str, domain: &str, value: &str) -> Option<St
     }
 }
 
-#[async_trait]
 impl Provider for RobotsProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
@@ -347,17 +298,12 @@ impl Provider for RobotsProvider {
                 return self.fetch_archived(domain, settings, None).await;
             }
 
-            let client = self.build_client()?;
-            let limiter = self.rate_limit.as_ref();
+            let client = self.net.http.build_client()?;
+            let limiter = self.net.rate_limit.as_ref();
 
-            #[cfg(not(test))]
-            let https_url = format!("https://{domain}/robots.txt");
-
-            #[cfg(test)]
-            let https_url = if !self.base_url.is_empty() {
-                format!("{}/robots.txt", self.base_url)
-            } else {
-                format!("https://{domain}/robots.txt")
+            let https_url = match self.base_url.as_str() {
+                "" => format!("https://{domain}/robots.txt"),
+                base => format!("{base}/robots.txt"),
             };
 
             let mut urls: Vec<String> = Vec::new();
@@ -381,16 +327,9 @@ impl Provider for RobotsProvider {
 
             if body.is_none() {
                 // If HTTPS didn't produce a robots.txt, try HTTP.
-                #[cfg(not(test))]
-                let http_url = format!("http://{domain}/robots.txt");
-
-                #[cfg(test)]
-                let http_url = if !self.base_url_http.is_empty() {
-                    format!("{}/robots.txt", self.base_url_http)
-                } else if !self.base_url.is_empty() {
-                    format!("{}/robots.txt", self.base_url)
-                } else {
-                    format!("http://{domain}/robots.txt")
+                let http_url = match (self.base_url_http.as_str(), self.base_url.as_str()) {
+                    ("", "") => format!("http://{domain}/robots.txt"),
+                    ("", base) | (base, _) => format!("{base}/robots.txt"),
                 };
 
                 match fetch_robots(&client, &http_url, limiter).await {
@@ -448,30 +387,11 @@ impl Provider for RobotsProvider {
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
     fn with_headers(&mut self, headers: CustomHeaders) {
-        self.headers = headers;
-    }
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = Duration::from_secs(seconds);
-    }
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+        self.net.http.headers = headers;
     }
 }
 
@@ -481,102 +401,10 @@ mod tests {
     use crate::providers::urls_of;
 
     #[test]
-    fn test_new_provider() {
-        let provider = RobotsProvider::new();
-        assert_eq!(provider.timeout, Duration::from_secs(30));
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
-        assert_eq!(provider.base_url, String::new());
-        assert_eq!(provider.base_url_http, String::new());
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let mut provider = RobotsProvider::new();
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-        // A non-positive rate means "no limiting".
-        provider.with_rate_limit(Some(0.0));
-        assert!(provider.rate_limit.is_none());
-    }
-
-    #[test]
-    fn test_with_proxy() {
-        let mut provider = RobotsProvider::new();
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let mut provider = RobotsProvider::new();
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let mut provider = RobotsProvider::new();
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let mut provider = RobotsProvider::new();
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let mut provider = RobotsProvider::new();
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-
-        // Test disabling the random agent
-        provider.with_random_agent(false);
-        assert!(!provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let mut provider = RobotsProvider::new();
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
     fn test_clone_box() {
         let provider = RobotsProvider::new();
         let _cloned = provider.clone_box();
         // Testing the existence of cloned object
-    }
-
-    #[test]
-    fn test_build_client() {
-        let provider = RobotsProvider::new();
-        let client_result = provider.build_client();
-        assert!(client_result.is_ok());
-
-        // Test with proxy
-        let mut provider_with_proxy = RobotsProvider::new();
-        provider_with_proxy.with_proxy(Some("http://invalid:proxy".to_string()));
-        let client_result = provider_with_proxy.build_client();
-        assert!(client_result.is_err());
-
-        // Test with user agent
-        let mut provider_with_agent = RobotsProvider::new();
-        provider_with_agent.with_random_agent(true);
-        let client_result = provider_with_agent.build_client();
-        assert!(client_result.is_ok());
     }
 
     #[tokio::test]
@@ -639,7 +467,7 @@ Sitemap: https://example.com/sitemap.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert!(urls.contains(&"https://example.com/lower/".to_string()));
@@ -663,7 +491,7 @@ Sitemap: https://example.com/sitemap.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         // Glob pattern is skipped entirely.
@@ -696,7 +524,7 @@ Sitemap: https://example.com/sitemap.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert_eq!(
@@ -730,7 +558,7 @@ Sitemap: https://example.com/sitemap.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/admin".to_string()]);
     }
@@ -771,7 +599,7 @@ Sitemap: https://example.com/sitemap.xml
             .create();
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(mock_server.url());
+        provider.base_url = mock_server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -801,7 +629,7 @@ Sitemap: https://example.com/sitemap.xml
             .create();
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(mock_server.url());
+        provider.base_url = mock_server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -833,7 +661,7 @@ Sitemap: https://example.com/sitemap.xml
             .create();
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(mock_server.url());
+        provider.base_url = mock_server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert!(
@@ -857,9 +685,9 @@ Sitemap: https://example.com/sitemap.xml
         };
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(dead.clone());
-        provider.with_http_base_url(dead);
-        provider.with_timeout(5);
+        provider.base_url = dead.clone();
+        provider.base_url_http = dead;
+        provider.net.http.timeout = 5;
 
         let err = provider
             .fetch_urls("example.com")
@@ -890,8 +718,8 @@ Sitemap: https://example.com/sitemap.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(https.url());
-        provider.with_http_base_url(http.url());
+        provider.base_url = https.url();
+        provider.base_url_http = http.url();
 
         let urls = urls_of(
             provider
@@ -921,8 +749,8 @@ Sitemap: https://example.com/sitemap.xml
         };
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(https.url());
-        provider.with_http_base_url(dead);
+        provider.base_url = https.url();
+        provider.base_url_http = dead;
 
         assert!(provider.fetch_urls("example.com").await.unwrap().is_empty());
     }
@@ -947,7 +775,7 @@ Sitemap: https://example.com/sitemap.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
         assert!(
@@ -997,8 +825,8 @@ Sitemap: http://example.com/sitemap.xml
             .create();
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(mock_server_https.url());
-        provider.with_http_base_url(mock_server_http.url());
+        provider.base_url = mock_server_https.url();
+        provider.base_url_http = mock_server_http.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -1287,7 +1115,7 @@ Sitemap: /sitemap-2015.xml
             format!("http://{addr}")
         };
         let mut provider = RobotsProvider::archived(ArchivedDiscovery::new(10).with_origin(dead));
-        provider.with_retries(0);
+        provider.net.retries = 0;
         assert!(provider.fetch_urls("example.com").await.is_err());
     }
 
@@ -1309,7 +1137,7 @@ Sitemap: /sitemap-2015.xml
             .await;
 
         let mut provider = RobotsProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/live".to_string()]);
         index.assert();

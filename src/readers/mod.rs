@@ -1,14 +1,11 @@
 use anyhow::Result;
-use std::io::{BufRead, Read};
+use std::fs::File;
+use std::io::{BufRead, Read, Seek};
 use std::path::Path;
 
 mod text_reader;
 mod urlteam_reader;
 mod warc_reader;
-
-pub use text_reader::TextFileReader;
-pub use urlteam_reader::UrlTeamFileReader;
-pub use warc_reader::WarcFileReader;
 
 /// Maximum bytes buffered for a single input line. Real URL lines are far
 /// shorter; the cap keeps a corrupt or malicious file (e.g. a gzip bomb that
@@ -238,10 +235,15 @@ pub(crate) fn warn_if_truncated(
     }
 }
 
-/// Trait for reading URLs from different file formats
-pub trait FileReader {
-    /// Read URLs from a file and return them as a vector of strings
-    fn read_urls(&self, file_path: &Path) -> Result<Vec<String>>;
+const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
+
+/// The file's first three bytes, with the file rewound for the real read. A
+/// short read leaves the tail zeroed, which matches no signature.
+fn magic(file: &mut File) -> std::io::Result<[u8; 3]> {
+    let mut magic = [0u8; 3];
+    let _ = file.read(&mut magic);
+    file.rewind()?;
+    Ok(magic)
 }
 
 /// Enum representing different file formats
@@ -253,7 +255,7 @@ pub enum FileFormat {
 }
 
 /// Auto-detect file format based on file extension and content
-pub fn detect_file_format(file_path: &Path) -> Result<FileFormat> {
+pub fn detect_file_format(file_path: &Path) -> FileFormat {
     let filename = file_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -265,52 +267,41 @@ pub fn detect_file_format(file_path: &Path) -> Result<FileFormat> {
         let ext = extension.to_string_lossy().to_lowercase();
 
         match ext.as_str() {
-            "warc" => return Ok(FileFormat::Warc),
+            "warc" => return FileFormat::Warc,
             "gz" | "bz2" => {
                 // Compression extensions do not identify the archive format.
                 // Use the WARC filename clue before the URLTeam default.
                 if filename.contains("warc") {
-                    return Ok(FileFormat::Warc);
+                    return FileFormat::Warc;
                 }
 
                 // Compressed files without a WARC clue default to URLTeam.
-                return Ok(FileFormat::UrlTeam);
+                return FileFormat::UrlTeam;
             }
-            "txt" | "list" => return Ok(FileFormat::Text),
+            "txt" | "list" => return FileFormat::Text,
             _ => {}
         }
     }
 
     // For unknown or missing extensions, fall back to filename patterns.
     if filename.contains("warc") {
-        return Ok(FileFormat::Warc);
+        return FileFormat::Warc;
     }
 
     if filename.contains("urlteam") || filename.contains("url_team") {
-        return Ok(FileFormat::UrlTeam);
+        return FileFormat::UrlTeam;
     }
 
     // Default to text format for unknown files
-    Ok(FileFormat::Text)
+    FileFormat::Text
 }
 
 /// Read URLs from a file using auto-detected format
 pub fn read_urls_from_file(file_path: &Path) -> Result<Vec<String>> {
-    let format = detect_file_format(file_path)?;
-
-    match format {
-        FileFormat::Warc => {
-            let reader = WarcFileReader::new();
-            reader.read_urls(file_path)
-        }
-        FileFormat::UrlTeam => {
-            let reader = UrlTeamFileReader::new();
-            reader.read_urls(file_path)
-        }
-        FileFormat::Text => {
-            let reader = TextFileReader::new();
-            reader.read_urls(file_path)
-        }
+    match detect_file_format(file_path) {
+        FileFormat::Warc => warc_reader::read_urls(file_path),
+        FileFormat::UrlTeam => urlteam_reader::read_urls(file_path),
+        FileFormat::Text => text_reader::read_urls(file_path),
     }
 }
 
@@ -322,52 +313,52 @@ mod tests {
     #[test]
     fn test_detect_warc_format() {
         let path = PathBuf::from("test.warc");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+        assert_eq!(detect_file_format(&path), FileFormat::Warc);
 
         let path = PathBuf::from("archive.warc");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+        assert_eq!(detect_file_format(&path), FileFormat::Warc);
 
         let path = PathBuf::from("some_warc_file.dat");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+        assert_eq!(detect_file_format(&path), FileFormat::Warc);
 
         let path = PathBuf::from("some_warc_file.gz");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+        assert_eq!(detect_file_format(&path), FileFormat::Warc);
 
         let path = PathBuf::from("foo.warc.gz");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+        assert_eq!(detect_file_format(&path), FileFormat::Warc);
 
         let path = PathBuf::from("crawl-warc.dat");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Warc);
+        assert_eq!(detect_file_format(&path), FileFormat::Warc);
     }
 
     #[test]
     fn test_detect_urlteam_format() {
         let path = PathBuf::from("urlteam_data.gz");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::UrlTeam);
+        assert_eq!(detect_file_format(&path), FileFormat::UrlTeam);
 
         let path = PathBuf::from("url_team_archive.bz2");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::UrlTeam);
+        assert_eq!(detect_file_format(&path), FileFormat::UrlTeam);
 
         let path = PathBuf::from("data.gz");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::UrlTeam);
+        assert_eq!(detect_file_format(&path), FileFormat::UrlTeam);
     }
 
     #[test]
     fn test_detect_text_format() {
         let path = PathBuf::from("urls.txt");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+        assert_eq!(detect_file_format(&path), FileFormat::Text);
 
         let path = PathBuf::from("list.list");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+        assert_eq!(detect_file_format(&path), FileFormat::Text);
 
         let path = PathBuf::from("warc-targets.txt");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+        assert_eq!(detect_file_format(&path), FileFormat::Text);
 
         let path = PathBuf::from("my_warc_urls.list");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+        assert_eq!(detect_file_format(&path), FileFormat::Text);
 
         let path = PathBuf::from("unknown_file");
-        assert_eq!(detect_file_format(&path).unwrap(), FileFormat::Text);
+        assert_eq!(detect_file_format(&path), FileFormat::Text);
     }
 
     #[test]
@@ -528,7 +519,7 @@ mod tests {
         let compressed = tempfile::Builder::new().suffix(".warc.bz2").tempfile()?;
         std::fs::write(compressed.path(), b"BZh91AY&SY\0\0\0\0")?;
 
-        assert_eq!(detect_file_format(compressed.path())?, FileFormat::Warc);
+        assert_eq!(detect_file_format(compressed.path()), FileFormat::Warc);
         let error = read_urls_from_file(compressed.path()).unwrap_err();
         assert!(error
             .to_string()

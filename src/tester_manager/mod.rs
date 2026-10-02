@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use crate::cli::Args;
 use crate::filters::{HostValidator, UrlFilter};
-use crate::network::{NetworkScope, NetworkSettings};
+use crate::network::client::HttpClientConfig;
+use crate::network::{NetConfig, NetworkScope, NetworkSettings, RateLimiter};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::testers::Tester;
@@ -59,19 +60,20 @@ pub fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &Netw
         return;
     }
 
-    tester.with_timeout(settings.timeout);
-    tester.with_retries(settings.retries);
-    tester.with_random_agent(settings.random_agent);
-    tester.with_insecure(settings.insecure);
-    tester.with_headers(settings.headers.clone());
-
-    if let Some(proxy) = &settings.proxy {
-        tester.with_proxy(Some(proxy.clone()));
-
-        if let Some(auth) = &settings.proxy_auth {
-            tester.with_proxy_auth(Some(auth.clone()));
-        }
-    }
+    tester.with_network(NetConfig {
+        http: HttpClientConfig {
+            timeout: settings.timeout,
+            insecure: settings.insecure,
+            random_agent: settings.random_agent,
+            proxy: settings.proxy.clone(),
+            proxy_auth: settings.proxy_auth.clone(),
+            // Testers request the target, so the user's headers go along;
+            // the archive replayer strips them again.
+            headers: settings.headers.clone(),
+        },
+        retries: settings.retries,
+        rate_limit: settings.rate_limit.and_then(RateLimiter::new),
+    });
 }
 
 /// Process URLs with tester components (status checker, link extractor, etc.)
@@ -98,7 +100,7 @@ pub async fn process_urls_with_testers(
     // instead stream URL chunks through `buffer_unordered`, keeping at most
     // `parallel` chunks in flight at a time, and advance the progress bar as
     // each URL actually completes (not when its task is merely scheduled).
-    let parallel = args.parallel.unwrap_or(5).max(1) as usize;
+    let parallel = args.parallel.max(1) as usize;
     let total = transformed_urls.len() as u64;
     let completed = Arc::new(AtomicU64::new(0));
 
@@ -140,7 +142,7 @@ pub async fn process_urls_with_testers(
 
                 for url in url_vec {
                     let mut status_result = None;
-                    let mut links_result: Option<Vec<String>> = None;
+                    let mut links_result: Option<Vec<output::UrlData>> = None;
 
                     // Process URL with each tester
                     for (i, tester) in testers_clone.iter().enumerate() {
@@ -167,10 +169,7 @@ pub async fn process_urls_with_testers(
 
                     // Create UrlData for this URL
                     if let Some(status_urls) = status_result {
-                        for status_url in status_urls {
-                            // Parse the status URL (format: "{url} - {status}")
-                            result_urls.push(output::UrlData::from_string(status_url));
-                        }
+                        result_urls.extend(status_urls);
                     } else {
                         // If no status but URL should be included anyway
                         if check_status {
@@ -191,14 +190,14 @@ pub async fn process_urls_with_testers(
                     // putting them through the same filters, host validation and
                     // views the primary URLs already passed.
                     if let Some(link_urls) = links_result {
-                        for link_url in link_urls {
+                        for link in link_urls {
                             match &link_filter {
                                 Some(f) => {
-                                    if let Some(kept) = f.accept(&link_url) {
+                                    if let Some(kept) = f.accept(&link.url) {
                                         result_urls.push(output::UrlData::new(kept));
                                     }
                                 }
-                                None => result_urls.push(output::UrlData::new(link_url)),
+                                None => result_urls.push(link),
                             }
                         }
                     }
@@ -255,25 +254,16 @@ pub async fn process_urls_with_testers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::UrlData;
+    use crate::testers::urls;
     use anyhow::Result;
     use std::future::Future;
     use std::pin::Pin;
 
-    /// Mock tester for testing apply_network_settings_to_tester
+    /// Records the network settings it was handed.
     #[derive(Clone, Default)]
     struct MockTester {
-        timeout: u64,
-        retries: u32,
-        random_agent: bool,
-        insecure: bool,
-        proxy: Option<String>,
-        proxy_auth: Option<String>,
-    }
-
-    impl MockTester {
-        fn new() -> Self {
-            MockTester::default()
-        }
+        net: Option<NetConfig>,
     }
 
     impl Tester for MockTester {
@@ -283,34 +273,13 @@ mod tests {
 
         fn test_url<'a>(
             &'a self,
-            url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
-            let url = url.to_string();
-            Box::pin(async move { Ok(vec![url]) })
+            _url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+            Box::pin(async { Ok(Vec::new()) })
         }
 
-        fn with_timeout(&mut self, seconds: u64) {
-            self.timeout = seconds;
-        }
-
-        fn with_retries(&mut self, count: u32) {
-            self.retries = count;
-        }
-
-        fn with_random_agent(&mut self, enabled: bool) {
-            self.random_agent = enabled;
-        }
-
-        fn with_insecure(&mut self, enabled: bool) {
-            self.insecure = enabled;
-        }
-
-        fn with_proxy(&mut self, proxy: Option<String>) {
-            self.proxy = proxy;
-        }
-
-        fn with_proxy_auth(&mut self, auth: Option<String>) {
-            self.proxy_auth = auth;
+        fn with_network(&mut self, net: NetConfig) {
+            self.net = Some(net);
         }
     }
 
@@ -326,17 +295,10 @@ mod tests {
         fn test_url<'a>(
             &'a self,
             url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
             let url = url.to_string();
             Box::pin(async move { Err(anyhow::anyhow!("connection refused for {url}")) })
         }
-
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
     async fn run_failing_status_check(argv: &[&str]) -> Vec<output::UrlData> {
@@ -395,17 +357,10 @@ mod tests {
         fn test_url<'a>(
             &'a self,
             _url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
-            let links = self.0.clone();
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+            let links = self.0.iter().cloned().map(UrlData::new).collect();
             Box::pin(async move { Ok(links) })
         }
-
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
     async fn run_extract_links(
@@ -440,7 +395,7 @@ mod tests {
         filter.with_extensions(vec!["js".to_string()]);
         let link_filter = Some(Arc::new(ExtractedLinkFilter::new(
             filter,
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
         )));
 
@@ -478,7 +433,7 @@ mod tests {
         // social buttons) landed in the results.
         let link_filter = Some(Arc::new(ExtractedLinkFilter::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             Some(HostValidator::new(&["example.com".to_string()], false)),
         )));
 
@@ -508,8 +463,10 @@ mod tests {
     async fn test_extracted_links_are_transformed_like_the_rest() {
         // The show-only / normalize views applied to the primary list must apply
         // to extracted links too, or the output mixes two different shapes.
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_path(true);
+        let transformer = UrlTransformer {
+            show_only_path: true,
+            ..Default::default()
+        };
         let link_filter = Some(Arc::new(ExtractedLinkFilter::new(
             UrlFilter::new(),
             transformer,
@@ -588,90 +545,38 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_network_settings_to_tester_basic() {
-        let mut tester = MockTester::new();
-        let settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
+    fn test_apply_network_settings_to_tester_honours_scope() {
+        for (scope, applied) in [
+            (NetworkScope::All, true),
+            (NetworkScope::Testers, true),
+            (NetworkScope::Providers, false),
+        ] {
+            let mut tester = MockTester::default();
+            let settings = NetworkSettings {
+                timeout: 60,
+                retries: 5,
+                insecure: true,
+                proxy: Some("http://proxy:8080".to_string()),
+                proxy_auth: Some("user:pass".to_string()),
+                rate_limit: Some(2.0),
+                scope,
+                ..Default::default()
+            };
 
-        apply_network_settings_to_tester(&mut tester, &settings);
+            apply_network_settings_to_tester(&mut tester, &settings);
 
-        assert_eq!(tester.timeout, 60);
-        assert_eq!(tester.retries, 5);
-        assert!(tester.random_agent);
-        assert!(tester.insecure);
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_with_proxy() {
-        let mut tester = MockTester::new();
-        let settings = NetworkSettings::new()
-            .with_proxy(Some("http://proxy:8080".to_string()))
-            .with_proxy_auth(Some("user:pass".to_string()));
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
-        assert_eq!(tester.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_skips_for_providers_scope() {
-        let mut tester = MockTester::new();
-        let mut settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
-        settings.scope = NetworkScope::Providers;
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        // Settings should not be applied when scope is Providers
-        assert_eq!(tester.timeout, 0);
-        assert_eq!(tester.retries, 0);
-        assert!(!tester.random_agent);
-        assert!(!tester.insecure);
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_applies_for_testers_scope() {
-        let mut tester = MockTester::new();
-        let mut settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
-        settings.scope = NetworkScope::Testers;
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        // Settings should be applied when scope is Testers
-        assert_eq!(tester.timeout, 60);
-        assert_eq!(tester.retries, 5);
-        assert!(tester.random_agent);
-        assert!(tester.insecure);
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_applies_for_all_scope() {
-        let mut tester = MockTester::new();
-        let mut settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
-        settings.scope = NetworkScope::All;
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        // Settings should be applied when scope is All
-        assert_eq!(tester.timeout, 60);
-        assert_eq!(tester.retries, 5);
-        assert!(tester.random_agent);
-        assert!(tester.insecure);
+            let Some(net) = tester.net else {
+                assert!(!applied, "{scope:?}");
+                continue;
+            };
+            assert!(applied, "{scope:?}");
+            assert_eq!(net.http.timeout, 60);
+            assert_eq!(net.retries, 5);
+            assert!(net.http.insecure);
+            assert_eq!(net.http.proxy.as_deref(), Some("http://proxy:8080"));
+            assert_eq!(net.http.proxy_auth.as_deref(), Some("user:pass"));
+            assert!(net.rate_limit.is_some());
+        }
     }
 
     #[tokio::test]
@@ -726,16 +631,10 @@ mod tests {
         fn test_url<'a>(
             &'a self,
             url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
             let url = url.to_string();
-            Box::pin(async move { Ok(vec![format!("{url} - 200 OK")]) })
+            Box::pin(async move { Ok(vec![UrlData::with_status(url, "200 OK".to_string())]) })
         }
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
     #[tokio::test]
@@ -770,17 +669,6 @@ mod tests {
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].url, "https://example.com/a");
         assert_eq!(out[0].status.as_deref(), Some("200 OK"));
-    }
-
-    #[test]
-    fn test_apply_network_settings_proxy_without_auth() {
-        let mut tester = MockTester::new();
-        let settings = NetworkSettings::new().with_proxy(Some("http://proxy:8080".to_string()));
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
-        assert_eq!(tester.proxy_auth, None);
     }
 
     #[tokio::test]
@@ -820,14 +708,15 @@ mod tests {
         use crate::network::CustomHeaders;
         use crate::testers::{ArchiveBodyExtractor, ArchiveCapture, LinkExtractor};
 
-        let settings = NetworkSettings::new().with_headers(
-            CustomHeaders::parse(
+        let settings = NetworkSettings {
+            headers: CustomHeaders::parse(
                 &["X-Trace: urx".to_string()],
                 Some("session=secret"),
                 Some("urx-test/1"),
             )
             .unwrap(),
-        );
+            ..Default::default()
+        };
 
         // The link extractor requests URLs from the target, so it must send
         // them...
@@ -849,6 +738,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/page", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert_eq!(links, vec![format!("{}/found", server.url())]);
         // Mockito answers 501 when no mock matches, so a missed header would
@@ -883,7 +773,11 @@ mod tests {
         );
         apply_network_settings_to_tester(&mut replayer, &settings);
         replayer.with_origin(archive.url());
-        let found = replayer.test_url("https://example.com/gone").await.unwrap();
+        let found = replayer
+            .test_url("https://example.com/gone")
+            .await
+            .map(urls)
+            .unwrap();
         assert_eq!(found, vec!["https://example.com/archived".to_string()]);
         replay.assert();
     }

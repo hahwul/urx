@@ -10,9 +10,10 @@ use anyhow::Result;
 
 use crate::app::catalog::{
     cdx_endpoint_ids, cdx_endpoints, is_cdx_endpoint_id, missing_api_key_message, provider_catalog,
-    valid_provider_ids, validate_provider_ids, validate_rate_limit_override_ids,
+    provider_display_name, valid_provider_ids, validate_provider_ids,
+    validate_rate_limit_override_ids,
 };
-use crate::app::keys::{auto_enable_provider, ApiKeys, KEYED_PROVIDER_IDS};
+use crate::app::keys::{ApiKeys, KEYED_PROVIDER_IDS};
 use crate::cli::Args;
 use crate::filters::{compile_url_regexes, validate_presets};
 use crate::network::NetworkSettings;
@@ -39,15 +40,6 @@ const PYWB_PROVIDERS: [&str; 2] = ["cc", "arquivo"];
 /// Whether `id` honours the archive-side filters.
 fn is_cdx_provider(id: &str) -> bool {
     CDX_PROVIDERS.contains(&id) || is_cdx_endpoint_id(id)
-}
-
-/// The dialect `--cdx-dialect` named, if any. Validated by clap, so a value
-/// that fails to parse here is a programming error rather than user input.
-fn requested_cdx_dialect(args: &Args) -> Result<Option<CdxDialect>> {
-    args.cdx_dialect
-        .as_deref()
-        .map(|d| d.parse::<CdxDialect>().map_err(anyhow::Error::msg))
-        .transpose()
 }
 
 /// Whether `id` matches filter values exactly (pywb semantics). A
@@ -96,7 +88,9 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
         // this function also runs for cache-key construction, where announcing
         // the same thing a second time would be noise.
         for id in KEYED_PROVIDER_IDS {
-            auto_enable_provider(&mut providers_list, keys.for_provider(id), id, false, true);
+            if !keys.for_provider(id).is_empty() && !providers_list.iter().any(|p| p == id) {
+                providers_list.push(id.to_string());
+            }
         }
     }
 
@@ -184,11 +178,10 @@ fn warn_about_inert_archive_filters(
     // and AND repeated filters together, so "200 or 301" is unsatisfiable
     // there. urx drops such a filter for those providers instead of sending a
     // query that would come back empty and read as "the archive has nothing".
-    let requested_dialect = requested_cdx_dialect(args).ok().flatten();
     let affected: Vec<&str> = providers_list
         .iter()
         .map(String::as_str)
-        .filter(|p| is_pywb_provider(p, requested_dialect))
+        .filter(|p| is_pywb_provider(p, args.cdx_dialect))
         .collect();
     if affected.is_empty() {
         return;
@@ -254,6 +247,9 @@ pub fn initialize_providers(
 
     // Every provider is registered the same way; the macro keeps the shared
     // `args`/`network_settings`/accumulator arguments out of ten call sites.
+    // Labels come from the catalog, the same names `--list-providers` shows.
+    let label = |id: &str| provider_display_name(id).to_string();
+    let archived_label = |id: &str| format!("{} (archived)", provider_display_name(id));
     macro_rules! register {
         ($id:expr, $label:expr, $builder:expr) => {
             add_provider(
@@ -270,7 +266,7 @@ pub fn initialize_providers(
 
     if enabled.contains("wayback") {
         let filters = archive_filters.clone();
-        register!("wayback", "Wayback Machine".to_string(), move || {
+        register!("wayback", label("wayback"), move || {
             let mut p = WaybackMachineProvider::new();
             p.with_filters(filters);
             p
@@ -306,30 +302,30 @@ pub fn initialize_providers(
     });
 
     if enabled.contains("robots") {
-        register!("robots", "Robots.txt".to_string(), RobotsProvider::new);
+        register!("robots", label("robots"), RobotsProvider::new);
         if let Some(settings) = archived.clone() {
-            register!("robots", "Robots.txt (archived)".to_string(), || {
+            register!("robots", archived_label("robots"), || {
                 RobotsProvider::archived(settings)
             });
         }
     }
 
     if enabled.contains("sitemap") {
-        register!("sitemap", "Sitemap".to_string(), SitemapProvider::new);
+        register!("sitemap", label("sitemap"), SitemapProvider::new);
         if let Some(settings) = archived.clone() {
-            register!("sitemap", "Sitemap (archived)".to_string(), || {
+            register!("sitemap", archived_label("sitemap"), || {
                 SitemapProvider::archived(settings)
             });
         }
     }
 
     if enabled.contains("otx") {
-        register!("otx", "OTX".to_string(), OTXProvider::new);
+        register!("otx", label("otx"), OTXProvider::new);
     }
 
     if enabled.contains("arquivo") {
         let filters = archive_filters.clone();
-        register!("arquivo", "Arquivo.pt".to_string(), move || {
+        register!("arquivo", label("arquivo"), move || {
             let mut p = ArquivoProvider::new();
             p.with_filters(filters);
             p
@@ -339,7 +335,7 @@ pub fn initialize_providers(
     // User-supplied CDX servers run right after the built-in archives. Each
     // endpoint is its own instance (its own stats row, rate limit and dialect
     // probe), labelled by the `cdx:<host>` id it answers to on the flags.
-    let cdx_dialect = requested_cdx_dialect(args)?;
+    let cdx_dialect = args.cdx_dialect;
     for (id, endpoint) in cdx_endpoints(args)? {
         if !enabled.contains(id.as_str()) {
             continue;
@@ -356,61 +352,31 @@ pub fn initialize_providers(
     // From here on the order matches the catalog's keyed section, which is also
     // the order provider rows appear in `--stats` and the progress region.
     //
-    // These three cannot run at all without a key. `--all-providers` users
-    // don't want a noisy error for every key they happen not to have, so the
-    // complaint is suppressed in that mode.
-    if enabled.contains("vt") {
-        let vt_keys = keys.vt.clone();
-        if !vt_keys.is_empty() {
-            register!("vt", "VirusTotal".to_string(), || {
-                VirusTotalProvider::new_with_keys(vt_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("vt"));
+    // A key-gated provider cannot run at all without a key. `--all-providers`
+    // users don't want a noisy error for every key they happen not to have, so
+    // the complaint is suppressed in that mode. urlscan.io's public search
+    // works without a key (rate-limited to ~30 req/min per IP); a key only
+    // raises those limits and enables rotation.
+    for info in provider_catalog() {
+        let id = info.id;
+        if !KEYED_PROVIDER_IDS.contains(&id) || !enabled.contains(id) {
+            continue;
         }
-    }
-
-    if enabled.contains("urlscan") {
-        // urlscan.io's public search works without a key (rate-limited to
-        // ~30 req/min per IP); a key only raises those limits and enables
-        // rotation. So always instantiate — keys are passed through when
-        // present, but their absence no longer disables the provider.
-        let keys = keys.urlscan.clone();
-        register!("urlscan", "Urlscan".to_string(), || {
-            UrlscanProvider::new_with_keys(keys)
-        });
-    }
-
-    if enabled.contains("zoomeye") {
-        let zoomeye_keys = keys.zoomeye.clone();
-        if !zoomeye_keys.is_empty() {
-            register!("zoomeye", "ZoomEye".to_string(), || {
-                ZoomEyeProvider::new_with_keys(zoomeye_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("zoomeye"));
+        let keys = keys.for_provider(id).to_vec();
+        if info.requires_key && keys.is_empty() {
+            if !args.silent && !args.all_providers {
+                eprintln!("{}", missing_api_key_message(id));
+            }
+            continue;
         }
-    }
-
-    if enabled.contains("github") {
-        let github_keys = keys.github.clone();
-        if !github_keys.is_empty() {
-            register!("github", "GitHub".to_string(), || {
-                GitHubProvider::new_with_keys(github_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("github"));
-        }
-    }
-
-    if enabled.contains("bevigil") {
-        let bevigil_keys = keys.bevigil.clone();
-        if !bevigil_keys.is_empty() {
-            register!("bevigil", "BeVigil".to_string(), || {
-                BeVigilProvider::new_with_keys(bevigil_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("bevigil"));
+        let name = label(id);
+        match id {
+            "vt" => register!(id, name, || VirusTotalProvider::new_with_keys(keys)),
+            "urlscan" => register!(id, name, || UrlscanProvider::new_with_keys(keys)),
+            "zoomeye" => register!(id, name, || ZoomEyeProvider::new_with_keys(keys)),
+            "github" => register!(id, name, || GitHubProvider::new_with_keys(keys)),
+            "bevigil" => register!(id, name, || BeVigilProvider::new_with_keys(keys)),
+            _ => unreachable!("{id} is not a keyed provider"),
         }
     }
 
@@ -430,7 +396,7 @@ pub fn initialize_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{build_test_args, env_mutex, EnvGuard};
+    use crate::test_support::{build_test_args, EnvGuard, ENV};
     use clap::Parser;
 
     /// The keyed providers' environment variables, cleared so a developer's
@@ -577,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_initialize_providers_errors_when_nothing_was_selected() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -591,7 +557,7 @@ mod tests {
     fn test_initialize_providers_enables_urlscan_without_api_key() {
         // urlscan is keyless: requesting it with no API key must still
         // instantiate the provider (regression guard for the removed key gate).
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&["URX_URLSCAN_API_KEY"]);
 
         let mut args = build_test_args();
@@ -608,7 +574,7 @@ mod tests {
 
     #[test]
     fn test_initialize_providers_skips_keyed_provider_without_a_key() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -621,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_initialize_providers_builds_one_instance_per_cc_index() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -638,7 +604,7 @@ mod tests {
         // --all-providers with no keys must enable every keyless provider
         // (including arquivo and the now-keyless urlscan) while keeping the
         // keyed providers disabled.
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -663,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_bevigil_is_keyed_like_the_other_keyed_providers() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         // Requested without a key: skipped (the message goes to stderr).
@@ -691,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_exclude_providers_wins_over_auto_enable() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "some-key")]);
 
         let mut args = build_test_args();
@@ -711,7 +677,7 @@ mod tests {
         // `--providers "wayback, cc"` failed with
         // "Unknown provider id(s) in --providers:  cc. Allowed values: ..., cc, ..."
         // — an error naming the very value it rejected.
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let args = Args::parse_from([
@@ -749,7 +715,7 @@ mod tests {
         // by `main`, so a failing run showed it twice — and `--silent`
         // suppressed the copy that carried the list of valid ids, leaving only
         // the bare "No valid providers specified".
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -766,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_cdx_endpoints_join_the_selection_by_being_named() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -820,10 +786,7 @@ mod tests {
             "classic",
             "example.com",
         ]);
-        assert_eq!(
-            requested_cdx_dialect(&args).unwrap(),
-            Some(CdxDialect::Classic)
-        );
+        assert_eq!(args.cdx_dialect, Some(CdxDialect::Classic));
         // Classic endpoints take a regex OR list; only pywb ones are warned
         // about.
         assert!(!is_pywb_provider(
@@ -839,7 +802,7 @@ mod tests {
 
     #[test]
     fn test_archived_discovery_adds_an_archived_instance_beside_each_live_one() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -883,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_robots_and_sitemap_join_only_when_requested() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();

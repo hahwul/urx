@@ -24,42 +24,41 @@ pub fn api_key_flag(id: &str) -> String {
     format!("--{id}-api-key")
 }
 
-/// Every API key urx resolved for this run, per provider.
-#[derive(Debug, Default, Clone)]
-pub struct ApiKeys {
-    pub vt: Vec<String>,
-    pub urlscan: Vec<String>,
-    pub zoomeye: Vec<String>,
-    pub github: Vec<String>,
-    pub bevigil: Vec<String>,
+/// The `--<id>-api-key` slot in `args` for keyed provider `id`.
+pub fn api_keys_mut<'a>(args: &'a mut Args, id: &str) -> &'a mut Vec<String> {
+    match id {
+        "vt" => &mut args.vt_api_key,
+        "urlscan" => &mut args.urlscan_api_key,
+        "zoomeye" => &mut args.zoomeye_api_key,
+        "github" => &mut args.github_api_key,
+        "bevigil" => &mut args.bevigil_api_key,
+        _ => unreachable!("{id} is not a keyed provider"),
+    }
 }
+
+/// Every API key urx resolved for this run, aligned with [`KEYED_PROVIDER_IDS`].
+#[derive(Debug, Default, Clone)]
+pub struct ApiKeys([Vec<String>; 5]);
 
 impl ApiKeys {
     /// Merge each provider's CLI/config keys with its environment variable.
-    ///
-    /// Resolving all four together means the four-line incantation this
-    /// replaces exists once instead of being repeated at every call site, where
-    /// one copy could quietly fall behind.
     pub fn resolve(args: &Args) -> Self {
-        Self {
-            vt: parse_api_keys(args.vt_api_key.clone(), &api_key_env_var("vt")),
-            urlscan: parse_api_keys(args.urlscan_api_key.clone(), &api_key_env_var("urlscan")),
-            zoomeye: parse_api_keys(args.zoomeye_api_key.clone(), &api_key_env_var("zoomeye")),
-            github: parse_api_keys(args.github_api_key.clone(), &api_key_env_var("github")),
-            bevigil: parse_api_keys(args.bevigil_api_key.clone(), &api_key_env_var("bevigil")),
-        }
+        // A scratch copy, so the one `api_keys_mut` table serves reads too.
+        let mut args = args.clone();
+        Self(KEYED_PROVIDER_IDS.map(|id| {
+            parse_api_keys(
+                std::mem::take(api_keys_mut(&mut args, id)),
+                &api_key_env_var(id),
+            )
+        }))
     }
 
     /// The keys resolved for provider `id`, or an empty slice for a keyless one.
     pub fn for_provider(&self, id: &str) -> &[String] {
-        match id {
-            "vt" => &self.vt,
-            "urlscan" => &self.urlscan,
-            "zoomeye" => &self.zoomeye,
-            "github" => &self.github,
-            "bevigil" => &self.bevigil,
-            _ => &[],
-        }
+        KEYED_PROVIDER_IDS
+            .iter()
+            .position(|k| *k == id)
+            .map_or(&[], |i| &self.0[i])
     }
 }
 
@@ -69,14 +68,7 @@ impl ApiKeys {
 /// it doesn't produce an empty key that later reads as an auth failure.
 fn parse_env_api_keys(env_var_name: &str) -> Vec<String> {
     std::env::var(env_var_name)
-        .ok()
-        .map(|env_keys| {
-            env_keys
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
+        .map(|keys| crate::utils::split_csv(&keys))
         .unwrap_or_default()
 }
 
@@ -92,58 +84,23 @@ pub fn parse_api_keys(cli_keys: Vec<String>, env_var_name: &str) -> Vec<String> 
     all_keys
 }
 
-/// Which providers had a key supplied directly by the user — on the CLI or via
-/// the environment — as opposed to by a config file.
-///
-/// Config layers consult this to avoid overwriting a key the user named
-/// explicitly.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct DirectKeySources {
-    pub vt: bool,
-    pub urlscan: bool,
-    pub zoomeye: bool,
-    pub github: bool,
-    pub bevigil: bool,
-}
-
-/// Fill empty API-key args from their environment variables, and report which
-/// providers ended up with a user-supplied key.
+/// Fill empty API-key args from their environment variables, and return the
+/// providers that ended up with a user-supplied key.
 ///
 /// This must run *before* any config file is applied, which is also what makes
 /// the return value trustworthy: at this point a non-empty field can only have
 /// come from the CLI or from the environment.
-pub fn seed_api_keys_from_env(args: &mut Args) -> DirectKeySources {
-    fn seed(slot: &mut Vec<String>, id: &str) -> bool {
-        if slot.is_empty() {
-            *slot = parse_env_api_keys(&api_key_env_var(id));
-        }
-        !slot.is_empty()
-    }
-
-    DirectKeySources {
-        vt: seed(&mut args.vt_api_key, "vt"),
-        urlscan: seed(&mut args.urlscan_api_key, "urlscan"),
-        zoomeye: seed(&mut args.zoomeye_api_key, "zoomeye"),
-        github: seed(&mut args.github_api_key, "github"),
-        bevigil: seed(&mut args.bevigil_api_key, "bevigil"),
-    }
-}
-
-/// Add `provider_name` to the selection when a key for it is available and it
-/// isn't already selected.
-pub fn auto_enable_provider(
-    providers_list: &mut Vec<String>,
-    api_keys: &[String],
-    provider_name: &str,
-    verbose: bool,
-    silent: bool,
-) {
-    if !api_keys.is_empty() && !providers_list.iter().any(|p| p == provider_name) {
-        providers_list.push(provider_name.to_string());
-        if verbose && !silent {
-            println!("Auto-enabling {provider_name} provider because API key is provided");
-        }
-    }
+pub fn seed_api_keys_from_env(args: &mut Args) -> Vec<&'static str> {
+    KEYED_PROVIDER_IDS
+        .into_iter()
+        .filter(|id| {
+            let slot = api_keys_mut(args, id);
+            if slot.is_empty() {
+                *slot = parse_env_api_keys(&api_key_env_var(id));
+            }
+            !slot.is_empty()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -151,7 +108,7 @@ mod tests {
     use super::*;
     use crate::cli::CliProvided;
     use crate::config::{self, Config};
-    use crate::test_support::{env_mutex, EnvGuard};
+    use crate::test_support::{EnvGuard, ENV};
     use clap::Parser;
 
     #[test]
@@ -162,54 +119,13 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_enable_provider() {
-        let mut providers_list = vec!["wayback".to_string(), "cc".to_string()];
-        let api_keys = vec!["test_api_key".to_string()];
-
-        // Should add vt to the list
-        auto_enable_provider(&mut providers_list, &api_keys, "vt", false, false);
-        assert!(providers_list.contains(&"vt".to_string()));
-        assert_eq!(providers_list.len(), 3);
-
-        // Calling again shouldn't add duplicates
-        auto_enable_provider(&mut providers_list, &api_keys, "vt", false, false);
-        assert_eq!(providers_list.len(), 3);
-
-        // Empty API key should not add the provider
-        let empty_keys: Vec<String> = vec![];
-        auto_enable_provider(&mut providers_list, &empty_keys, "urlscan", false, false);
-        assert!(!providers_list.contains(&"urlscan".to_string()));
-        assert_eq!(providers_list.len(), 3);
-    }
-
-    #[test]
-    fn test_auto_enable_providers_with_env_vars() {
-        let _env_lock = env_mutex().lock().unwrap();
-        let _guard = EnvGuard::set(&[
-            ("URX_VT_API_KEY", "test_vt_key"),
-            ("URX_URLSCAN_API_KEY", "test_urlscan_key"),
-        ]);
-
-        let args = Args::parse_from(["urx", "example.com"]);
-        let keys = ApiKeys::resolve(&args);
-        let mut providers_list = Vec::new();
-
-        auto_enable_provider(&mut providers_list, &keys.vt, "vt", false, false);
-        auto_enable_provider(&mut providers_list, &keys.urlscan, "urlscan", false, false);
-
-        assert!(providers_list.contains(&"vt".to_string()));
-        assert!(providers_list.contains(&"urlscan".to_string()));
-        assert_eq!(providers_list.len(), 2);
-    }
-
-    #[test]
     fn test_parse_api_keys() {
         // CLI keys only
         let cli_keys = vec!["key1".to_string(), "key2".to_string()];
         let result = parse_api_keys(cli_keys, "NONEXISTENT_ENV_VAR");
         assert_eq!(result, vec!["key1", "key2"]);
 
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
 
         // Environment keys only, with surrounding whitespace trimmed
         let _guard = EnvGuard::set(&[("TEST_API_KEYS", "env_key1,env_key2, env_key3 ")]);
@@ -238,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_multiple_api_keys_integration() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&["URX_VT_API_KEY", "URX_URLSCAN_API_KEY"]);
 
         let args = Args::parse_from([
@@ -256,48 +172,37 @@ mod tests {
         assert_eq!(args.urlscan_api_key, vec!["url_key1"]);
 
         let keys = ApiKeys::resolve(&args);
-        assert_eq!(keys.vt, vec!["vt_key1", "vt_key2"]);
-        assert_eq!(keys.urlscan, vec!["url_key1"]);
+        assert_eq!(keys.for_provider("vt"), ["vt_key1", "vt_key2"]);
+        assert_eq!(keys.for_provider("urlscan"), ["url_key1"]);
     }
 
     #[test]
     fn test_api_key_precedence() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "env_vt_key")]);
 
         // An explicit CLI key sorts ahead of the environment's.
         let args = Args::parse_from(["urx", "example.com", "--vt-api-key", "arg_vt_key"]);
         let keys = ApiKeys::resolve(&args);
-        assert_eq!(keys.vt, vec!["arg_vt_key", "env_vt_key"]);
-        assert_eq!(keys.vt[0], "arg_vt_key");
+        assert_eq!(keys.for_provider("vt"), ["arg_vt_key", "env_vt_key"]);
 
         // Without one, the environment variable is the fallback.
         let args = Args::parse_from(["urx", "example.com"]);
-        assert_eq!(ApiKeys::resolve(&args).vt, vec!["env_vt_key"]);
+        assert_eq!(ApiKeys::resolve(&args).for_provider("vt"), ["env_vt_key"]);
     }
 
     #[test]
     fn test_for_provider_maps_ids_and_ignores_keyless_ones() {
-        let keys = ApiKeys {
-            vt: vec!["v".to_string()],
-            urlscan: vec!["u".to_string()],
-            zoomeye: vec!["z".to_string()],
-            github: vec!["g".to_string()],
-            bevigil: vec!["b".to_string()],
-        };
+        let keys = ApiKeys(KEYED_PROVIDER_IDS.map(|id| vec![id.to_string()]));
         for id in KEYED_PROVIDER_IDS {
-            assert_eq!(
-                keys.for_provider(id).len(),
-                1,
-                "{id} should map to its keys"
-            );
+            assert_eq!(keys.for_provider(id), [id], "{id} should map to its keys");
         }
         assert!(keys.for_provider("wayback").is_empty());
     }
 
     #[test]
     fn test_env_api_keys_override_config_layers() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[
             ("URX_VT_API_KEY", "env-vt-1,env-vt-2"),
             ("URX_URLSCAN_API_KEY", "env-urlscan"),
@@ -307,9 +212,7 @@ mod tests {
 
         let mut args = Args::parse_from(["urx", "example.com"]);
         let direct = seed_api_keys_from_env(&mut args);
-        assert!(direct.vt && direct.urlscan && direct.zoomeye);
-        assert!(!direct.github, "no GITHUB key was supplied");
-        assert!(!direct.bevigil, "no BEVIGIL key was supplied");
+        assert_eq!(direct, ["vt", "urlscan", "zoomeye"]);
 
         let mut config = Config::default();
         config.provider.vt_api_key = Some("config-vt".to_string());
@@ -321,19 +224,12 @@ mod tests {
             vt_api_key: Some("provider-vt".to_string()),
             urlscan_api_key: Some("provider-urlscan".to_string()),
             zoomeye_api_key: Some("provider-zoomeye".to_string()),
-            github_api_key: None,
-            bevigil_api_key: None,
-            notify_url: None,
-            unknown: Default::default(),
+            ..Default::default()
         };
         provider_keys.apply_to_args(
             &mut args,
             config::CliSuppliedKeys {
-                vt: direct.vt,
-                urlscan: direct.urlscan,
-                zoomeye: direct.zoomeye,
-                github: direct.github,
-                bevigil: direct.bevigil,
+                api_keys: direct,
                 notify: false,
             },
         );
@@ -345,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_seed_api_keys_leaves_cli_values_alone() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "env-vt")]);
 
         let mut args = Args::parse_from(["urx", "example.com", "--vt-api-key", "cli-vt"]);
@@ -353,12 +249,12 @@ mod tests {
 
         // The env var must not clobber a key the user named explicitly.
         assert_eq!(args.vt_api_key, vec!["cli-vt"]);
-        assert!(direct.vt);
+        assert_eq!(direct, ["vt"]);
     }
 
     #[test]
     fn test_seed_api_keys_reports_no_direct_source_when_environment_is_empty() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&[
             "URX_VT_API_KEY",
             "URX_URLSCAN_API_KEY",
@@ -368,10 +264,6 @@ mod tests {
         ]);
 
         let mut args = Args::parse_from(["urx", "example.com"]);
-        let direct = seed_api_keys_from_env(&mut args);
-
-        assert!(
-            !direct.vt && !direct.urlscan && !direct.zoomeye && !direct.github && !direct.bevigil
-        );
+        assert!(seed_api_keys_from_env(&mut args).is_empty());
     }
 }

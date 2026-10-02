@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use tokio::task;
 
 use crate::cli::Args;
-use crate::network::{NetworkScope, NetworkSettings};
+use crate::network::client::HttpClientConfig;
+use crate::network::{NetConfig, NetworkScope, NetworkSettings, RateLimiter};
 use crate::output::StreamSink;
 use crate::progress::{
     provider_error_style, provider_partial_style, provider_running_style, provider_success_style,
@@ -152,25 +153,22 @@ pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings:
         return;
     }
 
-    provider.with_timeout(settings.timeout);
-    provider.with_retries(settings.retries);
-    provider.with_random_agent(settings.random_agent);
-    provider.with_insecure(settings.insecure);
+    provider.with_network(NetConfig {
+        http: HttpClientConfig {
+            timeout: settings.timeout,
+            insecure: settings.insecure,
+            random_agent: settings.random_agent,
+            proxy: settings.proxy.clone(),
+            proxy_auth: settings.proxy_auth.clone(),
+            // Archives never see the target's headers; see below.
+            headers: Default::default(),
+        },
+        retries: settings.retries,
+        rate_limit: settings.rate_limit.and_then(RateLimiter::new),
+    });
     // A no-op for every provider that queries an archive; see
-    // `Provider::with_headers`.
+    // `Provider::with_headers`. After `with_network`, which resets them.
     provider.with_headers(settings.headers.clone());
-
-    if let Some(proxy) = &settings.proxy {
-        provider.with_proxy(Some(proxy.clone()));
-
-        if let Some(auth) = &settings.proxy_auth {
-            provider.with_proxy_auth(Some(auth.clone()));
-        }
-    }
-
-    if let Some(rate) = settings.rate_limit {
-        provider.with_rate_limit(Some(rate));
-    }
 }
 
 pub fn add_provider<T: Provider + 'static>(
@@ -357,7 +355,7 @@ pub async fn process_domains(
     // --parallel bounds how many of a provider's domains are fetched at once.
     // The shared per-provider rate limiter (stored in the provider and cloned
     // per domain) keeps --rate-limit honest across these concurrent fetches.
-    let parallel = args.parallel.unwrap_or(5).max(1) as usize;
+    let parallel = args.parallel.max(1) as usize;
 
     // Per-provider bookkeeping the *outer* task needs after an abort: how many
     // domains each provider actually got through, and whether it ran to
@@ -888,13 +886,7 @@ mod tests {
         }
 
         fn with_subdomains(&mut self, _include: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+        fn with_network(&mut self, _net: crate::network::NetConfig) {}
     }
 
     /// A provider that records what `with_subdomains` was told.
@@ -918,13 +910,7 @@ mod tests {
         fn with_subdomains(&mut self, include: bool) {
             self.include_subdomains = include;
         }
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+        fn with_network(&mut self, _net: crate::network::NetConfig) {}
     }
 
     /// A provider returning canned records, so a test can hand two providers
@@ -948,13 +934,7 @@ mod tests {
         }
 
         fn with_subdomains(&mut self, _include: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+        fn with_network(&mut self, _net: crate::network::NetConfig) {}
     }
 
     /// Two providers reporting the same URL must produce one entry whose
@@ -1126,7 +1106,7 @@ mod tests {
             .collect();
 
         let mut args = build_test_args();
-        args.parallel = Some(5);
+        args.parallel = 5;
 
         let start = std::time::Instant::now();
         let _ = process_domains(
@@ -1166,7 +1146,7 @@ mod tests {
             .collect();
 
         let mut args = build_test_args();
-        args.parallel = Some(1);
+        args.parallel = 1;
 
         let start = std::time::Instant::now();
         let _ = process_domains(
@@ -1217,9 +1197,9 @@ mod tests {
         let sink = Arc::new(
             output::StreamSink::new(
                 UrlFilter::new(),
-                UrlTransformer::new(),
+                UrlTransformer::default(),
                 None,
-                "plain",
+                output::Format::Plain,
                 Box::new(buf.clone()),
             )
             .unwrap(),
@@ -1294,9 +1274,9 @@ mod tests {
         let sink = Arc::new(
             output::StreamSink::new(
                 UrlFilter::new(),
-                UrlTransformer::new(),
+                UrlTransformer::default(),
                 None,
-                "plain",
+                output::Format::Plain,
                 Box::new(Sink),
             )
             .unwrap(),
@@ -1447,7 +1427,10 @@ mod tests {
         // `urx example.com --subs --network-scope testers` silently queried the
         // apex only. Subdomain inclusion decides *what* is searched, not how
         // the request is made.
-        let settings = NetworkSettings::new().with_subdomains(true);
+        let settings = NetworkSettings {
+            include_subdomains: true,
+            ..Default::default()
+        };
 
         for scope in [
             NetworkScope::All,
@@ -1455,7 +1438,7 @@ mod tests {
             NetworkScope::Testers,
         ] {
             let mut settings = settings.clone();
-            settings.scope = scope.clone();
+            settings.scope = scope;
             let mut provider = SubdomainRecordingProvider::default();
             apply_network_settings_to_provider(&mut provider, &settings);
             assert!(
@@ -1552,13 +1535,7 @@ mod tests {
             })
         }
         fn with_subdomains(&mut self, _include: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+        fn with_network(&mut self, _net: crate::network::NetConfig) {}
     }
 
     #[tokio::test]
