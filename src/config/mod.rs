@@ -168,28 +168,7 @@ impl ProviderKeysConfig {
     /// do NOT auto-create the file because that would land an empty
     /// "credentials" path the user didn't ask for.
     pub fn default_path() -> Option<PathBuf> {
-        #[cfg(windows)]
-        {
-            if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
-                let p = app_data.join("urx").join("provider-config.toml");
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if let Some(home) = home_dir() {
-                let p = home
-                    .join(".config")
-                    .join("urx")
-                    .join("provider-config.toml");
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-        None
+        Some(urx_config_dir()?.join("provider-config.toml")).filter(|p| p.exists())
     }
 
     /// Load using the same precedence as the main config: --provider-config
@@ -433,47 +412,20 @@ impl Config {
     /// If the directory doesn't exist, it will be created.
     /// If the file doesn't exist, an empty config.toml file will be created.
     pub fn default_path() -> Option<PathBuf> {
-        #[cfg(windows)]
-        {
-            if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
-                let config_dir = app_data.join("urx");
-                let config_path = config_dir.join("config.toml");
+        let config_dir = urx_config_dir()?;
+        let config_path = config_dir.join("config.toml");
 
-                // Create directory if it doesn't exist
-                if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
-                    return None;
-                }
-
-                // Create empty config file if it doesn't exist
-                if !config_path.exists() && fs::write(&config_path, "").is_err() {
-                    return None;
-                }
-
-                return Some(config_path);
-            }
+        // Create directory if it doesn't exist
+        if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
+            return None;
         }
 
-        #[cfg(not(windows))]
-        {
-            if let Some(home) = home_dir() {
-                let config_dir = home.join(".config").join("urx");
-                let config_path = config_dir.join("config.toml");
-
-                // Create directory if it doesn't exist
-                if !config_dir.exists() && fs::create_dir_all(&config_dir).is_err() {
-                    return None;
-                }
-
-                // Create empty config file if it doesn't exist
-                if !config_path.exists() && fs::write(&config_path, "").is_err() {
-                    return None;
-                }
-
-                return Some(config_path);
-            }
+        // Create empty config file if it doesn't exist
+        if !config_path.exists() && fs::write(&config_path, "").is_err() {
+            return None;
         }
 
-        None
+        Some(config_path)
     }
 
     /// Load configuration based on command line arguments
@@ -890,30 +842,14 @@ fn fill_untyped<T: Clone>(provided: &CliProvided, id: &str, slot: &mut T, config
     }
 }
 
-#[cfg_attr(windows, allow(dead_code))]
-/// Helper function to get the home directory
-fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).or({
-        #[cfg(windows)]
-        {
-            // On Windows, try USERPROFILE first, then HOMEDRIVE + HOMEPATH
-            if let Some(profile) = env::var_os("USERPROFILE").map(PathBuf::from) {
-                return Some(profile);
-            }
-
-            match (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
-                (Some(drive), Some(path)) => {
-                    let mut drive_path = PathBuf::from(drive);
-                    drive_path.push(path);
-                    Some(drive_path)
-                }
-                _ => None,
-            }
-        }
-
-        #[cfg(not(windows))]
-        None
-    })
+/// urx's config directory: `$HOME/.config/urx` (`$XDG_CONFIG_HOME` is not
+/// consulted), or `%APPDATA%\urx` on Windows.
+fn urx_config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let base = env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let base = env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"));
+    base.map(|base| base.join("urx"))
 }
 
 #[cfg(test)]
