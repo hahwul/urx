@@ -27,6 +27,7 @@ use app::pipeline::{
     apply_meta_filters, apply_url_filters, apply_url_transformations, build_archive_body_extractor,
     build_extracted_link_filter, build_stream_sink, build_testers, collect_domains,
     read_urls_from_files, should_check_status, validate_result_filters, validate_stream_options,
+    wants_meta,
 };
 use app::report::{configure_colors, print_provider_stats, render_header, write_per_domain_output};
 use app::selection::{initialize_providers, validate_selection_flags};
@@ -289,20 +290,6 @@ fn attach_capture_meta(final_urls: &mut [output::UrlData], run_result: &Provider
     }
 }
 
-/// Whether capture metadata should reach the output.
-///
-/// The structured formats always take it: they omit absent keys, so a run that
-/// collected none is byte-identical to before the fields existed. Plain text is
-/// a pipeline contract — `urx target.com | httpx` must keep working — so there
-/// it is opt-in via `--show-meta`.
-fn wants_capture_meta(args: &Args) -> bool {
-    args.show_meta
-        || matches!(
-            args.format.to_lowercase().as_str(),
-            "json" | "jsonl" | "csv"
-        )
-}
-
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
 fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     let mut errors = Vec::new();
@@ -470,7 +457,7 @@ async fn main() -> Result<()> {
     if args.show_sources {
         attach_sources(&mut final_urls, &run_result);
     }
-    if wants_capture_meta(&args) {
+    if wants_meta(&args) {
         attach_capture_meta(&mut final_urls, &run_result);
     }
 
@@ -543,22 +530,6 @@ mod tests {
         .expect_err("a run with no resolvable target must not succeed");
 
         assert!(err.to_string().contains("No domains provided"), "{err}");
-    }
-
-    #[test]
-    fn metadata_reaches_structured_formats_but_not_bare_plain_output() {
-        // Plain output is a pipeline contract: `urx target.com | httpx` must
-        // keep seeing one bare URL per line unless the user opts in.
-        let plain = Args::parse_from(["urx", "example.com"]);
-        assert!(!wants_capture_meta(&plain));
-
-        let plain_opt_in = Args::parse_from(["urx", "--show-meta", "example.com"]);
-        assert!(wants_capture_meta(&plain_opt_in));
-
-        for format in ["json", "jsonl", "csv", "JSON"] {
-            let args = Args::parse_from(["urx", "-f", format, "example.com"]);
-            assert!(wants_capture_meta(&args), "{format} should carry metadata");
-        }
     }
 
     #[test]

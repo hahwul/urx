@@ -780,14 +780,16 @@ fn param_view(args: &Args) -> ParamView {
     }
 }
 
-/// Whether the free response facts (`Location`, `Content-Length`,
-/// `Content-Type`) a `--check-status` request already carries should be kept.
+/// Whether per-URL metadata — the archive capture fields, and the free response
+/// facts (`Location`, `Content-Length`, `Content-Type`) a `--check-status`
+/// request already carries — should reach the output.
 ///
-/// Mirrors `wants_capture_meta` in `main.rs`: the structured formats always take
-/// them (absent keys are omitted, so a run that collected none is byte-identical
-/// to before the fields existed), while plain text is a pipeline contract and
-/// keeps one bare URL per line unless `--show-meta` asks otherwise.
-fn wants_response_meta(args: &Args) -> bool {
+/// The structured formats always take it (absent keys are omitted, so a run
+/// that collected none is byte-identical to before the fields existed), while
+/// plain text is a pipeline contract — `urx target.com | httpx` must keep
+/// working — and keeps one bare URL per line unless `--show-meta` asks
+/// otherwise.
+pub fn wants_meta(args: &Args) -> bool {
     args.show_meta
         || matches!(
             args.format.to_lowercase().as_str(),
@@ -829,7 +831,7 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         }
 
         // --- output-views ---
-        status_checker.with_response_meta(wants_response_meta(args));
+        status_checker.with_response_meta(wants_meta(args));
         status_checker.with_response_title(args.check_title);
         if args.check_title {
             verbose_print(args, "Reading response bodies to record HTML titles");
@@ -1010,21 +1012,21 @@ mod tests {
         // and stays one bare URL per line unless --show-meta asks otherwise.
         let mut args = build_test_args();
         args.format = "plain".to_string();
-        assert!(!wants_response_meta(&args));
+        assert!(!wants_meta(&args));
 
         args.show_meta = true;
-        assert!(wants_response_meta(&args));
+        assert!(wants_meta(&args));
 
         args.show_meta = false;
         for format in ["json", "jsonl", "csv", "JSON"] {
             args.format = format.to_string();
-            assert!(wants_response_meta(&args), "{format}");
+            assert!(wants_meta(&args), "{format}");
         }
 
         // A wordlist carries no per-URL fields at all, so there is nothing to
         // populate them for.
         args.format = "wordlist".to_string();
-        assert!(!wants_response_meta(&args));
+        assert!(!wants_meta(&args));
     }
 
     #[test]
