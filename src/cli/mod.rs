@@ -804,40 +804,16 @@ where
     (args, CliProvided { ids })
 }
 
-pub fn read_domains_from_stdin() -> anyhow::Result<Vec<String>> {
+/// Read newline-separated domains. Blank lines and lines that start with `#`
+/// (after trimming) are skipped so users can keep notes alongside the list.
+/// `source` names the input in a read error.
+pub fn read_domains(reader: impl std::io::BufRead, source: &str) -> anyhow::Result<Vec<String>> {
     use anyhow::Context;
-    use std::io::{self, BufRead};
 
-    let stdin = io::stdin();
-    let mut domains = Vec::new();
-
-    for line in stdin.lock().lines() {
-        let domain = line.context("Failed to read line from stdin")?;
-        let domain = parse_domain_line(&domain);
-        if let Some(d) = domain {
-            domains.push(d);
-        }
-    }
-
-    Ok(domains)
-}
-
-/// Read newline-separated domains from a file. Blank lines and lines that
-/// start with `#` (after trimming) are skipped so users can keep notes
-/// alongside the list.
-pub fn read_domains_from_file(path: &std::path::Path) -> anyhow::Result<Vec<String>> {
-    use anyhow::Context;
-    use std::io::{BufRead, BufReader};
-
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open domain list: {}", path.display()))?;
-    let reader = BufReader::new(file);
     let mut domains = Vec::new();
     for line in reader.lines() {
-        let raw = line.with_context(|| format!("Failed to read {}", path.display()))?;
-        if let Some(d) = parse_domain_line(&raw) {
-            domains.push(d);
-        }
+        let line = line.with_context(|| format!("Failed to read {source}"))?;
+        domains.extend(parse_domain_line(&line));
     }
     Ok(domains)
 }
@@ -1278,14 +1254,9 @@ mod tests {
     }
 
     #[test]
-    fn test_read_domains_from_file() -> anyhow::Result<()> {
-        use std::io::Write;
-        let mut file = tempfile::NamedTempFile::new()?;
-        writeln!(
-            file,
-            "example.com\n  # comment\n\n  another.test  \n#trailing"
-        )?;
-        let domains = read_domains_from_file(file.path())?;
+    fn test_read_domains() -> anyhow::Result<()> {
+        let input = "example.com\n  # comment\n\n  another.test  \n#trailing\n";
+        let domains = read_domains(input.as_bytes(), "test input")?;
         assert_eq!(domains, vec!["example.com", "another.test"]);
         Ok(())
     }
@@ -1495,13 +1466,10 @@ mod tests {
     }
 
     #[test]
-    fn test_read_domains_from_file_handles_bom_and_crlf() {
-        use std::io::Write;
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+    fn test_read_domains_handles_bom_and_crlf() {
         // Exactly what Notepad / Excel / PowerShell `>` produce.
-        file.write_all("\u{feff}example.com\r\n# note\r\nanother.test\r\n".as_bytes())
-            .unwrap();
-        let domains = read_domains_from_file(file.path()).unwrap();
+        let input = "\u{feff}example.com\r\n# note\r\nanother.test\r\n";
+        let domains = read_domains(input.as_bytes(), "test input").unwrap();
         assert_eq!(domains, vec!["example.com", "another.test"]);
     }
 
@@ -1536,27 +1504,6 @@ mod tests {
         for id in ["retries", "providers", "cache_ttl"] {
             assert!(provided.has(id), "{id} was supplied on the command line");
         }
-    }
-
-    #[test]
-    fn test_read_domains_from_stdin() {
-        use std::io::{self, BufRead, Cursor};
-
-        // Create a cursor with test input data
-        let input = "example.com\nexample.org\n\n";
-        let cursor = Cursor::new(input);
-
-        // Extract lines from the cursor
-        let buffer = io::BufReader::new(cursor);
-        let mut domains = Vec::new();
-        for line in buffer.lines() {
-            let domain = line.unwrap();
-            if !domain.trim().is_empty() {
-                domains.push(domain.trim().to_string());
-            }
-        }
-
-        assert_eq!(domains, vec!["example.com", "example.org"]);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use crate::cli::{self, read_domains_from_file, read_domains_from_stdin, Args};
+use crate::cli::{self, Args};
 use crate::filters::{
     compile_url_regexes, HostValidator, MetaFilter, MetaFilterStats, ScopeMatcher, UrlFilter,
 };
@@ -33,7 +33,10 @@ fn cli_domain_inputs(args: &Args) -> Result<Vec<String>> {
     let mut domains: Vec<String> = args.domains.clone();
 
     for path in &args.domain_list {
-        let file_domains = read_domains_from_file(path)?;
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open domain list: {}", path.display()))?;
+        let file_domains =
+            cli::read_domains(std::io::BufReader::new(file), &path.display().to_string())?;
         verbose_print(
             args,
             format!(
@@ -61,7 +64,9 @@ fn normalize_domains(raw: &[String]) -> Vec<String> {
 /// files, and (when both are empty) stdin. Duplicates are removed while
 /// preserving first-seen order so the run order is predictable.
 pub fn collect_domains(args: &Args) -> Result<Vec<String>> {
-    collect_domains_with_stdin(args, read_domains_from_stdin)
+    collect_domains_with_stdin(args, || {
+        cli::read_domains(std::io::stdin().lock(), "line from stdin")
+    })
 }
 
 /// Resolve explicit targets first and read stdin only when there are none.
