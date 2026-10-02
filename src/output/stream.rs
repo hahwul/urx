@@ -20,7 +20,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use super::{create_outputter, Outputter, UrlData};
+use super::{Format, UrlData};
 use crate::filters::{HostValidator, UrlFilter};
 use crate::providers::UrlRecord;
 use crate::utils::UrlTransformer;
@@ -37,7 +37,7 @@ pub struct StreamSink {
     /// stream deduplicated despite never holding the full result set.
     seen: Mutex<HashSet<String>>,
     writer: Mutex<Box<dyn Write + Send>>,
-    outputter: Box<dyn Outputter>,
+    format: Format,
     emitted: AtomicUsize,
     /// Set once the destination stops accepting writes — `urx --stream | head`
     /// closes the pipe long before the providers are done. Later batches are
@@ -64,7 +64,7 @@ impl StreamSink {
             host_validator,
             seen: Mutex::new(HashSet::new()),
             writer: Mutex::new(writer),
-            outputter: create_outputter(format),
+            format: Format::parse(format),
             emitted: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
         };
@@ -146,7 +146,7 @@ impl StreamSink {
         let mut w = self.lock_writer();
         let written = (|| -> std::io::Result<bool> {
             for entry in &batch {
-                let formatted = self.outputter.format(entry, false);
+                let formatted = self.format.format(entry, false);
                 w.write_all(formatted.as_bytes())?;
             }
             w.flush()?;

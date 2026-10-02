@@ -116,7 +116,7 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
 }
 
 /// Best-effort filename extension matching `--format`. Anything other than
-/// json/jsonl/csv falls back to `.txt`, mirroring how `create_outputter` treats
+/// json/jsonl/csv falls back to `.txt`, mirroring how `Format::parse` treats
 /// unknown formats as plain text.
 pub fn output_dir_extension(format: &str) -> &'static str {
     match format.to_lowercase().as_str() {
@@ -149,11 +149,11 @@ pub fn write_per_domain_output(
         grouped.entry(host).or_default().push(entry.clone());
     }
 
-    let outputter = output::create_outputter(format);
+    let fmt = output::Format::parse(format);
     let ext = output_dir_extension(format);
 
     for (host, entries) in &grouped {
-        outputter.output(entries, Some(dir.join(format!("{host}.{ext}"))), silent)?;
+        fmt.output(entries, Some(dir.join(format!("{host}.{ext}"))), silent)?;
     }
     Ok(())
 }

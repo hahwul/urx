@@ -33,7 +33,6 @@ use app::selection::{initialize_providers, validate_selection_flags};
 use cli::{Args, CliProvided};
 use config::Config;
 use network::NetworkSettings;
-use output::create_outputter;
 use progress::ProgressManager;
 use runner::{process_domains, ProviderRunResult, ProviderStats};
 use tester_manager::process_urls_with_testers;
@@ -319,9 +318,8 @@ fn wants_capture_meta(args: &Args) -> bool {
 
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
 fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
-    let outputter = create_outputter(&args.format);
     let mut errors = Vec::new();
-    match outputter.output(final_urls, args.output.clone(), args.silent) {
+    match output::Format::parse(&args.format).output(final_urls, args.output.clone(), args.silent) {
         Ok(()) => {
             if let Some(path) = &args.output {
                 verbose_print(args, format!("Results written to: {}", path.display()));
@@ -332,7 +330,7 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
                 errors.push(format!("Error writing output: {e:#}"));
             } else if !args.silent {
                 // Preserve the existing best-effort behavior for stdout-only
-                // output. Outputters already treat a broken pipe as success,
+                // output. Output already treats a broken pipe as success,
                 // so `urx ... | head` remains successful.
                 eprintln!("Error writing output: {e}");
             }

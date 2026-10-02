@@ -1,4 +1,3 @@
-use crate::output::Formatter;
 use crate::utils::url::wordlist_terms;
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -6,8 +5,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
-// Outputter implementations for different formats
-use super::{Outputter, UrlData};
+use super::{Format, UrlData};
 
 /// Write to stdout, treating a closed pipe as a normal end of output.
 ///
@@ -34,37 +32,54 @@ fn finish_stdout_write(result: std::io::Result<()>) -> Result<()> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct PlainOutputter {
-    formatter: Box<dyn Formatter>,
-}
-
-impl PlainOutputter {
-    pub fn new() -> Self {
-        PlainOutputter {
-            formatter: Box::new(super::PlainFormatter::new()),
-        }
-    }
-}
-
-impl PlainOutputter {
+impl Format {
     /// Render the whole result set. Both destinations go through this, so the
     /// bytes a pipe sees and the bytes a file gets can never drift apart.
-    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
-        for (i, url_data) in urls.iter().enumerate() {
-            let formatted = self.format(url_data, i == urls.len() - 1);
-            out.write_all(formatted.as_bytes())?;
+    ///
+    /// CSV decides its column layout once for the whole run, so the header and
+    /// every row emit exactly the same columns (otherwise rows could carry a
+    /// trailing/extra comma the header doesn't, breaking strict CSV parsers).
+    /// A wordlist is a set: `/admin/users` and `/admin/roles` contribute
+    /// `admin` once, and a `BTreeSet` gives the dedup and the sort in one pass.
+    fn render(self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
+        match self {
+            Format::Csv => {
+                let layout = super::formatter::CsvLayout::for_rows(urls);
+                out.write_all(super::formatter::csv_header(&layout).as_bytes())?;
+                for url_data in urls {
+                    out.write_all(super::formatter::csv_row(url_data, &layout).as_bytes())?;
+                }
+            }
+            Format::Wordlist => {
+                let terms: BTreeSet<String> =
+                    urls.iter().flat_map(|u| wordlist_terms(&u.url)).collect();
+                for term in &terms {
+                    out.write_all(term.as_bytes())?;
+                    out.write_all(b"\n")?;
+                }
+            }
+            _ => {
+                if self == Format::Json {
+                    out.write_all(b"[")?;
+                }
+                for (i, url_data) in urls.iter().enumerate() {
+                    out.write_all(self.format(url_data, i == urls.len() - 1).as_bytes())?;
+                }
+                if self == Format::Json {
+                    out.write_all(b"]")?;
+                }
+            }
         }
         Ok(())
     }
-}
 
-impl Outputter for PlainOutputter {
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        self.formatter.format(url_data, is_last)
-    }
-
-    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
+    /// Write `urls` to `output_path`, or to stdout unless `silent`.
+    pub fn output(
+        self,
+        urls: &[UrlData],
+        output_path: Option<PathBuf>,
+        silent: bool,
+    ) -> Result<()> {
         match output_path {
             Some(path) => {
                 // Writing to a file: suppress ANSI colour. The `colored` crate
@@ -85,236 +100,16 @@ impl Outputter for PlainOutputter {
                 colored::control::set_override(prev_colorize);
                 result
             }
-            None => {
-                if silent {
-                    return Ok(());
-                };
-
-                write_stdout(|out| self.render(urls, out))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct JsonOutputter {
-    formatter: Box<dyn Formatter>,
-}
-
-impl JsonOutputter {
-    pub fn new() -> Self {
-        JsonOutputter {
-            formatter: Box::new(super::JsonFormatter::new()),
-        }
-    }
-}
-
-impl JsonOutputter {
-    /// Render the array. Shared by both destinations; stdout adds a trailing
-    /// newline afterwards so an interactive run ends on its own line.
-    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
-        out.write_all(b"[")?;
-        for (i, url_data) in urls.iter().enumerate() {
-            let formatted = self.format(url_data, i == urls.len() - 1);
-            out.write_all(formatted.as_bytes())?;
-        }
-        out.write_all(b"]")
-    }
-}
-
-impl Outputter for JsonOutputter {
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        self.formatter.format(url_data, is_last)
-    }
-
-    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
-        match output_path {
-            Some(path) => {
-                let mut file = File::create(&path).context("Failed to create output file")?;
-                self.render(urls, &mut file)
-                    .context("Failed to write to output file")
-            }
-            None => {
-                if silent {
-                    return Ok(());
-                };
-
-                write_stdout(|out| {
-                    self.render(urls, out)?;
-                    out.write_all(b"\n")
-                })
-            }
-        }
-    }
-}
-
-/// Writes one JSON object per line, with no array wrapper. Every line stands
-/// alone, so the file remains parseable while it is still being written.
-#[derive(Debug, Clone)]
-pub struct JsonLinesOutputter {
-    formatter: Box<dyn Formatter>,
-}
-
-impl JsonLinesOutputter {
-    pub fn new() -> Self {
-        JsonLinesOutputter {
-            formatter: Box::new(super::JsonLinesFormatter::new()),
-        }
-    }
-}
-
-impl Default for JsonLinesOutputter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JsonLinesOutputter {
-    /// Render one standalone JSON object per line, for either destination.
-    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
-        for url_data in urls {
-            out.write_all(self.format(url_data, false).as_bytes())?;
-        }
-        Ok(())
-    }
-}
-
-impl Outputter for JsonLinesOutputter {
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        self.formatter.format(url_data, is_last)
-    }
-
-    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
-        match output_path {
-            Some(path) => {
-                let mut file = File::create(&path).context("Failed to create output file")?;
-                self.render(urls, &mut file)
-                    .context("Failed to write to output file")
-            }
-            None => {
-                if silent {
-                    return Ok(());
-                };
-                write_stdout(|out| self.render(urls, out))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct CsvOutputter {
-    formatter: Box<dyn Formatter>,
-}
-
-impl CsvOutputter {
-    pub fn new() -> Self {
-        CsvOutputter {
-            formatter: Box::new(super::CsvFormatter::new()),
-        }
-    }
-}
-
-impl CsvOutputter {
-    /// Render header plus rows for either destination.
-    ///
-    /// The column layout is decided once for the whole run so the header and
-    /// every row emit exactly the same columns (otherwise rows could carry a
-    /// trailing/extra comma the header doesn't, breaking strict CSV parsers) —
-    /// which is also why both destinations must share this one function.
-    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
-        let layout = super::formatter::CsvLayout::for_rows(urls);
-
-        out.write_all(super::formatter::csv_header(&layout).as_bytes())?;
-        for url_data in urls {
-            let formatted = super::formatter::csv_row(url_data, &layout);
-            out.write_all(formatted.as_bytes())?;
-        }
-        Ok(())
-    }
-}
-
-impl Outputter for CsvOutputter {
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        self.formatter.format(url_data, is_last)
-    }
-
-    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
-        match output_path {
-            Some(path) => {
-                let mut file = File::create(&path).context("Failed to create output file")?;
-                self.render(urls, &mut file)
-                    .context("Failed to write to output file")
-            }
-            None => {
-                if silent {
-                    return Ok(());
-                };
-
-                write_stdout(|out| self.render(urls, out))
-            }
-        }
-    }
-}
-
-/// Writes a wordlist: every path segment and query parameter name the run saw,
-/// deduplicated across the whole result set and sorted, one per line.
-#[derive(Debug, Clone)]
-pub struct WordlistOutputter {
-    formatter: Box<dyn Formatter>,
-}
-
-impl WordlistOutputter {
-    pub fn new() -> Self {
-        WordlistOutputter {
-            formatter: Box::new(super::WordlistFormatter::new()),
-        }
-    }
-}
-
-impl Default for WordlistOutputter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl WordlistOutputter {
-    /// Render the run-wide term set for either destination.
-    ///
-    /// The union is taken here rather than per entry because a wordlist is a
-    /// set: `/admin/users` and `/admin/roles` contribute `admin` once, not
-    /// twice. A `BTreeSet` gives the dedup and the sort in one pass.
-    fn render(&self, urls: &[UrlData], out: &mut dyn Write) -> std::io::Result<()> {
-        let mut terms: BTreeSet<String> = BTreeSet::new();
-        for url_data in urls {
-            terms.extend(wordlist_terms(&url_data.url));
-        }
-        for term in &terms {
-            out.write_all(term.as_bytes())?;
-            out.write_all(b"\n")?;
-        }
-        Ok(())
-    }
-}
-
-impl Outputter for WordlistOutputter {
-    fn format(&self, url_data: &UrlData, is_last: bool) -> String {
-        self.formatter.format(url_data, is_last)
-    }
-
-    fn output(&self, urls: &[UrlData], output_path: Option<PathBuf>, silent: bool) -> Result<()> {
-        match output_path {
-            Some(path) => {
-                let mut file = File::create(&path).context("Failed to create output file")?;
-                self.render(urls, &mut file)
-                    .context("Failed to write to output file")
-            }
-            None => {
-                if silent {
-                    return Ok(());
-                };
-
-                write_stdout(|out| self.render(urls, out))
-            }
+            None if silent => Ok(()),
+            // JSON on stdout gets a trailing newline so an interactive run
+            // ends on its own line.
+            None => write_stdout(|out| {
+                self.render(urls, out)?;
+                if self == Format::Json {
+                    out.write_all(b"\n")?;
+                }
+                Ok(())
+            }),
         }
     }
 }
@@ -322,13 +117,12 @@ impl Outputter for WordlistOutputter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::create_outputter;
     use std::io::Read;
     use tempfile::NamedTempFile;
 
     #[test]
     fn test_plain_outputter_format() {
-        let outputter = PlainOutputter::new();
+        let outputter = Format::Plain;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
 
@@ -343,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_json_outputter_format() {
-        let outputter = JsonOutputter::new();
+        let outputter = Format::Json;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(
             outputter.format(&url_data, false),
@@ -360,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_csv_outputter_format() {
-        let outputter = CsvOutputter::new();
+        let outputter = Format::Csv;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
 
@@ -376,7 +170,7 @@ mod tests {
     fn test_csv_outputter_no_status_no_sources_single_column() -> Result<()> {
         // Regression: a url-only run must produce a single `url` column for both
         // header and every row (no dangling trailing comma).
-        let outputter = CsvOutputter::new();
+        let outputter = Format::Csv;
         let urls = vec![
             UrlData::new("https://example.com/a".to_string()),
             UrlData::new("https://example.com/b".to_string()),
@@ -396,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_plain_outputter_file_output() -> Result<()> {
-        let outputter = PlainOutputter::new();
+        let outputter = Format::Plain;
         let urls = vec![
             UrlData::new("https://example.com/page1".to_string()),
             UrlData::with_status(
@@ -424,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_json_outputter_file_output() -> Result<()> {
-        let outputter = JsonOutputter::new();
+        let outputter = Format::Json;
         let urls = vec![
             UrlData::new("https://example.com/page1".to_string()),
             UrlData::with_status(
@@ -452,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_csv_outputter_file_output() -> Result<()> {
-        let outputter = CsvOutputter::new();
+        let outputter = Format::Csv;
         let urls = vec![
             UrlData::new("https://example.com/page1".to_string()),
             UrlData::with_status(
@@ -480,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_csv_outputter_with_sources_header() -> Result<()> {
-        let outputter = CsvOutputter::new();
+        let outputter = Format::Csv;
         let urls = vec![
             UrlData::new("https://example.com/a".to_string()).with_sources(vec!["wayback".into()]),
             UrlData::with_status("https://example.com/b".to_string(), "200 OK".to_string())
@@ -507,7 +301,7 @@ mod tests {
         // `urx ... --show-only-param -f csv` writes a raw query-parameter name
         // into the url column; one starting with `=` is a live DDE formula in
         // Excel. Reproduced from real output: `=cmd|'/C calc'!A0=1&normal=2`.
-        let outputter = CsvOutputter::new();
+        let outputter = Format::Csv;
         let urls = vec![
             UrlData::new("=cmd|'/C calc'!A0=1".to_string()),
             UrlData::new("https://example.com/ok".to_string()),
@@ -528,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_empty_urls() -> Result<()> {
-        let outputter = PlainOutputter::new();
+        let outputter = Format::Plain;
         let urls: Vec<UrlData> = vec![];
 
         let temp_file = NamedTempFile::new()?;
@@ -547,9 +341,9 @@ mod tests {
 
     #[test]
     fn test_jsonl_outputter_format_is_position_independent() {
-        // Unlike JsonOutputter, no entry depends on being last — that is what
+        // Unlike Format::Json, no entry depends on being last — that is what
         // lets the same formatter serve the streaming path.
-        let outputter = JsonLinesOutputter::new();
+        let outputter = Format::Jsonl;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(
             outputter.format(&url_data, false),
@@ -563,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_jsonl_outputter_file_output() -> Result<()> {
-        let outputter = JsonLinesOutputter::new();
+        let outputter = Format::Jsonl;
         let urls = vec![
             UrlData::new("https://example.com/page1".to_string()),
             UrlData::with_status(
@@ -618,21 +412,21 @@ mod tests {
         let urls = sample();
 
         assert_eq!(
-            rendered(|out| PlainOutputter::new().render(&urls, out)),
+            rendered(|out| Format::Plain.render(&urls, out)),
             "https://example.com/page1\nhttps://example.com/page2 [200 OK]\n"
         );
         assert_eq!(
-            rendered(|out| JsonOutputter::new().render(&urls, out)),
+            rendered(|out| Format::Json.render(&urls, out)),
             "[{\"url\":\"https://example.com/page1\"},\
              {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]"
         );
         assert_eq!(
-            rendered(|out| JsonLinesOutputter::new().render(&urls, out)),
+            rendered(|out| Format::Jsonl.render(&urls, out)),
             "{\"url\":\"https://example.com/page1\"}\n\
              {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n"
         );
         assert_eq!(
-            rendered(|out| CsvOutputter::new().render(&urls, out)),
+            rendered(|out| Format::Csv.render(&urls, out)),
             "url,status\nhttps://example.com/page1,\nhttps://example.com/page2,200 OK\n"
         );
     }
@@ -641,19 +435,10 @@ mod tests {
     fn test_render_of_an_empty_result_set() {
         let none: Vec<UrlData> = Vec::new();
         // json stays a valid (empty) array; csv still declares its columns.
-        assert_eq!(
-            rendered(|out| JsonOutputter::new().render(&none, out)),
-            "[]"
-        );
-        assert_eq!(
-            rendered(|out| CsvOutputter::new().render(&none, out)),
-            "url\n"
-        );
-        assert_eq!(rendered(|out| PlainOutputter::new().render(&none, out)), "");
-        assert_eq!(
-            rendered(|out| JsonLinesOutputter::new().render(&none, out)),
-            ""
-        );
+        assert_eq!(rendered(|out| Format::Json.render(&none, out)), "[]");
+        assert_eq!(rendered(|out| Format::Csv.render(&none, out)), "url\n");
+        assert_eq!(rendered(|out| Format::Plain.render(&none, out)), "");
+        assert_eq!(rendered(|out| Format::Jsonl.render(&none, out)), "");
     }
 
     #[test]
@@ -662,11 +447,11 @@ mod tests {
             .with_sources(vec!["wayback".into(), "cc".into()])];
 
         assert_eq!(
-            rendered(|out| CsvOutputter::new().render(&urls, out)),
+            rendered(|out| Format::Csv.render(&urls, out)),
             "url,sources\nhttps://example.com/a,cc|wayback\n"
         );
         assert_eq!(
-            rendered(|out| JsonLinesOutputter::new().render(&urls, out)),
+            rendered(|out| Format::Jsonl.render(&urls, out)),
             "{\"url\":\"https://example.com/a\",\"sources\":[\"cc\",\"wayback\"]}\n"
         );
     }
@@ -681,10 +466,10 @@ mod tests {
         // capture, and this keeps the stray lines to a minimum.
         let urls = vec![UrlData::new("https://example.com/a".to_string())];
         for outputter in [
-            create_outputter("plain"),
-            create_outputter("json"),
-            create_outputter("jsonl"),
-            create_outputter("csv"),
+            Format::parse("plain"),
+            Format::parse("json"),
+            Format::parse("jsonl"),
+            Format::parse("csv"),
         ] {
             outputter.output(&urls, None, false).unwrap();
             // --silent short-circuits before touching stdout at all.
@@ -714,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_jsonl_outputter_silent_writes_nothing() -> Result<()> {
-        let outputter = JsonLinesOutputter::new();
+        let outputter = Format::Jsonl;
         let urls = vec![UrlData::new("https://example.com".to_string())];
         // Silent + stdout must be a no-op rather than an error.
         outputter.output(&urls, None, true)?;
@@ -722,7 +507,7 @@ mod tests {
     }
 
     fn wordlist_of(urls: &[&str]) -> Result<String> {
-        let outputter = create_outputter("wordlist");
+        let outputter = Format::parse("wordlist");
         let entries: Vec<UrlData> = urls
             .iter()
             .map(|u| UrlData::new((*u).to_string()))
@@ -783,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_wordlist_outputter_silent_writes_nothing() -> Result<()> {
-        let outputter = WordlistOutputter::new();
+        let outputter = Format::Wordlist;
         let urls = vec![UrlData::new("https://example.com/admin".to_string())];
         outputter.output(&urls, None, true)?;
         Ok(())
