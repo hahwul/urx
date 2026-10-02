@@ -112,8 +112,8 @@ impl SqliteCache {
             }
             tx.commit()?;
 
-            // Matches `cleanup_expired`: reclaiming pages costs a full rewrite,
-            // so it is only worth it once a meaningful number of rows went.
+            // Reclaiming pages costs a full rewrite, so it is only worth it
+            // once a meaningful number of rows went.
             if deleted > 10 {
                 conn.execute("VACUUM", [])?;
             }
@@ -197,39 +197,8 @@ impl CacheBackend for SqliteCache {
         .await
     }
 
-    async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
-        // See `expiry_cutoff`: `--cache-ttl` is an unvalidated u64 and the raw
-        // chrono conversion either panics or wraps into the future.
-        let cutoff_str = super::types::expiry_cutoff(ttl_seconds).to_rfc3339();
-
-        self.with_connection(move |conn| {
-            let deleted = conn.execute(
-                "DELETE FROM url_cache WHERE timestamp < ?1",
-                params![cutoff_str],
-            )?;
-
-            // Also vacuum the database if we deleted a significant number of entries
-            if deleted > 10 {
-                conn.execute("VACUUM", [])?;
-            }
-
-            Ok(())
-        })
-        .await
-    }
-
-    async fn exists(&self, key: &CacheKey) -> Result<bool> {
-        let cache_key = format!("{}", key);
-
-        self.with_connection(move |conn| {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM url_cache WHERE cache_key = ?1",
-                params![cache_key],
-                |row| row.get(0),
-            )?;
-            Ok(count > 0)
-        })
-        .await
+    fn admin(&self) -> Option<&dyn CacheAdmin> {
+        Some(self)
     }
 }
 
@@ -380,14 +349,12 @@ mod tests {
         let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
         let entry = CacheEntry::new(vec!["https://example.com/page1".to_string()]);
 
-        // Test exists (should be false initially)
-        assert!(!cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_none());
 
         // Test set
         cache.set(&key, &entry).await?;
 
-        // Test exists (should be true now)
-        assert!(cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_some());
 
         // Test get
         let retrieved = cache.get(&key).await?;
@@ -397,60 +364,7 @@ mod tests {
 
         // Test delete
         cache.delete(&key).await?;
-        assert!(!cache.exists(&key).await?);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_cache_cleanup_expired() -> Result<()> {
-        let temp_dir = tempdir()?;
-        let db_path = temp_dir.path().join("test.db");
-
-        let cache = SqliteCache::new(&db_path).await?;
-
-        let filters = CacheFilters {
-            strict: true,
-            ..Default::default()
-        };
-
-        let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
-
-        // Create an old entry
-        let mut old_entry = CacheEntry::new(vec!["https://example.com/old".to_string()]);
-        old_entry.timestamp = Utc::now() - chrono::Duration::hours(2);
-
-        cache.set(&key, &old_entry).await?;
-        assert!(cache.exists(&key).await?);
-
-        // Clean up expired entries (1 hour TTL)
-        cache.cleanup_expired(3600).await?;
-
-        // Entry should be gone
-        assert!(!cache.exists(&key).await?);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_with_huge_ttl_keeps_entries_and_does_not_panic() -> Result<()> {
-        // Regression: `--cache-ttl` is an unvalidated u64 fed straight to
-        // chrono::Duration::seconds, which panics past its bounds — a large
-        // value aborted the run at cleanup time.
-        let temp_dir = tempdir()?;
-        let cache = SqliteCache::new(temp_dir.path().join("test.db")).await?;
-
-        let filters = CacheFilters::default();
-        let key = CacheKey::new("example.com", &["wayback".to_string()], &filters);
-        cache
-            .set(&key, &CacheEntry::new(vec!["https://example.com/x".into()]))
-            .await?;
-
-        // A TTL this long means "never expire"; nothing may be deleted.
-        cache.cleanup_expired(u64::MAX).await?;
-        assert!(cache.exists(&key).await?);
-        cache.cleanup_expired(10_000_000_000_000_000).await?;
-        assert!(cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_none());
 
         Ok(())
     }
@@ -541,7 +455,7 @@ mod tests {
     #[tokio::test]
     async fn prune_with_a_huge_ttl_deletes_nothing() -> Result<()> {
         // The `--cache-ttl` overflow that would otherwise put the cutoff in the
-        // future and wipe the cache — the same hazard `expiry_cutoff` guards.
+        // future and wipe the cache — the same hazard `ttl_remaining` guards.
         let dir = tempdir()?;
         let cache = admin_cache(&dir).await?;
         seed(&cache, "example.com", "a", 1, 90_000).await?;
@@ -658,10 +572,6 @@ mod tests {
 
         cache.set(&key1, &entry1).await?;
         cache.set(&key2, &entry2).await?;
-
-        // Both should exist
-        assert!(cache.exists(&key1).await?);
-        assert!(cache.exists(&key2).await?);
 
         // Retrieve and verify
         let retrieved1 = cache.get(&key1).await?.unwrap();

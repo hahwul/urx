@@ -80,8 +80,8 @@ impl RedisCache {
             };
 
             // The URL count lives in the payload, not the metadata, so it costs
-            // a second read. Only `urx cache` pays it — the scan path never
-            // touches this.
+            // a second read — paid by `urx cache` and by the post-scan expiry
+            // sweep alike.
             let payload: Option<String> = redis::cmd("GET")
                 .arg(&cache_key)
                 .query_async(&mut conn)
@@ -259,71 +259,8 @@ impl CacheBackend for RedisCache {
         Ok(())
     }
 
-    async fn cleanup_expired(&self, ttl_seconds: u64) -> Result<()> {
-        let mut conn = self
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to connect to Redis")?;
-
-        // `Duration::seconds` panics past its bounds and `ttl_seconds as i64`
-        // wraps a huge TTL negative, which would push the cutoff into the future
-        // and wipe every entry. The SQLite backend already guards this; share
-        // the same helper so the two cannot diverge again.
-        let cutoff_time = super::types::expiry_cutoff(ttl_seconds);
-
-        // Get all metadata keys
-        let meta_keys: Vec<String> = redis::cmd("KEYS")
-            .arg("urx:meta:*")
-            .query_async(&mut conn)
-            .await
-            .context("Failed to get metadata keys from Redis")?;
-
-        for meta_key in meta_keys {
-            let meta_value: Option<String> = redis::cmd("GET")
-                .arg(&meta_key)
-                .query_async(&mut conn)
-                .await
-                .context("Failed to get metadata from Redis")?;
-
-            if let Some(meta_str) = meta_value {
-                if let Ok(meta_json) = serde_json::from_str::<serde_json::Value>(&meta_str) {
-                    if let Some(timestamp_str) = meta_json["timestamp"].as_str() {
-                        if let Ok(timestamp) = timestamp_str.parse::<DateTime<Utc>>() {
-                            if timestamp < cutoff_time {
-                                // This entry is expired, delete it
-                                let cache_key = meta_key.replace("urx:meta:", "urx:cache:");
-                                redis::cmd("DEL")
-                                    .arg(&cache_key)
-                                    .arg(&meta_key)
-                                    .query_async::<()>(&mut conn)
-                                    .await
-                                    .context("Failed to delete expired entry from Redis")?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn exists(&self, key: &CacheKey) -> Result<bool> {
-        let mut conn = self
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to connect to Redis")?;
-
-        let redis_key = self.redis_key(key);
-        let exists: bool = redis::cmd("EXISTS")
-            .arg(&redis_key)
-            .query_async(&mut conn)
-            .await
-            .context("Failed to check existence in Redis")?;
-
-        Ok(exists)
+    fn admin(&self) -> Option<&dyn CacheAdmin> {
+        Some(self)
     }
 }
 
@@ -450,14 +387,12 @@ mod tests {
         // Clean up any existing data
         let _ = cache.delete(&key).await;
 
-        // Test exists (should be false initially)
-        assert!(!cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_none());
 
         // Test set
         cache.set(&key, &entry).await?;
 
-        // Test exists (should be true now)
-        assert!(cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_some());
 
         // Test get
         let retrieved = cache.get(&key).await?;
@@ -467,7 +402,7 @@ mod tests {
 
         // Test delete
         cache.delete(&key).await?;
-        assert!(!cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_none());
 
         Ok(())
     }
@@ -495,13 +430,13 @@ mod tests {
         old_entry.timestamp = Utc::now() - chrono::Duration::hours(2);
 
         cache.set(&key, &old_entry).await?;
-        assert!(cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_some());
 
         // Clean up expired entries (1 hour TTL)
-        cache.cleanup_expired(3600).await?;
+        cache.delete_expired(3600).await?;
 
         // Entry should be gone
-        assert!(!cache.exists(&key).await?);
+        assert!(cache.get(&key).await?.is_none());
 
         Ok(())
     }
