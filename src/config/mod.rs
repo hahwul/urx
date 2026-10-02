@@ -4,6 +4,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::app::keys::{api_keys_mut, KEYED_PROVIDER_IDS};
 use crate::cli::{Args, CliProvided};
 use crate::utils::split_csv;
 
@@ -227,29 +228,19 @@ impl ProviderKeysConfig {
             }
         }
 
-        if !supplied.vt {
-            if let Some(keys) = &self.vt_api_key {
-                args.vt_api_key = split_csv(keys);
+        let configured = [
+            &self.vt_api_key,
+            &self.urlscan_api_key,
+            &self.zoomeye_api_key,
+            &self.github_api_key,
+            &self.bevigil_api_key,
+        ];
+        for (id, keys) in KEYED_PROVIDER_IDS.into_iter().zip(configured) {
+            if supplied.api_keys.contains(&id) {
+                continue;
             }
-        }
-        if !supplied.urlscan {
-            if let Some(keys) = &self.urlscan_api_key {
-                args.urlscan_api_key = split_csv(keys);
-            }
-        }
-        if !supplied.zoomeye {
-            if let Some(keys) = &self.zoomeye_api_key {
-                args.zoomeye_api_key = split_csv(keys);
-            }
-        }
-        if !supplied.github {
-            if let Some(keys) = &self.github_api_key {
-                args.github_api_key = split_csv(keys);
-            }
-        }
-        if !supplied.bevigil {
-            if let Some(keys) = &self.bevigil_api_key {
-                args.bevigil_api_key = split_csv(keys);
+            if let Some(keys) = keys {
+                *api_keys_mut(args, id) = split_csv(keys);
             }
         }
     }
@@ -260,16 +251,10 @@ impl ProviderKeysConfig {
 /// only overwrites a slot when its flag here is `false` — otherwise CLI/env
 /// input would be silently replaced by the provider-config file.
 ///
-/// A named struct instead of six positional bools: the six-argument form hit
-/// clippy's `too_many_arguments` the moment BeVigil support added a sixth key,
-/// and positional bools are error-prone at the call site regardless.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CliSuppliedKeys {
-    pub vt: bool,
-    pub urlscan: bool,
-    pub zoomeye: bool,
-    pub github: bool,
-    pub bevigil: bool,
+    /// Keyed provider ids whose `--<id>-api-key` slot is already filled.
+    pub api_keys: Vec<&'static str>,
     pub notify: bool,
 }
 
@@ -668,33 +653,20 @@ impl Config {
         // provider-config file. The main config used to push the whole string as
         // a single key, so `vt_api_key = "k1,k2"` became one key literally named
         // "k1,k2" — which simply fails to authenticate, with no hint why.
-        if args.vt_api_key.is_empty() {
-            if let Some(vt_api_key) = &self.provider.vt_api_key {
-                args.vt_api_key = split_csv(vt_api_key);
-            }
-        }
-
-        if args.urlscan_api_key.is_empty() {
-            if let Some(urlscan_api_key) = &self.provider.urlscan_api_key {
-                args.urlscan_api_key = split_csv(urlscan_api_key);
-            }
-        }
-
-        if args.zoomeye_api_key.is_empty() {
-            if let Some(zoomeye_api_key) = &self.provider.zoomeye_api_key {
-                args.zoomeye_api_key = split_csv(zoomeye_api_key);
-            }
-        }
-
-        if args.github_api_key.is_empty() {
-            if let Some(github_api_key) = &self.provider.github_api_key {
-                args.github_api_key = split_csv(github_api_key);
-            }
-        }
-
-        if args.bevigil_api_key.is_empty() {
-            if let Some(bevigil_api_key) = &self.provider.bevigil_api_key {
-                args.bevigil_api_key = split_csv(bevigil_api_key);
+        let p = &self.provider;
+        let configured = [
+            &p.vt_api_key,
+            &p.urlscan_api_key,
+            &p.zoomeye_api_key,
+            &p.github_api_key,
+            &p.bevigil_api_key,
+        ];
+        for (id, keys) in KEYED_PROVIDER_IDS.into_iter().zip(configured) {
+            let slot = api_keys_mut(args, id);
+            if slot.is_empty() {
+                if let Some(keys) = keys {
+                    *slot = split_csv(keys);
+                }
             }
         }
 
@@ -1424,7 +1396,7 @@ mod tests {
         keys.apply_to_args(
             &mut args,
             CliSuppliedKeys {
-                github: true,
+                api_keys: vec!["github"],
                 ..Default::default()
             },
         );
@@ -1476,7 +1448,7 @@ mod tests {
         cfg.apply_to_args(
             &mut args,
             CliSuppliedKeys {
-                vt: true,
+                api_keys: vec!["vt"],
                 ..Default::default()
             },
         );

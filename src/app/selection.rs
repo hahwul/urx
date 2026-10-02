@@ -12,7 +12,7 @@ use crate::app::catalog::{
     cdx_endpoint_ids, cdx_endpoints, is_cdx_endpoint_id, missing_api_key_message, provider_catalog,
     valid_provider_ids, validate_provider_ids, validate_rate_limit_override_ids,
 };
-use crate::app::keys::{auto_enable_provider, ApiKeys, KEYED_PROVIDER_IDS};
+use crate::app::keys::{ApiKeys, KEYED_PROVIDER_IDS};
 use crate::cli::Args;
 use crate::filters::{compile_url_regexes, validate_presets};
 use crate::network::NetworkSettings;
@@ -96,7 +96,9 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
         // this function also runs for cache-key construction, where announcing
         // the same thing a second time would be noise.
         for id in KEYED_PROVIDER_IDS {
-            auto_enable_provider(&mut providers_list, keys.for_provider(id), id, false, true);
+            if !keys.for_provider(id).is_empty() && !providers_list.iter().any(|p| p == id) {
+                providers_list.push(id.to_string());
+            }
         }
     }
 
@@ -356,61 +358,31 @@ pub fn initialize_providers(
     // From here on the order matches the catalog's keyed section, which is also
     // the order provider rows appear in `--stats` and the progress region.
     //
-    // These three cannot run at all without a key. `--all-providers` users
-    // don't want a noisy error for every key they happen not to have, so the
-    // complaint is suppressed in that mode.
-    if enabled.contains("vt") {
-        let vt_keys = keys.vt.clone();
-        if !vt_keys.is_empty() {
-            register!("vt", "VirusTotal".to_string(), || {
-                VirusTotalProvider::new_with_keys(vt_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("vt"));
+    // A key-gated provider cannot run at all without a key. `--all-providers`
+    // users don't want a noisy error for every key they happen not to have, so
+    // the complaint is suppressed in that mode. urlscan.io's public search
+    // works without a key (rate-limited to ~30 req/min per IP); a key only
+    // raises those limits and enables rotation.
+    for info in provider_catalog() {
+        let id = info.id;
+        if !KEYED_PROVIDER_IDS.contains(&id) || !enabled.contains(id) {
+            continue;
         }
-    }
-
-    if enabled.contains("urlscan") {
-        // urlscan.io's public search works without a key (rate-limited to
-        // ~30 req/min per IP); a key only raises those limits and enables
-        // rotation. So always instantiate — keys are passed through when
-        // present, but their absence no longer disables the provider.
-        let keys = keys.urlscan.clone();
-        register!("urlscan", "Urlscan".to_string(), || {
-            UrlscanProvider::new_with_keys(keys)
-        });
-    }
-
-    if enabled.contains("zoomeye") {
-        let zoomeye_keys = keys.zoomeye.clone();
-        if !zoomeye_keys.is_empty() {
-            register!("zoomeye", "ZoomEye".to_string(), || {
-                ZoomEyeProvider::new_with_keys(zoomeye_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("zoomeye"));
+        let keys = keys.for_provider(id).to_vec();
+        if info.requires_key && keys.is_empty() {
+            if !args.silent && !args.all_providers {
+                eprintln!("{}", missing_api_key_message(id));
+            }
+            continue;
         }
-    }
-
-    if enabled.contains("github") {
-        let github_keys = keys.github.clone();
-        if !github_keys.is_empty() {
-            register!("github", "GitHub".to_string(), || {
-                GitHubProvider::new_with_keys(github_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("github"));
-        }
-    }
-
-    if enabled.contains("bevigil") {
-        let bevigil_keys = keys.bevigil.clone();
-        if !bevigil_keys.is_empty() {
-            register!("bevigil", "BeVigil".to_string(), || {
-                BeVigilProvider::new_with_keys(bevigil_keys)
-            });
-        } else if !args.silent && !args.all_providers {
-            eprintln!("{}", missing_api_key_message("bevigil"));
+        let label = info.display_name.to_string();
+        match id {
+            "vt" => register!(id, label, || VirusTotalProvider::new_with_keys(keys)),
+            "urlscan" => register!(id, label, || UrlscanProvider::new_with_keys(keys)),
+            "zoomeye" => register!(id, label, || ZoomEyeProvider::new_with_keys(keys)),
+            "github" => register!(id, label, || GitHubProvider::new_with_keys(keys)),
+            "bevigil" => register!(id, label, || BeVigilProvider::new_with_keys(keys)),
+            _ => unreachable!("{id} is not a keyed provider"),
         }
     }
 

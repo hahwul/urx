@@ -43,24 +43,16 @@ use utils::verbose_print;
 fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
     // Must run before either config layer: afterwards there is no way to tell a
     // key the user supplied from one a config file filled in.
-    let direct = seed_api_keys_from_env(args);
-    let direct_notify = seed_notify_urls_from_env(args);
+    let supplied = config::CliSuppliedKeys {
+        api_keys: seed_api_keys_from_env(args),
+        notify: seed_notify_urls_from_env(args),
+    };
 
     Config::load(args)?.apply_to_args(args, provided);
 
     // The provider-config file is separate from the main config and overrides
     // it, but still loses to anything supplied on the CLI or in the environment.
-    config::ProviderKeysConfig::load(args)?.apply_to_args(
-        args,
-        config::CliSuppliedKeys {
-            vt: direct.vt,
-            urlscan: direct.urlscan,
-            zoomeye: direct.zoomeye,
-            github: direct.github,
-            bevigil: direct.bevigil,
-            notify: direct_notify,
-        },
-    );
+    config::ProviderKeysConfig::load(args)?.apply_to_args(args, supplied);
 
     Ok(())
 }
