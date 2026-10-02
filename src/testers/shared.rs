@@ -14,6 +14,7 @@ use std::time::Duration;
 use url::Url;
 
 use crate::network::RateLimiter;
+use crate::output::UrlData;
 
 /// The extension of the last path segment of `url`, lower-cased, if any.
 ///
@@ -29,6 +30,11 @@ pub(super) fn path_extension(url: &Url) -> Option<String> {
         return None;
     }
     Some(ext.to_ascii_lowercase())
+}
+
+/// Discovered URLs as tester results.
+pub(super) fn found(urls: Vec<String>) -> Vec<UrlData> {
+    urls.into_iter().map(UrlData::new).collect()
 }
 
 /// The response's `Content-Type`, lower-cased, if it sent a readable one.

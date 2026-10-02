@@ -158,7 +158,7 @@ impl Tester for StatusChecker {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.client().await?;
 
@@ -180,12 +180,6 @@ impl Tester for StatusChecker {
                 status.canonical_reason().unwrap_or("")
             );
 
-            // Nothing extra was asked for: emit the historical
-            // `"{url} - {status}"` line, byte for byte.
-            if !self.response_meta && !self.response_title {
-                return Ok(vec![format!("{} - {}", url, status_text)]);
-            }
-
             let mut data = UrlData::with_status(url.to_string(), status_text);
             let content_type = header(&response, CONTENT_TYPE);
             if self.response_meta {
@@ -198,7 +192,7 @@ impl Tester for StatusChecker {
             if self.response_title {
                 data.title = read_title(response, content_type.as_deref()).await;
             }
-            Ok(vec![data.to_tester_line()])
+            Ok(vec![data])
         })
     }
 
@@ -452,7 +446,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.len(), 1, "{out:?}");
-        assert!(out[0].contains("301"), "{out:?}");
+        assert_eq!(out[0].status.as_deref(), Some("301 Moved Permanently"));
         redirect.assert();
         final_page.assert();
     }
@@ -483,7 +477,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.len(), 1, "--is 30x should keep a redirect: {out:?}");
-        assert!(out[0].contains("302"), "{out:?}");
+        assert_eq!(out[0].status.as_deref(), Some("302 Found"));
     }
 
     #[tokio::test]
@@ -568,25 +562,25 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(ok_result[0].contains("200"));
-        assert!(missing_result[0].contains("404"));
+        assert_eq!(ok_result[0].status.as_deref(), Some("200 OK"));
+        assert_eq!(missing_result[0].status.as_deref(), Some("404 Not Found"));
         // A single client was built and shared across both requests.
         assert!(checker.client.get().is_some());
         ok.assert();
         missing.assert();
     }
 
-    /// Run one URL through a checker and decode the record it produced.
-    async fn check(checker: &StatusChecker, url: &str) -> crate::output::UrlData {
-        let out = checker.test_url(url).await.unwrap();
+    /// Run one URL through a checker and return the record it produced.
+    async fn check(checker: &StatusChecker, url: &str) -> UrlData {
+        let mut out = checker.test_url(url).await.unwrap();
         assert_eq!(out.len(), 1, "{out:?}");
-        crate::output::UrlData::from_string(out[0].clone())
+        out.remove(0)
     }
 
     #[tokio::test]
     async fn test_response_metadata_is_off_by_default() {
-        // The default line is the historical `"{url} - {status}"` one, so an
-        // existing `--check-status` run is byte-identical to before.
+        // Without --show-meta / a structured format the record carries the
+        // status alone, so an existing `--check-status` run is unchanged.
         let mut server = mockito::Server::new_async().await;
         let _m = server
             .mock("GET", "/x")
@@ -596,11 +590,10 @@ mod tests {
             .create_async()
             .await;
 
-        let out = StatusChecker::new()
-            .test_url(&format!("{}/x", server.url()))
-            .await
-            .unwrap();
-        assert_eq!(out[0], format!("{}/x - 200 OK", server.url()));
+        let data = check(&StatusChecker::new(), &format!("{}/x", server.url())).await;
+        assert_eq!(data.url, format!("{}/x", server.url()));
+        assert_eq!(data.status.as_deref(), Some("200 OK"));
+        assert!(!data.has_response_meta(), "{data:?}");
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::cli::Args;
+use crate::output::UrlData;
 use crate::providers::{Provider, UrlRecord};
 use crate::testers::Tester;
 
@@ -283,8 +284,8 @@ impl Tester for MockStatusChecker {
     fn test_url<'a>(
         &'a self,
         _url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
-        let results = self.results.clone();
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+        let results = self.results.iter().cloned().map(UrlData::new).collect();
         Box::pin(async move { Ok(results) })
     }
 }

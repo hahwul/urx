@@ -50,11 +50,12 @@ use super::body_archive::BodyArchive;
 use super::js_endpoint_extractor::{classify, BodyKind};
 use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
 // --- spec-expansion ---
-use super::shared::{content_type, send};
+use super::shared::{content_type, found, send};
 use super::spec_expander::{expand_spec_body, spec_body_kind};
 use super::{JsEndpointExtractor, Tester};
 use crate::network::client::read_body_capped;
 use crate::network::{NetConfig, RateLimiter};
+use crate::output::UrlData;
 use crate::providers::archived::{replay_url, WAYBACK_ORIGIN};
 
 /// The capture to replay for one URL: when it was taken and, when the index
@@ -376,7 +377,7 @@ impl Tester for ArchiveBodyExtractor {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let Some(capture) = self.reserve(url) else {
                 return Ok(Vec::new());
@@ -419,7 +420,7 @@ impl Tester for ArchiveBodyExtractor {
                 if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
                     let body = read_body_capped(response, MAX_BODY_BYTES).await?;
                     self.persist(url, capture, &content_type, &body).await;
-                    return Ok(expand_spec_body(&base_url, kind, &body));
+                    return Ok(found(expand_spec_body(&base_url, kind, &body)));
                 }
             }
 
@@ -457,7 +458,9 @@ impl Tester for ArchiveBodyExtractor {
             }
 
             if script {
-                return Ok(JsEndpointExtractor::extract_endpoints(&base_url, &body));
+                return Ok(found(JsEndpointExtractor::extract_endpoints(
+                    &base_url, &body,
+                )));
             }
             if !html {
                 return Ok(Vec::new());
@@ -474,7 +477,7 @@ impl Tester for ArchiveBodyExtractor {
                     }
                 }
             }
-            Ok(links)
+            Ok(found(links))
         })
     }
 
@@ -492,6 +495,7 @@ impl Tester for ArchiveBodyExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testers::urls;
 
     fn capture(ts: &str, digest: Option<&str>) -> ArchiveCapture {
         ArchiveCapture {
@@ -658,6 +662,7 @@ mod tests {
         let links = ex
             .test_url("https://example.com/gone/page.html")
             .await
+            .map(urls)
             .unwrap();
         // Relative links resolve against the *captured* URL, not the replay URL.
         assert_eq!(
@@ -737,6 +742,7 @@ mod tests {
         let found = ex
             .test_url("https://example.com/static/app.a3f9c2.js")
             .await
+            .map(urls)
             .unwrap();
         assert!(
             found.contains(&"https://example.com/api/v2/internal/users".to_string()),
@@ -775,6 +781,7 @@ mod tests {
         let found = ex
             .test_url("https://example.com/static/app.a3f9c2.js")
             .await
+            .map(urls)
             .unwrap();
         assert!(found.is_empty(), "{found:?}");
     }
@@ -802,7 +809,11 @@ mod tests {
         ex.with_origin(server.url());
         ex.with_extract_js_endpoints(true);
 
-        let found = ex.test_url("https://example.com/bundle.js").await.unwrap();
+        let found = ex
+            .test_url("https://example.com/bundle.js")
+            .await
+            .map(urls)
+            .unwrap();
         assert_eq!(found, vec!["https://example.com/api/orders/pending"]);
     }
 
@@ -830,7 +841,11 @@ mod tests {
         ex.with_origin(server.url());
         ex.with_extract_js_endpoints(true);
 
-        let found = ex.test_url("https://example.com/page.html").await.unwrap();
+        let found = ex
+            .test_url("https://example.com/page.html")
+            .await
+            .map(urls)
+            .unwrap();
         // Markup links first, then what only the inline script knew.
         assert_eq!(
             found,
@@ -865,7 +880,11 @@ mod tests {
         ex.with_origin(server.url());
         ex.with_extract_js_endpoints(true);
 
-        let found = ex.test_url("https://example.com/page.html").await.unwrap();
+        let found = ex
+            .test_url("https://example.com/page.html")
+            .await
+            .map(urls)
+            .unwrap();
         assert_eq!(found, vec!["https://example.com/api/shared".to_string()]);
     }
 
@@ -896,7 +915,11 @@ mod tests {
         ex.with_body_archive(Some(Arc::clone(&archive)));
 
         // Links still come back: storing the body is a by-product, not a mode.
-        let links = ex.test_url("https://example.com/page.html").await.unwrap();
+        let links = ex
+            .test_url("https://example.com/page.html")
+            .await
+            .map(urls)
+            .unwrap();
         assert_eq!(links, vec!["https://example.com/x".to_string()]);
 
         assert_eq!(archive.written(), 1);
@@ -939,6 +962,7 @@ mod tests {
         let links = ex
             .test_url("https://example.com/config.json")
             .await
+            .map(urls)
             .unwrap();
         assert!(links.is_empty(), "{links:?}");
         assert_eq!(archive.written(), 1);
@@ -976,6 +1000,7 @@ mod tests {
         let found = ex
             .test_url("https://example.com/app.a3f9c2.js")
             .await
+            .map(urls)
             .unwrap();
         assert_eq!(found, vec!["https://example.com/api/v2/orders".to_string()]);
         assert_eq!(archive.written(), 1);
@@ -1007,7 +1032,11 @@ mod tests {
         ex.with_origin(server.url());
         ex.with_body_archive(Some(Arc::clone(&archive)));
 
-        let links = ex.test_url("https://example.com/logo.png").await.unwrap();
+        let links = ex
+            .test_url("https://example.com/logo.png")
+            .await
+            .map(urls)
+            .unwrap();
         assert!(links.is_empty());
         assert_eq!(archive.written(), 0);
     }
@@ -1042,6 +1071,7 @@ mod tests {
         let found = ex
             .test_url("https://example.com/swagger.json")
             .await
+            .map(urls)
             .unwrap();
         assert!(!found.is_empty(), "spec should still expand");
         assert_eq!(archive.written(), 1);
@@ -1069,7 +1099,11 @@ mod tests {
             ..Default::default()
         });
 
-        let links = ex.test_url("https://example.com/x").await.unwrap();
+        let links = ex
+            .test_url("https://example.com/x")
+            .await
+            .map(urls)
+            .unwrap();
         assert!(links.is_empty());
     }
 
@@ -1093,7 +1127,11 @@ mod tests {
         );
         ex.with_origin(server.url());
 
-        let links = ex.test_url("https://example.com/logo.png").await.unwrap();
+        let links = ex
+            .test_url("https://example.com/logo.png")
+            .await
+            .map(urls)
+            .unwrap();
         assert!(links.is_empty());
     }
 
@@ -1124,10 +1162,15 @@ mod tests {
         );
         ex.with_origin(server.url());
 
-        let first = ex.test_url("https://example.com/a").await.unwrap();
+        let first = ex
+            .test_url("https://example.com/a")
+            .await
+            .map(urls)
+            .unwrap();
         let second = ex
             .test_url("https://example.com/a?utm_source=x")
             .await
+            .map(urls)
             .unwrap();
         assert_eq!(first, vec!["https://example.com/found".to_string()]);
         assert!(second.is_empty());
@@ -1165,8 +1208,14 @@ mod tests {
         ex.with_rate_limit(Some(5.0));
 
         let start = Instant::now();
-        ex.test_url("https://example.com/a").await.unwrap();
-        ex.test_url("https://example.com/b").await.unwrap();
+        ex.test_url("https://example.com/a")
+            .await
+            .map(urls)
+            .unwrap();
+        ex.test_url("https://example.com/b")
+            .await
+            .map(urls)
+            .unwrap();
         assert!(
             start.elapsed() >= Duration::from_millis(150),
             "rate limit was not applied; elapsed {:?}",
@@ -1205,6 +1254,7 @@ mod tests {
         assert!(ex
             .test_url("https://gone.example.com/swagger.json")
             .await
+            .map(urls)
             .unwrap()
             .is_empty());
 
@@ -1215,6 +1265,7 @@ mod tests {
         let mut got = ex
             .test_url("https://gone.example.com/swagger.json")
             .await
+            .map(urls)
             .unwrap();
         got.sort();
         assert_eq!(
@@ -1250,7 +1301,10 @@ mod tests {
         ex.with_origin(server.url());
         ex.with_expand_specs(true);
         assert_eq!(
-            ex.test_url("https://example.com/page.html").await.unwrap(),
+            ex.test_url("https://example.com/page.html")
+                .await
+                .map(urls)
+                .unwrap(),
             vec!["https://example.com/still-here".to_string()]
         );
     }

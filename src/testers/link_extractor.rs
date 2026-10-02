@@ -9,10 +9,11 @@ use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
 
-use super::shared::{content_type, send};
+use super::shared::{content_type, found, send};
 use super::Tester;
 use crate::network::client::read_body_capped;
 use crate::network::NetConfig;
+use crate::output::UrlData;
 
 /// Cap on bytes read from one page before parsing.
 ///
@@ -257,7 +258,7 @@ impl Tester for LinkExtractor {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let client = self.client().await?;
 
@@ -291,9 +292,7 @@ impl Tester for LinkExtractor {
             // exhaust memory.
             let html_content = read_body_capped(response, MAX_BODY_BYTES).await?;
 
-            // Extract links using the helper function
-            let links = Self::extract_links(&base_url, &html_content);
-            Ok(links)
+            Ok(found(Self::extract_links(&base_url, &html_content)))
         })
     }
 
@@ -305,6 +304,7 @@ impl Tester for LinkExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testers::urls;
 
     #[test]
     fn test_extract_links() {
@@ -576,6 +576,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/index.html", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         let base = server.url();
@@ -678,6 +679,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/gone", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert!(links.is_empty(), "{links:?}");
@@ -699,6 +701,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/photo.jpg", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert!(links.is_empty(), "{links:?}");
@@ -720,6 +723,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/bare", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert_eq!(links, vec!["https://example.com/found".to_string()]);
@@ -750,6 +754,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/big", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert!(
@@ -836,10 +841,12 @@ mod tests {
         let first = extractor
             .test_url(&format!("{}/p1", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let second = extractor
             .test_url(&format!("{}/p2", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert_eq!(first, vec!["https://example.com/one".to_string()]);

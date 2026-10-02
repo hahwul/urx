@@ -27,10 +27,11 @@ use tokio::sync::OnceCell;
 use url::Url;
 use yaml_rust2::yaml::{Yaml, YamlLoader};
 
-use super::shared::{content_type, path_extension, send, FetchBudget};
+use super::shared::{content_type, found, path_extension, send, FetchBudget};
 use super::Tester;
 use crate::network::client::read_body_capped;
 use crate::network::NetConfig;
+use crate::output::UrlData;
 
 /// Cap on bytes read from one document before parsing.
 ///
@@ -612,7 +613,7 @@ impl Tester for SpecExpander {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let spec_url =
                 Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
@@ -641,7 +642,7 @@ impl Tester for SpecExpander {
                 return Ok(Vec::new());
             };
             let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-            Ok(expand_spec_body(&spec_url, kind, &body))
+            Ok(found(expand_spec_body(&spec_url, kind, &body)))
         })
     }
 
@@ -653,6 +654,7 @@ impl Tester for SpecExpander {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testers::urls;
     use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
     use serde_json::json;
 
@@ -1085,6 +1087,7 @@ glob: /assets/*
         let mut got = expander
             .test_url(&format!("{}/swagger.json", server.url()))
             .await
+            .map(urls)
             .unwrap();
         got.sort();
         assert_eq!(
@@ -1138,6 +1141,7 @@ glob: /assets/*
             let got = expander
                 .test_url(&format!("{}{path}", server.url()))
                 .await
+                .map(urls)
                 .unwrap();
             assert!(got.is_empty(), "{path}: {got:?}");
         }
@@ -1173,6 +1177,7 @@ glob: /assets/*
                 expander
                     .test_url(&format!("{}{path}", server.url()))
                     .await
+                    .map(urls)
                     .unwrap(),
                 vec![format!("{}{expected}", server.url())],
                 "{path}"
@@ -1203,12 +1208,14 @@ glob: /assets/*
             let got = tester
                 .test_url(&format!("{}/{n}/swagger.json", server.url()))
                 .await
+                .map(urls)
                 .unwrap();
             assert_eq!(got.len(), 1);
         }
         let third = expander
             .test_url(&format!("{}/3/swagger.json", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert!(third.is_empty(), "third fetch must be refused by the cap");
         assert_eq!(expander.budget.fetched(), 2);

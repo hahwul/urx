@@ -142,7 +142,7 @@ pub async fn process_urls_with_testers(
 
                 for url in url_vec {
                     let mut status_result = None;
-                    let mut links_result: Option<Vec<String>> = None;
+                    let mut links_result: Option<Vec<output::UrlData>> = None;
 
                     // Process URL with each tester
                     for (i, tester) in testers_clone.iter().enumerate() {
@@ -169,10 +169,7 @@ pub async fn process_urls_with_testers(
 
                     // Create UrlData for this URL
                     if let Some(status_urls) = status_result {
-                        for status_url in status_urls {
-                            // Parse the status URL (format: "{url} - {status}")
-                            result_urls.push(output::UrlData::from_string(status_url));
-                        }
+                        result_urls.extend(status_urls);
                     } else {
                         // If no status but URL should be included anyway
                         if check_status {
@@ -193,14 +190,14 @@ pub async fn process_urls_with_testers(
                     // putting them through the same filters, host validation and
                     // views the primary URLs already passed.
                     if let Some(link_urls) = links_result {
-                        for link_url in link_urls {
+                        for link in link_urls {
                             match &link_filter {
                                 Some(f) => {
-                                    if let Some(kept) = f.accept(&link_url) {
+                                    if let Some(kept) = f.accept(&link.url) {
                                         result_urls.push(output::UrlData::new(kept));
                                     }
                                 }
-                                None => result_urls.push(output::UrlData::new(link_url)),
+                                None => result_urls.push(link),
                             }
                         }
                     }
@@ -257,6 +254,8 @@ pub async fn process_urls_with_testers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::UrlData;
+    use crate::testers::urls;
     use anyhow::Result;
     use std::future::Future;
     use std::pin::Pin;
@@ -274,10 +273,9 @@ mod tests {
 
         fn test_url<'a>(
             &'a self,
-            url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
-            let url = url.to_string();
-            Box::pin(async move { Ok(vec![url]) })
+            _url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+            Box::pin(async { Ok(Vec::new()) })
         }
 
         fn with_network(&mut self, net: NetConfig) {
@@ -297,7 +295,7 @@ mod tests {
         fn test_url<'a>(
             &'a self,
             url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
             let url = url.to_string();
             Box::pin(async move { Err(anyhow::anyhow!("connection refused for {url}")) })
         }
@@ -359,8 +357,8 @@ mod tests {
         fn test_url<'a>(
             &'a self,
             _url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
-            let links = self.0.clone();
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+            let links = self.0.iter().cloned().map(UrlData::new).collect();
             Box::pin(async move { Ok(links) })
         }
     }
@@ -631,9 +629,9 @@ mod tests {
         fn test_url<'a>(
             &'a self,
             url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
             let url = url.to_string();
-            Box::pin(async move { Ok(vec![format!("{url} - 200 OK")]) })
+            Box::pin(async move { Ok(vec![UrlData::with_status(url, "200 OK".to_string())]) })
         }
     }
 
@@ -738,6 +736,7 @@ mod tests {
         let links = extractor
             .test_url(&format!("{}/page", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert_eq!(links, vec![format!("{}/found", server.url())]);
         // Mockito answers 501 when no mock matches, so a missed header would
@@ -772,7 +771,11 @@ mod tests {
         );
         apply_network_settings_to_tester(&mut replayer, &settings);
         replayer.with_origin(archive.url());
-        let found = replayer.test_url("https://example.com/gone").await.unwrap();
+        let found = replayer
+            .test_url("https://example.com/gone")
+            .await
+            .map(urls)
+            .unwrap();
         assert_eq!(found, vec!["https://example.com/archived".to_string()]);
         replay.assert();
     }

@@ -23,10 +23,11 @@ use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
 
-use super::shared::{content_type, path_extension, send, FetchBudget};
+use super::shared::{content_type, found, path_extension, send, FetchBudget};
 use super::Tester;
 use crate::network::client::read_body_capped;
 use crate::network::NetConfig;
+use crate::output::UrlData;
 
 /// Cap on bytes read from one script before scanning.
 ///
@@ -608,7 +609,7 @@ impl Tester for JsEndpointExtractor {
     fn test_url<'a>(
         &'a self,
         url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
             let base_url =
                 Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
@@ -638,11 +639,11 @@ impl Tester for JsEndpointExtractor {
                 return Ok(Vec::new());
             }
             let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-            Ok(match kind {
+            Ok(found(match kind {
                 BodyKind::Script => Self::extract_endpoints(&base_url, &body),
                 BodyKind::Html => Self::extract_inline_endpoints(&base_url, &body),
                 BodyKind::Skip => Vec::new(),
-            })
+            }))
         })
     }
 
@@ -654,6 +655,7 @@ impl Tester for JsEndpointExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testers::urls;
 
     fn base() -> Url {
         Url::parse("https://app.example.com/static/js/main.3f2a1b.js").unwrap()
@@ -1030,6 +1032,7 @@ mod tests {
         let got = extractor
             .test_url(&format!("{}/app.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let b = server.url();
         assert_eq!(got, vec![format!("{b}/api/one"), format!("{b}/api/two")]);
@@ -1048,6 +1051,7 @@ mod tests {
         let got = extractor
             .test_url(&format!("{}/logo.png", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert!(got.is_empty());
         assert_eq!(extractor.budget.fetched(), 0);
@@ -1076,6 +1080,7 @@ mod tests {
             let got = extractor
                 .test_url(&format!("{}{path}", server.url()))
                 .await
+                .map(urls)
                 .unwrap();
             assert!(got.is_empty(), "{path}: {got:?}");
         }
@@ -1095,6 +1100,7 @@ mod tests {
         let got = extractor
             .test_url(&format!("{}/index.html", server.url()))
             .await
+            .map(urls)
             .unwrap();
         assert_eq!(got, vec![format!("{}/api/inline", server.url())]);
     }
@@ -1118,14 +1124,17 @@ mod tests {
         let first = extractor
             .test_url(&format!("{}/1.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let second = clone
             .test_url(&format!("{}/2.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
         let third = extractor
             .test_url(&format!("{}/3.js", server.url()))
             .await
+            .map(urls)
             .unwrap();
 
         assert_eq!(first.len(), 1);
@@ -1152,6 +1161,7 @@ mod tests {
             let got = extractor
                 .test_url(&format!("{}/{i}.js", server.url()))
                 .await
+                .map(urls)
                 .unwrap();
             assert_eq!(got.len(), 1);
         }
