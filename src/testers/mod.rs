@@ -33,32 +33,7 @@ pub trait Tester: Send + Sync {
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>>;
 
-    // Configuration options
-    /// Set the request timeout in seconds
-    fn with_timeout(&mut self, seconds: u64);
-
-    /// Set the number of retry attempts for failed requests
-    fn with_retries(&mut self, count: u32);
-
-    /// Enable or disable the use of random User-Agent headers
-    fn with_random_agent(&mut self, enabled: bool);
-
-    /// Enable or disable SSL certificate verification (for self-signed certificates)
-    fn with_insecure(&mut self, enabled: bool);
-
-    /// Set the proxy server for HTTP requests
-    fn with_proxy(&mut self, proxy: Option<String>);
-
-    /// Set the proxy authentication credentials (username:password)
-    fn with_proxy_auth(&mut self, auth: Option<String>);
-
-    /// Send the user's `-H` / `--cookie` / `--user-agent` headers.
-    ///
-    /// The default does nothing, and that is the right default: it is taken by
-    /// every component whose requests go to an *archive* or a third-party API
-    /// rather than to the target. Handing a target's `Authorization` header to
-    /// web.archive.org would mail the user's credentials to a service that
-    /// keeps what it receives, so only the components that fetch from the
-    /// target itself override this. See [`crate::network::CustomHeaders`].
-    fn with_headers(&mut self, _headers: crate::network::CustomHeaders) {}
+    /// Apply proxy, timeout, TLS, retries, rate limit and the user's `-H`
+    /// headers. A no-op by default, for the test doubles that make no request.
+    fn with_network(&mut self, _net: crate::network::NetConfig) {}
 }

@@ -22,17 +22,15 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use url::Url;
 use yaml_rust2::yaml::{Yaml, YamlLoader};
 
-use super::shared::path_extension;
+use super::shared::{content_type, path_extension, send, FetchBudget};
 use super::Tester;
-use crate::network::client::{read_body_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::read_body_capped;
+use crate::network::NetConfig;
 
 /// Cap on bytes read from one document before parsing.
 ///
@@ -116,12 +114,7 @@ fn classify(headers: &reqwest::header::HeaderMap, url: &Url) -> BodyKind {
         _ => None,
     };
 
-    let ct = headers
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_ascii_lowercase());
-
-    match ct.as_deref() {
+    match content_type(headers).as_deref() {
         // `application/json`, and the registered specification types
         // `application/vnd.oai.openapi+json` / `application/schema+json`.
         Some(ct) if ct.contains("json") => BodyKind::Json,
@@ -551,24 +544,9 @@ pub(super) fn expand_spec_body(url: &Url, kind: BodyKind, body: &str) -> Vec<Str
 /// collected URLs and expands the endpoints they describe.
 #[derive(Clone)]
 pub struct SpecExpander {
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
-    /// target itself, so the user's headers belong on those requests.
-    headers: CustomHeaders,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    /// Upper bound on documents fetched across the whole run; `0` is
-    /// unlimited.
-    max_files: usize,
-    /// Fetches performed so far, shared across `clone_box` clones so the cap
-    /// is global rather than per worker.
-    fetched: Arc<AtomicUsize>,
-    /// `--rate-limit`, shared across clones for the same reason: this tester
-    /// re-requests URLs from the target itself.
-    rate_limiter: Option<RateLimiter>,
+    net: NetConfig,
+    /// Upper bound on documents fetched across the whole run.
+    budget: FetchBudget,
     /// One HTTP client, built lazily and shared across clones.
     client: Arc<OnceCell<Client>>,
 }
@@ -583,65 +561,21 @@ impl SpecExpander {
 
     pub fn new() -> Self {
         SpecExpander {
-            proxy: None,
-            proxy_auth: None,
-            headers: CustomHeaders::default(),
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            max_files: Self::DEFAULT_MAX_FILES,
-            fetched: Arc::new(AtomicUsize::new(0)),
-            rate_limiter: None,
+            net: NetConfig::default(),
+            budget: FetchBudget::new(Self::DEFAULT_MAX_FILES),
             client: Arc::new(OnceCell::new()),
         }
     }
 
     /// Cap the number of documents fetched; `0` means no cap.
     pub fn with_max_files(&mut self, max: usize) {
-        self.max_files = max;
-    }
-
-    /// Pace requests at `requests_per_sec`, as `--rate-limit` does for
-    /// providers.
-    pub fn with_rate_limit(&mut self, requests_per_sec: Option<f32>) {
-        self.rate_limiter = RateLimiter::from_rate(requests_per_sec);
-    }
-
-    /// Documents fetched so far.
-    #[cfg(test)]
-    fn fetched(&self) -> usize {
-        self.fetched.load(Ordering::Relaxed)
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: self.headers.clone(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
+        self.budget.max = max;
     }
 
     async fn client(&self) -> Result<&Client> {
         self.client
-            .get_or_try_init(|| async { self.client_config().build_client() })
+            .get_or_try_init(|| async { self.net.http.build_client() })
             .await
-    }
-
-    /// Reserve one slot under the fetch cap, or `false` if the cap is spent.
-    fn try_reserve_fetch(&self) -> bool {
-        if self.max_files == 0 {
-            self.fetched.fetch_add(1, Ordering::Relaxed);
-            return true;
-        }
-        self.fetched
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < self.max_files).then_some(n + 1)
-            })
-            .is_ok()
     }
 
     /// Expand one parsed document into the absolute URLs it describes,
@@ -688,73 +622,31 @@ impl Tester for SpecExpander {
             }
             // The cap is on requests actually made, so it is checked after the
             // free name test and before the request.
-            if !self.try_reserve_fetch() {
+            if !self.budget.try_reserve() {
                 return Ok(Vec::new());
             }
 
             let client = self.client().await?;
-            let mut last_error = None;
-
-            for attempt in 0..=self.retries {
-                if let Some(limiter) = &self.rate_limiter {
-                    limiter.acquire().await;
-                }
-                match client.get(url).send().await {
-                    Ok(response) => {
-                        // An error page under `/swagger.json` describes
-                        // nothing; only a served document does.
-                        if !response.status().is_success() {
-                            return Ok(Vec::new());
-                        }
-                        let Some(kind) = spec_body_kind(response.headers(), &spec_url) else {
-                            return Ok(Vec::new());
-                        };
-                        let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                        return Ok(expand_spec_body(&spec_url, kind, &body));
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        if attempt < self.retries {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                    }
-                }
+            let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
+                client.get(url)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to expand API specification {}: {:?}", url, e))?;
+            // An error page under `/swagger.json` describes
+            // nothing; only a served document does.
+            if !response.status().is_success() {
+                return Ok(Vec::new());
             }
-
-            Err(anyhow::anyhow!(
-                "Failed to expand API specification {}: {:?}",
-                url,
-                last_error
-            ))
+            let Some(kind) = spec_body_kind(response.headers(), &spec_url) else {
+                return Ok(Vec::new());
+            };
+            let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+            Ok(expand_spec_body(&spec_url, kind, &body))
         })
     }
 
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_headers(&mut self, headers: CustomHeaders) {
-        self.headers = headers;
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -1202,7 +1094,7 @@ glob: /assets/*
                 format!("{}/v1/b/{{id}}", server.url()),
             ]
         );
-        assert_eq!(expander.fetched(), 1);
+        assert_eq!(expander.budget.fetched(), 1);
     }
 
     #[tokio::test]
@@ -1250,7 +1142,7 @@ glob: /assets/*
             assert!(got.is_empty(), "{path}: {got:?}");
         }
         // Only the three specification-shaped URLs were requested.
-        assert_eq!(expander.fetched(), 3);
+        assert_eq!(expander.budget.fetched(), 3);
         untouched.assert();
     }
 
@@ -1319,30 +1211,7 @@ glob: /assets/*
             .await
             .unwrap();
         assert!(third.is_empty(), "third fetch must be refused by the cap");
-        assert_eq!(expander.fetched(), 2);
+        assert_eq!(expander.budget.fetched(), 2);
         m.assert();
-    }
-
-    #[test]
-    fn test_settings_apply() {
-        let mut e = SpecExpander::new();
-        assert_eq!(e.max_files, SpecExpander::DEFAULT_MAX_FILES);
-        e.with_timeout(7);
-        e.with_retries(1);
-        e.with_random_agent(true);
-        e.with_insecure(true);
-        e.with_proxy(Some("http://p:1".into()));
-        e.with_proxy_auth(Some("u:p".into()));
-        e.with_rate_limit(Some(2.0));
-        e.with_max_files(0);
-        assert_eq!(e.timeout, 7);
-        assert_eq!(e.retries, 1);
-        assert!(e.random_agent && e.insecure);
-        assert_eq!(e.proxy.as_deref(), Some("http://p:1"));
-        assert_eq!(e.proxy_auth.as_deref(), Some("u:p"));
-        assert!(e.rate_limiter.is_some());
-        assert_eq!(e.max_files, 0);
-        e.with_rate_limit(None);
-        assert!(e.rate_limiter.is_none());
     }
 }

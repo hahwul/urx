@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use crate::cli::Args;
 use crate::filters::{HostValidator, UrlFilter};
-use crate::network::{NetworkScope, NetworkSettings};
+use crate::network::client::HttpClientConfig;
+use crate::network::{NetConfig, NetworkScope, NetworkSettings, RateLimiter};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::testers::Tester;
@@ -59,19 +60,20 @@ pub fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &Netw
         return;
     }
 
-    tester.with_timeout(settings.timeout);
-    tester.with_retries(settings.retries);
-    tester.with_random_agent(settings.random_agent);
-    tester.with_insecure(settings.insecure);
-    tester.with_headers(settings.headers.clone());
-
-    if let Some(proxy) = &settings.proxy {
-        tester.with_proxy(Some(proxy.clone()));
-
-        if let Some(auth) = &settings.proxy_auth {
-            tester.with_proxy_auth(Some(auth.clone()));
-        }
-    }
+    tester.with_network(NetConfig {
+        http: HttpClientConfig {
+            timeout: settings.timeout,
+            insecure: settings.insecure,
+            random_agent: settings.random_agent,
+            proxy: settings.proxy.clone(),
+            proxy_auth: settings.proxy_auth.clone(),
+            // Testers request the target, so the user's headers go along;
+            // the archive replayer strips them again.
+            headers: settings.headers.clone(),
+        },
+        retries: settings.retries,
+        rate_limit: settings.rate_limit.and_then(RateLimiter::new),
+    });
 }
 
 /// Process URLs with tester components (status checker, link extractor, etc.)
@@ -259,21 +261,10 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
 
-    /// Mock tester for testing apply_network_settings_to_tester
+    /// Records the network settings it was handed.
     #[derive(Clone, Default)]
     struct MockTester {
-        timeout: u64,
-        retries: u32,
-        random_agent: bool,
-        insecure: bool,
-        proxy: Option<String>,
-        proxy_auth: Option<String>,
-    }
-
-    impl MockTester {
-        fn new() -> Self {
-            MockTester::default()
-        }
+        net: Option<NetConfig>,
     }
 
     impl Tester for MockTester {
@@ -289,28 +280,8 @@ mod tests {
             Box::pin(async move { Ok(vec![url]) })
         }
 
-        fn with_timeout(&mut self, seconds: u64) {
-            self.timeout = seconds;
-        }
-
-        fn with_retries(&mut self, count: u32) {
-            self.retries = count;
-        }
-
-        fn with_random_agent(&mut self, enabled: bool) {
-            self.random_agent = enabled;
-        }
-
-        fn with_insecure(&mut self, enabled: bool) {
-            self.insecure = enabled;
-        }
-
-        fn with_proxy(&mut self, proxy: Option<String>) {
-            self.proxy = proxy;
-        }
-
-        fn with_proxy_auth(&mut self, auth: Option<String>) {
-            self.proxy_auth = auth;
+        fn with_network(&mut self, net: NetConfig) {
+            self.net = Some(net);
         }
     }
 
@@ -330,13 +301,6 @@ mod tests {
             let url = url.to_string();
             Box::pin(async move { Err(anyhow::anyhow!("connection refused for {url}")) })
         }
-
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
     async fn run_failing_status_check(argv: &[&str]) -> Vec<output::UrlData> {
@@ -399,13 +363,6 @@ mod tests {
             let links = self.0.clone();
             Box::pin(async move { Ok(links) })
         }
-
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
     async fn run_extract_links(
@@ -588,100 +545,38 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_network_settings_to_tester_basic() {
-        let mut tester = MockTester::new();
-        let settings = NetworkSettings {
-            timeout: 60,
-            retries: 5,
-            random_agent: true,
-            insecure: true,
-            ..Default::default()
-        };
+    fn test_apply_network_settings_to_tester_honours_scope() {
+        for (scope, applied) in [
+            (NetworkScope::All, true),
+            (NetworkScope::Testers, true),
+            (NetworkScope::Providers, false),
+        ] {
+            let mut tester = MockTester::default();
+            let settings = NetworkSettings {
+                timeout: 60,
+                retries: 5,
+                insecure: true,
+                proxy: Some("http://proxy:8080".to_string()),
+                proxy_auth: Some("user:pass".to_string()),
+                rate_limit: Some(2.0),
+                scope: scope.clone(),
+                ..Default::default()
+            };
 
-        apply_network_settings_to_tester(&mut tester, &settings);
+            apply_network_settings_to_tester(&mut tester, &settings);
 
-        assert_eq!(tester.timeout, 60);
-        assert_eq!(tester.retries, 5);
-        assert!(tester.random_agent);
-        assert!(tester.insecure);
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_with_proxy() {
-        let mut tester = MockTester::new();
-        let settings = NetworkSettings {
-            proxy: Some("http://proxy:8080".to_string()),
-            proxy_auth: Some("user:pass".to_string()),
-            ..Default::default()
-        };
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
-        assert_eq!(tester.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_skips_for_providers_scope() {
-        let mut tester = MockTester::new();
-        let mut settings = NetworkSettings {
-            timeout: 60,
-            retries: 5,
-            random_agent: true,
-            insecure: true,
-            ..Default::default()
-        };
-        settings.scope = NetworkScope::Providers;
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        // Settings should not be applied when scope is Providers
-        assert_eq!(tester.timeout, 0);
-        assert_eq!(tester.retries, 0);
-        assert!(!tester.random_agent);
-        assert!(!tester.insecure);
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_applies_for_testers_scope() {
-        let mut tester = MockTester::new();
-        let mut settings = NetworkSettings {
-            timeout: 60,
-            retries: 5,
-            random_agent: true,
-            insecure: true,
-            ..Default::default()
-        };
-        settings.scope = NetworkScope::Testers;
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        // Settings should be applied when scope is Testers
-        assert_eq!(tester.timeout, 60);
-        assert_eq!(tester.retries, 5);
-        assert!(tester.random_agent);
-        assert!(tester.insecure);
-    }
-
-    #[test]
-    fn test_apply_network_settings_to_tester_applies_for_all_scope() {
-        let mut tester = MockTester::new();
-        let mut settings = NetworkSettings {
-            timeout: 60,
-            retries: 5,
-            random_agent: true,
-            insecure: true,
-            ..Default::default()
-        };
-        settings.scope = NetworkScope::All;
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        // Settings should be applied when scope is All
-        assert_eq!(tester.timeout, 60);
-        assert_eq!(tester.retries, 5);
-        assert!(tester.random_agent);
-        assert!(tester.insecure);
+            let Some(net) = tester.net else {
+                assert!(!applied, "{scope:?}");
+                continue;
+            };
+            assert!(applied, "{scope:?}");
+            assert_eq!(net.http.timeout, 60);
+            assert_eq!(net.retries, 5);
+            assert!(net.http.insecure);
+            assert_eq!(net.http.proxy.as_deref(), Some("http://proxy:8080"));
+            assert_eq!(net.http.proxy_auth.as_deref(), Some("user:pass"));
+            assert!(net.rate_limit.is_some());
+        }
     }
 
     #[tokio::test]
@@ -740,12 +635,6 @@ mod tests {
             let url = url.to_string();
             Box::pin(async move { Ok(vec![format!("{url} - 200 OK")]) })
         }
-        fn with_timeout(&mut self, _seconds: u64) {}
-        fn with_retries(&mut self, _count: u32) {}
-        fn with_random_agent(&mut self, _enabled: bool) {}
-        fn with_insecure(&mut self, _enabled: bool) {}
-        fn with_proxy(&mut self, _proxy: Option<String>) {}
-        fn with_proxy_auth(&mut self, _auth: Option<String>) {}
     }
 
     #[tokio::test]
@@ -780,20 +669,6 @@ mod tests {
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].url, "https://example.com/a");
         assert_eq!(out[0].status.as_deref(), Some("200 OK"));
-    }
-
-    #[test]
-    fn test_apply_network_settings_proxy_without_auth() {
-        let mut tester = MockTester::new();
-        let settings = NetworkSettings {
-            proxy: Some("http://proxy:8080".to_string()),
-            ..Default::default()
-        };
-
-        apply_network_settings_to_tester(&mut tester, &settings);
-
-        assert_eq!(tester.proxy, Some("http://proxy:8080".to_string()));
-        assert_eq!(tester.proxy_auth, None);
     }
 
     #[tokio::test]

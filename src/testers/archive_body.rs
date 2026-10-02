@@ -50,11 +50,11 @@ use super::body_archive::BodyArchive;
 use super::js_endpoint_extractor::{classify, BodyKind};
 use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
 // --- spec-expansion ---
+use super::shared::{content_type, send};
 use super::spec_expander::{expand_spec_body, spec_body_kind};
 use super::{JsEndpointExtractor, Tester};
-use crate::network::client::{read_body_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::read_body_capped;
+use crate::network::{NetConfig, RateLimiter};
 use crate::providers::archived::{replay_url, WAYBACK_ORIGIN};
 
 /// The capture to replay for one URL: when it was taken and, when the index
@@ -113,13 +113,7 @@ pub struct ArchiveBodyExtractor {
     /// request to a public archive, and a large domain's URL list is easily
     /// six figures.
     limit: usize,
-    rate_limit: Option<RateLimiter>,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
+    net: NetConfig,
     /// Built lazily and shared across workers, exactly as the live link
     /// extractor does, so every replay request reuses one connection pool.
     client: Arc<OnceCell<Client>>,
@@ -148,13 +142,7 @@ impl ArchiveBodyExtractor {
             claimed: Arc::new(Mutex::new(HashSet::new())),
             stats: Arc::new(ArchiveBodyStats::default()),
             limit,
-            rate_limit: None,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
+            net: NetConfig::default(),
             client: Arc::new(OnceCell::new()),
             origin: WAYBACK_ORIGIN.to_string(),
             // --- spec-expansion ---
@@ -177,7 +165,7 @@ impl ArchiveBodyExtractor {
     /// Pace replay requests. The archive is one host no matter how many URLs
     /// are in flight, so the limiter is shared across workers.
     pub fn with_rate_limit(&mut self, requests_per_second: Option<f32>) -> &mut Self {
-        self.rate_limit = RateLimiter::from_rate(requests_per_second);
+        self.net.rate_limit = requests_per_second.and_then(RateLimiter::new);
         self
     }
 
@@ -226,20 +214,9 @@ impl ArchiveBodyExtractor {
         self.body_archive.clone()
     }
 
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
     async fn client(&self) -> Result<&Client> {
         self.client
-            .get_or_try_init(|| async { self.client_config().build_client() })
+            .get_or_try_init(|| async { self.net.http.build_client() })
             .await
     }
 
@@ -322,11 +299,7 @@ impl ArchiveBodyExtractor {
 /// path extension when it did not — the same two signals, in the same order,
 /// that [`classify`] and [`is_html_like`] use.
 fn is_text_like(headers: &reqwest::header::HeaderMap, url: &Url) -> bool {
-    if let Some(ct) = headers
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-    {
-        let ct = ct.to_ascii_lowercase();
+    if let Some(ct) = content_type(headers) {
         let ct = ct.split(';').next().unwrap_or(&ct).trim().to_string();
         return ct.starts_with("text/")
             || ct.ends_with("+json")
@@ -416,142 +389,104 @@ impl Tester for ArchiveBodyExtractor {
             let client = self.client().await?;
             let target = replay_url(&self.origin, &capture.timestamp, url);
 
-            let mut last_error = None;
-            for attempt in 0..=self.retries {
-                if let Some(rl) = &self.rate_limit {
-                    rl.acquire().await;
-                }
-                match client.get(&target).send().await {
-                    Ok(response) => {
-                        // 404 means the Wayback Machine holds no capture of
-                        // this URL (the timestamp may have come from another
-                        // archive). Not an error; there is simply no body.
-                        if !response.status().is_success() {
-                            return Ok(Vec::new());
-                        }
-                        // Read before `read_body_capped` consumes the
-                        // response; the index records it verbatim.
-                        let content_type = response
-                            .headers()
-                            .get(reqwest::header::CONTENT_TYPE)
-                            .and_then(|v| v.to_str().ok())
-                            .map(str::to_string);
-                        // --- spec-expansion ---
-                        // The combination that recovers an API which no longer
-                        // exists: the archive still holds the specification
-                        // that described it. The replay is `id_`, so the body
-                        // and its `Content-Type` are the originals, and the
-                        // same two signals decide as on the live path. Checked
-                        // before `is_html_like`, which rejects
-                        // `application/json` outright.
-                        if self.expand_specs {
-                            if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
-                                let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                                self.persist(url, capture, &content_type, &body).await;
-                                return Ok(expand_spec_body(&base_url, kind, &body));
-                            }
-                        }
-
-                        // --- archived JS ---
-                        // Script is decided before HTML, not after. A `.js`
-                        // capture the archive replayed without a
-                        // `Content-Type` satisfies `is_html_like` (which
-                        // treats an absent type as "might be markup"), so
-                        // asking that question first would hand every such
-                        // bundle to the HTML parser and mine nothing.
-                        let script = self.extract_js_endpoints
-                            && classify(response.headers(), &base_url) == BodyKind::Script;
-                        let html = is_html_like(response.headers());
-                        // A body nothing will read is still worth storing when
-                        // the user asked for a corpus — JSON, CSS and plain
-                        // text hold the comments and credentials that no
-                        // extractor looks for — but an image never is.
-                        // `script` is included on its own: `classify` reaches
-                        // that verdict for a `.js` served as
-                        // `application/octet-stream` (misconfigured static
-                        // hosts are full of them), which `is_text_like` refuses
-                        // on the strength of the declared type. Mining a body
-                        // and then leaving it out of the corpus would lose
-                        // exactly the file whose endpoints the run just
-                        // reported.
-                        let keep = self.body_archive.is_some()
-                            && (script || is_text_like(response.headers(), &base_url));
-                        if !script && !html && !keep {
-                            return Ok(Vec::new());
-                        }
-
-                        let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                        if keep {
-                            self.persist(url, capture, &content_type, &body).await;
-                        }
-
-                        if script {
-                            return Ok(JsEndpointExtractor::extract_endpoints(&base_url, &body));
-                        }
-                        if !html {
-                            return Ok(Vec::new());
-                        }
-                        let mut links = LinkExtractor::extract_links(&base_url, &body);
-                        if self.extract_js_endpoints {
-                            // An archived page's inline scripts get the same
-                            // treatment the live path gives them, and the two
-                            // sources are merged in first-seen order.
-                            let mut seen: HashSet<String> = links.iter().cloned().collect();
-                            for endpoint in
-                                JsEndpointExtractor::extract_inline_endpoints(&base_url, &body)
-                            {
-                                if seen.insert(endpoint.clone()) {
-                                    links.push(endpoint);
-                                }
-                            }
-                        }
-                        return Ok(links);
-                    }
-                    Err(e) => {
-                        last_error = Some(e);
-                        if attempt < self.retries {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                    }
+            let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
+                client.get(&target)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fetch archived body of {}: {:?}", url, e))?;
+            // 404 means the Wayback Machine holds no capture of
+            // this URL (the timestamp may have come from another
+            // archive). Not an error; there is simply no body.
+            if !response.status().is_success() {
+                return Ok(Vec::new());
+            }
+            // Read before `read_body_capped` consumes the
+            // response; the index records it verbatim.
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            // --- spec-expansion ---
+            // The combination that recovers an API which no longer
+            // exists: the archive still holds the specification
+            // that described it. The replay is `id_`, so the body
+            // and its `Content-Type` are the originals, and the
+            // same two signals decide as on the live path. Checked
+            // before `is_html_like`, which rejects
+            // `application/json` outright.
+            if self.expand_specs {
+                if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
+                    let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+                    self.persist(url, capture, &content_type, &body).await;
+                    return Ok(expand_spec_body(&base_url, kind, &body));
                 }
             }
 
-            Err(anyhow::anyhow!(
-                "Failed to fetch archived body of {}: {:?}",
-                url,
-                last_error
-            ))
+            // --- archived JS ---
+            // Script is decided before HTML, not after. A `.js`
+            // capture the archive replayed without a
+            // `Content-Type` satisfies `is_html_like` (which
+            // treats an absent type as "might be markup"), so
+            // asking that question first would hand every such
+            // bundle to the HTML parser and mine nothing.
+            let script = self.extract_js_endpoints
+                && classify(response.headers(), &base_url) == BodyKind::Script;
+            let html = is_html_like(response.headers());
+            // A body nothing will read is still worth storing when
+            // the user asked for a corpus — JSON, CSS and plain
+            // text hold the comments and credentials that no
+            // extractor looks for — but an image never is.
+            // `script` is included on its own: `classify` reaches
+            // that verdict for a `.js` served as
+            // `application/octet-stream` (misconfigured static
+            // hosts are full of them), which `is_text_like` refuses
+            // on the strength of the declared type. Mining a body
+            // and then leaving it out of the corpus would lose
+            // exactly the file whose endpoints the run just
+            // reported.
+            let keep = self.body_archive.is_some()
+                && (script || is_text_like(response.headers(), &base_url));
+            if !script && !html && !keep {
+                return Ok(Vec::new());
+            }
+
+            let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+            if keep {
+                self.persist(url, capture, &content_type, &body).await;
+            }
+
+            if script {
+                return Ok(JsEndpointExtractor::extract_endpoints(&base_url, &body));
+            }
+            if !html {
+                return Ok(Vec::new());
+            }
+            let mut links = LinkExtractor::extract_links(&base_url, &body);
+            if self.extract_js_endpoints {
+                // An archived page's inline scripts get the same
+                // treatment the live path gives them, and the two
+                // sources are merged in first-seen order.
+                let mut seen: HashSet<String> = links.iter().cloned().collect();
+                for endpoint in JsEndpointExtractor::extract_inline_endpoints(&base_url, &body) {
+                    if seen.insert(endpoint.clone()) {
+                        links.push(endpoint);
+                    }
+                }
+            }
+            Ok(links)
         })
     }
 
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
+    /// Keeps everything but the user's `-H` headers: every request this
+    /// tester makes goes to the Wayback Machine, never to the target, and the
+    /// user's `-H` may well carry the target's session cookie.
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = NetConfig {
+            http: net.http.without_headers(),
+            ..net
+        };
     }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    /// Deliberately not implemented beyond the no-op default: every request
-    /// this tester makes goes to the Wayback Machine, never to the target, and
-    /// the user's `-H` may well carry the target's session cookie.
-    fn with_headers(&mut self, _headers: CustomHeaders) {}
 }
 
 #[cfg(test)]
@@ -1129,7 +1064,10 @@ mod tests {
             10,
         );
         ex.with_origin(server.url());
-        ex.with_retries(0);
+        ex.with_network(NetConfig {
+            retries: 0,
+            ..Default::default()
+        });
 
         let links = ex.test_url("https://example.com/x").await.unwrap();
         assert!(links.is_empty());

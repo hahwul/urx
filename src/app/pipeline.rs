@@ -851,12 +851,9 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
 
         let mut js_extractor = JsEndpointExtractor::new();
         apply_network_settings_to_tester(&mut js_extractor, network_settings);
+        // --rate-limit arrives with the network settings: this tester
+        // re-requests a large slice of the result set from the target.
         js_extractor.with_max_files(args.max_js_files);
-        // Providers pace themselves with --rate-limit; this tester re-requests
-        // a large slice of the result set from the target, so it must too.
-        if network_settings.scope != NetworkScope::Providers {
-            js_extractor.with_rate_limit(network_settings.rate_limit);
-        }
         testers.push(Box::new(js_extractor));
     }
 
@@ -867,11 +864,6 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         let mut spec_expander = SpecExpander::new();
         apply_network_settings_to_tester(&mut spec_expander, network_settings);
         spec_expander.with_max_files(args.max_spec_files);
-        // Same reasoning as the JS extractor: these requests go to the target,
-        // not to a provider, so --rate-limit has to reach them.
-        if network_settings.scope != NetworkScope::Providers {
-            spec_expander.with_rate_limit(network_settings.rate_limit);
-        }
         testers.push(Box::new(spec_expander));
     }
 
@@ -926,7 +918,7 @@ pub fn build_archive_body_extractor(
     // applies is the one the user set for it — `--rate-limit-by wayback=N`
     // first, the global `--rate-limit` otherwise. The tester scope rule is
     // honoured the way it is for the other settings.
-    if network_settings.scope != crate::network::NetworkScope::Providers {
+    if network_settings.scope != NetworkScope::Providers {
         let rate = args
             .rate_limit_overrides()
             .get("wayback")

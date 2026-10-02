@@ -43,12 +43,6 @@ impl RateLimiter {
         })
     }
 
-    /// Convenience constructor from an `Option<f32>` rate, so callers can write
-    /// `RateLimiter::from_rate(self.rate_limit)`.
-    pub fn from_rate(requests_per_sec: Option<f32>) -> Option<Self> {
-        requests_per_sec.and_then(Self::new)
-    }
-
     /// Block until issuing the next request respects the configured rate. The
     /// lock is held across the sleep so concurrent callers queue rather than
     /// all firing at once.
@@ -74,8 +68,6 @@ mod tests {
         assert!(RateLimiter::new(-1.0).is_none());
         assert!(RateLimiter::new(f32::NAN).is_none());
         assert!(RateLimiter::new(f32::INFINITY).is_none());
-        assert!(RateLimiter::from_rate(None).is_none());
-        assert!(RateLimiter::from_rate(Some(5.0)).is_some());
     }
 
     #[test]
