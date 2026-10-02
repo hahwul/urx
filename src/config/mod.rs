@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{Args, CliProvided};
+use crate::utils::split_csv;
 
 /// Keys a config section did not recognise.
 ///
@@ -131,16 +132,6 @@ fn warn_about_unknown_keys(unknown: &[String], source: &str, silent: bool) {
         if unknown.len() == 1 { "key" } else { "keys" },
         unknown.join(", ")
     );
-}
-
-/// Split a comma-separated key list into individual keys, trimming each and
-/// dropping blanks. Shared by both config layers so they agree on what
-/// `"k1, k2"` means.
-fn split_csv(s: &str) -> Vec<String> {
-    s.split(',')
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect()
 }
 
 impl ProviderKeysConfig {
@@ -611,11 +602,7 @@ impl Config {
         // users can configure multi-index there too.
         if !provided.has("cc_index") {
             if let Some(cc_index) = &self.provider.cc_index {
-                let split: Vec<String> = cc_index
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                let split = split_csv(cc_index);
                 if !split.is_empty() {
                     args.cc_index = split;
                 }

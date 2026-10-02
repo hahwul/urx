@@ -72,12 +72,7 @@ fn apply_config_layers(args: &mut Args, provided: &CliProvided) -> Result<()> {
 fn seed_notify_urls_from_env(args: &mut Args) -> bool {
     if args.notify.is_empty() {
         if let Ok(raw) = std::env::var("URX_NOTIFY_URL") {
-            args.notify = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|u| !u.is_empty())
-                .map(str::to_string)
-                .collect();
+            args.notify = utils::split_csv(&raw);
         }
     }
     !args.notify.is_empty()

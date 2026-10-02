@@ -69,14 +69,7 @@ impl ApiKeys {
 /// it doesn't produce an empty key that later reads as an auth failure.
 fn parse_env_api_keys(env_var_name: &str) -> Vec<String> {
     std::env::var(env_var_name)
-        .ok()
-        .map(|env_keys| {
-            env_keys
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
+        .map(|keys| crate::utils::split_csv(&keys))
         .unwrap_or_default()
 }
 
