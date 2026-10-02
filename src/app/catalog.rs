@@ -136,29 +136,27 @@ pub fn provider_catalog() -> &'static [ProviderInfo] {
         },
         ProviderInfo {
             id: "robots",
-            display_name: "robots.txt",
+            display_name: "Robots.txt",
             requires_key: false,
             summary: "Discovery from the target's robots.txt",
         },
         ProviderInfo {
             id: "sitemap",
-            display_name: "sitemap.xml",
+            display_name: "Sitemap",
             requires_key: false,
             summary: "Discovery from the target's sitemap.xml",
         },
     ]
 }
 
-/// Look up a provider's entry by its command-line id.
-pub fn provider_info(id: &str) -> Option<&'static ProviderInfo> {
-    provider_catalog().iter().find(|p| p.id == id)
-}
-
 /// The provider's human-readable name, falling back to the id for anything not
 /// in the catalog — a `cdx:<host>` endpoint, whose id already names the
 /// server, or a synthetic test id.
 pub fn provider_display_name(id: &str) -> &str {
-    provider_info(id).map_or(id, |p| p.display_name)
+    provider_catalog()
+        .iter()
+        .find(|p| p.id == id)
+        .map_or(id, |p| p.display_name)
 }
 
 /// The error shown when a key-gated provider was requested without a key.

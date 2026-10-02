@@ -345,10 +345,10 @@ async fn main() -> Result<()> {
     // config layers, the network, or the domain list — these flags are useful
     // on their own, with no target named.
     if let Some(shell) = args.completions {
-        return app::shell::print_completions(shell);
+        return app::shell::write_stdout(&app::shell::completion_script(shell));
     }
     if args.manpage {
-        return app::shell::print_man_page();
+        return app::shell::write_stdout(&app::shell::man_page()?);
     }
     if args.list_providers {
         print_provider_list(&args);

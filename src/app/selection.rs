@@ -10,7 +10,8 @@ use anyhow::Result;
 
 use crate::app::catalog::{
     cdx_endpoint_ids, cdx_endpoints, is_cdx_endpoint_id, missing_api_key_message, provider_catalog,
-    valid_provider_ids, validate_provider_ids, validate_rate_limit_override_ids,
+    provider_display_name, valid_provider_ids, validate_provider_ids,
+    validate_rate_limit_override_ids,
 };
 use crate::app::keys::{ApiKeys, KEYED_PROVIDER_IDS};
 use crate::cli::Args;
@@ -246,6 +247,9 @@ pub fn initialize_providers(
 
     // Every provider is registered the same way; the macro keeps the shared
     // `args`/`network_settings`/accumulator arguments out of ten call sites.
+    // Labels come from the catalog, the same names `--list-providers` shows.
+    let label = |id: &str| provider_display_name(id).to_string();
+    let archived_label = |id: &str| format!("{} (archived)", provider_display_name(id));
     macro_rules! register {
         ($id:expr, $label:expr, $builder:expr) => {
             add_provider(
@@ -262,7 +266,7 @@ pub fn initialize_providers(
 
     if enabled.contains("wayback") {
         let filters = archive_filters.clone();
-        register!("wayback", "Wayback Machine".to_string(), move || {
+        register!("wayback", label("wayback"), move || {
             let mut p = WaybackMachineProvider::new();
             p.with_filters(filters);
             p
@@ -298,30 +302,30 @@ pub fn initialize_providers(
     });
 
     if enabled.contains("robots") {
-        register!("robots", "Robots.txt".to_string(), RobotsProvider::new);
+        register!("robots", label("robots"), RobotsProvider::new);
         if let Some(settings) = archived.clone() {
-            register!("robots", "Robots.txt (archived)".to_string(), || {
+            register!("robots", archived_label("robots"), || {
                 RobotsProvider::archived(settings)
             });
         }
     }
 
     if enabled.contains("sitemap") {
-        register!("sitemap", "Sitemap".to_string(), SitemapProvider::new);
+        register!("sitemap", label("sitemap"), SitemapProvider::new);
         if let Some(settings) = archived.clone() {
-            register!("sitemap", "Sitemap (archived)".to_string(), || {
+            register!("sitemap", archived_label("sitemap"), || {
                 SitemapProvider::archived(settings)
             });
         }
     }
 
     if enabled.contains("otx") {
-        register!("otx", "OTX".to_string(), OTXProvider::new);
+        register!("otx", label("otx"), OTXProvider::new);
     }
 
     if enabled.contains("arquivo") {
         let filters = archive_filters.clone();
-        register!("arquivo", "Arquivo.pt".to_string(), move || {
+        register!("arquivo", label("arquivo"), move || {
             let mut p = ArquivoProvider::new();
             p.with_filters(filters);
             p
@@ -365,13 +369,13 @@ pub fn initialize_providers(
             }
             continue;
         }
-        let label = info.display_name.to_string();
+        let name = label(id);
         match id {
-            "vt" => register!(id, label, || VirusTotalProvider::new_with_keys(keys)),
-            "urlscan" => register!(id, label, || UrlscanProvider::new_with_keys(keys)),
-            "zoomeye" => register!(id, label, || ZoomEyeProvider::new_with_keys(keys)),
-            "github" => register!(id, label, || GitHubProvider::new_with_keys(keys)),
-            "bevigil" => register!(id, label, || BeVigilProvider::new_with_keys(keys)),
+            "vt" => register!(id, name, || VirusTotalProvider::new_with_keys(keys)),
+            "urlscan" => register!(id, name, || UrlscanProvider::new_with_keys(keys)),
+            "zoomeye" => register!(id, name, || ZoomEyeProvider::new_with_keys(keys)),
+            "github" => register!(id, name, || GitHubProvider::new_with_keys(keys)),
+            "bevigil" => register!(id, name, || BeVigilProvider::new_with_keys(keys)),
             _ => unreachable!("{id} is not a keyed provider"),
         }
     }
