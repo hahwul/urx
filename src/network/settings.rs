@@ -1,8 +1,9 @@
 /// Network scope specifying which components should use the network settings
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum NetworkScope {
     /// Apply network settings to all components
     #[default]
+    #[value(alias = "providers,testers", alias = "testers,providers")]
     All,
     /// Apply network settings only to providers
     Providers,
@@ -87,7 +88,7 @@ impl NetworkSettings {
             retries: args.retries,
             random_agent: args.random_agent,
             insecure: args.insecure,
-            parallel: args.parallel.unwrap_or(5).max(1),
+            parallel: args.parallel.max(1),
             rate_limit: args.rate_limit,
             include_subdomains: args.subs,
             headers: super::CustomHeaders::parse(
@@ -95,13 +96,7 @@ impl NetworkSettings {
                 args.cookie.as_deref(),
                 args.user_agent.as_deref(),
             )?,
-            // `validate_network_scope` admits nothing else; anything it
-            // doesn't name, including "providers,testers", means both.
-            scope: match args.network_scope.to_lowercase().as_str() {
-                "providers" => NetworkScope::Providers,
-                "testers" => NetworkScope::Testers,
-                _ => NetworkScope::All,
-            },
+            scope: args.network_scope,
         })
     }
 }
@@ -206,7 +201,7 @@ mod tests {
 
         let mut args = Args::parse_from(["urx", "example.com"]);
         args.timeout = 0;
-        args.parallel = Some(0);
+        args.parallel = 0;
 
         let settings = NetworkSettings::from_args(&args).unwrap();
 

@@ -58,12 +58,12 @@ pub struct Args {
     #[clap(
         short,
         long,
-        default_value = "plain",
+        value_enum,
+        default_value_t = crate::output::Format::Plain,
         global = true,
-        ignore_case = true,
-        value_parser = ["plain", "json", "jsonl", "csv", "wordlist"]
+        ignore_case = true
     )]
-    pub format: String,
+    pub format: crate::output::Format,
 
     /// Merge endpoints with the same path and merge URL parameters
     #[clap(help_heading = "Output Options")]
@@ -147,8 +147,13 @@ pub struct Args {
     /// resume-key pagination — web.archive.org, OutbackCDX). Unset: urx probes
     /// each endpoint once and falls back to pywb when the answer is ambiguous.
     #[clap(help_heading = "Provider Options")]
-    #[clap(long = "cdx-dialect", value_name = "DIALECT", value_parser = ["classic", "pywb"])]
-    pub cdx_dialect: Option<String>,
+    #[clap(
+        long = "cdx-dialect",
+        value_name = "DIALECT",
+        value_enum,
+        ignore_case = true
+    )]
+    pub cdx_dialect: Option<crate::providers::CdxDialect>,
 
     /// Restrict results to captures at or after this date, on every CDX-backed
     /// provider (wayback, cc, arquivo, --cdx-endpoint). Accepts YYYY, YYYYMM, YYYYMMDD, or the
@@ -464,8 +469,14 @@ pub struct Args {
     // --- end result-filters ---
     /// Control which components network settings apply to (all, providers, testers, or providers,testers)
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "all", value_parser = validate_network_scope)]
-    pub network_scope: String,
+    #[clap(
+        long,
+        value_enum,
+        default_value_t = crate::network::NetworkScope::All,
+        ignore_case = true,
+        hide_possible_values = true
+    )]
+    pub network_scope: crate::network::NetworkScope,
 
     #[clap(help_heading = "Network Options")]
     /// Use proxy for HTTP requests (format: <http://proxy.example.com:8080>)
@@ -512,7 +523,7 @@ pub struct Args {
 
     /// Request timeout in seconds
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "120", value_parser = validate_positive_timeout)]
+    #[clap(long, default_value = "120", value_parser = clap::value_parser!(u64).range(1..))]
     pub timeout: u64,
 
     /// Number of retries for failed requests
@@ -524,8 +535,8 @@ pub struct Args {
     /// tests). A provider's --rate-limit is shared across these, so the
     /// configured rate is still honored.
     #[clap(help_heading = "Network Options")]
-    #[clap(long, default_value = "5", value_parser = validate_positive_parallel)]
-    pub parallel: Option<u32>,
+    #[clap(long, default_value = "5", value_parser = clap::value_parser!(u32).range(1..))]
+    pub parallel: u32,
 
     /// Rate limit (requests per second)
     #[clap(help_heading = "Network Options")]
@@ -639,8 +650,15 @@ pub struct Args {
 
     /// Cache backend type (sqlite or redis)
     #[clap(help_heading = "Cache Options")]
-    #[clap(long, default_value = "sqlite", global = true)]
-    pub cache_type: String,
+    #[clap(
+        long,
+        value_enum,
+        default_value_t = crate::cache::CacheType::Sqlite,
+        global = true,
+        ignore_case = true,
+        hide_possible_values = true
+    )]
+    pub cache_type: crate::cache::CacheType,
 
     /// Path for SQLite cache database
     #[clap(help_heading = "Cache Options")]
@@ -1012,35 +1030,6 @@ impl Args {
     }
 }
 
-fn validate_network_scope(s: &str) -> Result<String, String> {
-    match s {
-        "all" | "providers" | "testers" | "providers,testers" | "testers,providers" => Ok(s.to_string()),
-        _ => Err(format!("Invalid network scope: {s}. Allowed values are all, providers, testers, or providers,testers")),
-    }
-}
-
-fn validate_positive_timeout(s: &str) -> Result<u64, String> {
-    let value = s
-        .parse::<u64>()
-        .map_err(|_| format!("Invalid timeout: {s}. Must be a positive integer"))?;
-    if value == 0 {
-        Err("Invalid timeout: 0. Must be at least 1 second".to_string())
-    } else {
-        Ok(value)
-    }
-}
-
-fn validate_positive_parallel(s: &str) -> Result<u32, String> {
-    let value = s
-        .parse::<u32>()
-        .map_err(|_| format!("Invalid parallel value: {s}. Must be a positive integer"))?;
-    if value == 0 {
-        Err("Invalid parallel value: 0. Must be at least 1".to_string())
-    } else {
-        Ok(value)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,7 +1038,7 @@ mod tests {
     fn test_args_default_values() {
         let args = Args::parse_from(["urx", "example.com"]);
         assert_eq!(args.domains, vec!["example.com"]);
-        assert_eq!(args.format, "plain");
+        assert_eq!(args.format, crate::output::Format::Plain);
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
         assert_eq!(args.cc_index, vec!["latest"]);
         assert_eq!(args.timeout, 120);
@@ -1078,7 +1067,7 @@ mod tests {
         assert_eq!(args.domains, vec!["example.com"]);
         assert!(args.output.is_some());
         assert_eq!(args.output.unwrap().to_str().unwrap(), "output.txt");
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, crate::output::Format::Json);
     }
 
     #[test]
@@ -1086,11 +1075,12 @@ mod tests {
         for value in ["plain", "json", "jsonl", "csv", "wordlist"] {
             let args = Args::try_parse_from(["urx", "example.com", "--format", value])
                 .unwrap_or_else(|error| panic!("{value} should be accepted: {error}"));
-            assert_eq!(args.format, value);
+            let name = clap::ValueEnum::to_possible_value(&args.format).unwrap();
+            assert_eq!(name.get_name(), value);
         }
 
         let (args, provided) = parse_args_from(["urx", "example.com", "-f", "JSON"]);
-        assert_eq!(args.format, "JSON");
+        assert_eq!(args.format, crate::output::Format::Json);
         assert!(provided.has("format"), "-f should remain CLI-provided");
     }
 
@@ -1099,7 +1089,7 @@ mod tests {
         let args = Args::try_parse_from(["urx", "cache", "stats", "-f", "json"])
             .expect("cache subcommands should accept the global format flag");
         assert!(args.command.is_some());
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, crate::output::Format::Json);
     }
 
     #[test]
@@ -1126,14 +1116,20 @@ mod tests {
     fn test_timeout_must_be_positive() {
         let err = Args::try_parse_from(["urx", "example.com", "--timeout", "0"]).unwrap_err();
         let rendered = err.to_string();
-        assert!(rendered.contains("Invalid timeout: 0"));
+        assert!(
+            rendered.contains("'0'") && rendered.contains("--timeout"),
+            "{rendered}"
+        );
     }
 
     #[test]
     fn test_parallel_must_be_positive() {
         let err = Args::try_parse_from(["urx", "example.com", "--parallel", "0"]).unwrap_err();
         let rendered = err.to_string();
-        assert!(rendered.contains("Invalid parallel value: 0"));
+        assert!(
+            rendered.contains("'0'") && rendered.contains("--parallel"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -1205,33 +1201,6 @@ mod tests {
         assert!(args.exclude_robots);
         assert!(args.include_robots); // Both flags retain their values
         assert!(!args.should_use_robots()); // But should_use_robots uses the logic
-    }
-
-    #[test]
-    fn test_validate_network_scope_valid() {
-        assert!(validate_network_scope("all").is_ok());
-        assert!(validate_network_scope("providers").is_ok());
-        assert!(validate_network_scope("testers").is_ok());
-        assert!(validate_network_scope("providers,testers").is_ok());
-    }
-
-    #[test]
-    fn test_validate_network_scope_invalid() {
-        assert!(validate_network_scope("invalid").is_err());
-    }
-
-    #[test]
-    fn test_validate_positive_timeout() {
-        assert_eq!(validate_positive_timeout("1"), Ok(1));
-        assert!(validate_positive_timeout("0").is_err());
-        assert!(validate_positive_timeout("abc").is_err());
-    }
-
-    #[test]
-    fn test_validate_positive_parallel() {
-        assert_eq!(validate_positive_parallel("1"), Ok(1));
-        assert!(validate_positive_parallel("0").is_err());
-        assert!(validate_positive_parallel("abc").is_err());
     }
 
     #[test]
@@ -1467,7 +1436,7 @@ mod tests {
             args.cdx_endpoint,
             vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
         );
-        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+        assert_eq!(args.cdx_dialect, Some(crate::providers::CdxDialect::Pywb));
 
         // Unset by default: the dialect is detected.
         let args = Args::parse_from(["urx", "example.com"]);
@@ -1542,7 +1511,7 @@ mod tests {
         // default is still an explicit choice, and the config layers must be
         // able to see that.
         let (args, provided) = parse_args_from(["urx", "example.com", "--format", "plain"]);
-        assert_eq!(args.format, "plain");
+        assert_eq!(args.format, crate::output::Format::Plain);
         assert!(provided.has("format"), "--format was typed");
         assert!(!provided.has("retries"), "--retries was not");
         assert!(!provided.has("providers"));

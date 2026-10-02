@@ -30,7 +30,6 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -67,21 +66,6 @@ pub(crate) const CLASSIC_FIELDS: &str = "original,timestamp,mimetype,statuscode,
 
 /// The pywb-dialect `fl=` list — same columns, pywb's names.
 pub(crate) const PYWB_FIELDS: &str = "url,timestamp,mime,status,digest";
-
-impl FromStr for CdxDialect {
-    type Err = String;
-
-    /// The `--cdx-dialect` spellings.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "classic" => Ok(CdxDialect::Classic),
-            "pywb" => Ok(CdxDialect::Pywb),
-            other => Err(format!(
-                "Unknown CDX dialect {other:?}. Allowed values: classic, pywb"
-            )),
-        }
-    }
-}
 
 /// One CDXJ / NDJSON row of a pywb-dialect index. Every value arrives as a JSON
 /// string, the status code included, and the metadata is named `status`/`mime`
@@ -640,14 +624,6 @@ mod tests {
         let mut p = CdxProvider::new(format!("{}/cdx", server.url()), dialect);
         p.net.retries = 0;
         p
-    }
-
-    #[test]
-    fn dialect_parses_the_documented_spellings() {
-        assert_eq!("classic".parse::<CdxDialect>(), Ok(CdxDialect::Classic));
-        assert_eq!(" PyWB ".parse::<CdxDialect>(), Ok(CdxDialect::Pywb));
-        let err = "wayback".parse::<CdxDialect>().unwrap_err();
-        assert!(err.contains("classic, pywb"), "{err}");
     }
 
     #[test]

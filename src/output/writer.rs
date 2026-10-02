@@ -465,12 +465,7 @@ mod tests {
         // writes go straight to fd 1 and so escape the harness's per-test
         // capture, and this keeps the stray lines to a minimum.
         let urls = vec![UrlData::new("https://example.com/a".to_string())];
-        for outputter in [
-            Format::parse("plain"),
-            Format::parse("json"),
-            Format::parse("jsonl"),
-            Format::parse("csv"),
-        ] {
+        for outputter in [Format::Plain, Format::Json, Format::Jsonl, Format::Csv] {
             outputter.output(&urls, None, false).unwrap();
             // --silent short-circuits before touching stdout at all.
             outputter.output(&urls, None, true).unwrap();
@@ -507,7 +502,7 @@ mod tests {
     }
 
     fn wordlist_of(urls: &[&str]) -> Result<String> {
-        let outputter = Format::parse("wordlist");
+        let outputter = Format::Wordlist;
         let entries: Vec<UrlData> = urls
             .iter()
             .map(|u| UrlData::new((*u).to_string()))

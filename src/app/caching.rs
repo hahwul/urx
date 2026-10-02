@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 
 use crate::app::selection::effective_provider_ids;
-use crate::cache::{CacheEntry, CacheFilters, CacheKey, CacheManager};
+use crate::cache::{CacheEntry, CacheFilters, CacheKey, CacheManager, CacheType};
 use crate::cli::Args;
 use crate::filters::HostValidator;
 use crate::progress::ProgressManager;
@@ -25,8 +25,8 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
         return Ok(None);
     }
 
-    match args.cache_type.as_str() {
-        "sqlite" => {
+    match args.cache_type {
+        CacheType::Sqlite => {
             let cache_path = args
                 .cache_path
                 .clone()
@@ -39,7 +39,7 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
             Ok(Some(CacheManager::new_sqlite(cache_path).await?))
         }
         #[cfg(feature = "redis-cache")]
-        "redis" => {
+        CacheType::Redis => {
             let Some(redis_url) = &args.redis_url else {
                 if !args.silent {
                     eprintln!("Error: Redis cache type selected but no --redis-url provided");
@@ -50,17 +50,11 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
             Ok(Some(CacheManager::new_redis(redis_url).await?))
         }
         #[cfg(not(feature = "redis-cache"))]
-        "redis" => {
+        CacheType::Redis => {
             if !args.silent {
                 eprintln!("Error: Redis cache support not compiled in. Use 'sqlite' or compile with --features redis-cache");
             }
             Err(anyhow::anyhow!("Redis cache not supported"))
-        }
-        other => {
-            if !args.silent {
-                eprintln!("Error: Unknown cache type '{other}'. Use 'sqlite' or 'redis'");
-            }
-            Err(anyhow::anyhow!("Invalid cache type"))
         }
     }
 }
@@ -273,22 +267,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_cache_manager_invalid_type_errors() {
-        let mut args = build_test_args();
-        args.cache_type = "bogus".to_string();
-
-        match create_cache_manager(&args).await {
-            Ok(_) => panic!("expected an unknown cache type to error"),
-            Err(e) => assert!(e.to_string().contains("Invalid cache type"), "{e}"),
-        }
-    }
-
-    #[tokio::test]
     async fn test_create_cache_manager_is_none_under_no_cache() {
         let mut args = build_test_args();
         args.no_cache = true;
-        // --no-cache wins even over a cache type that would otherwise error.
-        args.cache_type = "bogus".to_string();
 
         // `CacheManager` isn't `Debug`, so match rather than unwrap.
         match create_cache_manager(&args).await {

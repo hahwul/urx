@@ -100,7 +100,7 @@ pub async fn process_urls_with_testers(
     // instead stream URL chunks through `buffer_unordered`, keeping at most
     // `parallel` chunks in flight at a time, and advance the progress bar as
     // each URL actually completes (not when its task is merely scheduled).
-    let parallel = args.parallel.unwrap_or(5).max(1) as usize;
+    let parallel = args.parallel.max(1) as usize;
     let total = transformed_urls.len() as u64;
     let completed = Arc::new(AtomicU64::new(0));
 
@@ -557,7 +557,7 @@ mod tests {
                 proxy: Some("http://proxy:8080".to_string()),
                 proxy_auth: Some("user:pass".to_string()),
                 rate_limit: Some(2.0),
-                scope: scope.clone(),
+                scope,
                 ..Default::default()
             };
 

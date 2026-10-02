@@ -20,6 +20,7 @@ use super::admin::{
     domain_matches, is_expired, summarize_domains, summarize_stats, CacheStats, DomainSummary,
 };
 use crate::cli::Args;
+use crate::output::Format;
 
 // Top-level subcommands.
 //
@@ -81,14 +82,14 @@ pub enum CacheAction {
 /// `-f json` / `-f jsonl` switch every subcommand to machine-readable output.
 /// `csv` has no sensible shape for a stats blob, so it — like `plain` and
 /// anything unrecognised — gets the text report.
-fn wants_json(format: &str) -> bool {
-    matches!(format.to_lowercase().as_str(), "json" | "jsonl")
+fn wants_json(format: Format) -> bool {
+    matches!(format, Format::Json | Format::Jsonl)
 }
 
 /// Run one `urx cache` subcommand and print its report to stdout.
 pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
     let admin = super::open_admin(args).await?;
-    let json = wants_json(&args.format);
+    let json = wants_json(args.format);
     let ttl = args.cache_ttl;
 
     match action {
@@ -527,7 +528,7 @@ mod tests {
         let args = Args::parse_from(["urx", "--silent", "example.com", "-f", "json"]);
         assert!(args.command.is_none());
         assert_eq!(args.domains, ["example.com"]);
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, Format::Json);
 
         // --files input names no domain and must not look like a subcommand.
         let args = Args::parse_from(["urx", "--files", "urls.txt"]);
@@ -644,13 +645,11 @@ mod tests {
 
     #[test]
     fn json_is_opt_in_via_the_existing_format_flag() {
-        assert!(wants_json("json"));
-        assert!(wants_json("jsonl"));
-        assert!(wants_json("JSON"));
+        assert!(wants_json(Format::Json));
+        assert!(wants_json(Format::Jsonl));
         // csv has no shape for a stats blob; plain text is the honest fallback.
-        assert!(!wants_json("csv"));
-        assert!(!wants_json("plain"));
-        assert!(!wants_json("nonsense"));
+        assert!(!wants_json(Format::Csv));
+        assert!(!wants_json(Format::Plain));
     }
 
     #[test]

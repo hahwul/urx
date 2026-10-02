@@ -355,7 +355,7 @@ pub async fn process_domains(
     // --parallel bounds how many of a provider's domains are fetched at once.
     // The shared per-provider rate limiter (stored in the provider and cloned
     // per domain) keeps --rate-limit honest across these concurrent fetches.
-    let parallel = args.parallel.unwrap_or(5).max(1) as usize;
+    let parallel = args.parallel.max(1) as usize;
 
     // Per-provider bookkeeping the *outer* task needs after an abort: how many
     // domains each provider actually got through, and whether it ran to
@@ -1106,7 +1106,7 @@ mod tests {
             .collect();
 
         let mut args = build_test_args();
-        args.parallel = Some(5);
+        args.parallel = 5;
 
         let start = std::time::Instant::now();
         let _ = process_domains(
@@ -1146,7 +1146,7 @@ mod tests {
             .collect();
 
         let mut args = build_test_args();
-        args.parallel = Some(1);
+        args.parallel = 1;
 
         let start = std::time::Instant::now();
         let _ = process_domains(
@@ -1199,7 +1199,7 @@ mod tests {
                 UrlFilter::new(),
                 UrlTransformer::new(),
                 None,
-                "plain",
+                output::Format::Plain,
                 Box::new(buf.clone()),
             )
             .unwrap(),
@@ -1276,7 +1276,7 @@ mod tests {
                 UrlFilter::new(),
                 UrlTransformer::new(),
                 None,
-                "plain",
+                output::Format::Plain,
                 Box::new(Sink),
             )
             .unwrap(),
@@ -1438,7 +1438,7 @@ mod tests {
             NetworkScope::Testers,
         ] {
             let mut settings = settings.clone();
-            settings.scope = scope.clone();
+            settings.scope = scope;
             let mut provider = SubdomainRecordingProvider::default();
             apply_network_settings_to_provider(&mut provider, &settings);
             assert!(

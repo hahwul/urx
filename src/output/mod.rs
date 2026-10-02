@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_create_outputter_json() {
-        let outputter = Format::parse("json");
+        let outputter = Format::Json;
         // Checks the output of the format method
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(
@@ -117,39 +117,16 @@ mod tests {
 
     #[test]
     fn test_create_outputter_csv() {
-        let outputter = Format::parse("csv");
+        let outputter = Format::Csv;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
     }
 
     #[test]
     fn test_create_outputter_plain() {
-        let outputter = Format::parse("plain");
+        let outputter = Format::Plain;
         let url_data = UrlData::new("https://example.com".to_string());
         assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
-    }
-
-    #[test]
-    fn test_create_outputter_default_for_unknown() {
-        let outputter = Format::parse("unknown");
-        let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
-    }
-
-    #[test]
-    fn test_create_outputter_case_insensitive() {
-        let json_outputter = Format::parse("JSON");
-        let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(
-            json_outputter.format(&url_data, false),
-            "{\"url\":\"https://example.com\"},"
-        );
-
-        let csv_outputter = Format::parse("CSV");
-        assert_eq!(
-            csv_outputter.format(&url_data, false),
-            "https://example.com\n"
-        );
     }
 
     #[test]
@@ -198,14 +175,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_outputter_empty_format() {
-        let outputter = Format::parse("");
-        let url_data = UrlData::new("https://example.com".to_string());
-        // Empty format should default to plain
-        assert_eq!(outputter.format(&url_data, false), "https://example.com\n");
-    }
-
-    #[test]
     fn test_has_response_meta_tracks_each_field() {
         assert!(!UrlData::new("https://example.com".to_string()).has_response_meta());
         for set in [
@@ -224,18 +193,8 @@ mod tests {
 
     #[test]
     fn test_create_outputter_wordlist() {
-        let outputter = Format::parse("wordlist");
+        let outputter = Format::Wordlist;
         let url_data = UrlData::new("https://example.com/admin".to_string());
         assert_eq!(outputter.format(&url_data, false), "admin\n");
-    }
-
-    #[test]
-    fn test_create_outputter_mixed_case() {
-        let outputter = Format::parse("JsOn");
-        let url_data = UrlData::new("https://example.com".to_string());
-        assert_eq!(
-            outputter.format(&url_data, false),
-            "{\"url\":\"https://example.com\"},"
-        );
     }
 }

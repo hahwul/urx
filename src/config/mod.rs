@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use serde::Deserialize;
 use std::env;
 use std::fs;
@@ -323,18 +324,6 @@ pub struct CacheConfig {
     pub unknown: UnknownKeys,
 }
 
-fn normalize_output_format(format: &str) -> Option<String> {
-    match format.trim().to_ascii_lowercase().as_str() {
-        "plain" => Some("plain".to_string()),
-        "json" => Some("json".to_string()),
-        "jsonl" => Some("jsonl".to_string()),
-        "csv" => Some("csv".to_string()),
-        // --- output-views ---
-        "wordlist" => Some("wordlist".to_string()),
-        _ => None,
-    }
-}
-
 /// A single string or a list of them, so `url = "..."` and `url = ["..."]`
 /// both read naturally.
 #[derive(Debug, Deserialize, Clone)]
@@ -365,16 +354,6 @@ pub struct NotifyConfig {
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
-}
-
-fn normalize_network_scope(scope: &str) -> Option<String> {
-    match scope.trim().to_ascii_lowercase().as_str() {
-        "all" => Some("all".to_string()),
-        "providers" => Some("providers".to_string()),
-        "testers" => Some("testers".to_string()),
-        "providers,testers" | "testers,providers" => Some("providers,testers".to_string()),
-        _ => None,
-    }
 }
 
 impl Config {
@@ -487,14 +466,9 @@ impl Config {
         args.output.fill(&o.output.as_ref().map(PathBuf::from));
 
         if !provided.has("format") {
-            if let Some(format) = &o.format {
-                if let Some(format) = normalize_output_format(format) {
-                    args.format = format;
-                } else if !args.silent {
-                    eprintln!(
-                        "Ignoring [output].format={format:?} in config: expected plain, json, jsonl, csv, or wordlist"
-                    );
-                }
+            let expected = "plain, json, jsonl, csv, or wordlist";
+            if let Some(v) = parse_enum(&o.format, "[output].format", expected, args.silent) {
+                args.format = v;
             }
         }
 
@@ -530,11 +504,10 @@ impl Config {
 
         // An empty string is the documented "unset" spelling, same as `from`.
         if args.cdx_dialect.is_none() {
-            if let Some(dialect) = p.cdx_dialect.as_deref().map(str::trim) {
-                if !dialect.is_empty() {
-                    args.cdx_dialect = Some(dialect.to_string());
-                }
-            }
+            let dialect = p.cdx_dialect.clone().filter(|d| !d.trim().is_empty());
+            let expected = "classic or pywb";
+            args.cdx_dialect =
+                parse_enum(&dialect, "[provider].cdx_dialect", expected, args.silent);
         }
 
         // Archive-side CDX predicates.
@@ -646,14 +619,12 @@ impl Config {
 
         // [network]
         if !provided.has("network_scope") {
-            if let Some(network_scope) = &n.network_scope {
-                if let Some(network_scope) = normalize_network_scope(network_scope) {
-                    args.network_scope = network_scope;
-                } else if !args.silent {
-                    eprintln!(
-                        "Ignoring [network].network_scope={network_scope:?} in config: expected all, providers, testers, or providers,testers"
-                    );
-                }
+            let (key, expected) = (
+                "[network].network_scope",
+                "all, providers, testers, or providers,testers",
+            );
+            if let Some(v) = parse_enum(&n.network_scope, key, expected, args.silent) {
+                args.network_scope = v;
             }
         }
 
@@ -686,7 +657,7 @@ impl Config {
         if !provided.has("parallel") {
             if let Some(parallel) = n.parallel {
                 if parallel > 0 {
-                    args.parallel = Some(parallel);
+                    args.parallel = parallel;
                 } else if !args.silent {
                     eprintln!("Ignoring [network].parallel=0 in config: value must be at least 1");
                 }
@@ -728,21 +699,10 @@ impl Config {
         args.incremental.fill(&c.incremental);
 
         if !provided.has("cache_type") {
-            if let Some(cache_type) = &c.cache_type {
-                // Mirrors how [output].format and [network].network_scope are
-                // handled: name the bad value at the point it was read, rather
-                // than failing later with an error that doesn't mention the
-                // config file at all.
-                match cache_type.trim().to_ascii_lowercase().as_str() {
-                    valid @ ("sqlite" | "redis") => args.cache_type = valid.to_string(),
-                    _ => {
-                        if !args.silent {
-                            eprintln!(
-                                "Ignoring [cache].cache_type={cache_type:?} in config: expected sqlite or redis"
-                            );
-                        }
-                    }
-                }
+            let expected = "sqlite or redis";
+            if let Some(v) = parse_enum(&c.cache_type, "[cache].cache_type", expected, args.silent)
+            {
+                args.cache_type = v;
             }
         }
 
@@ -771,39 +731,39 @@ impl Config {
             }
         }
 
+        let notify = &self.notify;
         if !provided.has("notify_on") {
-            if let Some(on) = &self.notify.on {
-                match <crate::notify::NotifyOn as clap::ValueEnum>::from_str(on.trim(), true) {
-                    Ok(value) => args.notify_on = value,
-                    Err(_) => {
-                        if !args.silent {
-                            eprintln!(
-                                "Ignoring [notify].on={on:?} in config: expected always, new, or never"
-                            );
-                        }
-                    }
-                }
+            let expected = "always, new, or never";
+            if let Some(v) = parse_enum(&notify.on, "[notify].on", expected, args.silent) {
+                args.notify_on = v;
             }
         }
 
         if !provided.has("notify_format") {
-            if let Some(format) = &self.notify.format {
-                match <crate::notify::NotifyFormat as clap::ValueEnum>::from_str(
-                    format.trim(),
-                    true,
-                ) {
-                    Ok(value) => args.notify_format = value,
-                    Err(_) => {
-                        if !args.silent {
-                            eprintln!(
-                                "Ignoring [notify].format={format:?} in config: expected slack, discord, or json"
-                            );
-                        }
-                    }
-                }
+            let expected = "slack, discord, or json";
+            if let Some(v) = parse_enum(&notify.format, "[notify].format", expected, args.silent) {
+                args.notify_format = v;
             }
         }
     }
+}
+
+/// Parse a configured value of a `--flag` enum the way clap would, ignoring
+/// case. A bad value is named at the point it was read — with the config key
+/// it came from — and ignored, rather than failing later with an error that
+/// doesn't mention the config file at all.
+fn parse_enum<T: ValueEnum>(
+    raw: &Option<String>,
+    key: &str,
+    expected: &str,
+    silent: bool,
+) -> Option<T> {
+    let raw = raw.as_ref()?;
+    let parsed = T::from_str(raw.trim(), true).ok();
+    if parsed.is_none() && !silent {
+        eprintln!("Ignoring {key}={raw:?} in config: expected {expected}");
+    }
+    parsed
 }
 
 /// Fill a CLI slot from the config file only when the CLI left it empty,
@@ -856,6 +816,7 @@ fn urx_config_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::cli::parse_args_from;
+    use crate::{cache::CacheType, network::NetworkScope, output::Format, providers::CdxDialect};
     use clap::Parser;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -941,7 +902,7 @@ mod tests {
         // an inline literal here was a fourth copy of the Args fixture.
         let mut args = Args::parse_from(["urx", "example.com"]);
         assert_eq!(args.output, None);
-        assert_eq!(args.format, "plain");
+        assert_eq!(args.format, Format::Plain);
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
 
         // Apply config to args
@@ -949,7 +910,7 @@ mod tests {
 
         // Verify args were updated correctly
         assert_eq!(args.output, Some(PathBuf::from("output.txt")));
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, Format::Json);
         assert_eq!(args.providers, vec!["cc"]);
     }
 
@@ -963,7 +924,7 @@ mod tests {
         config.apply_to_args(&mut args, &CliProvided::default());
 
         assert_eq!(args.timeout, 120);
-        assert_eq!(args.parallel, Some(5));
+        assert_eq!(args.parallel, 5);
     }
 
     #[test]
@@ -975,8 +936,8 @@ mod tests {
         let mut args = Args::parse_from(["urx", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
 
-        assert_eq!(args.format, "plain");
-        assert_eq!(args.network_scope, "all");
+        assert_eq!(args.format, Format::Plain);
+        assert_eq!(args.network_scope, NetworkScope::All);
     }
 
     #[test]
@@ -988,8 +949,8 @@ mod tests {
         let mut args = Args::parse_from(["urx", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
 
-        assert_eq!(args.format, "json");
-        assert_eq!(args.network_scope, "providers,testers");
+        assert_eq!(args.format, Format::Json);
+        assert_eq!(args.network_scope, NetworkScope::All);
     }
 
     #[test]
@@ -1069,7 +1030,7 @@ mod tests {
             args.cdx_endpoint,
             vec!["https://vefsafn.is/cdx", "http://localhost:8080/cdx"]
         );
-        assert_eq!(args.cdx_dialect.as_deref(), Some("classic"));
+        assert_eq!(args.cdx_dialect, Some(CdxDialect::Classic));
 
         // The CLI wins over the file.
         let config: Config = toml::from_str(toml_src).unwrap();
@@ -1083,7 +1044,7 @@ mod tests {
         ]);
         config.apply_to_args(&mut args, &CliProvided::default());
         assert_eq!(args.cdx_endpoint, vec!["https://example.org/cdx"]);
-        assert_eq!(args.cdx_dialect.as_deref(), Some("pywb"));
+        assert_eq!(args.cdx_dialect, Some(CdxDialect::Pywb));
 
         // An empty dialect string, as in the documented template, is unset.
         let config: Config = toml::from_str("[provider]\ncdx_dialect = \"\"").unwrap();
@@ -1154,14 +1115,18 @@ mod tests {
         config.cache.cache_type = Some("postgres".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
-        assert_eq!(args.cache_type, "sqlite", "invalid value must be ignored");
+        assert_eq!(
+            args.cache_type,
+            CacheType::Sqlite,
+            "invalid value must be ignored"
+        );
 
         // A valid value still applies, case-insensitively.
         let mut config = Config::default();
         config.cache.cache_type = Some("Redis".to_string());
         let mut args = <Args as clap::Parser>::parse_from(["urx", "--silent", "example.com"]);
         config.apply_to_args(&mut args, &CliProvided::default());
-        assert_eq!(args.cache_type, "redis");
+        assert_eq!(args.cache_type, CacheType::Redis);
     }
 
     #[test]
@@ -1298,14 +1263,14 @@ mod tests {
             .unwrap()
             .apply_to_args(&mut args, &provided);
 
-        assert_eq!(args.format, "plain");
+        assert_eq!(args.format, Format::Plain);
         assert_eq!(args.providers, vec!["wayback", "cc", "otx"]);
         assert_eq!(args.cc_index, vec!["latest"]);
-        assert_eq!(args.network_scope, "all");
+        assert_eq!(args.network_scope, NetworkScope::All);
         assert_eq!(args.timeout, 120);
         assert_eq!(args.retries, 2);
-        assert_eq!(args.parallel, Some(5));
-        assert_eq!(args.cache_type, "sqlite");
+        assert_eq!(args.parallel, 5);
+        assert_eq!(args.cache_type, CacheType::Sqlite);
         assert_eq!(args.cache_ttl, 86400);
     }
 
@@ -1337,14 +1302,14 @@ mod tests {
             .unwrap()
             .apply_to_args(&mut args, &provided);
 
-        assert_eq!(args.format, "json");
+        assert_eq!(args.format, Format::Json);
         assert_eq!(args.providers, vec!["arquivo"]);
         assert_eq!(args.cc_index, vec!["CC-MAIN-2020-05"]);
-        assert_eq!(args.network_scope, "testers");
+        assert_eq!(args.network_scope, NetworkScope::Testers);
         assert_eq!(args.timeout, 30);
         assert_eq!(args.retries, 9);
-        assert_eq!(args.parallel, Some(2));
-        assert_eq!(args.cache_type, "redis");
+        assert_eq!(args.parallel, 2);
+        assert_eq!(args.cache_type, CacheType::Redis);
         assert_eq!(args.cache_ttl, 60);
     }
 

@@ -293,7 +293,10 @@ fn attach_capture_meta(final_urls: &mut [output::UrlData], run_result: &Provider
 /// Write the result set to stdout or `--output`, and to `--output-dir` when set.
 fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     let mut errors = Vec::new();
-    match output::Format::parse(&args.format).output(final_urls, args.output.clone(), args.silent) {
+    match args
+        .format
+        .output(final_urls, args.output.clone(), args.silent)
+    {
         Ok(()) => {
             if let Some(path) = &args.output {
                 verbose_print(args, format!("Results written to: {}", path.display()));
@@ -312,7 +315,7 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     }
 
     if let Some(dir) = &args.output_dir {
-        match write_per_domain_output(final_urls, dir, &args.format, args.silent) {
+        match write_per_domain_output(final_urls, dir, args.format, args.silent) {
             Ok(()) => verbose_print(
                 args,
                 format!("Per-domain results written under: {}", dir.display()),

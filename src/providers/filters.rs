@@ -27,13 +27,16 @@
 
 /// Which CDX implementation a provider's index server runs. See the module
 /// docs — these are not interchangeable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variants carry `//` rather than doc comments so `--cdx-dialect`'s help
+/// keeps its one-line list of values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum CdxDialect {
-    /// The classic Internet Archive CDX server: `statuscode`/`mimetype`, and
-    /// values are treated as regular expressions.
+    // The classic Internet Archive CDX server: `statuscode`/`mimetype`, and
+    // values are treated as regular expressions.
     Classic,
-    /// pywb-derived index servers: `status`/`mime`, and values must match the
-    /// captured field exactly.
+    // pywb-derived index servers: `status`/`mime`, and values must match the
+    // captured field exactly.
     Pywb,
 }
 

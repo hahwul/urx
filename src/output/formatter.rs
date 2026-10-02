@@ -57,34 +57,25 @@ impl<'a> JsonUrlEntry<'a> {
 }
 
 /// An output format, chosen by `--format`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variants carry `//` rather than doc comments: clap would otherwise turn them
+/// into a per-value list in `--help`, which the flag's own help already gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
-    /// One URL per line; any unrecognised `--format` value lands here.
+    // One URL per line.
     Plain,
-    /// A single JSON array of entries.
+    // A single JSON array of entries.
     Json,
-    /// JSON Lines: one independent JSON object per line.
+    // JSON Lines: one independent JSON object per line.
     Jsonl,
-    /// CSV with a `url` column plus whichever optional columns are populated.
+    // CSV with a `url` column plus whichever optional columns are populated.
     Csv,
-    /// The path segments and parameter names the URLs are built from,
-    /// deduplicated across the run, one term per line.
+    // The path segments and parameter names the URLs are built from,
+    // deduplicated across the run, one term per line.
     Wordlist,
 }
 
 impl Format {
-    /// The format named by `--format`, case-insensitively. Anything unknown is
-    /// plain text.
-    pub fn parse(format: &str) -> Self {
-        match format.to_lowercase().as_str() {
-            "json" => Format::Json,
-            "jsonl" => Format::Jsonl,
-            "csv" => Format::Csv,
-            "wordlist" => Format::Wordlist,
-            _ => Format::Plain,
-        }
-    }
-
     /// Format one entry on its own.
     ///
     /// `is_last` matters only to JSON, whose entries are comma-separated.

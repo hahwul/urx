@@ -19,6 +19,14 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// `--cache-type`: the backend that holds the cache. `redis` is always
+/// accepted and reports at run time when it was not compiled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CacheType {
+    Sqlite,
+    Redis,
+}
+
 /// Where the SQLite cache lives when `--cache-path` / `[cache].cache_path`
 /// say nothing.
 pub fn default_sqlite_path() -> PathBuf {
@@ -33,8 +41,8 @@ pub fn default_sqlite_path() -> PathBuf {
 /// because `--no-cache` is irrelevant here: it turns caching off for a *scan*,
 /// while `urx cache` is asking about the store itself.
 pub async fn open_admin(args: &crate::cli::Args) -> Result<Box<dyn CacheAdmin>> {
-    match args.cache_type.as_str() {
-        "sqlite" => {
+    match args.cache_type {
+        CacheType::Sqlite => {
             let path = args.cache_path.clone().unwrap_or_else(default_sqlite_path);
             // Looking at the cache must not create one — see [`MissingCache`].
             if !path.exists() {
@@ -45,17 +53,16 @@ pub async fn open_admin(args: &crate::cli::Args) -> Result<Box<dyn CacheAdmin>> 
             Ok(Box::new(SqliteCache::new(path).await?))
         }
         #[cfg(feature = "redis-cache")]
-        "redis" => {
+        CacheType::Redis => {
             let Some(redis_url) = &args.redis_url else {
                 anyhow::bail!("Redis cache type selected but no --redis-url provided");
             };
             Ok(Box::new(RedisCache::new(redis_url).await?))
         }
         #[cfg(not(feature = "redis-cache"))]
-        "redis" => anyhow::bail!(
+        CacheType::Redis => anyhow::bail!(
             "Redis cache support is not compiled in. Rebuild with `--features redis-cache`, or use --cache-type sqlite."
         ),
-        other => anyhow::bail!("Unknown cache type '{other}'. Use 'sqlite' or 'redis'"),
     }
 }
 

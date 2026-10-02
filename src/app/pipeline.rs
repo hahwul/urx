@@ -676,8 +676,8 @@ pub fn validate_stream_options(args: &Args) -> Result<()> {
         anyhow::bail!("--stream cannot be combined with:\n{detail}");
     }
 
-    if !output::format_supports_streaming(&args.format) {
-        anyhow::bail!(output::streaming_format_error(&args.format));
+    if !output::format_supports_streaming(args.format) {
+        anyhow::bail!(output::streaming_format_error(args.format));
     }
 
     Ok(())
@@ -715,7 +715,7 @@ pub fn build_stream_sink(
         // there is nothing to enforce — no target, or `--no-strict` with no
         // path scope among the resolved targets.
         build_host_validator(args, domains),
-        &args.format,
+        args.format,
         writer,
     )?)))
 }
@@ -792,8 +792,8 @@ fn param_view(args: &Args) -> ParamView {
 pub fn wants_meta(args: &Args) -> bool {
     args.show_meta
         || matches!(
-            args.format.to_lowercase().as_str(),
-            "json" | "jsonl" | "csv"
+            args.format,
+            output::Format::Json | output::Format::Jsonl | output::Format::Csv
         )
 }
 
@@ -1011,21 +1011,25 @@ mod tests {
         // that collected none is unchanged); plain text is a pipeline contract
         // and stays one bare URL per line unless --show-meta asks otherwise.
         let mut args = build_test_args();
-        args.format = "plain".to_string();
+        args.format = output::Format::Plain;
         assert!(!wants_meta(&args));
 
         args.show_meta = true;
         assert!(wants_meta(&args));
 
         args.show_meta = false;
-        for format in ["json", "jsonl", "csv", "JSON"] {
-            args.format = format.to_string();
-            assert!(wants_meta(&args), "{format}");
+        for format in [
+            output::Format::Json,
+            output::Format::Jsonl,
+            output::Format::Csv,
+        ] {
+            args.format = format;
+            assert!(wants_meta(&args), "{format:?}");
         }
 
         // A wordlist carries no per-URL fields at all, so there is nothing to
         // populate them for.
-        args.format = "wordlist".to_string();
+        args.format = output::Format::Wordlist;
         assert!(!wants_meta(&args));
     }
 

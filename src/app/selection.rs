@@ -41,15 +41,6 @@ fn is_cdx_provider(id: &str) -> bool {
     CDX_PROVIDERS.contains(&id) || is_cdx_endpoint_id(id)
 }
 
-/// The dialect `--cdx-dialect` named, if any. Validated by clap, so a value
-/// that fails to parse here is a programming error rather than user input.
-fn requested_cdx_dialect(args: &Args) -> Result<Option<CdxDialect>> {
-    args.cdx_dialect
-        .as_deref()
-        .map(|d| d.parse::<CdxDialect>().map_err(anyhow::Error::msg))
-        .transpose()
-}
-
 /// Whether `id` matches filter values exactly (pywb semantics). A
 /// `--cdx-endpoint` provider counts unless the user named the classic dialect:
 /// undeclared, it is probed at fetch time and defaults to pywb, so the warning
@@ -186,11 +177,10 @@ fn warn_about_inert_archive_filters(
     // and AND repeated filters together, so "200 or 301" is unsatisfiable
     // there. urx drops such a filter for those providers instead of sending a
     // query that would come back empty and read as "the archive has nothing".
-    let requested_dialect = requested_cdx_dialect(args).ok().flatten();
     let affected: Vec<&str> = providers_list
         .iter()
         .map(String::as_str)
-        .filter(|p| is_pywb_provider(p, requested_dialect))
+        .filter(|p| is_pywb_provider(p, args.cdx_dialect))
         .collect();
     if affected.is_empty() {
         return;
@@ -341,7 +331,7 @@ pub fn initialize_providers(
     // User-supplied CDX servers run right after the built-in archives. Each
     // endpoint is its own instance (its own stats row, rate limit and dialect
     // probe), labelled by the `cdx:<host>` id it answers to on the flags.
-    let cdx_dialect = requested_cdx_dialect(args)?;
+    let cdx_dialect = args.cdx_dialect;
     for (id, endpoint) in cdx_endpoints(args)? {
         if !enabled.contains(id.as_str()) {
             continue;
@@ -792,10 +782,7 @@ mod tests {
             "classic",
             "example.com",
         ]);
-        assert_eq!(
-            requested_cdx_dialect(&args).unwrap(),
-            Some(CdxDialect::Classic)
-        );
+        assert_eq!(args.cdx_dialect, Some(CdxDialect::Classic));
         // Classic endpoints take a regex OR list; only pywb ones are warned
         // about.
         assert!(!is_pywb_provider(

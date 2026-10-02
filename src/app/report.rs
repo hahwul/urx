@@ -113,15 +113,13 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
     }
 }
 
-/// Best-effort filename extension matching `--format`. Anything other than
-/// json/jsonl/csv falls back to `.txt`, mirroring how `Format::parse` treats
-/// unknown formats as plain text.
-pub fn output_dir_extension(format: &str) -> &'static str {
-    match format.to_lowercase().as_str() {
-        "json" => "json",
-        "jsonl" => "jsonl",
-        "csv" => "csv",
-        _ => "txt",
+/// Filename extension matching `--format`; plain and wordlist are `.txt`.
+pub fn output_dir_extension(format: output::Format) -> &'static str {
+    match format {
+        output::Format::Json => "json",
+        output::Format::Jsonl => "jsonl",
+        output::Format::Csv => "csv",
+        output::Format::Plain | output::Format::Wordlist => "txt",
     }
 }
 
@@ -131,7 +129,7 @@ pub fn output_dir_extension(format: &str) -> &'static str {
 pub fn write_per_domain_output(
     urls: &[UrlData],
     dir: &Path,
-    format: &str,
+    format: output::Format,
     silent: bool,
 ) -> anyhow::Result<()> {
     if !dir.exists() {
@@ -147,11 +145,10 @@ pub fn write_per_domain_output(
         grouped.entry(host).or_default().push(entry.clone());
     }
 
-    let fmt = output::Format::parse(format);
     let ext = output_dir_extension(format);
 
     for (host, entries) in &grouped {
-        fmt.output(entries, Some(dir.join(format!("{host}.{ext}"))), silent)?;
+        format.output(entries, Some(dir.join(format!("{host}.{ext}"))), silent)?;
     }
     Ok(())
 }
@@ -231,12 +228,12 @@ mod tests {
 
     #[test]
     fn test_output_dir_extension() {
-        assert_eq!(output_dir_extension("json"), "json");
-        assert_eq!(output_dir_extension("JSON"), "json");
-        assert_eq!(output_dir_extension("jsonl"), "jsonl");
-        assert_eq!(output_dir_extension("csv"), "csv");
-        assert_eq!(output_dir_extension("plain"), "txt");
-        assert_eq!(output_dir_extension("anything-else"), "txt");
+        use output::Format;
+        assert_eq!(output_dir_extension(Format::Json), "json");
+        assert_eq!(output_dir_extension(Format::Jsonl), "jsonl");
+        assert_eq!(output_dir_extension(Format::Csv), "csv");
+        assert_eq!(output_dir_extension(Format::Plain), "txt");
+        assert_eq!(output_dir_extension(Format::Wordlist), "txt");
     }
 
     #[test]
@@ -249,7 +246,7 @@ mod tests {
             UrlData::new("not-a-url".to_string()),
         ];
 
-        write_per_domain_output(&urls, dir.path(), "plain", true)?;
+        write_per_domain_output(&urls, dir.path(), output::Format::Plain, true)?;
 
         let example = std::fs::read_to_string(dir.path().join("example.com.txt"))?;
         assert!(example.contains("https://example.com/a"));
@@ -270,7 +267,7 @@ mod tests {
         let nested = base.path().join("nested/output/dir");
         let urls = vec![UrlData::new("https://example.com/a".to_string())];
 
-        write_per_domain_output(&urls, &nested, "json", true)?;
+        write_per_domain_output(&urls, &nested, output::Format::Json, true)?;
 
         assert!(nested.is_dir());
         let example = std::fs::read_to_string(nested.join("example.com.json"))?;
