@@ -113,15 +113,11 @@ impl UrlFilter {
     pub fn apply_presets(&mut self, presets: &[String]) -> &mut Self {
         for preset_str in presets {
             if let Some(preset) = FilterPreset::from_str(preset_str) {
-                // Merge preset extensions/patterns with existing ones
+                // Merge preset extensions with existing ones
                 self.extensions
                     .extend(normalize_extensions(preset.get_extensions()));
                 self.exclude_extensions
                     .extend(normalize_extensions(preset.get_exclude_extensions()));
-                self.patterns
-                    .extend(normalize_patterns(preset.get_patterns()));
-                self.exclude_patterns
-                    .extend(normalize_patterns(preset.get_exclude_patterns()));
                 self.path_rules.extend(preset.get_path_rules());
             }
         }
