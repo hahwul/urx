@@ -282,10 +282,7 @@ async fn run_testers(
 fn attach_sources(final_urls: &mut [output::UrlData], run_result: &ProviderRunResult) {
     for entry in final_urls.iter_mut() {
         if let Some(found) = run_result.urls.get(&entry.url) {
-            let mut sources: Vec<String> = found.sources.iter().cloned().collect();
-            sources.sort();
-            sources.dedup();
-            entry.sources = sources;
+            *entry = std::mem::take(entry).with_sources(found.sources.iter().cloned().collect());
         }
     }
 }
@@ -767,8 +764,8 @@ mod tests {
     /// the API-key variables.
     #[test]
     fn notify_url_env_var_fills_only_an_empty_flag() {
-        use crate::test_support::{env_mutex, EnvGuard};
-        let _lock = env_mutex().lock().unwrap();
+        use crate::test_support::{EnvGuard, ENV};
+        let _lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[(
             "URX_NOTIFY_URL",
             "https://hooks.example/env1, https://hooks.example/env2,",

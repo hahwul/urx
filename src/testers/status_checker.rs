@@ -8,6 +8,7 @@ use tokio::sync::OnceCell;
 
 use super::shared::send;
 use super::Tester;
+use crate::filters::status_matches_pattern;
 use crate::network::NetConfig;
 use crate::output::UrlData;
 
@@ -83,45 +84,18 @@ impl StatusChecker {
             .await
     }
 
-    /// Checks if a status code matches a pattern
-    /// Patterns can be exact (e.g., "200") or wildcard (e.g., "20x", "3xx")
-    fn status_matches_pattern(&self, status_code: u16, pattern: &str) -> bool {
-        if pattern.contains('x') || pattern.contains('X') {
-            let status_str = status_code.to_string();
-            let pattern = pattern.to_lowercase();
-
-            if status_str.len() != pattern.len() {
-                return false;
-            }
-
-            for (s, p) in status_str.chars().zip(pattern.chars()) {
-                if p != 'x' && p != s {
-                    return false;
-                }
-            }
-
-            true
-        } else {
-            // Exact match
-            if let Ok(pattern_code) = pattern.parse::<u16>() {
-                status_code == pattern_code
-            } else {
-                false
-            }
-        }
-    }
-
     /// Checks if a status code matches any pattern in the given patterns vector
     fn matches_any_pattern(&self, status_code: u16, patterns: &[String]) -> bool {
         if patterns.is_empty() {
             return false;
         }
 
+        let status_code = status_code.to_string();
         patterns.iter().any(|pattern| {
             // Split the pattern by commas and check if any subpattern matches
             pattern
                 .split(',')
-                .any(|subpattern| self.status_matches_pattern(status_code, subpattern.trim()))
+                .any(|subpattern| status_matches_pattern(&status_code, subpattern.trim()))
         })
     }
 
@@ -321,46 +295,42 @@ mod tests {
 
     #[test]
     fn test_status_matches_pattern() {
-        let checker = StatusChecker::new();
-
         // Exact match test
-        assert!(checker.status_matches_pattern(200, "200"));
-        assert!(!checker.status_matches_pattern(200, "404"));
+        assert!(status_matches_pattern("200", "200"));
+        assert!(!status_matches_pattern("200", "404"));
 
         // Wildcard match test
-        assert!(checker.status_matches_pattern(200, "2xx"));
-        assert!(checker.status_matches_pattern(200, "20x"));
-        assert!(checker.status_matches_pattern(201, "20x"));
-        assert!(checker.status_matches_pattern(404, "4xx"));
-        assert!(!checker.status_matches_pattern(200, "3xx"));
-        assert!(!checker.status_matches_pattern(200, "4xx"));
+        assert!(status_matches_pattern("200", "2xx"));
+        assert!(status_matches_pattern("200", "20x"));
+        assert!(status_matches_pattern("201", "20x"));
+        assert!(status_matches_pattern("404", "4xx"));
+        assert!(!status_matches_pattern("200", "3xx"));
+        assert!(!status_matches_pattern("200", "4xx"));
 
         // Case insensitivity test
-        assert!(checker.status_matches_pattern(200, "2XX"));
-        assert!(checker.status_matches_pattern(404, "4XX"));
+        assert!(status_matches_pattern("200", "2XX"));
+        assert!(status_matches_pattern("404", "4XX"));
     }
 
     #[test]
     fn test_status_matches_pattern_edge_cases() {
-        let checker = StatusChecker::new();
-
         // Wrong length with wildcard
-        assert!(!checker.status_matches_pattern(200, "2x"));
-        assert!(!checker.status_matches_pattern(200, "2xxx"));
-        assert!(!checker.status_matches_pattern(200, "x"));
+        assert!(!status_matches_pattern("200", "2x"));
+        assert!(!status_matches_pattern("200", "2xxx"));
+        assert!(!status_matches_pattern("200", "x"));
 
         // Non-numeric characters in exact match
-        assert!(!checker.status_matches_pattern(200, "20a"));
-        assert!(!checker.status_matches_pattern(200, "abc"));
-        assert!(!checker.status_matches_pattern(200, ""));
+        assert!(!status_matches_pattern("200", "20a"));
+        assert!(!status_matches_pattern("200", "abc"));
+        assert!(!status_matches_pattern("200", ""));
 
         // Non-numeric characters in wildcard patterns
-        assert!(!checker.status_matches_pattern(200, "2ax"));
-        assert!(!checker.status_matches_pattern(200, "abx"));
+        assert!(!status_matches_pattern("200", "2ax"));
+        assert!(!status_matches_pattern("200", "abx"));
 
         // Special chars
-        assert!(!checker.status_matches_pattern(200, "20!"));
-        assert!(!checker.status_matches_pattern(200, "2!x"));
+        assert!(!status_matches_pattern("200", "20!"));
+        assert!(!status_matches_pattern("200", "2!x"));
     }
 
     #[test]

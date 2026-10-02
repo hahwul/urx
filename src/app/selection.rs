@@ -430,7 +430,7 @@ pub fn initialize_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{build_test_args, env_mutex, EnvGuard};
+    use crate::test_support::{build_test_args, EnvGuard, ENV};
     use clap::Parser;
 
     /// The keyed providers' environment variables, cleared so a developer's
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn test_initialize_providers_errors_when_nothing_was_selected() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -591,7 +591,7 @@ mod tests {
     fn test_initialize_providers_enables_urlscan_without_api_key() {
         // urlscan is keyless: requesting it with no API key must still
         // instantiate the provider (regression guard for the removed key gate).
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&["URX_URLSCAN_API_KEY"]);
 
         let mut args = build_test_args();
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_initialize_providers_skips_keyed_provider_without_a_key() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_initialize_providers_builds_one_instance_per_cc_index() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -638,7 +638,7 @@ mod tests {
         // --all-providers with no keys must enable every keyless provider
         // (including arquivo and the now-keyless urlscan) while keeping the
         // keyed providers disabled.
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_bevigil_is_keyed_like_the_other_keyed_providers() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         // Requested without a key: skipped (the message goes to stderr).
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_exclude_providers_wins_over_auto_enable() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "some-key")]);
 
         let mut args = build_test_args();
@@ -711,7 +711,7 @@ mod tests {
         // `--providers "wayback, cc"` failed with
         // "Unknown provider id(s) in --providers:  cc. Allowed values: ..., cc, ..."
         // — an error naming the very value it rejected.
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let args = Args::parse_from([
@@ -749,7 +749,7 @@ mod tests {
         // by `main`, so a failing run showed it twice — and `--silent`
         // suppressed the copy that carried the list of valid ids, leaving only
         // the bare "No valid providers specified".
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_cdx_endpoints_join_the_selection_by_being_named() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn test_archived_discovery_adds_an_archived_instance_beside_each_live_one() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_robots_and_sitemap_join_only_when_requested() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&KEYED_ENV);
 
         let mut args = build_test_args();

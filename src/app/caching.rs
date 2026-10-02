@@ -253,7 +253,7 @@ mod tests {
     use super::*;
     use crate::app::keys::KEYED_PROVIDER_IDS;
     use crate::cache;
-    use crate::test_support::{build_test_args, env_mutex, EnvGuard, MockProvider};
+    use crate::test_support::{build_test_args, EnvGuard, MockProvider, ENV};
 
     struct FailingCacheBackend;
 
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_cache_key_uses_effective_provider_ids() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "env-vt")]);
         let _unset = EnvGuard::unset(&[
             "URX_URLSCAN_API_KEY",
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_cache_key_changes_with_archive_scope() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&[
             "URX_VT_API_KEY",
             "URX_URLSCAN_API_KEY",

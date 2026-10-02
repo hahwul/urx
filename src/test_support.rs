@@ -26,10 +26,7 @@ pub fn plain(s: &str) -> String {
 
 /// Serializes tests that mutate environment variables. `std::env::set_var` is
 /// process-wide, so without this the parallel test threads race each other.
-pub fn env_mutex() -> &'static Mutex<()> {
-    static INSTANCE: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
-    INSTANCE.get_or_init(|| Mutex::new(()))
-}
+pub static ENV: Mutex<()> = Mutex::new(());
 
 /// Save the current values of `vars`, clear them, and restore them on drop.
 ///

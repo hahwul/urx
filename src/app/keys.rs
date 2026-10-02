@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     use crate::cli::CliProvided;
     use crate::config::{self, Config};
-    use crate::test_support::{env_mutex, EnvGuard};
+    use crate::test_support::{EnvGuard, ENV};
     use clap::Parser;
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_auto_enable_providers_with_env_vars() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[
             ("URX_VT_API_KEY", "test_vt_key"),
             ("URX_URLSCAN_API_KEY", "test_urlscan_key"),
@@ -209,7 +209,7 @@ mod tests {
         let result = parse_api_keys(cli_keys, "NONEXISTENT_ENV_VAR");
         assert_eq!(result, vec!["key1", "key2"]);
 
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
 
         // Environment keys only, with surrounding whitespace trimmed
         let _guard = EnvGuard::set(&[("TEST_API_KEYS", "env_key1,env_key2, env_key3 ")]);
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_multiple_api_keys_integration() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&["URX_VT_API_KEY", "URX_URLSCAN_API_KEY"]);
 
         let args = Args::parse_from([
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_api_key_precedence() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "env_vt_key")]);
 
         // An explicit CLI key sorts ahead of the environment's.
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_env_api_keys_override_config_layers() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[
             ("URX_VT_API_KEY", "env-vt-1,env-vt-2"),
             ("URX_URLSCAN_API_KEY", "env-urlscan"),
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_seed_api_keys_leaves_cli_values_alone() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::set(&[("URX_VT_API_KEY", "env-vt")]);
 
         let mut args = Args::parse_from(["urx", "example.com", "--vt-api-key", "cli-vt"]);
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_seed_api_keys_reports_no_direct_source_when_environment_is_empty() {
-        let _env_lock = env_mutex().lock().unwrap();
+        let _env_lock = ENV.lock().unwrap();
         let _guard = EnvGuard::unset(&[
             "URX_VT_API_KEY",
             "URX_URLSCAN_API_KEY",

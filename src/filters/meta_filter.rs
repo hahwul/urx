@@ -53,12 +53,8 @@ use crate::providers::{normalize_cdx_timestamp, CaptureMeta};
 /// rather than a parsed `u16` because a CDX `statuscode` field is only *usually*
 /// a number; a value urx cannot parse must simply not match, not panic.
 ///
-/// This deliberately mirrors `StatusChecker::status_matches_pattern` instead of
-/// calling it: that one is a private method on the live-request tester, and the
-/// two filters are otherwise unrelated (one reads what the archive stored, the
-/// other re-requests the URL now). See the handoff note — folding them into one
-/// shared helper is worth doing once both sides are owned by the same change.
-fn status_matches_pattern(recorded: &str, pattern: &str) -> bool {
+/// `--include-status` / `--exclude-status` match the live status the same way.
+pub(crate) fn status_matches_pattern(recorded: &str, pattern: &str) -> bool {
     if recorded.len() != pattern.len() {
         return false;
     }
