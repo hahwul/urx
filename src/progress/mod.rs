@@ -16,7 +16,7 @@ pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 const BAR_FILL: &str = "━━╸─";
 
 // Modern Rail palette (truecolor hex, applied directly inside the indicatif
-// templates below). `console`/`colored` strip these automatically when stdout
+// templates below). `console` strips these automatically when stdout
 // isn't a TTY or NO_COLOR is set, so every state stays legible in monochrome.
 //
 //   #5ad1cd  accent      — rail fill, header/footer frame, Domains & Filtering

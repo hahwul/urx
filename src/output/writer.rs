@@ -82,22 +82,22 @@ impl Format {
     ) -> Result<()> {
         match output_path {
             Some(path) => {
-                // Writing to a file: suppress ANSI colour. The `colored` crate
-                // decides on color globally from stdout's TTY status, so without
+                // Writing to a file: suppress ANSI colour. `console` decides on
+                // colour globally from stdout's TTY status, so without
                 // this a run in an interactive terminal would bake escape codes
                 // into the file. Capture the current effective decision and
                 // restore *that* afterward (not blanket auto-detection), so a
                 // later stdout write keeps its colour — and a forced --no-color /
                 // NO_COLOR run stays colourless instead of being re-enabled.
-                let prev_colorize = colored::control::SHOULD_COLORIZE.should_colorize();
-                colored::control::set_override(false);
+                let prev_colorize = console::colors_enabled();
+                console::set_colors_enabled(false);
                 let result = File::create(&path)
                     .context("Failed to create output file")
                     .and_then(|mut file| {
                         self.render(urls, &mut file)
                             .context("Failed to write to output file")
                     });
-                colored::control::set_override(prev_colorize);
+                console::set_colors_enabled(prev_colorize);
                 result
             }
             None if silent => Ok(()),

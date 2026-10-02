@@ -18,8 +18,8 @@ use crate::providers::{Provider, UrlRecord};
 use crate::testers::Tester;
 
 /// Strip ANSI escapes so layout assertions hold regardless of the ambient
-/// colour state — cargo runs tests in parallel and both `colored` and
-/// `console` key off process-global toggles.
+/// colour state — cargo runs tests in parallel and `console` keys off
+/// process-global toggles.
 pub fn plain(s: &str) -> String {
     console::strip_ansi_codes(s).to_string()
 }

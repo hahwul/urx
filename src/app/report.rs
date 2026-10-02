@@ -11,15 +11,13 @@ use crate::cli::Args;
 use crate::output::{self, UrlData};
 use crate::runner::ProviderStats;
 
-/// Force-disable colour when `--no-color` or the `NO_COLOR` env var is set, for
-/// both the progress UI (`console`, used by indicatif) and the URL output
-/// (`colored`). With neither set, both keep their own TTY auto-detection.
-/// `NO_COLOR` disables on mere presence (any value, including empty), matching
-/// how `console` itself detects it (`env::var("NO_COLOR").is_ok()`), so both
-/// surfaces stay consistent.
+/// Force-disable colour when `--no-color` or the `NO_COLOR` env var is set, on
+/// both stdout (the URL output) and stderr (the progress UI). With neither set,
+/// each keeps `console`'s TTY auto-detection. `NO_COLOR` disables on mere
+/// presence (any value, including empty), matching how `console` itself
+/// detects it (`env::var("NO_COLOR").is_ok()`).
 pub fn configure_colors(args: &Args) {
     if args.no_color || std::env::var_os("NO_COLOR").is_some() {
-        colored::control::set_override(false);
         console::set_colors_enabled(false);
         console::set_colors_enabled_stderr(false);
     }
@@ -30,10 +28,10 @@ pub fn configure_colors(args: &Args) {
 /// section-label tone, then a dimmed teal rule trailing out to a fixed width. No
 /// box corners — it reads as a rule, never an unclosed frame (the header is
 /// transient and cleared when the scan ends). Padding is measured from the plain
-/// text so colour codes never enter the width math; `colored` strips the hues
+/// text so colour codes never enter the width math; `console` strips the hues
 /// automatically when colour is off.
 pub fn render_header(n_domains: usize, n_providers: usize) -> String {
-    use colored::Colorize;
+    use console::style;
     const RAIL_W: usize = 58;
     let dword = if n_domains == 1 { "domain" } else { "domains" };
     let pword = if n_providers == 1 {
@@ -48,9 +46,9 @@ pub fn render_header(n_domains: usize, n_providers: usize) -> String {
     format!(
         "{}{}{}{}",
         "  ",
-        "urx".truecolor(0x5a, 0xd1, 0xcd).bold(),
-        rest.truecolor(0xa7, 0xb6, 0xc2),
-        "─".repeat(pad).truecolor(0x5a, 0xd1, 0xcd).dimmed(),
+        style("urx").true_color(0x5a, 0xd1, 0xcd).bold(),
+        style(rest).true_color(0xa7, 0xb6, 0xc2),
+        style("─".repeat(pad)).true_color(0x5a, 0xd1, 0xcd).dim(),
     )
 }
 

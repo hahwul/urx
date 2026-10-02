@@ -705,7 +705,7 @@ pub fn build_stream_sink(
     // Colour would be baked into a redirected stream, and streamed rows carry
     // no status to colourise anyway.
     if args.output.is_some() {
-        colored::control::set_override(false);
+        console::set_colors_enabled(false);
     }
 
     Ok(Some(Arc::new(output::StreamSink::new(

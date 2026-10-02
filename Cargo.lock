@@ -2669,7 +2669,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
- "colored",
  "console",
  "flate2",
  "futures",

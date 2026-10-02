@@ -1,7 +1,7 @@
 /// Implements different URL output formatters
 use super::UrlData;
 use crate::utils::url::wordlist_terms;
-use colored::*;
+use console::style;
 use serde::Serialize;
 use std::borrow::Cow;
 
@@ -129,13 +129,13 @@ fn plain_line(url_data: &UrlData) -> String {
             let status_code_str = status.split_whitespace().next().unwrap_or("");
             let colored_status = match status_code_str.parse::<u16>() {
                 Ok(code) => match code {
-                    200..=299 => status.green(),
-                    300..=399 => status.yellow(),
-                    400..=499 => status.red(),
-                    500..=599 => status.magenta(),
-                    _ => status.normal(),
+                    200..=299 => style(status).green(),
+                    300..=399 => style(status).yellow(),
+                    400..=499 => style(status).red(),
+                    500..=599 => style(status).magenta(),
+                    _ => style(status),
                 },
-                Err(_) => status.normal(),
+                Err(_) => style(status),
             };
             format!("{url} [{colored_status}]")
         }
@@ -143,14 +143,14 @@ fn plain_line(url_data: &UrlData) -> String {
     };
     if !url_data.sources.is_empty() {
         let sources = escape_plain_field(&url_data.sources.join(","));
-        line.push_str(&format!(" [{}]", sources.cyan()));
+        line.push_str(&format!(" [{}]", style(sources).cyan()));
     }
     // Only reached when `--show-meta` asked for it: the caller leaves these
     // fields empty otherwise, so plain output stays a stable pipeline
     // contract by default.
     let meta = plain_meta(url_data);
     if !meta.is_empty() {
-        line.push_str(&format!(" [{}]", meta.blue()));
+        line.push_str(&format!(" [{}]", style(meta).blue()));
     }
     line.push('\n');
     line
@@ -413,7 +413,7 @@ mod tests {
             "Invalid Status".to_string(),
         );
 
-        // Note: We can't easily test the exact color output since colored crate renders
+        // Note: We can't easily test the exact color output since console renders
         // terminal color codes, but we can at least verify that the formatting works
         // by checking the output contains the status
 
