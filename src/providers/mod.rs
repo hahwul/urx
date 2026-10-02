@@ -70,26 +70,8 @@ pub trait Provider: Send + Sync {
     /// Include or exclude subdomains in the search
     fn with_subdomains(&mut self, include: bool);
 
-    /// Set the proxy server for HTTP requests
-    fn with_proxy(&mut self, proxy: Option<String>);
-
-    /// Set the proxy authentication credentials (username:password)
-    fn with_proxy_auth(&mut self, auth: Option<String>);
-
-    /// Set the request timeout in seconds
-    fn with_timeout(&mut self, seconds: u64);
-
-    /// Set the number of retry attempts for failed requests
-    fn with_retries(&mut self, count: u32);
-
-    /// Enable or disable the use of random User-Agent headers
-    fn with_random_agent(&mut self, enabled: bool);
-
-    /// Enable or disable SSL certificate verification (for self-signed certificates)
-    fn with_insecure(&mut self, enabled: bool);
-
-    /// Set rate limiting to avoid being blocked by providers
-    fn with_rate_limit(&mut self, requests_per_second: Option<f32>);
+    /// Apply proxy, timeout, TLS, User-Agent, retry and rate-limit settings.
+    fn with_network(&mut self, net: crate::network::NetConfig);
 
     /// Whether this provider's own query can express a target's path scope.
     ///

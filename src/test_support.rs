@@ -260,13 +260,7 @@ impl Provider for MockProvider {
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
-    fn with_proxy(&mut self, _proxy: Option<String>) {}
-    fn with_proxy_auth(&mut self, _auth: Option<String>) {}
-    fn with_timeout(&mut self, _seconds: u64) {}
-    fn with_retries(&mut self, _count: u32) {}
-    fn with_random_agent(&mut self, _enabled: bool) {}
-    fn with_insecure(&mut self, _enabled: bool) {}
-    fn with_rate_limit(&mut self, _rate_limit: Option<f32>) {}
+    fn with_network(&mut self, _net: crate::network::NetConfig) {}
 }
 
 /// A [`Tester`] that echoes a fixed result list for every URL.

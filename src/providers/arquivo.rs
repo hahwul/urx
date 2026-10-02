@@ -5,9 +5,7 @@ use std::pin::Pin;
 use super::cdx::{parse_pywb_rows, CdxSession, PYWB_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{Provider, RecordSet, UrlRecord};
-use crate::network::client::HttpClientConfig;
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 /// Hard ceiling on the number of CDX pages walked for one domain. Arquivo.pt
@@ -38,18 +36,13 @@ const FIELDS: &str = PYWB_FIELDS;
 #[derive(Clone)]
 pub struct ArquivoProvider {
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
+    net: NetConfig,
     /// Server-side CDX predicates (date range, status code, MIME type).
     filters: ArchiveFilters,
-    #[cfg(test)]
+    /// Archive origin; tests point it at a mock server.
     base_url: String,
-    #[cfg(test)]
+    /// Rows requested per page. See [`ROW_LIMIT`]; tests shrink it to reach
+    /// the truncated-page path without a hundred-thousand-row mock body.
     row_limit: usize,
 }
 
@@ -58,17 +51,9 @@ impl ArquivoProvider {
     pub fn new() -> Self {
         ArquivoProvider {
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 60,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
+            net: NetConfig::with_timeout(60),
             filters: ArchiveFilters::default(),
-            #[cfg(test)]
             base_url: "https://arquivo.pt".to_string(),
-            #[cfg(test)]
             row_limit: ROW_LIMIT,
         }
     }
@@ -79,56 +64,6 @@ impl ArquivoProvider {
     pub fn with_filters(&mut self, filters: ArchiveFilters) -> &mut Self {
         self.filters = filters;
         self
-    }
-
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    /// Shrink the per-page row bound so a test can exercise the truncated-page
-    /// path without a mock body of a hundred thousand rows.
-    #[cfg(test)]
-    pub fn with_row_limit(&mut self, rows: usize) -> &mut Self {
-        self.row_limit = rows;
-        self
-    }
-
-    /// Rows requested per page. See [`ROW_LIMIT`].
-    fn row_limit(&self) -> usize {
-        #[cfg(test)]
-        {
-            self.row_limit
-        }
-        #[cfg(not(test))]
-        {
-            ROW_LIMIT
-        }
-    }
-
-    /// Build an `HttpClientConfig` from the current provider settings.
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
-    /// Archive origin. Overridable in tests so the mock server can stand in.
-    fn base_url(&self) -> &str {
-        #[cfg(test)]
-        {
-            &self.base_url
-        }
-        #[cfg(not(test))]
-        {
-            "https://arquivo.pt"
-        }
     }
 
     /// Build the CDX query *without* the `page=` cursor. `output=json` streams
@@ -150,7 +85,7 @@ impl ArquivoProvider {
         let pattern = super::cdx_url_pattern(domain, self.include_subdomains);
         let mut url = format!(
             "{}/wayback/cdx?url={pattern}&output=json&fl={FIELDS}&collapse=urlkey",
-            self.base_url()
+            self.base_url
         );
         url.push_str(&self.filters.query_params(CdxDialect::Pywb));
         url
@@ -181,14 +116,14 @@ impl Provider for ArquivoProvider {
         reporter: Option<ProgressReporter>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
-            let client = self.client_config().build_client()?;
+            let client = self.net.http.build_client()?;
             let query_base = self.query_base(domain);
             let session = CdxSession {
                 client: &client,
-                retries: self.retries,
-                limiter: self.rate_limit.as_ref(),
+                retries: self.net.retries,
+                limiter: self.net.rate_limit.as_ref(),
                 reporter: reporter.as_ref(),
-                endpoint: self.base_url(),
+                endpoint: &self.base_url,
             };
 
             if let Some(r) = &reporter {
@@ -206,7 +141,7 @@ impl Provider for ArquivoProvider {
             //
             // `seen` is the single source of truth: it dedups across pages and
             // its growth drives the no-progress stop condition.
-            let row_limit = self.row_limit();
+            let row_limit = self.row_limit;
             // Arquivo returns one row per *capture* (its `collapse=urlkey` is
             // ignored), so this is where thousands of rows for one URL become
             // one record — and what keeps a page's rows from accumulating.
@@ -302,32 +237,8 @@ impl Provider for ArquivoProvider {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -341,13 +252,6 @@ mod tests {
     fn test_new_provider() {
         let provider = ArquivoProvider::new();
         assert!(!provider.include_subdomains);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 60);
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
@@ -358,78 +262,9 @@ mod tests {
     }
 
     #[test]
-    fn test_with_proxy() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_timeout(30);
-        assert_eq!(provider.timeout, 30);
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-    }
-
-    #[test]
     fn test_clone_box() {
         let provider = ArquivoProvider::new();
         let _cloned = provider.clone_box();
-    }
-
-    #[test]
-    fn test_client_config() {
-        let mut provider = ArquivoProvider::new();
-        provider.with_timeout(45);
-        provider.with_insecure(true);
-        provider.with_random_agent(true);
-        provider.with_proxy(Some("http://proxy:8080".to_string()));
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-
-        let config = provider.client_config();
-        assert_eq!(config.timeout, 45);
-        assert!(config.insecure);
-        assert!(config.random_agent);
-        assert_eq!(config.proxy, Some("http://proxy:8080".to_string()));
-        assert_eq!(config.proxy_auth, Some("user:pass".to_string()));
     }
 
     #[test]
@@ -510,7 +345,7 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let records = provider
@@ -563,7 +398,7 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         provider.with_subdomains(true);
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
@@ -603,10 +438,10 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         // Two rows per page is a full page here, so each page looks truncated
         // and the walk keeps going until a short one.
-        provider.with_row_limit(2);
+        provider.row_limit = 2;
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -649,8 +484,8 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_row_limit(2); // both pages come back full ⇒ truncated
+        provider.base_url = server.url();
+        provider.row_limit = 2; // both pages come back full ⇒ truncated
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -706,8 +541,8 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_row_limit(2); // 2 rows == limit ⇒ the page was capped
+        provider.base_url = server.url();
+        provider.row_limit = 2; // 2 rows == limit ⇒ the page was capped
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
@@ -745,7 +580,7 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let stop = StopSignal::default();
         stop.request_stop();
@@ -780,8 +615,8 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_row_limit(10); // 2 rows < 10 ⇒ that was everything
+        provider.base_url = server.url();
+        provider.row_limit = 10; // 2 rows < 10 ⇒ that was everything
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -826,8 +661,8 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_row_limit(3);
+        provider.base_url = server.url();
+        provider.row_limit = 3;
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -855,7 +690,7 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -874,8 +709,8 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         // Nothing collected yet → a hard failure must propagate.
         assert!(provider.fetch_urls("example.com").await.is_err());
@@ -902,9 +737,9 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_retries(0); // fail fast, don't sleep through back-off
-        provider.with_row_limit(2); // page 0 comes back full ⇒ page 1 is fetched
+        provider.base_url = server.url();
+        provider.net.retries = 0; // fail fast, don't sleep through back-off
+        provider.row_limit = 2; // page 0 comes back full ⇒ page 1 is fetched
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -954,12 +789,12 @@ mod tests {
             .await;
 
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         // One row fills a page here, so page 0 looks truncated and page 1 is
         // fetched — which is what gives the limiter something to pace.
-        provider.with_row_limit(1);
+        provider.row_limit = 1;
         // 5 req/s ⇒ a 200ms minimum gap between page requests.
-        provider.with_rate_limit(Some(5.0));
+        provider.net.rate_limit = crate::network::RateLimiter::new(5.0);
 
         let start = Instant::now();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
@@ -977,7 +812,7 @@ mod tests {
         // anchored regex here was observed to hang the server rather than
         // return an empty page, so the value must reach it verbatim.
         let mut provider = ArquivoProvider::new();
-        provider.with_base_url("https://arquivo.pt".to_string());
+        provider.base_url = "https://arquivo.pt".to_string();
         provider.with_filters(ArchiveFilters::from_cli_lists(
             None,
             None,

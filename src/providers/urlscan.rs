@@ -6,25 +6,16 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::{read_json_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::send_with_retry;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 #[derive(Clone)]
 pub struct UrlscanProvider {
     api_key_rotator: ApiKeyRotator,
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
-    #[cfg(test)]
+    net: NetConfig,
     base_url: String,
-    #[cfg(test)]
     page_limit: usize,
 }
 
@@ -82,118 +73,40 @@ fn sort_to_search_after(sort: &[serde_json::Value]) -> Option<String> {
 }
 
 impl UrlscanProvider {
-    #[allow(dead_code)]
-    pub fn new(api_key: String) -> Self {
-        if api_key.is_empty() {
-            Self::new_with_keys(vec![])
-        } else {
-            Self::new_with_keys(vec![api_key])
-        }
-    }
-
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
-        // Filter out empty keys
-        let filtered_keys: Vec<String> = api_keys.into_iter().filter(|k| !k.is_empty()).collect();
-
         UrlscanProvider {
-            api_key_rotator: ApiKeyRotator::new(filtered_keys),
+            api_key_rotator: ApiKeyRotator::new(api_keys),
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
-            #[cfg(test)]
+            net: NetConfig::default(),
             base_url: "https://urlscan.io".to_string(),
-            #[cfg(test)]
             page_limit: URLSCAN_MAX_PAGES,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
         }
     }
 
     /// Fetch and parse a single search page with retry/back-off. Returns the
     /// parsed response or the last error after exhausting retries.
-    async fn fetch_page(
-        &self,
-        client: &reqwest::Client,
-        url: &str,
-        limiter: Option<&RateLimiter>,
-    ) -> Result<UrlscanResponse> {
-        let mut last_error = None;
-        let mut attempt = 0;
-
-        while attempt <= self.retries {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
-            }
-
-            // Rotate the key per attempt so a rate-limited key is retried with a
-            // different one when several are configured.
-            let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-            let mut req = client.get(url);
-            if !api_key.is_empty() {
-                req = req.header("API-Key", &api_key);
-            }
-
-            if let Some(rl) = limiter {
-                rl.acquire().await;
-            }
-            match req.send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    if !status.is_success() {
-                        if status.as_u16() == 429 {
-                            if let Some(d) =
-                                crate::network::client::retry_after_delay(response.headers())
-                            {
-                                tokio::time::sleep(d).await;
-                            }
-                        }
-                        attempt += 1;
-                        last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                        continue;
-                    }
-                    match read_json_capped::<UrlscanResponse>(response).await {
-                        Ok(parsed) => return Ok(parsed),
-                        Err(e) => {
-                            attempt += 1;
-                            last_error =
-                                Some(anyhow::anyhow!("Failed to parse Urlscan response: {}", e));
-                            continue;
-                        }
-                    }
+    async fn fetch_page(&self, client: &reqwest::Client, url: &str) -> Result<UrlscanResponse> {
+        send_with_retry(
+            self.net.retries,
+            self.net.rate_limit.as_ref(),
+            |_| true,
+            || {
+                // Rotate the key per attempt so a rate-limited key is retried
+                // with a different one when several are configured.
+                let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                let req = client.get(url);
+                if api_key.is_empty() {
+                    req
+                } else {
+                    req.header("API-Key", api_key)
                 }
-                Err(e) => {
-                    attempt += 1;
-                    last_error = Some(e.into());
-                    continue;
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "Failed after {} attempts: {}",
-            self.retries + 1,
-            last_error.unwrap_or_else(|| anyhow::anyhow!("unknown error"))
-        ))
+            },
+            |_, body| {
+                serde_json::from_str(&body)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse Urlscan response: {e}"))
+            },
+        )
+        .await
     }
 }
 
@@ -225,19 +138,12 @@ impl Provider for UrlscanProvider {
             let encoded_domain =
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
 
-            // Construct the base query - use base_url in test mode
-            #[cfg(test)]
             let base_query = format!(
-                "{}/api/v1/search/?q=domain:{}&size=100",
-                self.base_url, encoded_domain
+                "{}/api/v1/search/?q=domain:{encoded_domain}&size=100",
+                self.base_url
             );
 
-            #[cfg(not(test))]
-            let base_query =
-                format!("https://urlscan.io/api/v1/search/?q=domain:{encoded_domain}&size=100");
-
-            let client = self.client_config().build_client()?;
-            let limiter = self.rate_limit.as_ref();
+            let client = self.net.http.build_client()?;
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -251,14 +157,10 @@ impl Provider for UrlscanProvider {
             let mut search_after: Option<String> = None;
             let mut seen_cursors = HashSet::new();
             let mut pages = 0;
-            #[cfg(test)]
-            let page_limit = self.page_limit;
-            #[cfg(not(test))]
-            let page_limit = URLSCAN_MAX_PAGES;
 
             loop {
                 pages += 1;
-                if pages > page_limit {
+                if pages > self.page_limit {
                     if let Some(r) = &reporter {
                         r.mark_partial();
                     }
@@ -270,7 +172,7 @@ impl Provider for UrlscanProvider {
                     None => base_query.clone(),
                 };
 
-                let response = match self.fetch_page(&client, &url, limiter).await {
+                let response = match self.fetch_page(&client, &url).await {
                     Ok(resp) => resp,
                     Err(e) => {
                         // A failure on the very first page is fatal; a later
@@ -354,32 +256,8 @@ impl Provider for UrlscanProvider {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -409,29 +287,11 @@ mod tests {
     }
 
     #[test]
-    fn test_new_provider() {
-        let api_key = "test_api_key".to_string();
-        let provider = UrlscanProvider::new(api_key.clone());
-        assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 1);
-        assert_eq!(provider.api_key_rotator.current_key(), Some(api_key));
-        assert!(!provider.include_subdomains);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 30);
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
-    }
-
-    #[test]
     fn test_new_provider_with_multiple_keys() {
         let api_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let provider = UrlscanProvider::new_with_keys(api_keys.clone());
 
         assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 3);
 
         // Test rotation
         assert_eq!(
@@ -463,7 +323,6 @@ mod tests {
         let provider = UrlscanProvider::new_with_keys(api_keys);
 
         assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 2);
         assert_eq!(
             provider.api_key_rotator.next_key(),
             Some("key1".to_string())
@@ -476,74 +335,20 @@ mod tests {
 
     #[test]
     fn test_new_provider_with_empty_key() {
-        let provider = UrlscanProvider::new("".to_string());
+        let provider = UrlscanProvider::new_with_keys(vec!["".to_string()]);
         assert!(!provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 0);
-        assert_eq!(provider.api_key_rotator.current_key(), None);
     }
 
     #[test]
     fn test_with_subdomains() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
+        let provider = &mut UrlscanProvider::new_with_keys(vec!["test_api_key".to_string()]);
         provider.with_subdomains(true);
         assert!(provider.include_subdomains);
     }
 
     #[test]
-    fn test_with_proxy() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, 60);
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let provider = &mut UrlscanProvider::new("test_api_key".to_string());
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-    }
-
-    #[test]
     fn test_clone_box() {
-        let provider = UrlscanProvider::new("test_api_key".to_string());
+        let provider = UrlscanProvider::new_with_keys(vec!["test_api_key".to_string()]);
         let _cloned = provider.clone_box();
         // Just testing that cloning works without error
     }
@@ -613,8 +418,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = UrlscanProvider::new_with_keys(vec!["".to_string()]);
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/anon".to_string()]);
@@ -648,7 +453,7 @@ mod tests {
             .await;
 
         let mut provider = UrlscanProvider::new_with_keys(vec!["key1".into(), "key2".into()]);
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/ok".to_string()]);
@@ -685,8 +490,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("k".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
@@ -726,8 +531,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("k".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
+        provider.base_url = server.url();
         provider.page_limit = 1;
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
@@ -762,9 +567,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("k".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
 
         let urls = urls_of(
@@ -790,9 +595,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("k".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
 
         let urls = urls_of(
@@ -834,10 +639,10 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("k".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
+        provider.base_url = server.url();
         provider.page_limit = 3;
-        provider.with_retries(0);
+        provider.net.retries = 0;
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
 
         let urls = urls_of(
@@ -879,9 +684,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = UrlscanProvider::new("k".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0); // fail fast, don't sleep through back-off
+        let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0; // fail fast, don't sleep through back-off
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -940,8 +745,8 @@ mod tests {
             .await;
 
         // Create the provider using mock server URL
-        let mut provider = UrlscanProvider::new("test_api_key".to_string());
-        provider.with_base_url(mock_server.url());
+        let mut provider = UrlscanProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = mock_server.url();
 
         let result = provider.fetch_urls("example.com").await;
         assert!(result.is_ok(), "Expected success with mock API");

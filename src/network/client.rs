@@ -1,6 +1,8 @@
 use anyhow::Result;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use std::time::Duration;
+
+use super::RateLimiter;
 
 /// Common HTTP client configuration shared across providers and testers.
 ///
@@ -173,19 +175,6 @@ pub async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Read a JSON response body and deserialize it, bounded by
-/// [`MAX_RESPONSE_BYTES`].
-///
-/// `reqwest::Response::json` buffers the entire body first, which the keyed API
-/// providers (urlscan, VirusTotal, ZoomEye, GitHub) must not do for a host urx
-/// does not control — the same reason [`get_with_retry`] reads capped.
-pub async fn read_json_capped<T: serde::de::DeserializeOwned>(
-    resp: reqwest::Response,
-) -> Result<T> {
-    let body = read_body_capped(resp, MAX_RESPONSE_BYTES).await?;
-    Ok(serde_json::from_str(&body)?)
-}
-
 /// Whether an HTTP status is worth another attempt.
 ///
 /// Server errors and explicit throttling are transient. The rest of the 4xx
@@ -193,70 +182,140 @@ pub async fn read_json_capped<T: serde::de::DeserializeOwned>(
 /// wall-clock: a 404 from a CDX index is how those APIs say "this domain has no
 /// captures", so re-asking three times with back-off turns an instant miss into
 /// a multi-second one — per domain, per provider.
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+fn is_retryable_status(status: StatusCode) -> bool {
     status.is_server_error()
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
 }
 
-/// Execute an HTTP GET request with retry and linear back-off.
+/// Send a request with retry and linear back-off.
 ///
-/// `max_retries` is the number of **additional** attempts after the first
-/// failure (i.e. total attempts = 1 + max_retries). A response the server has
-/// told us not to repeat (see [`is_retryable_status`]) ends the loop early, and
-/// a `Retry-After` header overrides our own back-off so a throttled request
-/// waits as long as the server asked instead of hammering it again.
-///
-/// On success the response body is returned as a `String`.
+/// `retries` is the number of **additional** attempts after the first failure
+/// (i.e. total attempts = 1 + retries). `request` is called once per attempt,
+/// so a caller can rotate API keys between attempts, and `limiter` is acquired
+/// before each one. Transport errors, body-read errors, statuses `retry`
+/// accepts, and 2xx bodies `parse` rejects are retried after 500ms, 1000ms,
+/// 1500ms, … — or after the `Retry-After` a retried response named. Any other
+/// status is final: `parse` gets it with an empty body, and its answer ends the
+/// loop.
 ///
 /// # Errors
 ///
-/// Returns the last encountered error if all attempts are exhausted.
-pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Result<String> {
-    let mut last_error: Option<anyhow::Error> = None;
+/// `Failed after N attempts: <last error>` once the loop gives up.
+pub async fn send_with_retry<T>(
+    retries: u32,
+    limiter: Option<&RateLimiter>,
+    retry: impl Fn(StatusCode) -> bool,
+    mut request: impl FnMut() -> reqwest::RequestBuilder,
+    parse: impl Fn(StatusCode, String) -> Result<T>,
+) -> Result<T> {
+    let mut last_error = anyhow::anyhow!("no attempt made");
     // Server-dictated wait for the *next* attempt, when it sent one.
     let mut next_delay: Option<Duration> = None;
     let mut attempts: u32 = 0;
 
-    for attempt in 0..=max_retries {
+    for attempt in 0..=retries {
         if attempt > 0 {
-            // Linear back-off: 500ms, 1000ms, 1500ms, … unless the server named
-            // its own delay.
             let delay = next_delay
                 .take()
                 .unwrap_or_else(|| Duration::from_millis(500 * attempt as u64));
             tokio::time::sleep(delay).await;
         }
+        if let Some(rl) = limiter {
+            rl.acquire().await;
+        }
         attempts += 1;
 
-        match client.get(url).send().await {
-            Ok(response) => {
-                let status = response.status();
-                if !status.is_success() {
-                    last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                    if !is_retryable_status(status) {
-                        break;
-                    }
-                    next_delay = retry_after_delay(response.headers());
-                    continue;
-                }
-
-                // Capped rather than `response.text()`: this helper is the read
-                // path for every archive index urx queries, none of which urx
-                // controls, so an unbounded body must not be buffered in full.
-                match read_body_capped(response, MAX_RESPONSE_BYTES).await {
-                    Ok(text) => return Ok(text),
-                    Err(e) => last_error = Some(e),
+        let response = match request().send().await {
+            Ok(response) => response,
+            Err(e) => {
+                last_error = e.into();
+                continue;
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            if retry(status) {
+                last_error = anyhow::anyhow!("HTTP error: {status}");
+                next_delay = retry_after_delay(response.headers());
+                continue;
+            }
+            match parse(status, String::new()) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last_error = e;
+                    break;
                 }
             }
-            Err(e) => last_error = Some(e.into()),
+        }
+        // Capped rather than `response.text()`: none of these hosts is one
+        // urx controls, so an unbounded body must not be buffered in full.
+        match read_body_capped(response, MAX_RESPONSE_BYTES)
+            .await
+            .and_then(|body| parse(status, body))
+        {
+            Ok(v) => return Ok(v),
+            Err(e) => last_error = e,
         }
     }
 
     let noun = if attempts == 1 { "attempt" } else { "attempts" };
-    match last_error {
-        Some(e) => Err(anyhow::anyhow!("Failed after {attempts} {noun}: {e}")),
-        None => Err(anyhow::anyhow!("Failed after {attempts} {noun}")),
+    Err(anyhow::anyhow!(
+        "Failed after {attempts} {noun}: {last_error}"
+    ))
+}
+
+/// GET `url` through [`send_with_retry`], retrying only
+/// [`is_retryable_status`], and return the body.
+///
+/// # Errors
+///
+/// Returns the last encountered error if all attempts are exhausted.
+pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Result<String> {
+    send_with_retry(
+        max_retries,
+        None,
+        is_retryable_status,
+        || client.get(url),
+        |status, body| {
+            anyhow::ensure!(status.is_success(), "HTTP error: {status}");
+            Ok(body)
+        },
+    )
+    .await
+}
+
+/// Network settings a provider or tester applies to its own requests.
+#[derive(Debug, Clone)]
+pub struct NetConfig {
+    /// Proxy, timeout, TLS and User-Agent for the client.
+    pub http: HttpClientConfig,
+    /// Additional attempts after a failed request.
+    pub retries: u32,
+    /// Paces requests; `None` means unthrottled.
+    pub rate_limit: Option<RateLimiter>,
+}
+
+impl Default for NetConfig {
+    fn default() -> Self {
+        Self {
+            http: HttpClientConfig::default(),
+            retries: 3,
+            rate_limit: None,
+        }
+    }
+}
+
+impl NetConfig {
+    /// The defaults, with a different request timeout.
+    pub fn with_timeout(timeout: u64) -> Self {
+        Self {
+            http: HttpClientConfig {
+                timeout,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 }
 

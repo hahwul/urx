@@ -1,16 +1,12 @@
 use anyhow::Result;
-use async_recursion::async_recursion;
-use async_trait::async_trait;
 use reqwest::Client;
 use roxmltree::Document;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
 
-use crate::network::client::{read_body_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::read_body_capped;
+use crate::network::{CustomHeaders, NetConfig, RateLimiter};
 use crate::progress::ProgressReporter;
 use crate::providers::archived::{
     describe_skipped, list_versions, replay_at, ArchivedDiscovery, Replay,
@@ -155,16 +151,10 @@ struct Walk {
 
 #[derive(Clone)]
 pub struct SitemapProvider {
-    timeout: Duration,
-    retries: u32,
-    random_agent: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    /// `-H`/`--cookie`/`--user-agent`. This component requests URLs from the
-    /// target itself, so the user's headers belong on those requests.
-    headers: CustomHeaders,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
+    /// Carries `-H`/`--cookie`/`--user-agent` too: this component requests
+    /// URLs from the target itself, so the user's headers belong on those
+    /// requests.
+    net: NetConfig,
     /// When set, this instance reads the *archived* sitemaps the Wayback
     /// Machine holds instead of the live ones. See
     /// [`SitemapProvider::archived`].
@@ -174,14 +164,7 @@ pub struct SitemapProvider {
 impl SitemapProvider {
     pub fn new() -> Self {
         Self {
-            timeout: Duration::from_secs(30),
-            retries: 3,
-            random_agent: false,
-            proxy: None,
-            proxy_auth: None,
-            headers: CustomHeaders::default(),
-            insecure: false,
-            rate_limit: None,
+            net: NetConfig::default(),
             archived: None,
         }
     }
@@ -200,28 +183,11 @@ impl SitemapProvider {
         provider
     }
 
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: self.headers.clone(),
-            timeout: self.timeout.as_secs(),
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
-    /// Build the HTTP client via the shared config so it always sends a
-    /// User-Agent (a UA-less request is rejected with 400 by some servers).
-    fn build_client(&self) -> Result<Client> {
-        self.client_config().build_client()
-    }
-
     /// A client for requests that go to an archive rather than the target,
     /// i.e. everything `--archived-discovery` does. See
     /// [`HttpClientConfig::without_headers`].
     fn build_archive_client(&self) -> Result<Client> {
-        self.client_config().without_headers().build_client()
+        self.net.http.clone().without_headers().build_client()
     }
 
     /// Recursively fetch and parse a sitemap (or sitemap index).
@@ -230,7 +196,6 @@ impl SitemapProvider {
     /// (`A → A`, `A → B → A`); `depth` bounds straight-line nesting; and the
     /// caller stops feeding work once [`MAX_SITEMAP_URLS`] is reached. Together
     /// these stop a malicious sitemap from hanging the run or exhausting memory.
-    #[async_recursion]
     async fn parse_sitemap(
         client: &Client,
         sitemap_url: &str,
@@ -352,7 +317,6 @@ impl ArchivedWalk<'_> {
     /// names, following a `<sitemapindex>` into its children *at the same
     /// timestamp* — the archive replays the nearest capture, which is the
     /// child as it was when that version of the index pointed at it.
-    #[async_recursion]
     async fn walk(&mut self, timestamp: &str, sitemap_url: &str, depth: usize) {
         if depth > MAX_SITEMAP_DEPTH || self.budget == 0 {
             return;
@@ -400,7 +364,7 @@ impl ArchivedWalk<'_> {
                     if !same_host_as_parent(sitemap_url, &child) {
                         continue;
                     }
-                    self.walk(timestamp, &child, depth + 1).await;
+                    Box::pin(self.walk(timestamp, &child, depth + 1)).await;
                 }
             }
         }
@@ -424,7 +388,7 @@ impl SitemapProvider {
         let mut walk = ArchivedWalk {
             client: &client,
             settings,
-            limiter: self.rate_limit.as_ref(),
+            limiter: self.net.rate_limit.as_ref(),
             reporter: reporter.as_ref(),
             domain,
             budget: settings.limit,
@@ -440,7 +404,7 @@ impl SitemapProvider {
                 &client,
                 settings,
                 &format!("{domain}/{name}"),
-                self.retries,
+                self.net.retries,
                 walk.limiter,
             )
             .await?;
@@ -477,7 +441,6 @@ impl SitemapProvider {
     }
 }
 
-#[async_trait]
 impl Provider for SitemapProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
@@ -492,8 +455,8 @@ impl Provider for SitemapProvider {
                 return self.fetch_archived(domain, settings, None).await;
             }
 
-            let client = self.build_client()?;
-            let limiter = self.rate_limit.as_ref();
+            let client = self.net.http.build_client()?;
+            let limiter = self.net.rate_limit.as_ref();
             let mut urls = Vec::new();
             // Shared across all candidate locations so a sitemap reachable from
             // more than one entry point is fetched at most once, and so
@@ -559,30 +522,11 @@ impl Provider for SitemapProvider {
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
     fn with_headers(&mut self, headers: CustomHeaders) {
-        self.headers = headers;
-    }
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = Duration::from_secs(seconds);
-    }
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+        self.net.http.headers = headers;
     }
 }
 
@@ -673,28 +617,6 @@ mod tests {
         offsite.assert(); // never requested
     }
 
-    #[test]
-    fn test_new_provider() {
-        let provider = SitemapProvider::new();
-        assert_eq!(provider.timeout, Duration::from_secs(30));
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let mut provider = SitemapProvider::new();
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-        // A non-positive rate means "no limiting".
-        provider.with_rate_limit(Some(0.0));
-        assert!(provider.rate_limit.is_none());
-    }
-
     #[tokio::test]
     async fn test_rate_limit_paces_probe_requests() {
         // fetch_urls fires up to six back-to-back candidate-location probes;
@@ -704,7 +626,7 @@ mod tests {
         let host = server.host_with_port();
 
         let mut provider = SitemapProvider::new();
-        provider.with_rate_limit(Some(20.0)); // 50ms minimum interval
+        provider.net.rate_limit = crate::network::RateLimiter::new(20.0); // 50ms minimum interval
 
         let start = std::time::Instant::now();
         // No mocks: every probe 404s/fails fast, but each acquire() still paces.
@@ -713,7 +635,7 @@ mod tests {
         // Six probes => five enforced ~50ms gaps (~250ms). A no-op limiter would
         // finish in a few ms; allow generous scheduler slack below that signal.
         assert!(
-            start.elapsed() >= Duration::from_millis(150),
+            start.elapsed() >= std::time::Duration::from_millis(150),
             "rate limit did not pace the sitemap probe requests: {:?}",
             start.elapsed()
         );
@@ -751,64 +673,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_proxy() {
-        let mut provider = SitemapProvider::new();
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let mut provider = SitemapProvider::new();
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let mut provider = SitemapProvider::new();
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let mut provider = SitemapProvider::new();
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let mut provider = SitemapProvider::new();
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-        provider.with_random_agent(false);
-        assert!(!provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let mut provider = SitemapProvider::new();
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
     fn test_clone_box() {
         let provider = SitemapProvider::new();
         let _cloned = provider.clone_box();
         // Testing the existence of cloned object
-    }
-
-    #[test]
-    fn test_build_client() {
-        let provider = SitemapProvider::new();
-        let client_result = provider.build_client();
-        assert!(client_result.is_ok());
     }
 
     #[tokio::test]
@@ -1072,7 +940,7 @@ mod tests {
         };
 
         let mut provider = SitemapProvider::new();
-        provider.with_timeout(5);
+        provider.net.http.timeout = 5;
         let err = provider
             .fetch_urls(&addr.to_string())
             .await

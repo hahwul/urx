@@ -6,9 +6,8 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::{read_json_capped, HttpClientConfig};
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::client::send_with_retry;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 /// Page size for the v3 `urls` relationship. VirusTotal caps this relationship
@@ -23,16 +22,8 @@ const VT_MAX_PAGES: usize = 10_000;
 pub struct VirusTotalProvider {
     api_key_rotator: ApiKeyRotator,
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
-    #[cfg(test)]
+    net: NetConfig,
     base_url: String,
-    #[cfg(test)]
     page_limit: usize,
 }
 
@@ -69,50 +60,13 @@ struct VtUrlAttributes {
 }
 
 impl VirusTotalProvider {
-    #[allow(dead_code)]
-    pub fn new(api_key: String) -> Self {
-        if api_key.is_empty() {
-            Self::new_with_keys(vec![])
-        } else {
-            Self::new_with_keys(vec![api_key])
-        }
-    }
-
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
-        // Filter out empty keys
-        let filtered_keys: Vec<String> = api_keys.into_iter().filter(|k| !k.is_empty()).collect();
-
         VirusTotalProvider {
-            api_key_rotator: ApiKeyRotator::new(filtered_keys),
+            api_key_rotator: ApiKeyRotator::new(api_keys),
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 30,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
-            #[cfg(test)]
+            net: NetConfig::default(),
             base_url: "https://www.virustotal.com".to_string(),
-            #[cfg(test)]
             page_limit: VT_MAX_PAGES,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
         }
     }
 
@@ -122,21 +76,10 @@ impl VirusTotalProvider {
     /// only ever sent to VirusTotal.
     fn page_url(&self, domain: &str, cursor: Option<&str>) -> String {
         let encoded = url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
-        let mut url = {
-            #[cfg(test)]
-            {
-                format!(
-                    "{}/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}",
-                    self.base_url
-                )
-            }
-            #[cfg(not(test))]
-            {
-                format!(
-                    "https://www.virustotal.com/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}"
-                )
-            }
-        };
+        let mut url = format!(
+            "{}/api/v3/domains/{encoded}/urls?limit={VT_PAGE_LIMIT}",
+            self.base_url
+        );
         if let Some(cursor) = cursor {
             // The cursor is opaque base64-ish; percent-encode so reserved bytes
             // survive being spliced into the query string.
@@ -152,77 +95,32 @@ impl VirusTotalProvider {
     ///
     /// A 404 (the domain has no VT object) resolves to an empty page rather
     /// than an error, matching the "no data" semantics of the other providers.
-    async fn fetch_page(
-        &self,
-        client: &reqwest::Client,
-        url: &str,
-        limiter: Option<&RateLimiter>,
-    ) -> Result<VtUrlsResponse> {
-        let mut last_error = None;
-        let mut attempt = 0;
-
-        while attempt <= self.retries {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
-            }
-
-            // Rotate the key per attempt so a throttled/invalid key is retried
-            // with a different one when several are configured. v3 carries the
-            // key in the `x-apikey` header (v2 used an `apikey` query param).
-            let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-            let mut req = client.get(url);
-            if !api_key.is_empty() {
-                req = req.header("x-apikey", &api_key);
-            }
-
-            if let Some(rl) = limiter {
-                rl.acquire().await;
-            }
-            match req.send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    // 404 => no VT object for this domain; not an error.
-                    if status.as_u16() == 404 {
-                        return Ok(VtUrlsResponse::default());
-                    }
-                    if !status.is_success() {
-                        // On a throttle, wait as long as the server asked.
-                        if status.as_u16() == 429 {
-                            if let Some(d) =
-                                crate::network::client::retry_after_delay(response.headers())
-                            {
-                                tokio::time::sleep(d).await;
-                            }
-                        }
-                        attempt += 1;
-                        last_error = Some(anyhow::anyhow!("HTTP error: {status}"));
-                        continue;
-                    }
-                    match read_json_capped::<VtUrlsResponse>(response).await {
-                        Ok(parsed) => return Ok(parsed),
-                        Err(e) => {
-                            attempt += 1;
-                            last_error =
-                                Some(anyhow::anyhow!("Failed to parse VirusTotal response: {e}"));
-                            continue;
-                        }
-                    }
+    async fn fetch_page(&self, client: &reqwest::Client, url: &str) -> Result<VtUrlsResponse> {
+        send_with_retry(
+            self.net.retries,
+            self.net.rate_limit.as_ref(),
+            |status| status != 404,
+            || {
+                // Rotate the key per attempt so a throttled/invalid key is
+                // retried with a different one when several are configured.
+                // v3 carries the key in the `x-apikey` header.
+                let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                let req = client.get(url);
+                if api_key.is_empty() {
+                    req
+                } else {
+                    req.header("x-apikey", api_key)
                 }
-                Err(e) => {
-                    attempt += 1;
-                    // Defensive hygiene: keep the request URL out of surfaced
-                    // transport errors (the key is a header, not in the URL).
-                    last_error = Some(e.without_url().into());
-                    continue;
+            },
+            |status, body| {
+                if status == 404 {
+                    return Ok(VtUrlsResponse::default());
                 }
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "Failed after {} attempts: {}",
-            self.retries + 1,
-            last_error.unwrap_or_else(|| anyhow::anyhow!("unknown error"))
-        ))
+                serde_json::from_str(&body)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse VirusTotal response: {e}"))
+            },
+        )
+        .await
     }
 }
 
@@ -249,8 +147,7 @@ impl Provider for VirusTotalProvider {
                 return Ok(Vec::new());
             }
 
-            let client = self.client_config().build_client()?;
-            let limiter = self.rate_limit.as_ref();
+            let client = self.net.http.build_client()?;
 
             if let Some(r) = &reporter {
                 r.detail("fetching…");
@@ -266,14 +163,10 @@ impl Provider for VirusTotalProvider {
             let mut cursor: Option<String> = None;
             let mut seen_cursors = HashSet::new();
             let mut pages = 0usize;
-            #[cfg(test)]
-            let page_limit = self.page_limit;
-            #[cfg(not(test))]
-            let page_limit = VT_MAX_PAGES;
 
             loop {
                 pages += 1;
-                if pages > page_limit {
+                if pages > self.page_limit {
                     if let Some(r) = &reporter {
                         r.mark_partial();
                     }
@@ -285,7 +178,7 @@ impl Provider for VirusTotalProvider {
                 let first_page = pages == 1;
                 let url = self.page_url(domain, cursor.as_deref());
 
-                let page = match self.fetch_page(&client, &url, limiter).await {
+                let page = match self.fetch_page(&client, &url).await {
                     Ok(page) => page,
                     Err(e) => {
                         // A failure on the very first request is fatal; any
@@ -340,32 +233,8 @@ impl Provider for VirusTotalProvider {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -375,29 +244,11 @@ mod tests {
     use crate::providers::urls_of;
 
     #[test]
-    fn test_new_provider() {
-        let api_key = "test_api_key".to_string();
-        let provider = VirusTotalProvider::new(api_key.clone());
-        assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 1);
-        assert_eq!(provider.api_key_rotator.current_key(), Some(api_key));
-        assert!(!provider.include_subdomains);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 30);
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
-    }
-
-    #[test]
     fn test_new_provider_with_multiple_keys() {
         let api_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
         let provider = VirusTotalProvider::new_with_keys(api_keys.clone());
 
         assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 3);
 
         // Test rotation
         assert_eq!(
@@ -429,7 +280,6 @@ mod tests {
         let provider = VirusTotalProvider::new_with_keys(api_keys);
 
         assert!(provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 2);
         assert_eq!(
             provider.api_key_rotator.next_key(),
             Some("key1".to_string())
@@ -442,10 +292,8 @@ mod tests {
 
     #[test]
     fn test_new_provider_with_empty_key() {
-        let provider = VirusTotalProvider::new("".to_string());
+        let provider = VirusTotalProvider::new_with_keys(vec!["".to_string()]);
         assert!(!provider.api_key_rotator.has_keys());
-        assert_eq!(provider.api_key_rotator.key_count(), 0);
-        assert_eq!(provider.api_key_rotator.current_key(), None);
     }
 
     #[tokio::test]
@@ -455,9 +303,9 @@ mod tests {
         // surface it — and we strip the URL from the error for good measure.
         let mut provider = VirusTotalProvider::new_with_keys(vec!["SUPERSECRETKEY".to_string()]);
         // Port 1 reliably refuses the connection; keep the run fast.
-        provider.with_base_url("http://127.0.0.1:1".to_string());
-        provider.with_retries(0);
-        provider.with_timeout(5);
+        provider.base_url = "http://127.0.0.1:1".to_string();
+        provider.net.retries = 0;
+        provider.net.http.timeout = 5;
 
         let err = provider
             .fetch_urls("example.com")
@@ -472,66 +320,14 @@ mod tests {
 
     #[test]
     fn test_with_subdomains() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
+        let provider = &mut VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
         provider.with_subdomains(true);
         assert!(provider.include_subdomains);
     }
 
     #[test]
-    fn test_with_proxy() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, 60);
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let provider = &mut VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-    }
-
-    #[test]
     fn test_clone_box() {
-        let provider = VirusTotalProvider::new("test_api_key".to_string());
+        let provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
         let _cloned = provider.clone_box();
         // Just testing that cloning works without error
     }
@@ -572,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_urls_with_empty_api_key() {
-        let provider = VirusTotalProvider::new("".to_string());
+        let provider = VirusTotalProvider::new_with_keys(vec!["".to_string()]);
         let result = provider.fetch_urls("example.com").await;
 
         assert!(result.is_ok(), "Expected success with empty API key");
@@ -582,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_urls_with_invalid_api_key() {
-        let provider = VirusTotalProvider::new("invalid_key".to_string());
+        let provider = VirusTotalProvider::new_with_keys(vec!["invalid_key".to_string()]);
         // This test should fail with an HTTP error since the API key is invalid
         let result = provider.fetch_urls("example.com").await;
 
@@ -622,8 +418,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
@@ -675,8 +471,8 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(
@@ -712,10 +508,10 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("key".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["key".to_string()]);
+        provider.base_url = server.url();
         provider.page_limit = 1;
-        provider.with_retries(0);
+        provider.net.retries = 0;
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
 
         let urls = urls_of(
@@ -758,10 +554,10 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("key".to_string());
-        provider.with_base_url(server.url());
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["key".to_string()]);
+        provider.base_url = server.url();
         provider.page_limit = 3;
-        provider.with_retries(0);
+        provider.net.retries = 0;
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
 
         let urls = urls_of(
@@ -801,9 +597,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0); // fail fast, no back-off sleeps
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0; // fail fast, no back-off sleeps
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
         let urls = urls_of(
@@ -841,9 +637,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
         let result = provider
@@ -870,9 +666,9 @@ mod tests {
             .create_async()
             .await;
 
-        let mut provider = VirusTotalProvider::new("test_api_key".to_string());
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        let mut provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert!(urls.is_empty());

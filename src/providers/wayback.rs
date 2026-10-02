@@ -5,9 +5,7 @@ use std::pin::Pin;
 use super::cdx::{walk_resume_key, CdxSession, CLASSIC_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::{CaptureMeta, Provider, UrlRecord};
-use crate::network::client::HttpClientConfig;
-use crate::network::CustomHeaders;
-use crate::network::RateLimiter;
+use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
 /// The CDX fields we request, in order. `original` stays first so a data row
@@ -101,16 +99,10 @@ pub(crate) fn split_page(text: &str) -> (Vec<UrlRecord>, Option<String>) {
 #[derive(Clone)]
 pub struct WaybackMachineProvider {
     include_subdomains: bool,
-    proxy: Option<String>,
-    proxy_auth: Option<String>,
-    timeout: u64,
-    retries: u32,
-    random_agent: bool,
-    insecure: bool,
-    rate_limit: Option<RateLimiter>,
+    net: NetConfig,
     /// Server-side CDX predicates (date range, status code, MIME type).
     filters: ArchiveFilters,
-    #[cfg(test)]
+    /// Archive origin; tests point it at a mock server.
     base_url: String,
 }
 
@@ -119,15 +111,8 @@ impl WaybackMachineProvider {
     pub fn new() -> Self {
         WaybackMachineProvider {
             include_subdomains: false,
-            proxy: None,
-            proxy_auth: None,
-            timeout: 60,
-            retries: 3,
-            random_agent: false,
-            insecure: false,
-            rate_limit: None,
+            net: NetConfig::with_timeout(60),
             filters: ArchiveFilters::default(),
-            #[cfg(test)]
             base_url: "https://web.archive.org".to_string(),
         }
     }
@@ -140,36 +125,6 @@ impl WaybackMachineProvider {
         self
     }
 
-    #[cfg(test)]
-    pub fn with_base_url(&mut self, url: String) -> &mut Self {
-        self.base_url = url;
-        self
-    }
-
-    /// Build an `HttpClientConfig` from the current provider settings.
-    fn client_config(&self) -> HttpClientConfig {
-        HttpClientConfig {
-            headers: CustomHeaders::default(),
-            timeout: self.timeout,
-            insecure: self.insecure,
-            random_agent: self.random_agent,
-            proxy: self.proxy.clone(),
-            proxy_auth: self.proxy_auth.clone(),
-        }
-    }
-
-    /// Archive origin. Overridable in tests so the mock server can stand in.
-    fn base_url(&self) -> &str {
-        #[cfg(test)]
-        {
-            &self.base_url
-        }
-        #[cfg(not(test))]
-        {
-            "https://web.archive.org"
-        }
-    }
-
     /// Build the CDX query *without* pagination params. Plain-text streaming
     /// (an explicit `fl=` field list) is far more reliable than `output=json`
     /// for large domains, and `collapse=urlkey` trims server-side duplicates.
@@ -177,7 +132,7 @@ impl WaybackMachineProvider {
         let pattern = super::cdx_url_pattern(domain, self.include_subdomains);
         let mut url = format!(
             "{}/cdx/search/cdx?url={pattern}&fl={FIELDS}&collapse=urlkey",
-            self.base_url()
+            self.base_url
         );
         url.push_str(&self.filters.query_params(CdxDialect::Classic));
         url
@@ -208,7 +163,7 @@ impl Provider for WaybackMachineProvider {
         reporter: Option<ProgressReporter>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
         Box::pin(async move {
-            let client = self.client_config().build_client()?;
+            let client = self.net.http.build_client()?;
             let query_base = self.query_base(domain);
 
             if let Some(r) = &reporter {
@@ -220,47 +175,21 @@ impl Provider for WaybackMachineProvider {
             // verbatim for any other classic endpoint the user plugs in.
             let session = CdxSession {
                 client: &client,
-                retries: self.retries,
-                limiter: self.rate_limit.as_ref(),
+                retries: self.net.retries,
+                limiter: self.net.rate_limit.as_ref(),
                 reporter: reporter.as_ref(),
-                endpoint: self.base_url(),
+                endpoint: &self.base_url,
             };
             walk_resume_key(&session, &query_base).await
         })
     }
 
-    // Implement new trait methods
     fn with_subdomains(&mut self, include: bool) {
         self.include_subdomains = include;
     }
 
-    fn with_proxy(&mut self, proxy: Option<String>) {
-        self.proxy = proxy;
-    }
-
-    fn with_proxy_auth(&mut self, auth: Option<String>) {
-        self.proxy_auth = auth;
-    }
-
-    // New method implementations
-    fn with_timeout(&mut self, seconds: u64) {
-        self.timeout = seconds;
-    }
-
-    fn with_retries(&mut self, count: u32) {
-        self.retries = count;
-    }
-
-    fn with_random_agent(&mut self, enabled: bool) {
-        self.random_agent = enabled;
-    }
-
-    fn with_insecure(&mut self, enabled: bool) {
-        self.insecure = enabled;
-    }
-
-    fn with_rate_limit(&mut self, rate_limit: Option<f32>) {
-        self.rate_limit = RateLimiter::from_rate(rate_limit);
+    fn with_network(&mut self, net: NetConfig) {
+        self.net = net;
     }
 }
 
@@ -275,13 +204,6 @@ mod tests {
     fn test_new_provider() {
         let provider = WaybackMachineProvider::new();
         assert!(!provider.include_subdomains);
-        assert_eq!(provider.proxy, None);
-        assert_eq!(provider.proxy_auth, None);
-        assert_eq!(provider.timeout, 60);
-        assert_eq!(provider.retries, 3);
-        assert!(!provider.random_agent);
-        assert!(!provider.insecure);
-        assert!(provider.rate_limit.is_none());
     }
 
     #[test]
@@ -292,79 +214,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_proxy() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_proxy(Some("http://proxy.example.com:8080".to_string()));
-        assert_eq!(
-            provider.proxy,
-            Some("http://proxy.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_with_proxy_auth() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-        assert_eq!(provider.proxy_auth, Some("user:pass".to_string()));
-    }
-
-    #[test]
-    fn test_with_timeout() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_timeout(60);
-        assert_eq!(provider.timeout, 60);
-    }
-
-    #[test]
-    fn test_with_retries() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_retries(5);
-        assert_eq!(provider.retries, 5);
-    }
-
-    #[test]
-    fn test_with_random_agent() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_random_agent(true);
-        assert!(provider.random_agent);
-    }
-
-    #[test]
-    fn test_with_insecure() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_insecure(true);
-        assert!(provider.insecure);
-    }
-
-    #[test]
-    fn test_with_rate_limit() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_rate_limit(Some(2.5));
-        assert!(provider.rate_limit.is_some());
-    }
-
-    #[test]
     fn test_clone_box() {
         let provider = WaybackMachineProvider::new();
         let _cloned = provider.clone_box();
         // Testing the existence of cloned object
-    }
-
-    #[test]
-    fn test_client_config() {
-        let mut provider = WaybackMachineProvider::new();
-        provider.with_timeout(60);
-        provider.with_insecure(true);
-        provider.with_random_agent(true);
-        provider.with_proxy(Some("http://proxy:8080".to_string()));
-        provider.with_proxy_auth(Some("user:pass".to_string()));
-
-        let config = provider.client_config();
-        assert_eq!(config.timeout, 60);
-        assert!(config.insecure);
-        assert!(config.random_agent);
-        assert_eq!(config.proxy, Some("http://proxy:8080".to_string()));
-        assert_eq!(config.proxy_auth, Some("user:pass".to_string()));
     }
 
     #[tokio::test]
@@ -447,7 +300,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -502,7 +355,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
             .with_stop_signal(stop.clone());
@@ -542,7 +395,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let stop = StopSignal::default();
         stop.request_stop();
@@ -594,7 +447,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -639,9 +492,9 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         // 5 req/s => a 200ms minimum gap before the second page request.
-        provider.with_rate_limit(Some(5.0));
+        provider.net.rate_limit = crate::network::RateLimiter::new(5.0);
 
         let start = Instant::now();
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
@@ -682,8 +535,8 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_retries(0); // fail fast, don't sleep through back-off
+        provider.base_url = server.url();
+        provider.net.retries = 0; // fail fast, don't sleep through back-off
 
         // Drive it through a reporter so we can assert the partial flag is set.
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
@@ -718,8 +571,8 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
-        provider.with_retries(0);
+        provider.base_url = server.url();
+        provider.net.retries = 0;
 
         // Nothing collected yet → a hard failure must propagate.
         assert!(provider.fetch_urls("example.com").await.is_err());
@@ -853,7 +706,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         provider.with_subdomains(true);
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
@@ -879,7 +732,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -906,7 +759,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
 
@@ -931,7 +784,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let err = provider
             .fetch_urls("example.com")
@@ -964,7 +817,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
         provider.with_filters(ArchiveFilters {
             from: Some("20200101000000".to_string()),
             to: Some("20201231235959".to_string()),
@@ -982,7 +835,7 @@ mod tests {
         // pywb's `status`/`mime` here returns no error — just nothing — so the
         // exact wire format is worth pinning down.
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url("https://web.archive.org".to_string());
+        provider.base_url = "https://web.archive.org".to_string();
         provider.with_filters(ArchiveFilters::from_cli_lists(
             None,
             None,
@@ -1003,7 +856,7 @@ mod tests {
         // The live CDX server was verified to honour `filter=` together with
         // `fl=original` and `collapse=urlkey`; keep all three in the query.
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url("https://web.archive.org".to_string());
+        provider.base_url = "https://web.archive.org".to_string();
         provider.with_filters(ArchiveFilters::from_cli_lists(
             Some("20200101000000".to_string()),
             None,
@@ -1052,7 +905,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -1107,7 +960,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -1140,7 +993,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
@@ -1182,7 +1035,7 @@ mod tests {
             .await;
 
         let mut provider = WaybackMachineProvider::new();
-        provider.with_base_url(server.url());
+        provider.base_url = server.url();
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
