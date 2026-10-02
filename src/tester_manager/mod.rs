@@ -590,11 +590,13 @@ mod tests {
     #[test]
     fn test_apply_network_settings_to_tester_basic() {
         let mut tester = MockTester::new();
-        let settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
+        let settings = NetworkSettings {
+            timeout: 60,
+            retries: 5,
+            random_agent: true,
+            insecure: true,
+            ..Default::default()
+        };
 
         apply_network_settings_to_tester(&mut tester, &settings);
 
@@ -607,9 +609,11 @@ mod tests {
     #[test]
     fn test_apply_network_settings_to_tester_with_proxy() {
         let mut tester = MockTester::new();
-        let settings = NetworkSettings::new()
-            .with_proxy(Some("http://proxy:8080".to_string()))
-            .with_proxy_auth(Some("user:pass".to_string()));
+        let settings = NetworkSettings {
+            proxy: Some("http://proxy:8080".to_string()),
+            proxy_auth: Some("user:pass".to_string()),
+            ..Default::default()
+        };
 
         apply_network_settings_to_tester(&mut tester, &settings);
 
@@ -620,11 +624,13 @@ mod tests {
     #[test]
     fn test_apply_network_settings_to_tester_skips_for_providers_scope() {
         let mut tester = MockTester::new();
-        let mut settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
+        let mut settings = NetworkSettings {
+            timeout: 60,
+            retries: 5,
+            random_agent: true,
+            insecure: true,
+            ..Default::default()
+        };
         settings.scope = NetworkScope::Providers;
 
         apply_network_settings_to_tester(&mut tester, &settings);
@@ -639,11 +645,13 @@ mod tests {
     #[test]
     fn test_apply_network_settings_to_tester_applies_for_testers_scope() {
         let mut tester = MockTester::new();
-        let mut settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
+        let mut settings = NetworkSettings {
+            timeout: 60,
+            retries: 5,
+            random_agent: true,
+            insecure: true,
+            ..Default::default()
+        };
         settings.scope = NetworkScope::Testers;
 
         apply_network_settings_to_tester(&mut tester, &settings);
@@ -658,11 +666,13 @@ mod tests {
     #[test]
     fn test_apply_network_settings_to_tester_applies_for_all_scope() {
         let mut tester = MockTester::new();
-        let mut settings = NetworkSettings::new()
-            .with_timeout(60)
-            .with_retries(5)
-            .with_random_agent(true)
-            .with_insecure(true);
+        let mut settings = NetworkSettings {
+            timeout: 60,
+            retries: 5,
+            random_agent: true,
+            insecure: true,
+            ..Default::default()
+        };
         settings.scope = NetworkScope::All;
 
         apply_network_settings_to_tester(&mut tester, &settings);
@@ -775,7 +785,10 @@ mod tests {
     #[test]
     fn test_apply_network_settings_proxy_without_auth() {
         let mut tester = MockTester::new();
-        let settings = NetworkSettings::new().with_proxy(Some("http://proxy:8080".to_string()));
+        let settings = NetworkSettings {
+            proxy: Some("http://proxy:8080".to_string()),
+            ..Default::default()
+        };
 
         apply_network_settings_to_tester(&mut tester, &settings);
 
@@ -820,14 +833,15 @@ mod tests {
         use crate::network::CustomHeaders;
         use crate::testers::{ArchiveBodyExtractor, ArchiveCapture, LinkExtractor};
 
-        let settings = NetworkSettings::new().with_headers(
-            CustomHeaders::parse(
+        let settings = NetworkSettings {
+            headers: CustomHeaders::parse(
                 &["X-Trace: urx".to_string()],
                 Some("session=secret"),
                 Some("urx-test/1"),
             )
             .unwrap(),
-        );
+            ..Default::default()
+        };
 
         // The link extractor requests URLs from the target, so it must send
         // them...
