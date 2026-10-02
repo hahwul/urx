@@ -261,7 +261,7 @@ mod tests {
     fn sink_with(format: Format, buf: SharedBuf) -> StreamSink {
         StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             format,
             Box::new(buf),
@@ -304,7 +304,7 @@ mod tests {
         filter.with_extensions(vec!["js".to_string()]);
         let sink = StreamSink::new(
             filter,
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             Format::Plain,
             Box::new(buf.clone()),
@@ -325,8 +325,10 @@ mod tests {
         // With --normalize-url these two collapse to one; the stream must not
         // print both just because the raw strings differ.
         let buf = SharedBuf::default();
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
         let sink = StreamSink::new(
             UrlFilter::new(),
             transformer,
@@ -348,7 +350,7 @@ mod tests {
         let buf = SharedBuf::default();
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             Some(HostValidator::new(&["a.com".to_string()], false)),
             Format::Plain,
             Box::new(buf.clone()),
@@ -440,7 +442,7 @@ mod tests {
         // "Failed to write streamed URL: Broken pipe" and fail the whole run.
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             Format::Plain,
             Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),
@@ -460,7 +462,7 @@ mod tests {
         // surfaces there rather than on the write.
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             Format::Plain,
             Box::new(FailingWriter::on_flush(std::io::ErrorKind::BrokenPipe)),
@@ -476,7 +478,7 @@ mod tests {
     fn test_a_real_write_failure_is_still_reported() {
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             Format::Plain,
             Box::new(FailingWriter::on_write(std::io::ErrorKind::StorageFull)),
@@ -496,7 +498,7 @@ mod tests {
         // treatment: `urx target --stream -f csv | head -0` must not error.
         let sink = StreamSink::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
             Format::Csv,
             Box::new(FailingWriter::on_write(std::io::ErrorKind::BrokenPipe)),

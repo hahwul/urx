@@ -1197,7 +1197,7 @@ mod tests {
         let sink = Arc::new(
             output::StreamSink::new(
                 UrlFilter::new(),
-                UrlTransformer::new(),
+                UrlTransformer::default(),
                 None,
                 output::Format::Plain,
                 Box::new(buf.clone()),
@@ -1274,7 +1274,7 @@ mod tests {
         let sink = Arc::new(
             output::StreamSink::new(
                 UrlFilter::new(),
-                UrlTransformer::new(),
+                UrlTransformer::default(),
                 None,
                 output::Format::Plain,
                 Box::new(Sink),

@@ -327,13 +327,13 @@ fn report_meta_filter_stats(
 /// `--merge-endpoint` is deliberately absent — it folds several URLs into one and
 /// so has no single-URL form (see [`UrlTransformer::transform_one`]).
 pub fn build_url_transformer(args: &Args) -> UrlTransformer {
-    let mut transformer = UrlTransformer::new();
-    transformer
-        .with_normalize_url(args.normalize_url)
-        .with_show_only_host(args.show_only_host)
-        .with_show_only_path(args.show_only_path)
-        .with_show_only_param(args.show_only_param);
-    transformer
+    UrlTransformer {
+        normalize_url: args.normalize_url,
+        show_only_host: args.show_only_host,
+        show_only_path: args.show_only_path,
+        show_only_param: args.show_only_param,
+        ..Default::default()
+    }
 }
 
 /// True when any flag that narrows the URL list is set, which is the only case
@@ -505,16 +505,17 @@ pub fn apply_url_transformations(
 
     // The batch path is the one place that can honour --merge-endpoint and
     // --dedup-similar, since it alone holds every URL at once.
-    let mut url_transformer = build_url_transformer(args);
-    url_transformer
-        .with_merge_endpoint(args.merge_endpoint)
-        .with_dedup_similar(args.dedup_similar)
+    let url_transformer = UrlTransformer {
+        merge_endpoint: args.merge_endpoint,
+        dedup_similar: args.dedup_similar,
         // --- output-views ---
         // Set here and not in build_url_transformer(): an inventory view needs
         // the whole list, so only the batch path can honour it. The streaming
         // sink and the extracted-link filter both work one URL at a time and
         // must never see it half-applied — --stream rejects the flags outright.
-        .with_param_view(param_view(args));
+        param_view: param_view(args),
+        ..build_url_transformer(args)
+    };
 
     let (transformed_urls, stats) = url_transformer.transform_with_stats(urls);
 

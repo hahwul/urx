@@ -4,15 +4,18 @@ use url::Url;
 /// Utility for transforming and manipulating URL collections
 ///
 /// Provides methods for merging, filtering, and extracting parts of URLs.
+/// Every field mirrors the CLI flag of the same name.
+#[derive(Default)]
 pub struct UrlTransformer {
-    merge_endpoint: bool,
-    show_only_host: bool,
-    show_only_path: bool,
-    show_only_param: bool,
-    normalize_url: bool,
-    dedup_similar: bool,
+    pub merge_endpoint: bool,
+    pub show_only_host: bool,
+    pub show_only_path: bool,
+    pub show_only_param: bool,
+    pub normalize_url: bool,
+    pub dedup_similar: bool,
     // --- output-views ---
-    param_view: ParamView,
+    /// The parameter inventory view that replaces the URL list, if any.
+    pub param_view: ParamView,
 }
 
 /// A view that replaces the URL list with an inventory derived from it.
@@ -45,64 +48,6 @@ pub struct TransformStats {
 }
 
 impl UrlTransformer {
-    /// Creates a new URL transformer with default settings
-    pub fn new() -> Self {
-        UrlTransformer {
-            merge_endpoint: false,
-            show_only_host: false,
-            show_only_path: false,
-            show_only_param: false,
-            normalize_url: false,
-            dedup_similar: false,
-            param_view: ParamView::None,
-        }
-    }
-
-    /// Enables or disables merging of endpoints with the same path but different parameters
-    pub fn with_merge_endpoint(&mut self, merge: bool) -> &mut Self {
-        self.merge_endpoint = merge;
-        self
-    }
-
-    /// When enabled, shows only the hostname part of URLs
-    pub fn with_show_only_host(&mut self, show: bool) -> &mut Self {
-        self.show_only_host = show;
-        self
-    }
-
-    /// When enabled, shows only the path part of URLs
-    pub fn with_show_only_path(&mut self, show: bool) -> &mut Self {
-        self.show_only_path = show;
-        self
-    }
-
-    /// When enabled, shows only the query parameters of URLs
-    pub fn with_show_only_param(&mut self, show: bool) -> &mut Self {
-        self.show_only_param = show;
-        self
-    }
-
-    /// When enabled, normalizes URLs for better deduplication
-    /// Sorts query parameters alphabetically and normalizes paths
-    pub fn with_normalize_url(&mut self, normalize: bool) -> &mut Self {
-        self.normalize_url = normalize;
-        self
-    }
-
-    /// When enabled, collapses URLs that differ only in variable-looking path
-    /// segments (ids, UUIDs, hashes, dates) and query *values*
-    pub fn with_dedup_similar(&mut self, dedup: bool) -> &mut Self {
-        self.dedup_similar = dedup;
-        self
-    }
-
-    // --- output-views ---
-    /// Selects the parameter inventory view that replaces the URL list, if any.
-    pub fn with_param_view(&mut self, view: ParamView) -> &mut Self {
-        self.param_view = view;
-        self
-    }
-
     /// Transforms a list of URLs according to the configured settings, and
     /// reports what the cross-URL stages removed.
     ///
@@ -728,8 +673,10 @@ mod tests {
     use super::*;
 
     fn dedup(urls: &[&str]) -> Vec<String> {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_dedup_similar(true);
+        let transformer = UrlTransformer {
+            dedup_similar: true,
+            ..Default::default()
+        };
         transformer
             .transform_with_stats(urls.iter().map(|s| s.to_string()).collect())
             .0
@@ -906,8 +853,10 @@ mod tests {
 
     #[test]
     fn test_dedup_similar_reports_how_much_it_collapsed() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_dedup_similar(true);
+        let transformer = UrlTransformer {
+            dedup_similar: true,
+            ..Default::default()
+        };
 
         let (out, stats) = transformer.transform_with_stats(
             ["/1", "/2", "/3", "/about"]
@@ -921,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_dedup_similar_is_off_by_default() {
-        let transformer = UrlTransformer::new();
+        let transformer = UrlTransformer::default();
         let urls: Vec<String> = ["https://example.com/post/1", "https://example.com/post/2"]
             .iter()
             .map(|s| s.to_string())
@@ -935,11 +884,12 @@ mod tests {
     fn test_dedup_similar_composes_with_normalize_and_merge() {
         // The three options are independent stages; each must still do its own
         // job when the others are on.
-        let mut transformer = UrlTransformer::new();
-        transformer
-            .with_normalize_url(true)
-            .with_merge_endpoint(true)
-            .with_dedup_similar(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            merge_endpoint: true,
+            dedup_similar: true,
+            ..Default::default()
+        };
 
         let (out, stats) = transformer.transform_with_stats(
             [
@@ -964,10 +914,11 @@ mod tests {
 
     #[test]
     fn test_dedup_similar_runs_before_the_show_only_views() {
-        let mut transformer = UrlTransformer::new();
-        transformer
-            .with_dedup_similar(true)
-            .with_show_only_path(true);
+        let transformer = UrlTransformer {
+            dedup_similar: true,
+            show_only_path: true,
+            ..Default::default()
+        };
 
         let (out, _) = transformer.transform_with_stats(
             ["https://example.com/post/1", "https://example.com/post/2"]
@@ -980,8 +931,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_merge_endpoints() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api?param1=value1".to_string(),
@@ -1003,8 +956,10 @@ mod tests {
         // re-join the results raw, so an encoded '&' or '=' inside a value broke
         // out and became extra parameters — silently rewriting the URL the
         // archive actually recorded.
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/go?next=%2Fadmin%3Fdebug%3D1".to_string(),
@@ -1023,8 +978,10 @@ mod tests {
     fn test_merge_endpoints_preserves_plus_and_bare_params() {
         // '+' must not become a space, and a valueless `?foo` must not gain an
         // '=' — both were casualties of the decode/re-encode round trip.
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/s?q=a+b".to_string(),
@@ -1041,8 +998,10 @@ mod tests {
         // Regression: the group key was host+path, so a plain-HTTP endpoint and
         // its HTTPS counterpart (and a non-default port) merged into one URL —
         // inventing an endpoint that carried parameters never seen on that origin.
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "http://example.com/api?a=1".to_string(),
@@ -1068,8 +1027,10 @@ mod tests {
 
     #[test]
     fn test_merge_endpoints_still_merges_same_origin() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api?a=1".to_string(),
@@ -1082,8 +1043,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_show_only_host() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_host(true);
+        let transformer = UrlTransformer {
+            show_only_host: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/path1".to_string(),
@@ -1099,8 +1062,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_show_only_path() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_path(true);
+        let transformer = UrlTransformer {
+            show_only_path: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/path1".to_string(),
@@ -1116,8 +1081,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_show_only_param() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_param(true);
+        let transformer = UrlTransformer {
+            show_only_param: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api?param1=value1".to_string(),
@@ -1133,8 +1100,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_query_params() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api?b=2&a=1".to_string(),
@@ -1150,8 +1119,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_trailing_slashes() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api/".to_string(),
@@ -1172,8 +1143,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_complex() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api/?c=3&b=2&a=1".to_string(),
@@ -1188,10 +1161,11 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_with_merge_endpoint() {
-        let mut transformer = UrlTransformer::new();
-        transformer
-            .with_normalize_url(true)
-            .with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api/?param2=value2&param1=value1".to_string(),
@@ -1212,8 +1186,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_preserves_bare_param_and_plus() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/a?foo".to_string(), // bare param, no '='
@@ -1239,8 +1215,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_invalid_urls() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api?a=1&b=2".to_string(),
@@ -1256,7 +1234,7 @@ mod tests {
 
     #[test]
     fn test_url_transformer_new() {
-        let transformer = UrlTransformer::new();
+        let transformer = UrlTransformer::default();
 
         // Transform empty list should return empty list
         let urls: Vec<String> = vec![];
@@ -1266,7 +1244,7 @@ mod tests {
 
     #[test]
     fn test_url_transformer_no_options() {
-        let transformer = UrlTransformer::new();
+        let transformer = UrlTransformer::default();
 
         let urls = vec![
             "https://example.com/path1".to_string(),
@@ -1280,8 +1258,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_show_only_path_root_path() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_path(true);
+        let transformer = UrlTransformer {
+            show_only_path: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/".to_string(),
@@ -1299,8 +1279,10 @@ mod tests {
         // Regression: `https://example.com/x?` parses with a query of
         // `Some("")`, which was emitted as a value — a blank line in the
         // output (and a blank entry in JSON/CSV).
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_param(true);
+        let transformer = UrlTransformer {
+            show_only_param: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/x?".to_string(),
@@ -1314,8 +1296,10 @@ mod tests {
     #[test]
     fn test_transform_one_skips_an_empty_query() {
         // The streaming path decides each URL on arrival and must agree.
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_param(true);
+        let transformer = UrlTransformer {
+            show_only_param: true,
+            ..Default::default()
+        };
 
         assert_eq!(transformer.transform_one("https://example.com/x?"), None);
         assert_eq!(
@@ -1326,8 +1310,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_show_only_param_no_params() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_param(true);
+        let transformer = UrlTransformer {
+            show_only_param: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/path".to_string(),
@@ -1342,8 +1328,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_merge_endpoints_single_url() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec!["https://example.com/api?param1=value1".to_string()];
 
@@ -1354,8 +1342,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_merge_endpoints_no_params() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/path".to_string(),
@@ -1369,8 +1359,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_merge_endpoints_invalid_url() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_merge_endpoint(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "not-a-valid-url".to_string(),
@@ -1384,8 +1376,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_empty_query() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec!["https://example.com/path".to_string()];
 
@@ -1396,13 +1390,14 @@ mod tests {
 
     #[test]
     fn test_url_transformer_chaining() {
-        let mut transformer = UrlTransformer::new();
-        transformer
-            .with_merge_endpoint(true)
-            .with_show_only_host(false)
-            .with_show_only_path(false)
-            .with_show_only_param(false)
-            .with_normalize_url(true);
+        let transformer = UrlTransformer {
+            merge_endpoint: true,
+            show_only_host: false,
+            show_only_path: false,
+            show_only_param: false,
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/api?b=2&a=1".to_string(),
@@ -1415,8 +1410,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_show_only_host_invalid_url() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_host(true);
+        let transformer = UrlTransformer {
+            show_only_host: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "https://example.com/path".to_string(),
@@ -1431,8 +1428,10 @@ mod tests {
 
     #[test]
     fn test_url_transformer_normalize_completely_invalid_inputs() {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_normalize_url(true);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        };
 
         let urls = vec![
             "plain-text".to_string(),
@@ -1451,8 +1450,10 @@ mod tests {
     // --- output-views ---
 
     fn view(urls: &[&str], view: ParamView) -> Vec<String> {
-        let mut transformer = UrlTransformer::new();
-        transformer.with_param_view(view);
+        let transformer = UrlTransformer {
+            param_view: view,
+            ..Default::default()
+        };
         transformer
             .transform_with_stats(urls.iter().map(|s| s.to_string()).collect())
             .0
@@ -1632,10 +1633,11 @@ mod tests {
     fn test_param_view_composes_with_the_earlier_stages() {
         // --normalize-url runs first, so the sorted query it produces is what
         // the inventory sees; the view then replaces the list outright.
-        let mut transformer = UrlTransformer::new();
-        transformer
-            .with_normalize_url(true)
-            .with_param_view(ParamView::Names);
+        let transformer = UrlTransformer {
+            normalize_url: true,
+            param_view: ParamView::Names,
+            ..Default::default()
+        };
         let out = transformer
             .transform_with_stats(vec![
                 "https://example.com/s/?z=1&a=2".to_string(),

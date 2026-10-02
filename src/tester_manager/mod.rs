@@ -395,7 +395,7 @@ mod tests {
         filter.with_extensions(vec!["js".to_string()]);
         let link_filter = Some(Arc::new(ExtractedLinkFilter::new(
             filter,
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             None,
         )));
 
@@ -433,7 +433,7 @@ mod tests {
         // social buttons) landed in the results.
         let link_filter = Some(Arc::new(ExtractedLinkFilter::new(
             UrlFilter::new(),
-            UrlTransformer::new(),
+            UrlTransformer::default(),
             Some(HostValidator::new(&["example.com".to_string()], false)),
         )));
 
@@ -463,8 +463,10 @@ mod tests {
     async fn test_extracted_links_are_transformed_like_the_rest() {
         // The show-only / normalize views applied to the primary list must apply
         // to extracted links too, or the output mixes two different shapes.
-        let mut transformer = UrlTransformer::new();
-        transformer.with_show_only_path(true);
+        let transformer = UrlTransformer {
+            show_only_path: true,
+            ..Default::default()
+        };
         let link_filter = Some(Arc::new(ExtractedLinkFilter::new(
             UrlFilter::new(),
             transformer,
