@@ -1,4 +1,4 @@
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(test)]
@@ -52,34 +52,31 @@ pub fn provider_running_style() -> ProgressStyle {
     .tick_strings(SPINNER_FRAMES)
 }
 
-/// Terminal style for a provider line after a successful fetch. The prefix is
-/// expected to lead with a ✓ glyph (set by the runner); the name is tinted green
-/// and the message is dimmed.
+/// Terminal style for a provider line once its fetch is done. The prefix is
+/// expected to lead with the status glyph (set by the runner), tinted `color`
+/// like the name; the message is tinted `msg_color`.
+fn provider_done_style(color: &str, msg_color: &str) -> ProgressStyle {
+    ProgressStyle::with_template(&format!(
+        "  {{prefix:.{color}.bold}} {{elapsed:>5.#8b949e}}  {{wide_msg:.{msg_color}}}"
+    ))
+    .expect("static provider done template is valid")
+}
+
+/// A successful fetch: a green ✓ line with a dimmed message.
 pub fn provider_success_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "  {prefix:.#7ee787.bold} {elapsed:>5.#8b949e}  {wide_msg:.#8b949e}",
-    )
-    .expect("static provider success template is valid")
+    provider_done_style("#7ee787", "#8b949e")
 }
 
-/// Terminal style for a provider line after a failed fetch. The prefix is
-/// expected to lead with a ✗ glyph; the line is tinted red.
+/// A failed fetch: a red ✗ line.
 pub fn provider_error_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "  {prefix:.#f47067.bold} {elapsed:>5.#8b949e}  {wide_msg:.#f47067}",
-    )
-    .expect("static provider error template is valid")
+    provider_done_style("#f47067", "#f47067")
 }
 
-/// Terminal style for a provider line that succeeded but returned *incomplete*
-/// results (e.g. a paginating fetch lost a page mid-cursor). The prefix leads
-/// with a ◐ glyph and the line is tinted amber so a partial result is visually
-/// distinct from a clean ✓ and from a hard ✗.
+/// A fetch that succeeded but returned *incomplete* results (e.g. a paginating
+/// fetch lost a page mid-cursor): an amber ◐ line, visually distinct from a
+/// clean ✓ and from a hard ✗.
 pub fn provider_partial_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "  {prefix:.#e3b341.bold} {elapsed:>5.#8b949e}  {wide_msg:.#e3b341}",
-    )
-    .expect("static provider partial template is valid")
+    provider_done_style("#e3b341", "#e3b341")
 }
 
 /// A run-wide "wrap up now" flag, shared by every [`ProgressReporter`] handed
@@ -237,10 +234,9 @@ impl ProgressReporter {
 #[derive(Clone)]
 enum NoteSink {
     /// Above the live region, through `MultiProgress` (which draws to stderr)
-    /// so the region's line tracking stays correct.
+    /// so the region's line tracking stays correct — or straight to stderr
+    /// when the region is hidden.
     Region(MultiProgress),
-    /// No live region to disturb — straight to stderr.
-    Stderr,
     /// Test-only: collect the lines so a test can assert *that* a message went
     /// through this channel rather than to stdout.
     #[cfg(test)]
@@ -283,7 +279,6 @@ impl Notifier {
             NoteSink::Region(multi) => {
                 let _ = multi.println(msg.as_ref());
             }
-            NoteSink::Stderr => eprintln!("{}", msg.as_ref()),
             #[cfg(test)]
             NoteSink::Capture(lines) => lines
                 .lock()
@@ -295,22 +290,22 @@ impl Notifier {
 
 pub struct ProgressManager {
     multi_progress: MultiProgress,
-    no_progress: bool,
     notes: NoteSink,
 }
 
 impl ProgressManager {
+    /// With `no_progress` the region draws nowhere: every bar still accepts
+    /// updates, so callers drive them unconditionally, and notes go straight
+    /// to stderr.
     pub fn new(no_progress: bool) -> Self {
-        let multi_progress = MultiProgress::new();
-        let notes = if no_progress {
-            NoteSink::Stderr
+        let multi_progress = if no_progress {
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
         } else {
-            NoteSink::Region(multi_progress.clone())
+            MultiProgress::new()
         };
         ProgressManager {
+            notes: NoteSink::Region(multi_progress.clone()),
             multi_progress,
-            no_progress,
-            notes,
         }
     }
 
@@ -320,8 +315,7 @@ impl ProgressManager {
     pub fn capturing() -> (Self, Arc<Mutex<Vec<String>>>) {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let manager = ProgressManager {
-            multi_progress: MultiProgress::new(),
-            no_progress: true,
+            multi_progress: MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
             notes: NoteSink::Capture(Arc::clone(&lines)),
         };
         (manager, lines)
@@ -337,40 +331,35 @@ impl ProgressManager {
         }
     }
 
-    pub fn create_domain_bar(&self, total: usize) -> ProgressBar {
-        if self.no_progress {
-            // Return a hidden progress bar when progress is disabled
-            let bar = ProgressBar::hidden();
-            bar.set_length(total as u64);
-            return bar;
+    /// Add `bar` to the live region, ticking it while the region is visible.
+    fn add(&self, bar: ProgressBar, tick_ms: u64) -> ProgressBar {
+        let bar = self.multi_progress.add(bar);
+        if !bar.is_hidden() {
+            bar.enable_steady_tick(std::time::Duration::from_millis(tick_ms));
         }
-
-        let style = ProgressStyle::with_template(
-            "  {prefix:.#a7b6c2} {bar:26.#5ad1cd/#3b424d}  {pos:>3}/{len:<3}  {wide_msg:.#8b949e}",
-        )
-        .unwrap()
-        .progress_chars(BAR_FILL);
-
-        let bar = self.multi_progress.add(ProgressBar::new(total as u64));
-        bar.set_style(style);
-        // "◇ <label>" — the ◇ sits in the same gutter column as the provider
-        // status glyphs; the 12-wide label keeps every rail starting at one column.
-        bar.set_prefix(format!("◇ {:<12}", "Domains"));
-        bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
-
         bar
     }
 
-    pub fn create_provider_bars(&self, provider_names: &[String]) -> Vec<ProgressBar> {
-        if self.no_progress {
-            // Hidden spinners still accept set_message/set_style calls, so the
-            // runner can drive them unconditionally without branching.
-            return provider_names
-                .iter()
-                .map(|_| ProgressBar::hidden())
-                .collect();
-        }
+    /// One `◇ <label>` rail of `len` steps, filled in `color`. `counter` is the
+    /// `{pos}/{len}` column, or empty for a stage without one.
+    fn stage_bar(&self, label: &str, len: usize, color: &str, counter: &str) -> ProgressBar {
+        let style = ProgressStyle::with_template(&format!(
+            "  {{prefix:.#a7b6c2}} {{bar:26.{color}/#3b424d}}  {counter}{{wide_msg:.#8b949e}}"
+        ))
+        .unwrap()
+        .progress_chars(BAR_FILL);
+        let bar = ProgressBar::new(len as u64).with_style(style);
+        // "◇ <label>" — the ◇ sits in the same gutter column as the provider
+        // status glyphs; the 12-wide label keeps every rail starting at one column.
+        bar.set_prefix(format!("◇ {label:<12}"));
+        self.add(bar, BAR_TICK_MS)
+    }
 
+    pub fn create_domain_bar(&self, total: usize) -> ProgressBar {
+        self.stage_bar("Domains", total, "#5ad1cd", "{pos:>3}/{len:<3}  ")
+    }
+
+    pub fn create_provider_bars(&self, provider_names: &[String]) -> Vec<ProgressBar> {
         let style = provider_running_style();
 
         // Indeterminate spinner per provider: a fetch has no honest percentage
@@ -379,16 +368,14 @@ impl ProgressManager {
         let bars: Vec<ProgressBar> = provider_names
             .iter()
             .map(|name| {
-                let bar = self.multi_progress.add(ProgressBar::new_spinner());
+                let bar = ProgressBar::new_spinner().with_style(style.clone());
                 // 16-wide name field. The running style renders this after the
                 // spinner+space; the finished styles render "glyph + space + name"
                 // (18 cols) in the same slot, so the name column stays put across
                 // states. The runner resets this prefix each domain.
                 bar.set_prefix(format!("{name:<16}"));
-                bar.set_style(style.clone());
-                bar.enable_steady_tick(std::time::Duration::from_millis(SPINNER_TICK_MS));
                 bar.set_message("queued…");
-                bar
+                self.add(bar, SPINNER_TICK_MS)
             })
             .collect();
 
@@ -401,69 +388,15 @@ impl ProgressManager {
     }
 
     pub fn create_filter_bar(&self) -> ProgressBar {
-        if self.no_progress {
-            // Return a hidden progress bar when progress is disabled
-            let bar = ProgressBar::hidden();
-            bar.set_length(100);
-            return bar;
-        }
-
-        let style = ProgressStyle::with_template(
-            "  {prefix:.#a7b6c2} {bar:26.#5ad1cd/#3b424d}  {wide_msg:.#8b949e}",
-        )
-        .unwrap()
-        .progress_chars(BAR_FILL);
-
-        let bar = self.multi_progress.add(ProgressBar::new(100));
-        bar.set_style(style);
-        bar.set_prefix(format!("◇ {:<12}", "Filtering"));
-        bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
-
-        bar
+        self.stage_bar("Filtering", 100, "#5ad1cd", "")
     }
 
     pub fn create_transform_bar(&self) -> ProgressBar {
-        if self.no_progress {
-            // Return a hidden progress bar when progress is disabled
-            let bar = ProgressBar::hidden();
-            bar.set_length(100);
-            return bar;
-        }
-
-        let style = ProgressStyle::with_template(
-            "  {prefix:.#a7b6c2} {bar:26.#c29bf5/#3b424d}  {wide_msg:.#8b949e}",
-        )
-        .unwrap()
-        .progress_chars(BAR_FILL);
-
-        let bar = self.multi_progress.add(ProgressBar::new(100));
-        bar.set_style(style);
-        bar.set_prefix(format!("◇ {:<12}", "Transform"));
-        bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
-
-        bar
+        self.stage_bar("Transform", 100, "#c29bf5", "")
     }
 
     pub fn create_test_bar(&self, total: usize) -> ProgressBar {
-        if self.no_progress {
-            // Return a hidden progress bar when progress is disabled
-            let bar = ProgressBar::hidden();
-            bar.set_length(total as u64);
-            return bar;
-        }
-
-        let style = ProgressStyle::with_template(
-            "  {prefix:.#a7b6c2} {bar:26.#56b6f6/#3b424d}  {pos:>5}/{len:<5}  {wide_msg:.#8b949e}",
-        )
-        .unwrap()
-        .progress_chars(BAR_FILL);
-
-        let bar = self.multi_progress.add(ProgressBar::new(total as u64));
-        bar.set_style(style);
-        bar.set_prefix(format!("◇ {:<12}", "Testing"));
-        bar.enable_steady_tick(std::time::Duration::from_millis(BAR_TICK_MS));
-
-        bar
+        self.stage_bar("Testing", total, "#56b6f6", "{pos:>5}/{len:<5}  ")
     }
 
     /// Add the run header as a static (non-animated) line at the top of the
@@ -473,9 +406,6 @@ impl ProgressManager {
     ///
     /// [`clear`]: ProgressManager::clear
     pub fn create_header_line(&self, text: impl Into<String>) -> ProgressBar {
-        if self.no_progress {
-            return ProgressBar::hidden();
-        }
         let bar = self.multi_progress.add(ProgressBar::new_spinner());
         bar.set_style(
             ProgressStyle::with_template("{msg}").expect("static header template is valid"),
@@ -492,11 +422,8 @@ impl ProgressManager {
     /// Tear down the entire live region (header + every bar) once the run's
     /// progress is finished. Progress is meant to be visible only *while*
     /// scanning; clearing here keeps the final terminal output to just the URL
-    /// list. A no-op when progress is disabled.
+    /// list.
     pub fn clear(&self) {
-        if self.no_progress {
-            return;
-        }
         let _ = self.multi_progress.clear();
     }
 
