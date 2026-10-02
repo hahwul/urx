@@ -528,26 +528,14 @@ impl Config {
     /// be silently replaced by the config file's value.
     pub fn apply_to_args(self, args: &mut Args, provided: &CliProvided) {
         warn_about_unknown_keys(&self.unknown_keys(), "the config file", args.silent);
+        let (o, p, f, n) = (&self.output, &self.provider, &self.filter, &self.network);
+        let (t, c) = (&self.testing, &self.cache);
 
-        self.apply_output_config(args, provided);
-        self.apply_provider_config(args, provided);
-        self.apply_filter_config(args, provided);
-        self.apply_network_config(args, provided);
-        self.apply_testing_config(args, provided);
-        self.apply_cache_config(args, provided);
-        self.apply_notify_config(args, provided);
-    }
-
-    fn apply_output_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Output options
-        if args.output.is_none() {
-            if let Some(output) = &self.output.output {
-                args.output = Some(PathBuf::from(output));
-            }
-        }
+        // [output]
+        args.output.fill(&o.output.as_ref().map(PathBuf::from));
 
         if !provided.has("format") {
-            if let Some(format) = &self.output.format {
+            if let Some(format) = &o.format {
                 if let Some(format) = normalize_output_format(format) {
                     args.format = format;
                 } else if !args.silent {
@@ -558,35 +546,18 @@ impl Config {
             }
         }
 
-        if !args.merge_endpoint && self.output.merge_endpoint.unwrap_or(false) {
-            args.merge_endpoint = true;
-        }
+        args.merge_endpoint.fill(&o.merge_endpoint);
+        args.dedup_similar.fill(&o.dedup_similar);
+        args.stream.fill(&o.stream);
 
-        if !args.dedup_similar && self.output.dedup_similar.unwrap_or(false) {
-            args.dedup_similar = true;
-        }
-
-        if !args.stream && self.output.stream.unwrap_or(false) {
-            args.stream = true;
-        }
-    }
-
-    fn apply_provider_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Provider options
-        if !provided.has("providers") {
-            if let Some(providers) = &self.provider.providers {
-                args.providers = providers.clone();
-            }
-        }
-
-        if !args.subs && self.provider.subs.unwrap_or(false) {
-            args.subs = true;
-        }
+        // [provider]
+        fill_untyped(provided, "providers", &mut args.providers, &p.providers);
+        args.subs.fill(&p.subs);
 
         // Config file still accepts a single string; we split it on commas so
         // users can configure multi-index there too.
         if !provided.has("cc_index") {
-            if let Some(cc_index) = &self.provider.cc_index {
+            if let Some(cc_index) = &p.cc_index {
                 let split = split_csv(cc_index);
                 if !split.is_empty() {
                     args.cc_index = split;
@@ -596,7 +567,7 @@ impl Config {
 
         // Extra CDX index servers, and the dialect they speak.
         if args.cdx_endpoint.is_empty() {
-            if let Some(endpoints) = &self.provider.cdx_endpoint {
+            if let Some(endpoints) = &p.cdx_endpoint {
                 args.cdx_endpoint = endpoints
                     .iter()
                     .map(|e| e.trim().to_string())
@@ -607,53 +578,26 @@ impl Config {
 
         // An empty string is the documented "unset" spelling, same as `from`.
         if args.cdx_dialect.is_none() {
-            if let Some(dialect) = self.provider.cdx_dialect.as_deref().map(str::trim) {
+            if let Some(dialect) = p.cdx_dialect.as_deref().map(str::trim) {
                 if !dialect.is_empty() {
                     args.cdx_dialect = Some(dialect.to_string());
                 }
             }
         }
 
-        // Archive-side CDX predicates. Each applies only when the CLI left the
-        // slot untouched, matching how every other provider option resolves.
-        if args.from.is_none() && self.provider.from.is_some() {
-            args.from = self.provider.from.clone();
-        }
-
-        if args.to.is_none() && self.provider.to.is_some() {
-            args.to = self.provider.to.clone();
-        }
-
-        if args.archive_status.is_empty() {
-            if let Some(v) = &self.provider.archive_status {
-                args.archive_status = v.clone();
-            }
-        }
-
-        if args.archive_exclude_status.is_empty() {
-            if let Some(v) = &self.provider.archive_exclude_status {
-                args.archive_exclude_status = v.clone();
-            }
-        }
-
-        if args.archive_mime.is_empty() {
-            if let Some(v) = &self.provider.archive_mime {
-                args.archive_mime = v.clone();
-            }
-        }
-
-        if args.archive_exclude_mime.is_empty() {
-            if let Some(v) = &self.provider.archive_exclude_mime {
-                args.archive_exclude_mime = v.clone();
-            }
-        }
+        // Archive-side CDX predicates.
+        args.from.fill(&p.from);
+        args.to.fill(&p.to);
+        args.archive_status.fill(&p.archive_status);
+        args.archive_exclude_status.fill(&p.archive_exclude_status);
+        args.archive_mime.fill(&p.archive_mime);
+        args.archive_exclude_mime.fill(&p.archive_exclude_mime);
 
         // API keys rotate when several are given, and every other source
         // separates them with commas: the env vars do, and so does the
         // provider-config file. The main config used to push the whole string as
         // a single key, so `vt_api_key = "k1,k2"` became one key literally named
         // "k1,k2" — which simply fails to authenticate, with no hint why.
-        let p = &self.provider;
         let configured = [
             &p.vt_api_key,
             &p.urlscan_api_key,
@@ -662,12 +606,7 @@ impl Config {
             &p.bevigil_api_key,
         ];
         for (id, keys) in KEYED_PROVIDER_IDS.into_iter().zip(configured) {
-            let slot = api_keys_mut(args, id);
-            if slot.is_empty() {
-                if let Some(keys) = keys {
-                    *slot = split_csv(keys);
-                }
-            }
+            api_keys_mut(args, id).fill(&keys.as_deref().map(split_csv));
         }
 
         // Explicit CLI choices take precedence over config, while exclusion
@@ -675,7 +614,7 @@ impl Config {
         if !provided.has("include_robots")
             && !provided.has("exclude_robots")
             && !args.exclude_robots
-            && self.provider.exclude_robots.unwrap_or(false)
+            && p.exclude_robots.unwrap_or(false)
         {
             args.exclude_robots = true;
         }
@@ -683,78 +622,40 @@ impl Config {
         if !provided.has("include_sitemap")
             && !provided.has("exclude_sitemap")
             && !args.exclude_sitemap
-            && self.provider.exclude_sitemap.unwrap_or(false)
+            && p.exclude_sitemap.unwrap_or(false)
         {
             args.exclude_sitemap = true;
         }
 
         // Only apply include_* if exclude_* is not set (exclude takes precedence)
         if !provided.has("include_robots") && !args.exclude_robots && args.include_robots {
-            if let Some(include_robots) = self.provider.include_robots {
+            if let Some(include_robots) = p.include_robots {
                 args.include_robots = include_robots;
             }
         }
 
         if !provided.has("include_sitemap") && !args.exclude_sitemap && args.include_sitemap {
-            if let Some(include_sitemap) = self.provider.include_sitemap {
+            if let Some(include_sitemap) = p.include_sitemap {
                 args.include_sitemap = include_sitemap;
             }
         }
 
-        if !args.archived_discovery && self.provider.archived_discovery.unwrap_or(false) {
-            args.archived_discovery = true;
-        }
+        args.archived_discovery.fill(&p.archived_discovery);
+        fill_untyped(
+            provided,
+            "archived_discovery_limit",
+            &mut args.archived_discovery_limit,
+            &p.archived_discovery_limit,
+        );
 
-        if !provided.has("archived_discovery_limit") {
-            if let Some(limit) = self.provider.archived_discovery_limit {
-                args.archived_discovery_limit = limit;
-            }
-        }
-    }
-
-    fn apply_filter_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Filter options
-        if args.preset.is_empty() {
-            if let Some(preset) = &self.filter.preset {
-                args.preset = preset.clone();
-            }
-        }
-
-        if args.extensions.is_empty() {
-            if let Some(extensions) = &self.filter.extensions {
-                args.extensions = extensions.clone();
-            }
-        }
-
-        if args.exclude_extensions.is_empty() {
-            if let Some(exclude_extensions) = &self.filter.exclude_extensions {
-                args.exclude_extensions = exclude_extensions.clone();
-            }
-        }
-
-        if args.patterns.is_empty() {
-            if let Some(patterns) = &self.filter.patterns {
-                args.patterns = patterns.clone();
-            }
-        }
-
-        if args.exclude_patterns.is_empty() {
-            if let Some(exclude_patterns) = &self.filter.exclude_patterns {
-                args.exclude_patterns = exclude_patterns.clone();
-            }
-        }
-
-        if args.match_regex.is_empty() {
-            if let Some(match_regex) = &self.filter.match_regex {
-                args.match_regex = match_regex.clone();
-            }
-        }
-
-        if args.filter_regex.is_empty() {
-            if let Some(filter_regex) = &self.filter.filter_regex {
-                args.filter_regex = filter_regex.clone();
-            }
-        }
+        // [filter]
+        args.preset.fill(&f.preset);
+        args.extensions.fill(&f.extensions);
+        args.exclude_extensions.fill(&f.exclude_extensions);
+        args.patterns.fill(&f.patterns);
+        args.exclude_patterns.fill(&f.exclude_patterns);
+        args.match_regex.fill(&f.match_regex);
+        args.filter_regex.fill(&f.filter_regex);
 
         // These flags select one output view. A view explicitly chosen on the
         // CLI must replace the configured view as a whole; otherwise a config
@@ -771,79 +672,29 @@ impl Config {
         .iter()
         .any(|id| provided.has(id));
         if !cli_selected_output_view {
-            if !args.show_only_host && self.filter.show_only_host.unwrap_or(false) {
-                args.show_only_host = true;
-            }
-
-            if !args.show_only_path && self.filter.show_only_path.unwrap_or(false) {
-                args.show_only_path = true;
-            }
-
-            if !args.show_only_param && self.filter.show_only_param.unwrap_or(false) {
-                args.show_only_param = true;
-            }
+            args.show_only_host.fill(&f.show_only_host);
+            args.show_only_path.fill(&f.show_only_path);
+            args.show_only_param.fill(&f.show_only_param);
         }
 
-        if args.min_length.is_none() && self.filter.min_length.is_some() {
-            args.min_length = self.filter.min_length;
-        }
-
-        if args.max_length.is_none() && self.filter.max_length.is_some() {
-            args.max_length = self.filter.max_length;
-        }
+        args.min_length.fill(&f.min_length);
+        args.max_length.fill(&f.max_length);
 
         // --- result-filters ---
-        if args.scope_file.is_empty() {
-            if let Some(scope_file) = &self.filter.scope_file {
-                args.scope_file = scope_file.clone();
-            }
-        }
-
-        for (slot, configured) in [
-            (
-                &mut args.meta_first_seen_after,
-                &self.filter.meta_first_seen_after,
-            ),
-            (
-                &mut args.meta_first_seen_before,
-                &self.filter.meta_first_seen_before,
-            ),
-            (
-                &mut args.meta_last_seen_after,
-                &self.filter.meta_last_seen_after,
-            ),
-            (
-                &mut args.meta_last_seen_before,
-                &self.filter.meta_last_seen_before,
-            ),
-        ] {
-            if slot.is_none() {
-                slot.clone_from(configured);
-            }
-        }
-
-        for (slot, configured) in [
-            (&mut args.meta_mime, &self.filter.meta_mime),
-            (&mut args.meta_exclude_mime, &self.filter.meta_exclude_mime),
-            (&mut args.meta_status, &self.filter.meta_status),
-            (
-                &mut args.meta_exclude_status,
-                &self.filter.meta_exclude_status,
-            ),
-        ] {
-            if slot.is_empty() {
-                if let Some(values) = configured {
-                    slot.clone_from(values);
-                }
-            }
-        }
+        args.scope_file.fill(&f.scope_file);
+        args.meta_first_seen_after.fill(&f.meta_first_seen_after);
+        args.meta_first_seen_before.fill(&f.meta_first_seen_before);
+        args.meta_last_seen_after.fill(&f.meta_last_seen_after);
+        args.meta_last_seen_before.fill(&f.meta_last_seen_before);
+        args.meta_mime.fill(&f.meta_mime);
+        args.meta_exclude_mime.fill(&f.meta_exclude_mime);
+        args.meta_status.fill(&f.meta_status);
+        args.meta_exclude_status.fill(&f.meta_exclude_status);
         // --- end result-filters ---
-    }
 
-    fn apply_network_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Network options
+        // [network]
         if !provided.has("network_scope") {
-            if let Some(network_scope) = &self.network.network_scope {
+            if let Some(network_scope) = &n.network_scope {
                 if let Some(network_scope) = normalize_network_scope(network_scope) {
                     args.network_scope = network_scope;
                 } else if !args.silent {
@@ -854,45 +705,20 @@ impl Config {
             }
         }
 
-        if args.proxy.is_none() && self.network.proxy.is_some() {
-            args.proxy = self.network.proxy.clone();
-        }
-
-        if args.proxy_auth.is_none() && self.network.proxy_auth.is_some() {
-            args.proxy_auth = self.network.proxy_auth.clone();
-        }
-
-        if !args.insecure && self.network.insecure.unwrap_or(false) {
-            args.insecure = true;
-        }
-
-        if !args.random_agent && self.network.random_agent.unwrap_or(false) {
-            args.random_agent = true;
-        }
+        args.proxy.fill(&n.proxy);
+        args.proxy_auth.fill(&n.proxy_auth);
+        args.insecure.fill(&n.insecure);
+        args.random_agent.fill(&n.random_agent);
 
         // Headers are additive nowhere: a config file that sets them is a
         // default, and any -H on the command line replaces the set wholesale,
         // so a run can always be made anonymous again without editing a file.
-        if args.header.is_empty() {
-            if let Some(header) = &self.network.header {
-                args.header = header.clone().into_vec();
-            }
-        }
-
-        if args.cookie.is_none() {
-            if let Some(cookie) = &self.network.cookie {
-                args.cookie = Some(cookie.clone());
-            }
-        }
-
-        if args.user_agent.is_none() {
-            if let Some(ua) = &self.network.user_agent {
-                args.user_agent = Some(ua.clone());
-            }
-        }
+        args.header.fill(&n.header.clone().map(OneOrMany::into_vec));
+        args.cookie.fill(&n.cookie);
+        args.user_agent.fill(&n.user_agent);
 
         if !provided.has("timeout") {
-            if let Some(timeout) = self.network.timeout {
+            if let Some(timeout) = n.timeout {
                 if timeout > 0 {
                     args.timeout = timeout;
                 } else if !args.silent {
@@ -903,14 +729,10 @@ impl Config {
             }
         }
 
-        if !provided.has("retries") {
-            if let Some(retries) = self.network.retries {
-                args.retries = retries;
-            }
-        }
+        fill_untyped(provided, "retries", &mut args.retries, &n.retries);
 
         if !provided.has("parallel") {
-            if let Some(parallel) = self.network.parallel {
+            if let Some(parallel) = n.parallel {
                 if parallel > 0 {
                     args.parallel = Some(parallel);
                 } else if !args.silent {
@@ -919,79 +741,42 @@ impl Config {
             }
         }
 
-        if args.rate_limit.is_none() && self.network.rate_limit.is_some() {
-            args.rate_limit = self.network.rate_limit;
-        }
-    }
+        args.rate_limit.fill(&n.rate_limit);
 
-    fn apply_testing_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Testing options
-        if !args.check_status && self.testing.check_status.unwrap_or(false) {
-            args.check_status = true;
-        }
-
-        if args.include_status.is_empty() {
-            if let Some(include_status) = &self.testing.include_status {
-                args.include_status = include_status.clone();
-            }
-        }
-
-        if args.exclude_status.is_empty() {
-            if let Some(exclude_status) = &self.testing.exclude_status {
-                args.exclude_status = exclude_status.clone();
-            }
-        }
-
-        if !args.extract_links && self.testing.extract_links.unwrap_or(false) {
-            args.extract_links = true;
-        }
-
-        if !args.extract_js_endpoints && self.testing.extract_js_endpoints.unwrap_or(false) {
-            args.extract_js_endpoints = true;
-        }
-
-        if !provided.has("max_js_files") {
-            if let Some(max) = self.testing.max_js_files {
-                args.max_js_files = max;
-            }
-        }
-
-        if !args.archive_body && self.testing.archive_body.unwrap_or(false) {
-            args.archive_body = true;
-        }
-
-        if !provided.has("archive_body_limit") {
-            if let Some(limit) = self.testing.archive_body_limit {
-                args.archive_body_limit = limit;
-            }
-        }
-
-        if args.archive_body_dir.is_none() {
-            if let Some(dir) = &self.testing.archive_body_dir {
-                args.archive_body_dir = Some(dir.clone());
-            }
-        }
-
+        // [testing]
+        args.check_status.fill(&t.check_status);
+        args.include_status.fill(&t.include_status);
+        args.exclude_status.fill(&t.exclude_status);
+        args.extract_links.fill(&t.extract_links);
+        args.extract_js_endpoints.fill(&t.extract_js_endpoints);
+        fill_untyped(
+            provided,
+            "max_js_files",
+            &mut args.max_js_files,
+            &t.max_js_files,
+        );
+        args.archive_body.fill(&t.archive_body);
+        fill_untyped(
+            provided,
+            "archive_body_limit",
+            &mut args.archive_body_limit,
+            &t.archive_body_limit,
+        );
+        args.archive_body_dir.fill(&t.archive_body_dir);
         // --- spec-expansion ---
-        if !args.expand_specs && self.testing.expand_specs.unwrap_or(false) {
-            args.expand_specs = true;
-        }
+        args.expand_specs.fill(&t.expand_specs);
+        fill_untyped(
+            provided,
+            "max_spec_files",
+            &mut args.max_spec_files,
+            &t.max_spec_files,
+        );
 
-        if !provided.has("max_spec_files") {
-            if let Some(max) = self.testing.max_spec_files {
-                args.max_spec_files = max;
-            }
-        }
-    }
-
-    fn apply_cache_config(&self, args: &mut Args, provided: &CliProvided) {
-        // Cache options
-        if !args.incremental && self.cache.incremental.unwrap_or(false) {
-            args.incremental = true;
-        }
+        // [cache]
+        args.incremental.fill(&c.incremental);
 
         if !provided.has("cache_type") {
-            if let Some(cache_type) = &self.cache.cache_type {
+            if let Some(cache_type) = &c.cache_type {
                 // Mirrors how [output].format and [network].network_scope are
                 // handled: name the bad value at the point it was read, rather
                 // than failing later with an error that doesn't mention the
@@ -1009,28 +794,13 @@ impl Config {
             }
         }
 
-        if args.cache_path.is_none() {
-            if let Some(cache_path) = &self.cache.cache_path {
-                args.cache_path = Some(PathBuf::from(cache_path));
-            }
-        }
+        args.cache_path
+            .fill(&c.cache_path.as_ref().map(PathBuf::from));
+        args.redis_url.fill(&c.redis_url);
+        fill_untyped(provided, "cache_ttl", &mut args.cache_ttl, &c.cache_ttl);
+        args.no_cache.fill(&c.no_cache);
 
-        if args.redis_url.is_none() && self.cache.redis_url.is_some() {
-            args.redis_url = self.cache.redis_url.clone();
-        }
-
-        if !provided.has("cache_ttl") {
-            if let Some(cache_ttl) = self.cache.cache_ttl {
-                args.cache_ttl = cache_ttl;
-            }
-        }
-
-        if !args.no_cache && self.cache.no_cache.unwrap_or(false) {
-            args.no_cache = true;
-        }
-    }
-
-    fn apply_notify_config(&self, args: &mut Args, provided: &CliProvided) {
+        // [notify]
         // The URL list is filled from the CLI *or* URX_NOTIFY_URL before the
         // config layers run, and the two are indistinguishable afterwards —
         // so "still empty" is the test, not `provided.has`.
@@ -1081,6 +851,42 @@ impl Config {
                 }
             }
         }
+    }
+}
+
+/// Fill a CLI slot from the config file only when the CLI left it empty,
+/// unset or false — so CLI input always wins.
+trait Fill<C> {
+    fn fill(&mut self, configured: &C);
+}
+
+impl<T: Clone> Fill<Option<Vec<T>>> for Vec<T> {
+    fn fill(&mut self, configured: &Option<Vec<T>>) {
+        if let (true, Some(values)) = (self.is_empty(), configured) {
+            self.clone_from(values);
+        }
+    }
+}
+
+impl<T: Clone> Fill<Option<T>> for Option<T> {
+    fn fill(&mut self, configured: &Option<T>) {
+        if self.is_none() {
+            self.clone_from(configured);
+        }
+    }
+}
+
+impl Fill<Option<bool>> for bool {
+    fn fill(&mut self, configured: &Option<bool>) {
+        *self |= configured.unwrap_or(false);
+    }
+}
+
+/// Fill a clap-defaulted slot, whose default can't be told from "unset", unless
+/// `id` was typed on the command line.
+fn fill_untyped<T: Clone>(provided: &CliProvided, id: &str, slot: &mut T, configured: &Option<T>) {
+    if let (false, Some(value)) = (provided.has(id), configured) {
+        slot.clone_from(value);
     }
 }
 
