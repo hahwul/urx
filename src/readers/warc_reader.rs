@@ -1,27 +1,7 @@
-use super::FileReader;
 use anyhow::{Context, Result};
 use flate2::read::MultiGzDecoder;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
-
-/// Reader for WARC (Web ARChive) files
-/// Note: This is a basic implementation that extracts URLs from WARC headers
-pub struct WarcFileReader;
-
-impl WarcFileReader {
-    pub fn new() -> Self {
-        Self
-    }
-
-    fn magic(file_path: &Path) -> Result<[u8; 3]> {
-        let mut file = File::open(file_path)
-            .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
-        let mut magic = [0u8; 3];
-        let _ = file.read(&mut magic);
-        Ok(magic)
-    }
-}
 
 /// Pull a URL out of one WARC line, if it carries one.
 ///
@@ -49,26 +29,27 @@ fn extract_url_from_line(line: &str) -> Option<String> {
     None
 }
 
-impl FileReader for WarcFileReader {
-    fn read_urls(&self, file_path: &Path) -> Result<Vec<String>> {
-        let magic = Self::magic(file_path)?;
-        if &magic == b"BZh" {
-            anyhow::bail!(
-                "{}: bzip2 WARC input is not supported. Decompress it first \
+/// Read URLs from a WARC (Web ARChive) file: `WARC-Target-URI` headers plus
+/// bare URLs in the payload.
+pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
+    let mut file = File::open(file_path)
+        .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
+    let magic = super::magic(&mut file)?;
+    if &magic == b"BZh" {
+        anyhow::bail!(
+            "{}: bzip2 WARC input is not supported. Decompress it first \
                  (`bunzip2 -k <file>`) and pass the result to --files.",
-                file_path.display()
-            );
-        }
-        let file = File::open(file_path)
-            .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
+            file_path.display()
+        );
+    }
 
-        // WARCs are routinely gigabytes, and this reader used to collect every
-        // matching line with no bound at all — unlike the URLTeam and sitemap
-        // readers, which have capped their input from the start. Lines are read
-        // lossily because a WARC embeds raw response bodies: binary content must
-        // not abort the read.
-        let (urls, url_capped, byte_capped, _, line_capped) =
-            if magic[0] == 0x1f && magic[1] == 0x8b {
+    // WARCs are routinely gigabytes, and this reader used to collect every
+    // matching line with no bound at all — unlike the URLTeam and sitemap
+    // readers, which have capped their input from the start. Lines are read
+    // lossily because a WARC embeds raw response bodies: binary content must
+    // not abort the read.
+    let (urls, url_capped, byte_capped, _, line_capped) =
+            if magic.starts_with(super::GZIP_MAGIC) {
             // WARC files are often distributed as gzip streams. MultiGzDecoder
             // also handles record-oriented archives with one member per WARC
             // record; the decompressed byte cap still applies to the whole file.
@@ -104,17 +85,16 @@ impl FileReader for WarcFileReader {
         }
         .with_context(|| format!("Failed to read WARC file: {}", file_path.display()))?;
 
-        super::warn_if_truncated(
-            file_path,
-            url_capped,
-            byte_capped,
-            line_capped,
-            super::MAX_FILE_URLS,
-            super::MAX_FILE_BYTES,
-        );
+    super::warn_if_truncated(
+        file_path,
+        url_capped,
+        byte_capped,
+        line_capped,
+        super::MAX_FILE_URLS,
+        super::MAX_FILE_BYTES,
+    );
 
-        Ok(urls)
-    }
+    Ok(urls)
 }
 
 #[cfg(test)]
@@ -123,13 +103,6 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_warc_file_reader_creation() {
-        let reader = WarcFileReader::new();
-        // Just test that we can create the reader without issues
-        assert_eq!(std::mem::size_of_val(&reader), 0); // Zero-sized type
-    }
 
     #[test]
     fn test_read_warc_headers() -> Result<()> {
@@ -143,8 +116,7 @@ mod tests {
         writeln!(temp_file, "WARC-Target-URI: http://example.org/page2")?;
         temp_file.flush()?;
 
-        let reader = WarcFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
@@ -255,8 +227,7 @@ mod tests {
         writeln!(temp_file, "http://invalid-url-with space")?;
         temp_file.flush()?;
 
-        let reader = WarcFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"https://example.com/header".to_string()));

@@ -1,4 +1,3 @@
-use super::FileReader;
 use anyhow::{Context, Result};
 use flate2::read::MultiGzDecoder;
 use std::fs::File;
@@ -7,90 +6,47 @@ use std::path::Path;
 
 use super::{StopOnDecodeError, MAX_FILE_BYTES, MAX_FILE_URLS};
 
-/// Reader for URLTeam compressed files (typically gzip format)
-pub struct UrlTeamFileReader {
-    /// Maximum URLs collected before truncating (see [`MAX_FILE_URLS`]).
+/// Read URL lines from `src`, bounded by the given caps. URLTeam lines can
+/// carry timestamps or status columns alongside the URL, so extraction picks
+/// the first http(s) token rather than taking the whole line.
+fn collect_lines<R: Read>(
+    src: R,
     max_urls: usize,
-    /// Maximum decompressed bytes read (see [`MAX_FILE_BYTES`]).
     max_bytes: u64,
+) -> std::io::Result<(Vec<String>, bool, bool, bool, bool)> {
+    super::collect_capped(src, max_urls, max_bytes, |line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return None;
+        }
+        extract_url_from_line(trimmed)
+    })
 }
 
-impl UrlTeamFileReader {
-    pub fn new() -> Self {
-        Self {
-            max_urls: MAX_FILE_URLS,
-            max_bytes: MAX_FILE_BYTES,
-        }
-    }
-
-    /// Construct with explicit caps so tests can exercise the truncation paths
-    /// without generating gigabytes of input.
-    #[cfg(test)]
-    fn with_caps(max_urls: usize, max_bytes: u64) -> Self {
-        Self {
-            max_urls,
-            max_bytes,
-        }
-    }
-
-    /// Read the file's leading magic bytes, or an empty slice when the file is
-    /// too short to have any.
-    fn magic(file_path: &Path) -> Result<[u8; 3]> {
-        let mut file = File::open(file_path)
-            .with_context(|| format!("Failed to open file: {}", file_path.display()))?;
-
-        let mut magic = [0u8; 3];
-        // A short read leaves the tail zeroed, which matches no signature.
-        let _ = file.read(&mut magic);
-        Ok(magic)
-    }
-
-    /// Determine if file is gzip compressed based on magic bytes
-    fn is_gzip(file_path: &Path) -> Result<bool> {
-        let magic = Self::magic(file_path)?;
-        Ok(magic[0] == 0x1f && magic[1] == 0x8b)
-    }
-
-    /// Whether the file is bzip2-compressed. urx has no bzip2 decoder, and
-    /// reading such a file as text yields binary noise with no extractable
-    /// URLs — an empty result that reads as "this archive had nothing". Detect
-    /// it so the user gets told what actually happened.
-    fn is_bzip2(file_path: &Path) -> Result<bool> {
-        Ok(&Self::magic(file_path)? == b"BZh")
-    }
-
-    /// Read URL lines from `src`, bounded by the shared caps. URLTeam lines can
-    /// carry timestamps or status columns alongside the URL, so extraction picks
-    /// the first http(s) token rather than taking the whole line.
-    fn collect_capped<R: Read>(
-        src: R,
-        max_urls: usize,
-        max_bytes: u64,
-    ) -> std::io::Result<(Vec<String>, bool, bool, bool, bool)> {
-        super::collect_capped(src, max_urls, max_bytes, |line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return None;
-            }
-            extract_url_from_line(trimmed)
-        })
-    }
+/// Read a URLTeam file (typically gzip-compressed), one URL per line.
+pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
+    read_urls_capped(file_path, MAX_FILE_URLS, MAX_FILE_BYTES)
 }
 
-impl FileReader for UrlTeamFileReader {
-    fn read_urls(&self, file_path: &Path) -> Result<Vec<String>> {
-        if Self::is_bzip2(file_path)? {
-            anyhow::bail!(
-                "{}: bzip2 input is not supported. Decompress it first \
+/// [`read_urls`] with explicit caps, so tests can exercise the truncation
+/// paths without generating gigabytes of input.
+fn read_urls_capped(file_path: &Path, max_urls: usize, max_bytes: u64) -> Result<Vec<String>> {
+    let mut file = File::open(file_path)
+        .with_context(|| format!("Failed to open file: {}", file_path.display()))?;
+    let magic = super::magic(&mut file)?;
+
+    // urx has no bzip2 decoder, and reading such a file as text yields
+    // binary noise with no extractable URLs — an empty result that reads
+    // as "this archive had nothing". Tell the user what actually happened.
+    if &magic == b"BZh" {
+        anyhow::bail!(
+            "{}: bzip2 input is not supported. Decompress it first \
                  (`bunzip2 -k <file>`) and pass the result to --files.",
-                file_path.display()
-            );
-        }
+            file_path.display()
+        );
+    }
 
-        let file = File::open(file_path)
-            .with_context(|| format!("Failed to open URLTeam file: {}", file_path.display()))?;
-
-        let (urls, url_capped, byte_capped, _, line_capped) = if Self::is_gzip(file_path)? {
+    let (urls, url_capped, byte_capped, _, line_capped) = if magic.starts_with(super::GZIP_MAGIC) {
             // File is gzip compressed: bound the *decompressed* stream.
             //
             // MultiGzDecoder, not GzDecoder: gzip members concatenate, and both
@@ -98,7 +54,7 @@ impl FileReader for UrlTeamFileReader {
             // are made that way. GzDecoder stops after the first member, so urx
             // returned the first record's URLs and silently dropped the rest.
             let mut src = StopOnDecodeError::new(MultiGzDecoder::new(file));
-            let collected = Self::collect_capped(&mut src, self.max_urls, self.max_bytes);
+            let collected = collect_lines(&mut src, max_urls, max_bytes);
             let decode_error = src.error;
             collected.map(
                 |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
@@ -118,21 +74,20 @@ impl FileReader for UrlTeamFileReader {
             )
         } else {
             // File is not compressed, read as plain text.
-            Self::collect_capped(file, self.max_urls, self.max_bytes)
+            collect_lines(file, max_urls, max_bytes)
         }
         .with_context(|| format!("Failed to read URLTeam file: {}", file_path.display()))?;
 
-        super::warn_if_truncated(
-            file_path,
-            url_capped,
-            byte_capped,
-            line_capped,
-            self.max_urls,
-            self.max_bytes,
-        );
+    super::warn_if_truncated(
+        file_path,
+        url_capped,
+        byte_capped,
+        line_capped,
+        max_urls,
+        max_bytes,
+    );
 
-        Ok(urls)
-    }
+    Ok(urls)
 }
 
 /// Extract URL from a line that might contain additional data
@@ -168,9 +123,7 @@ mod tests {
         writeln!(temp_file, "# Comment")?;
         writeln!(temp_file, "https://example.net/page3 200 OK")?;
         temp_file.flush()?;
-
-        let reader = UrlTeamFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
@@ -192,9 +145,7 @@ mod tests {
             writeln!(encoder, "2023-01-01 http://example.org/compressed2")?;
             encoder.finish()?;
         }
-
-        let reader = UrlTeamFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert_eq!(urls.len(), 2);
         assert!(urls.contains(&"https://example.com/compressed1".to_string()));
@@ -227,8 +178,7 @@ mod tests {
         }
         temp_file.flush()?;
 
-        let reader = UrlTeamFileReader::with_caps(10, MAX_FILE_BYTES);
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls_capped(temp_file.path(), 10, MAX_FILE_BYTES)?;
         assert_eq!(urls.len(), 10, "URL collection should stop at the cap");
         Ok(())
     }
@@ -243,8 +193,7 @@ mod tests {
         temp_file.flush()?;
 
         // ~25 bytes/line; a 200-byte cap admits only the first handful of lines.
-        let reader = UrlTeamFileReader::with_caps(MAX_FILE_URLS, 200);
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls_capped(temp_file.path(), MAX_FILE_URLS, 200)?;
         assert!(
             !urls.is_empty() && urls.len() < 1000,
             "byte cap should truncate the stream, got {} URLs",
@@ -283,9 +232,7 @@ mod tests {
             "https://example.com/three\n",
         ]);
         std::fs::write(temp_file.path(), bytes)?;
-
-        let reader = UrlTeamFileReader::new();
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls(temp_file.path())?;
 
         assert_eq!(
             urls,
@@ -313,9 +260,7 @@ mod tests {
         let full = std::fs::read(source.path())?;
         let truncated = NamedTempFile::new()?;
         std::fs::write(truncated.path(), &full[..full.len() / 2])?;
-
-        let reader = UrlTeamFileReader::new();
-        let recovered = reader.read_urls(truncated.path())?.len();
+        let recovered = read_urls(truncated.path())?.len();
         assert!(
             recovered > 0 && recovered < 5_000,
             "a truncated archive should yield what decoded, got {recovered}"
@@ -332,7 +277,7 @@ mod tests {
         // Drop part of the gzip trailer after all URL bytes were produced.
         std::fs::write(truncated.path(), &full[..full.len() - 4])?;
 
-        let urls = UrlTeamFileReader::new().read_urls(truncated.path())?;
+        let urls = read_urls(truncated.path())?;
         assert_eq!(urls, vec!["https://example.com/complete"]);
         Ok(())
     }
@@ -345,10 +290,8 @@ mod tests {
         let mut bytes = multi_member_gzip(&["https://example.com/kept\n"]);
         bytes.extend_from_slice(b"NOT-A-GZIP-HEADER");
         std::fs::write(temp_file.path(), bytes)?;
-
-        let reader = UrlTeamFileReader::new();
         assert_eq!(
-            reader.read_urls(temp_file.path())?,
+            read_urls(temp_file.path())?,
             vec!["https://example.com/kept"]
         );
         Ok(())
@@ -365,8 +308,7 @@ mod tests {
         let bytes = multi_member_gzip(&[&member, &member, &member]);
         std::fs::write(temp_file.path(), bytes)?;
 
-        let reader = UrlTeamFileReader::with_caps(MAX_FILE_URLS, 4096);
-        let found = reader.read_urls(temp_file.path())?.len();
+        let found = read_urls_capped(temp_file.path(), MAX_FILE_URLS, 4096)?.len();
         assert!(
             found > 0 && found < 1_000,
             "the byte cap must bound every member, got {found} URLs"
@@ -411,9 +353,8 @@ mod tests {
             interrupts_left: 0,
         });
 
-        let (urls, _, _, _, _) =
-            UrlTeamFileReader::collect_capped(&mut src, MAX_FILE_URLS, 1 << 20)
-                .expect("a decode failure must not surface as an error");
+        let (urls, _, _, _, _) = collect_lines(&mut src, MAX_FILE_URLS, 1 << 20)
+            .expect("a decode failure must not surface as an error");
         assert_eq!(
             urls,
             vec!["https://example.com/a", "https://example.com/b"],
@@ -462,8 +403,7 @@ mod tests {
             encoder.finish()?;
         }
 
-        let reader = UrlTeamFileReader::with_caps(MAX_FILE_URLS, 4096);
-        let urls = reader.read_urls(temp_file.path())?;
+        let urls = read_urls_capped(temp_file.path(), MAX_FILE_URLS, 4096)?;
         assert!(
             !urls.is_empty() && urls.len() < 100_000,
             "decompressed-byte cap should truncate the bomb, got {} URLs",
@@ -482,7 +422,7 @@ mod tests {
         temp_file.flush()?;
 
         let (urls, url_capped, byte_capped, _, _) =
-            UrlTeamFileReader::collect_capped(File::open(temp_file.path())?, 1000, 1024)?;
+            collect_lines(File::open(temp_file.path())?, 1000, 1024)?;
         assert_eq!(urls.len(), 2);
         assert!(!url_capped);
         assert!(!byte_capped);
@@ -498,33 +438,8 @@ mod tests {
         // A bzip2 header is enough; we reject before decoding anything.
         temp_file.write_all(b"BZh91AY&SY\x00\x00\x00\x00")?;
         temp_file.flush()?;
-
-        let reader = UrlTeamFileReader::new();
-        let err = reader.read_urls(temp_file.path()).unwrap_err();
+        let err = read_urls(temp_file.path()).unwrap_err();
         assert!(err.to_string().contains("bzip2"), "{err}");
-        Ok(())
-    }
-
-    #[test]
-    fn test_is_gzip() -> Result<()> {
-        // Test with non-gzip file
-        let mut temp_file = NamedTempFile::new()?;
-        writeln!(temp_file, "plain text")?;
-        temp_file.flush()?;
-
-        assert!(!UrlTeamFileReader::is_gzip(temp_file.path())?);
-
-        // Test with gzip file
-        let gzip_file = NamedTempFile::new()?;
-        {
-            let mut encoder =
-                GzEncoder::new(File::create(gzip_file.path())?, Compression::default());
-            writeln!(encoder, "compressed text")?;
-            encoder.finish()?;
-        }
-
-        assert!(UrlTeamFileReader::is_gzip(gzip_file.path())?);
-
         Ok(())
     }
 }
