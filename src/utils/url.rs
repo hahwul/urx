@@ -173,13 +173,7 @@ impl UrlTransformer {
                 // `http://host/api?a=1` and `https://host/api?b=2` collapsed into a
                 // single URL that carried one scheme and both origins' parameters,
                 // and `host:8080/api` was folded into `host/api` the same way.
-                let key = format!(
-                    "{}://{}{}{}",
-                    url.scheme(),
-                    url.host_str().unwrap_or(""),
-                    url.port().map(|p| format!(":{p}")).unwrap_or_default(),
-                    url.path()
-                );
+                let key = format!("{}{}", origin_prefix(&url), url.path());
 
                 path_groups.entry(key).or_default().push(url_str);
             } else {
@@ -313,22 +307,23 @@ const VARIABLE_SEGMENT: &str = "{id}";
 /// the first one seen: the input arrives from a `HashSet` in arbitrary order,
 /// so anything else would produce a different answer on every run.
 pub fn dedup_similar_urls(urls: Vec<String>) -> Vec<String> {
-    let mut representatives: HashMap<String, String> = HashMap::new();
-
-    for url in urls {
-        let key = similarity_key(&url);
-        match representatives.get_mut(&key) {
-            Some(kept) if url < *kept => *kept = url,
-            Some(_) => {}
-            None => {
-                representatives.insert(key, url);
-            }
-        }
-    }
-
-    let mut result: Vec<String> = representatives.into_values().collect();
+    let mut result: Vec<String> = smallest_per_similarity_key(urls.iter())
+        .into_iter()
+        .cloned()
+        .collect();
     result.sort();
     result
+}
+
+/// The lexicographically smallest URL of each [`similarity_key`] group.
+fn smallest_per_similarity_key<'a>(urls: impl Iterator<Item = &'a String>) -> Vec<&'a String> {
+    let mut kept: HashMap<String, &String> = HashMap::new();
+    for url in urls {
+        kept.entry(similarity_key(url))
+            .and_modify(|kept| *kept = (*kept).min(url))
+            .or_insert(url);
+    }
+    kept.into_values().collect()
 }
 
 /// The shape of a URL with its variable parts erased.
@@ -344,20 +339,7 @@ fn similarity_key(url_str: &str) -> String {
         return url_str.to_string();
     };
 
-    let mut key = String::with_capacity(url_str.len());
-    key.push_str(url.scheme());
-    key.push_str("://");
-    key.push_str(url.host_str().unwrap_or(""));
-    if let Some(port) = url.port() {
-        key.push(':');
-        key.push_str(&port.to_string());
-    }
-
-    // `split('/')` on "/a/b" yields ["", "a", "b"], so re-joining restores the
-    // leading slash and preserves a trailing empty segment ("/a/" stays
-    // distinct from "/a").
-    let segments: Vec<String> = url.path().split('/').map(normalize_segment).collect();
-    key.push_str(&segments.join("/"));
+    let mut key = endpoint_key(&url);
 
     if let Some(query) = url.query() {
         let mut names: Vec<&str> = query
@@ -559,17 +541,21 @@ pub fn params_by_endpoint(urls: &[String]) -> Vec<String> {
 /// replaced — the endpoint identity [`params_by_endpoint`] groups on. The query
 /// and fragment are deliberately absent: they are the varying part.
 fn endpoint_key(url: &Url) -> String {
-    let mut key = String::new();
-    key.push_str(url.scheme());
-    key.push_str("://");
-    key.push_str(url.host_str().unwrap_or(""));
-    if let Some(port) = url.port() {
-        key.push(':');
-        key.push_str(&port.to_string());
-    }
+    // `split('/')` on "/a/b" yields ["", "a", "b"], so re-joining restores the
+    // leading slash and preserves a trailing empty segment ("/a/" stays
+    // distinct from "/a").
     let segments: Vec<String> = url.path().split('/').map(normalize_segment).collect();
-    key.push_str(&segments.join("/"));
-    key
+    format!("{}{}", origin_prefix(url), segments.join("/"))
+}
+
+/// `scheme://host[:port]`, spelled out even for the schemes whose
+/// [`Url::origin`] is opaque (`null`).
+pub fn origin_prefix(url: &Url) -> String {
+    let host = url.host_str().unwrap_or("");
+    match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    }
 }
 
 /// One ready-to-fuzz URL per parameter signature, every query value replaced by
@@ -585,26 +571,14 @@ fn endpoint_key(url: &Url) -> String {
 /// the output is meant to be fed straight to ffuf or dalfox and has to be a URL
 /// the server will actually route.
 pub fn fuzz_templates(urls: &[String], placeholder: &str) -> Vec<String> {
-    let mut representatives: HashMap<String, &String> = HashMap::new();
+    // A URL with no query has no signature worth fuzzing; skipping it here
+    // also keeps it from winning a group it would then render as nothing.
+    let with_params = urls
+        .iter()
+        .filter(|url| Url::parse(url).is_ok_and(|u| !query_param_names(&u).is_empty()));
 
-    for url in urls {
-        // A URL with no query has no signature worth fuzzing; skipping it here
-        // also keeps it from winning a group it would then render as nothing.
-        if !Url::parse(url).is_ok_and(|u| !query_param_names(&u).is_empty()) {
-            continue;
-        }
-        let key = similarity_key(url);
-        match representatives.get_mut(&key) {
-            Some(kept) if url < *kept => *kept = url,
-            Some(_) => {}
-            None => {
-                representatives.insert(key, url);
-            }
-        }
-    }
-
-    let mut out: Vec<String> = representatives
-        .into_values()
+    let mut out: Vec<String> = smallest_per_similarity_key(with_params)
+        .into_iter()
         .filter_map(|url| fuzz_one(url, placeholder))
         .collect();
     out.sort();

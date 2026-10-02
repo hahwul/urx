@@ -306,13 +306,8 @@ fn format_elapsed_ms(ms: u64) -> String {
 /// either; it might be a malformed but real secret.
 pub fn webhook_host(url: &str) -> String {
     match url::Url::parse(url) {
-        Ok(parsed) => match parsed.host_str() {
-            Some(host) => match parsed.port() {
-                Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
-                None => format!("{}://{host}", parsed.scheme()),
-            },
-            None => "<webhook with no host>".to_string(),
-        },
+        Ok(parsed) if parsed.host_str().is_some() => crate::utils::url::origin_prefix(&parsed),
+        Ok(_) => "<webhook with no host>".to_string(),
         Err(_) => "<unparseable webhook URL>".to_string(),
     }
 }
