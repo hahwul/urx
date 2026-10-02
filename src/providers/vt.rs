@@ -300,7 +300,7 @@ mod tests {
     async fn test_transport_error_does_not_leak_api_key() {
         // The v3 key travels in the `x-apikey` header, but a transport-layer
         // failure (which reqwest renders with the full URL) must still not
-        // surface it — and we strip the URL from the error for good measure.
+        // surface it.
         let mut provider = VirusTotalProvider::new_with_keys(vec!["SUPERSECRETKEY".to_string()]);
         // Port 1 reliably refuses the connection; keep the run fast.
         provider.base_url = "http://127.0.0.1:1".to_string();
