@@ -2687,7 +2687,6 @@ dependencies = [
  "futures",
  "indicatif",
  "mockito",
- "rand 0.10.3",
  "redis",
  "regex",
  "reqwest",
