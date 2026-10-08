@@ -1,0 +1,9 @@
+$ErrorActionPreference = 'Stop'
+$toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# The release zip holds urx-<tag>-windows-x86_64\urx.exe; Chocolatey
+# shims every .exe under tools\, so the nested folder needs no handling.
+Install-ChocolateyZipPackage -PackageName 'urx' `
+  -UnzipLocation $toolsDir `
+  -Url64bit 'https://github.com/hahwul/urx/releases/download/__TAG__/urx-__TAG__-windows-x86_64.zip' `
+  -Checksum64 '__SHA256__' -ChecksumType64 'sha256'

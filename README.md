@@ -96,6 +96,12 @@ docker run --rm ghcr.io/hahwul/urx:latest ./urx example.com
 yay -S urx
 ```
 
+### From Chocolatey (Windows)
+
+```powershell
+choco install urx
+```
+
 ### From GitHub Releases
 
 Prebuilt binaries for Linux, macOS and Windows (each with a `.sha256`) are

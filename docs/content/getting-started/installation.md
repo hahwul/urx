@@ -1,6 +1,6 @@
 +++
 title = "Installation"
-description = "Install urx with Cargo, Homebrew, the AUR, a release binary, Docker or from source, then add shell completions and the man page."
+description = "Install urx with Cargo, Homebrew, the AUR, Chocolatey, a release binary, Docker or from source, then add shell completions and the man page."
 toc = true
 weight = 1
 +++
@@ -38,6 +38,16 @@ yay -S urx
 paru -S urx
 ```
 
+### From Chocolatey
+
+For Windows users with [Chocolatey](https://chocolatey.org/):
+
+```powershell
+choco install urx
+```
+
+Installs the prebuilt `windows-x86_64` release binary and puts `urx` on your `PATH`.
+
 ### From GitHub Releases
 
 Every [release](https://github.com/hahwul/urx/releases/latest) ships prebuilt
@@ -68,8 +78,8 @@ Binary location: `target/release/urx`
 ### Optional: Redis Cache Support
 
 The Redis cache backend (`--cache-type redis`) is an optional Cargo feature.
-None of the packaged builds above (crates.io, Homebrew, AUR, release binaries,
-Docker) include it. Build it in yourself:
+None of the packaged builds above (crates.io, Homebrew, AUR, Chocolatey,
+release binaries, Docker) include it. Build it in yourself:
 
 ```bash
 cargo install urx --features redis-cache
