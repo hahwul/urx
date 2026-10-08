@@ -524,7 +524,7 @@ impl CdxProvider {
     ///
     /// The probe is memoised across clones, so it runs once per endpoint per
     /// run. A probe that *fails* (network error, 404 for a domain the archive
-    /// has never seen) is not cached — the next domain probes again — but it
+    /// has never seen) or answers without a signal is not cached — the next domain probes again — but it
     /// does not fail the fetch either: the pywb default is used for this
     /// domain. An HTML answer is the one exception, because it is the bot
     /// challenge the module docs describe and must surface as an error.
@@ -536,7 +536,10 @@ impl CdxProvider {
             return Ok(*dialect);
         }
 
-        let probe_url = format!("{}?url={domain}&output=json&limit=1", self.endpoint);
+        // The bare host: a path scope would probe one exact URL less likely
+        // to have a capture, and went into the query unescaped.
+        let (host, _) = crate::cli::split_target(domain);
+        let probe_url = format!("{}?url={host}&output=json&limit=1", self.endpoint);
         if let Some(rl) = &self.net.rate_limit {
             rl.acquire().await;
         }
@@ -546,7 +549,12 @@ impl CdxProvider {
         };
         reject_html(&body, &self.endpoint)?;
 
-        let dialect = Self::classify_probe(&body).unwrap_or(CdxDialect::Pywb);
+        // Only an answer that says something is remembered: an empty body
+        // for a domain with no captures would otherwise pin the pywb guess
+        // for every later domain, on a server that may well be classic.
+        let Some(dialect) = Self::classify_probe(&body) else {
+            return Ok(CdxDialect::Pywb);
+        };
         // `set` fails only when another clone won the race; both saw the same
         // server, so either answer is fine.
         let _ = self.detected.set(dialect);
@@ -1053,6 +1061,8 @@ mod tests {
         let urls = urls_of(p.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/x"]);
         walk.assert();
+        // A guess is not evidence: the next domain probes again.
+        assert!(p.detected.get().is_none());
     }
 
     #[tokio::test]

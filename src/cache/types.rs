@@ -102,6 +102,17 @@ pub struct CacheFilters {
     /// `--archived-discovery`: adds URLs from archived robots.txt / sitemap
     /// versions, so a run with it asks a different question from one without.
     pub archived_discovery: bool,
+    /// `--cdx-endpoint` URLs and `--cdx-dialect`. The provider id names only
+    /// the endpoint's host, so two collections on one server — or one server
+    /// read in two dialects — would otherwise share an entry.
+    #[serde(default)]
+    pub cdx_endpoints: Vec<String>,
+    #[serde(default)]
+    pub cdx_dialect: Option<String>,
+    /// `--archived-discovery-limit`, when archived discovery is on and the
+    /// limit is not the default.
+    #[serde(default)]
+    pub archived_discovery_limit: Option<usize>,
 }
 
 impl CacheFilters {
@@ -154,6 +165,21 @@ impl CacheFilters {
         feed_list(&mut hasher, &self.archive_mime);
         feed_list(&mut hasher, &self.archive_exclude_mime);
         hasher.update([self.archived_discovery as u8]);
+        // Fed tagged and only when set: keys from before these fields existed
+        // stay what they were, rather than every `--incremental` baseline
+        // being reset by an upgrade.
+        if !self.cdx_endpoints.is_empty() {
+            feed(&mut hasher, b"cdx_endpoints");
+            feed_list(&mut hasher, &self.cdx_endpoints);
+        }
+        if let Some(dialect) = &self.cdx_dialect {
+            feed(&mut hasher, b"cdx_dialect");
+            feed(&mut hasher, dialect.as_bytes());
+        }
+        if let Some(limit) = self.archived_discovery_limit {
+            feed(&mut hasher, b"archived_discovery_limit");
+            feed(&mut hasher, &limit.to_le_bytes());
+        }
 
         hasher
             .finalize()

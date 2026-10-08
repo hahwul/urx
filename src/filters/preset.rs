@@ -46,7 +46,9 @@ pub enum FilterPreset {
 /// marker, and a backup is often just an ordinary name with a `~` glued on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathRule {
-    /// Matches when the lower-cased URL contains this (lower-case) substring.
+    /// Matches when the lower-cased URL, from the path on (path, query and
+    /// fragment), contains this (lower-case) substring. The host is not
+    /// searched: `https://api.…` is not an API path.
     Contains(String),
     /// Matches when the lower-cased URL *path* ends with this (lower-case)
     /// suffix. Anchored at the end of the path rather than the end of the
@@ -238,7 +240,6 @@ fn api_path_rules() -> Vec<PathRule> {
         &[
             "/api/",
             "/api.",
-            "/api?",
             "/apis/",
             "/rest/",
             "/restapi",

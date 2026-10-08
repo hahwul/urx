@@ -634,6 +634,9 @@ impl Tester for JsEndpointExtractor {
             if !response.status().is_success() {
                 return Ok(Vec::new());
             }
+            // Relative endpoints resolve against the URL that served the
+            // body, which a redirect may have moved.
+            let base_url = response.url().clone();
             let kind = classify(response.headers(), &base_url);
             if kind == BodyKind::Skip {
                 return Ok(Vec::new());

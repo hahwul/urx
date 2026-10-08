@@ -174,33 +174,33 @@ impl HostValidator {
         let normalized_host = host.to_lowercase();
         let host_stripped = normalized_host.trim_end_matches('.');
 
-        // Check if the host exactly matches any of our domains
-        if self.domains.contains_key(host_stripped) {
-            return self.path_allowed(host_stripped, &url);
-        }
-
-        if self.include_subdomains {
-            // If subdomains are allowed, accept any subdomain of a target.
-            for domain in self.domains.keys() {
-                if host_stripped.ends_with(&format!(".{domain}")) {
-                    return self.path_allowed(domain, &url);
-                }
+        // Every target covering this host — the host itself, its parents
+        // under --subs, and the apex of a `www.` host (a site served entirely
+        // on www.<domain> must not return zero results for a bare <domain>
+        // query; other subdomains still require --subs). The URL is in scope
+        // when any of them admits its path: as on one host, a narrower target
+        // never cancels a broader one. Taking whichever target the HashMap
+        // yielded first made `example.com/shop api.example.com --subs` keep or
+        // drop `v2.api.example.com/users` from run to run.
+        let parents =
+            std::iter::successors(Some(host_stripped), |h| h.split_once('.').map(|(_, up)| up));
+        let mut covered = false;
+        for (depth, target) in parents.enumerate() {
+            let covers = depth == 0
+                || self.include_subdomains
+                || (depth == 1 && host_stripped.starts_with("www."));
+            if !covers || !self.domains.contains_key(target) {
+                continue;
             }
-        } else {
-            // Even in strict (apex-only) mode, treat the conventional
-            // `www.` host as the apex itself: a site served entirely on
-            // www.<domain> must not return zero results for a bare
-            // <domain> query. Other subdomains still require --subs.
-            for domain in self.domains.keys() {
-                if host_stripped == format!("www.{domain}") {
-                    return self.path_allowed(domain, &url);
-                }
+            if self.path_allowed(target, &url) {
+                return true;
             }
+            covered = true;
         }
 
         // An unrecognised host: out of scope in strict mode, and in
         // paths-only mode nothing was claimed about it either way.
-        !self.enforce_host
+        !covered && !self.enforce_host
     }
 }
 
@@ -427,6 +427,24 @@ mod tests {
             false,
         );
         assert!(validator.is_valid_host("https://example.com/about"));
+    }
+
+    #[test]
+    fn overlapping_targets_on_parent_and_child_hosts_are_a_union() {
+        // Regression: the first --subs target the HashMap yielded decided
+        // alone, so this verdict flipped between runs.
+        for _ in 0..32 {
+            let validator = HostValidator::new(
+                &[
+                    "example.com/shop".to_string(),
+                    "api.example.com".to_string(),
+                ],
+                true,
+            );
+            assert!(validator.is_valid_host("https://v2.api.example.com/users"));
+            assert!(validator.is_valid_host("https://cdn.example.com/shop/x"));
+            assert!(!validator.is_valid_host("https://cdn.example.com/about"));
+        }
     }
 
     #[test]

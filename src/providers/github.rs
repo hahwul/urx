@@ -6,6 +6,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
+use crate::filters::HostValidator;
 use crate::network::client::send_with_retry;
 use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
@@ -57,35 +58,31 @@ impl GitHubProvider {
 
 /// Extract URLs from a free-form text fragment that contain `domain`
 /// (or, when `include_subdomains` is true, any subdomain of it).
-/// The matched URL must end its host exactly at `domain` so we don't
-/// surface unrelated hosts like `notexample.com` for a search of `example.com`.
+/// The host check is [`HostValidator`]'s, so `notexample.com` is not
+/// `example.com` while `www.example.com` is, exactly as everywhere else.
 pub(crate) fn extract_matching_urls(
     fragment: &str,
     domain: &str,
     include_subdomains: bool,
     sink: &mut HashSet<String>,
 ) {
-    let domain = domain.to_ascii_lowercase();
+    let validator = HostValidator::new(&[domain.to_string()], include_subdomains);
     for token in fragment.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',') {
         let token = token.trim_end_matches(|c: char| {
             matches!(c, '.' | ')' | ']' | '}' | '>' | ';' | ':' | '!' | '?' | '`')
         });
+        // A URL can start mid-token: `[docs](https://…)`, `` fetch(`https://…`) ``,
+        // `<https://…>`, `src=https://…`. Lower-casing ASCII keeps byte offsets.
         let lower = token.to_ascii_lowercase();
-        if !lower.starts_with("http://") && !lower.starts_with("https://") {
-            continue;
-        }
-        let Ok(parsed) = url::Url::parse(token) else {
-            continue;
-        };
-        let Some(host) = parsed.host_str().map(|s| s.to_ascii_lowercase()) else {
+        let Some(start) = [lower.find("http://"), lower.find("https://")]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
             continue;
         };
-        let host_matches = if include_subdomains {
-            host == domain || host.ends_with(&format!(".{domain}"))
-        } else {
-            host == domain
-        };
-        if host_matches {
+        let token = &token[start..];
+        if validator.is_valid_host(token) {
             sink.insert(token.to_string());
         }
     }
@@ -273,6 +270,30 @@ mod tests {
         );
         assert!(sink.contains("https://example.com/path"));
         assert!(sink.contains("https://example.com/other"));
+    }
+
+    #[test]
+    fn test_extract_urls_inside_markup_and_on_www() {
+        // Regression: only a token *starting* with the scheme was read, and
+        // only the exact host matched — HostValidator treats `www.` as the apex.
+        let mut sink = HashSet::new();
+        extract_matching_urls(
+            "See [API](https://example.com/v2/users) or fetch(`https://example.com/v1`) \
+             <https://example.com/x> src=https://example.com/s.js https://www.example.com/login",
+            "example.com",
+            false,
+            &mut sink,
+        );
+        for url in [
+            "https://example.com/v2/users",
+            "https://example.com/v1",
+            "https://example.com/x",
+            "https://example.com/s.js",
+            "https://www.example.com/login",
+        ] {
+            assert!(sink.contains(url), "{url} missing from {sink:?}");
+        }
+        assert_eq!(sink.len(), 5, "{sink:?}");
     }
 
     #[test]

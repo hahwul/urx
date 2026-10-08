@@ -266,13 +266,10 @@ impl Tester for LinkExtractor {
             let response = send(self.net.retries, None, || client.get(url))
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to extract links from {}: {:?}", url, e))?;
-            // Get the base URL for resolving relative URLs
-            let base_url = match Url::parse(url) {
-                Ok(parsed_url) => parsed_url,
-                Err(_) => {
-                    return Err(anyhow::anyhow!("Failed to parse URL: {}", url));
-                }
-            };
+            // Relative links resolve against the URL that served the page,
+            // not the one asked for: `/docs` → 301 → `/docs/` makes
+            // `href="intro"` mean `/docs/intro`, not `/intro`.
+            let base_url = response.url().clone();
 
             // An error page still has a body, and its nav/footer is
             // full of links — mining those would inject the site's
@@ -683,6 +680,34 @@ mod tests {
             .unwrap();
 
         assert!(links.is_empty(), "{links:?}");
+    }
+
+    #[tokio::test]
+    async fn test_relative_links_resolve_against_the_redirected_url() {
+        // Regression: `/docs` → 301 → `/docs/` with `href="intro"` resolved
+        // against the requested URL and came out as `/intro`.
+        let mut server = mockito::Server::new_async().await;
+        let _redirect = server
+            .mock("GET", "/docs")
+            .with_status(301)
+            .with_header("location", "/docs/")
+            .create_async()
+            .await;
+        let _page = server
+            .mock("GET", "/docs/")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="intro">intro</a>"#)
+            .create_async()
+            .await;
+
+        let links = LinkExtractor::new()
+            .test_url(&format!("{}/docs", server.url()))
+            .await
+            .map(urls)
+            .unwrap();
+
+        assert_eq!(links, vec![format!("{}/docs/intro", server.url())]);
     }
 
     #[tokio::test]

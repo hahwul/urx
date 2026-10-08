@@ -53,16 +53,16 @@ where
         .collect()
 }
 
-/// The lower-cased path of `url`, for the suffix-anchored preset path rules.
+/// `url` lower-cased from the path on — path, query and fragment, without the
+/// scheme and host — for the extension and the preset path rules.
 ///
-/// Anchoring on the path rather than the whole URL is what makes a rule like
-/// "ends with `~`" survive a query string: `/index.php~?v=1` is still a backup.
-/// Unparseable input falls back to everything before the query, matching how
-/// the rest of the filter degrades on malformed URLs.
-fn lower_path(url: &str) -> String {
+/// Leaving the host out is what keeps `/api.` from matching every
+/// `https://api.…` URL. Unparseable input (a relative line from `--files`) has
+/// no host to leave out and is taken whole.
+fn lower_path_onward(url: &str) -> String {
     match Url::parse(url) {
-        Ok(parsed) => parsed.path().to_lowercase(),
-        Err(_) => url.split(['?', '#']).next().unwrap_or("").to_lowercase(),
+        Ok(parsed) => parsed[url::Position::BeforePath..].to_lowercase(),
+        Err(_) => url.to_lowercase(),
     }
 }
 
@@ -223,46 +223,18 @@ impl UrlFilter {
             }
         }
 
-        // Parse the URL to extract the path for better extension handling
-        let extension = match Url::parse(url) {
-            Ok(parsed_url) => {
-                // Get the path from the URL
-                if let Some(path) = parsed_url
-                    .path_segments()
-                    .and_then(|mut segments| segments.next_back())
-                {
-                    // Extract extension from the last path segment
-                    Path::new(path)
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|s| s.to_lowercase())
-                } else {
-                    None
-                }
-            }
-            Err(_) => {
-                // Fallback for invalid URLs - try to extract extension from the whole string
-                let parts: Vec<&str> = url.split('/').collect();
-                if let Some(last) = parts.last() {
-                    let filename_parts: Vec<&str> = last.split('.').collect();
-                    if filename_parts.len() > 1 {
-                        Some(
-                            filename_parts
-                                .last()
-                                .unwrap()
-                                .split('?')
-                                .next()
-                                .unwrap_or("")
-                                .to_lowercase(),
-                        )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-        };
+        // The extension of the last path segment, cut before any query,
+        // fragment or `;` path parameter: `app.js?v=1.2.3` and
+        // `app.js;jsessionid=…` are both `.js`.
+        let onward = lower_path_onward(url);
+        let path = onward.split(['?', '#']).next().unwrap_or("");
+        let extension = path
+            .rsplit('/')
+            .next()
+            .and_then(|segment| segment.split(';').next())
+            .and_then(|name| Path::new(name).extension())
+            .and_then(|ext| ext.to_str())
+            .map(str::to_string);
 
         // Compute url_lower once per URL if needed
         let mut url_lower = None;
@@ -313,10 +285,7 @@ impl UrlFilter {
                 // No extension found but an extensions filter is set.
                 None => false,
             };
-            include = by_extension || {
-                let url_lower_str = url_lower.get_or_insert_with(|| url.to_lowercase());
-                self.matches_path_rule(url, url_lower_str)
-            };
+            include = by_extension || self.matches_path_rule(path, &onward);
         }
 
         if include && !self.patterns.is_empty() {
@@ -334,21 +303,17 @@ impl UrlFilter {
         include
     }
 
-    /// Whether any preset path rule accepts this URL.
+    /// Whether any preset path rule accepts the URL, given its lower-cased
+    /// `path` and everything from the path on (`onward`).
     ///
-    /// `url_lower` is passed in because the caller has usually built it
-    /// already; the path is only derived when a suffix rule actually needs it.
-    fn matches_path_rule(&self, url: &str, url_lower: &str) -> bool {
-        if self.path_rules.is_empty() {
-            return false;
-        }
-
-        let mut path_lower: Option<String> = None;
+    /// `Contains` searches `onward`, so a `?file=backup.sql` or a `#/api/…`
+    /// hash route still counts; suffix rules anchor on the path, so `~` before
+    /// a `?v=1` does too. Neither sees the host: on the whole URL, `/api.`
+    /// matched every `https://api.…` host.
+    fn matches_path_rule(&self, path: &str, onward: &str) -> bool {
         self.path_rules.iter().any(|rule| match rule {
-            PathRule::Contains(needle) => url_lower.contains(needle.as_str()),
-            PathRule::PathEndsWith(suffix) => path_lower
-                .get_or_insert_with(|| lower_path(url))
-                .ends_with(suffix.as_str()),
+            PathRule::Contains(needle) => onward.contains(needle.as_str()),
+            PathRule::PathEndsWith(suffix) => path.ends_with(suffix.as_str()),
         })
     }
 
@@ -610,13 +575,18 @@ mod tests {
             "https://example.com/app.js#top",
             "https://example.com/App.JS",
             "https://example.com/dir.js/index",
+            // `;` path parameters are not part of the extension.
+            "https://example.com/app.js;jsessionid=ABC",
+            // Unparseable input: a dot in the query or fragment is not one.
+            "/static/app.js?v=1.2.3",
+            "/app.js#a.b",
         ]
         .into_iter()
         .map(String::from)
         .collect();
 
         let filtered = filter.apply_filters(&urls);
-        assert_eq!(filtered.len(), 3, "{filtered:?}");
+        assert_eq!(filtered.len(), 6, "{filtered:?}");
         assert!(!filtered.contains(&"https://example.com/dir.js/index".to_string()));
     }
 
@@ -801,6 +771,11 @@ mod tests {
         // rather than a substring one.
         assert!(!filter.matches("https://example.com/~john/index.html"));
         assert!(!filter.matches("https://example.com/index.php"));
+
+        // A backup handed out by a download script is still a backup...
+        assert!(filter.matches("https://example.com/download.php?file=backup.sql"));
+        // ...but a backups host is not one.
+        assert!(!filter.matches("https://backups.example.com/index.html"));
     }
 
     #[test]
@@ -817,6 +792,10 @@ mod tests {
 
         assert!(!filter.matches("https://example.com/about.html"));
         assert!(!filter.matches("https://example.com/rapid/deploy"));
+        // The host is not the path...
+        assert!(!filter.matches("https://api.example.com/logo.png"));
+        // ...but a hash route is where an SPA keeps its API paths.
+        assert!(filter.matches("https://app.example.com/#/api/users"));
     }
 
     #[test]

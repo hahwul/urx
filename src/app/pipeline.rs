@@ -247,6 +247,37 @@ pub fn build_meta_filter(args: &Args) -> Result<MetaFilter> {
 pub fn validate_result_filters(args: &Args) -> Result<()> {
     ScopeMatcher::from_files(&args.scope_file)?;
     build_meta_filter(args)?;
+    // These output views reshape URLs into hosts, paths or parameter names,
+    // and they run before the testers — which then request those: `--params
+    // --check-status` checked `id`, `page` and `q`, and with `--is 200`
+    // silently printed nothing. `--fuzz-placeholder` is not among them: its
+    // templates keep the real path and are requestable URLs.
+    let view = [
+        (args.show_only_host, "--show-only-host"),
+        (args.show_only_path, "--show-only-path"),
+        (args.show_only_param, "--show-only-param"),
+        (args.params, "--params"),
+        (args.params_by_endpoint, "--params-by-endpoint"),
+    ]
+    .into_iter()
+    .find_map(|(on, flag)| on.then_some(flag));
+    let tester = [
+        (
+            should_check_status(args),
+            "--check-status / --include-status / --exclude-status / --check-title",
+        ),
+        (args.extract_links, "--extract-links"),
+        (args.extract_js_endpoints, "--extract-js-endpoints"),
+        (args.archive_body, "--archive-body"),
+        (args.expand_specs, "--expand-specs"),
+    ]
+    .into_iter()
+    .find_map(|(on, flag)| on.then_some(flag));
+    if let (Some(view), Some(tester)) = (view, tester) {
+        anyhow::bail!(
+            "{view} cannot be combined with {tester}: the view rewrites URLs before they would be requested"
+        );
+    }
     // clap's `requires` covers the command line, but a config file can set
     // `archive_body_dir` on its own, and the run would then quietly write
     // nothing at all — the exact failure mode the unknown-key warning exists
@@ -2161,6 +2192,29 @@ mod tests {
         assert!(format!("{err}").contains("--archive-body-dir"), "{err}");
 
         args.archive_body = true;
+        assert!(validate_result_filters(&args).is_ok());
+    }
+
+    #[test]
+    fn an_output_view_cannot_feed_a_tester() {
+        // Regression: the view ran first, so the status checker requested
+        // parameter names and bare paths as if they were URLs.
+        let mut args = build_test_args();
+        args.params = true;
+        assert!(validate_result_filters(&args).is_ok());
+        args.check_status = true;
+        let err = validate_result_filters(&args).expect_err("should be refused");
+        assert!(format!("{err}").contains("--params"), "{err}");
+
+        let mut args = build_test_args();
+        args.show_only_path = true;
+        args.extract_links = true;
+        assert!(validate_result_filters(&args).is_err());
+
+        // Fuzz templates are real URLs; checking them is a fair request.
+        let mut args = build_test_args();
+        args.fuzz_placeholder = Some("FUZZ".to_string());
+        args.check_status = true;
         assert!(validate_result_filters(&args).is_ok());
     }
 

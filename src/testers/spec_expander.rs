@@ -19,12 +19,13 @@
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use url::Url;
+use yaml_rust2::parser::{Event, Parser};
 use yaml_rust2::yaml::{Yaml, YamlLoader};
 
 use super::shared::{content_type, found, path_extension, send, FetchBudget};
@@ -146,45 +147,77 @@ fn sniff(body: &str) -> BodyKind {
     }
 }
 
-/// Refuse a YAML document that references more anchors than this.
+/// The most a YAML document's aliases may add to it, in approximate bytes of
+/// parsed nodes.
 ///
 /// YAML aliases are expanded by copying, so a document that references a
 /// growing anchor from inside the next anchor multiplies its own size at every
 /// level — the "billion laughs" shape: a few hundred bytes that expand to
 /// gigabytes of nodes. [`MAX_BODY_BYTES`] cannot catch it, because the input
 /// really is tiny, and no YAML parser in the ecosystem bounds the expansion
-/// (libyaml does not either), so the reference count is bounded here, before
-/// parsing starts. That matters more for this tester than for most: the body
-/// comes from whatever host the URL list happened to name.
+/// (libyaml does not either), so it is bounded here, before the loader builds
+/// anything. That matters more for this tester than for most: the body comes
+/// from whatever host the URL list happened to name.
 ///
 /// Published specifications use `$ref`, which is a plain string and costs
-/// nothing; the rare document that uses YAML anchors uses a handful.
-const MAX_YAML_ALIASES: usize = 32;
+/// nothing; the rare document that uses YAML anchors copies a few small nodes.
+const MAX_YAML_ALIAS_BYTES: usize = MAX_BODY_BYTES;
 
-/// A rough count of `*alias` references in `body`.
+/// What one parsed YAML node costs beyond its text, for
+/// [`MAX_YAML_ALIAS_BYTES`] accounting.
+const YAML_NODE_COST: usize = 64;
+
+/// Whether expanding `body`'s aliases stays within [`MAX_YAML_ALIAS_BYTES`].
 ///
-/// Counted on the raw text because the blow-up happens inside the parser,
-/// before there is a document to inspect. A `*` inside prose or a quoted
-/// pattern can be miscounted as an alias; the cap is loose enough that it
-/// does not matter, and the cost of a false positive is one document skipped.
-fn alias_references(body: &str) -> usize {
-    let bytes = body.as_bytes();
-    bytes
-        .iter()
-        .enumerate()
-        .filter(|(i, b)| {
-            **b == b'*'
-                // An alias token starts a value: it follows the start of the
-                // document, whitespace, or a flow-collection opener.
-                && bytes
-                    .get(i.wrapping_sub(1))
-                    .is_none_or(|p| p.is_ascii_whitespace() || matches!(p, b'[' | b'{' | b',' | b'-'))
-                // ...and names something.
-                && bytes
-                    .get(i + 1)
-                    .is_some_and(|n| n.is_ascii_alphanumeric() || matches!(n, b'_' | b'-'))
-        })
-        .count()
+/// Walks the parser's event stream — no tree is built — tracking the size
+/// each anchored node would expand to and charging that size every time an
+/// alias copies it. Bounding the copies themselves, rather than counting
+/// `*name` tokens in the text, means no spelling of an anchor name and no
+/// arrangement of a handful of aliases gets past it. A stream that does not
+/// parse is refused too; the loader would reject it anyway.
+fn yaml_expansion_within_budget(body: &str) -> bool {
+    // No `*`, no alias: skip the extra parse for the usual `$ref`-only spec.
+    if !body.contains('*') {
+        return true;
+    }
+    let mut parser = Parser::new_from_str(body);
+    let mut anchored: HashMap<usize, usize> = HashMap::new();
+    // Each open collection's anchor and the size of what it holds so far.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    let mut copied = 0usize;
+    loop {
+        let Ok((event, _)) = parser.next_token() else {
+            return false;
+        };
+        let (anchor, size) = match event {
+            Event::StreamEnd => return true,
+            Event::Scalar(text, _, anchor, _) => (anchor, YAML_NODE_COST + text.len()),
+            Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
+                open.push((anchor, YAML_NODE_COST));
+                continue;
+            }
+            Event::SequenceEnd | Event::MappingEnd => match open.pop() {
+                Some(closed) => closed,
+                None => return false,
+            },
+            Event::Alias(id) => {
+                let size = anchored.get(&id).copied().unwrap_or(YAML_NODE_COST);
+                copied = copied.saturating_add(size);
+                if copied > MAX_YAML_ALIAS_BYTES {
+                    return false;
+                }
+                (0, size)
+            }
+            _ => continue,
+        };
+        // Anchor id 0 is the parser's "no anchor".
+        if anchor != 0 {
+            anchored.insert(anchor, size);
+        }
+        if let Some((_, parent)) = open.last_mut() {
+            *parent = parent.saturating_add(size);
+        }
+    }
 }
 
 /// A YAML mapping key as a string. YAML permits any node as a key; a
@@ -229,7 +262,7 @@ fn yaml_to_json(node: &Yaml) -> Value {
 /// A specification is one document; the rest of a multi-document stream is
 /// something else and is ignored rather than merged.
 fn parse_yaml(body: &str) -> Option<Value> {
-    if alias_references(body) > MAX_YAML_ALIASES {
+    if !yaml_expansion_within_budget(body) {
         return None;
     }
     let docs = YamlLoader::load_from_str(body).ok()?;
@@ -638,6 +671,9 @@ impl Tester for SpecExpander {
             if !response.status().is_success() {
                 return Ok(Vec::new());
             }
+            // A relative `servers` entry resolves against where the document
+            // was actually served from, which a redirect may have moved.
+            let spec_url = response.url().clone();
             let Some(kind) = spec_body_kind(response.headers(), &spec_url) else {
                 return Ok(Vec::new());
             };
@@ -1055,20 +1091,46 @@ paths:
                 vec![format!("*{prev}"); 9].join(",")
             ));
         }
-        assert!(alias_references(&bomb) > MAX_YAML_ALIASES);
+        assert!(!yaml_expansion_within_budget(&bomb));
         assert!(parse_yaml(&bomb).is_none());
     }
 
     #[test]
-    fn test_alias_counting_ignores_multiplication_and_globs() {
-        // `*` in prose, in a regex and in a glob is not an alias reference.
+    fn test_alias_bombs_are_refused_however_the_anchors_are_spelled() {
+        // Regression: the guard counted `*name` tokens in the raw text, so
+        // anchor names outside `[A-Za-z0-9_-]` (`&.1`, `*$x`) were never
+        // counted, and even 32 counted aliases could double a large leaf 16
+        // times over.
+        let mut dotted = String::from("l0: &.0 [x,x,x,x,x,x,x,x,x]\n");
+        for level in 1..9 {
+            dotted.push_str(&format!(
+                "l{level}: &.{level} [{}]\n",
+                vec![format!("*.{}", level - 1); 9].join(",")
+            ));
+        }
+        assert!(!yaml_expansion_within_budget(&dotted));
+        assert!(parse_yaml(&dotted).is_none());
+
+        let mut doubling = format!("a0: &a0 {}\n", "x".repeat(4096));
+        for level in 1..=16 {
+            let prev = level - 1;
+            doubling.push_str(&format!("a{level}: &a{level} [*a{prev}, *a{prev}]\n"));
+        }
+        assert!(!yaml_expansion_within_budget(&doubling));
+    }
+
+    #[test]
+    fn test_ordinary_yaml_passes_the_expansion_budget() {
+        // `*` in prose, in a regex and in a glob is not an alias at all.
         let benign = "\
 description: use * with care, a * b
 pattern: '^/api/v[0-9]*$'
 glob: /assets/*
 ";
-        assert_eq!(alias_references(benign), 0);
-        assert_eq!(alias_references("servers: [*a, *b]"), 2);
+        assert!(yaml_expansion_within_budget(benign));
+        assert!(yaml_expansion_within_budget(
+            "a: &a {x: 1}\nb: &b [y]\nservers: [*a, *b]\n"
+        ));
     }
 
     // ---- transport ---------------------------------------------------------

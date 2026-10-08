@@ -287,20 +287,34 @@ pub fn redact_redis_url(url: &str) -> String {
         return url.to_string();
     };
     // Only the authority section can hold credentials; a `@` after the first
-    // `/` belongs to the path.
-    let (authority, tail) = match rest.find('/') {
-        Some(idx) => (&rest[..idx], &rest[idx..]),
-        None => (rest, ""),
+    // `/` (or `?`) belongs to the path.
+    let (authority, tail) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
+    let authority = match authority.rsplit_once('@') {
+        None => authority.to_string(),
+        Some((userinfo, host)) => match userinfo.split_once(':').map_or(userinfo, |(u, _)| u) {
+            "" => format!("***@{host}"),
+            user => format!("{user}:***@{host}"),
+        },
     };
-    let Some((userinfo, host)) = authority.rsplit_once('@') else {
-        return url.to_string();
+    // redis-rs also takes the password as a query parameter, which is the
+    // only way to give one on a `redis+unix://` socket URL.
+    let tail = match tail.split_once('?') {
+        None => tail.to_string(),
+        Some((path, query)) => {
+            let query: Vec<&str> = query
+                .split('&')
+                .map(|pair| {
+                    if pair.starts_with("pass=") {
+                        "pass=***"
+                    } else {
+                        pair
+                    }
+                })
+                .collect();
+            format!("{path}?{}", query.join("&"))
+        }
     };
-    let user = userinfo.split_once(':').map_or(userinfo, |(u, _)| u);
-    if user.is_empty() {
-        format!("{scheme}://***@{host}{tail}")
-    } else {
-        format!("{scheme}://{user}:***@{host}{tail}")
-    }
+    format!("{scheme}://{authority}{tail}")
 }
 
 #[cfg(test)]
@@ -507,6 +521,11 @@ mod tests {
         assert_eq!(
             redact_redis_url("redis://127.0.0.1:6379/a@b"),
             "redis://127.0.0.1:6379/a@b"
+        );
+        // A socket URL can only carry its password in the query.
+        assert_eq!(
+            redact_redis_url("redis+unix:///run/redis.sock?db=1&pass=hunter2"),
+            "redis+unix:///run/redis.sock?db=1&pass=***"
         );
     }
 }

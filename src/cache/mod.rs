@@ -6,6 +6,8 @@ mod types;
 #[cfg(feature = "redis-cache")]
 mod redis_impl;
 
+#[cfg(feature = "redis-cache")]
+pub use admin::redact_redis_url;
 pub use admin::CacheAdmin;
 use admin::MissingCache;
 pub use command::Command;

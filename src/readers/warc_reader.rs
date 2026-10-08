@@ -14,7 +14,15 @@ fn extract_url_from_line(line: &str) -> Option<String> {
     let after_header = trimmed
         .split_once(':')
         .filter(|(name, _)| name.eq_ignore_ascii_case("WARC-Target-URI"))
-        .map(|(_, value)| value.trim());
+        // WARC/1.0 writers (wget before 1.21 among them) bracket the value:
+        // `WARC-Target-URI: <http://example.com/>`.
+        .map(|(_, value)| {
+            let value = value.trim();
+            value
+                .strip_prefix('<')
+                .and_then(|v| v.strip_suffix('>'))
+                .unwrap_or(value)
+        });
 
     let candidate = match after_header {
         Some(value) => value,
@@ -114,13 +122,16 @@ mod tests {
         writeln!(temp_file)?;
         writeln!(temp_file, "HTTP response content here")?;
         writeln!(temp_file, "WARC-Target-URI: http://example.org/page2")?;
+        // WARC/1.0-style bracketed value (wget < 1.21).
+        writeln!(temp_file, "WARC-Target-URI: <http://example.net/page3>")?;
         temp_file.flush()?;
 
         let urls = read_urls(temp_file.path())?;
 
-        assert_eq!(urls.len(), 2);
+        assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"https://example.com/page1".to_string()));
         assert!(urls.contains(&"http://example.org/page2".to_string()));
+        assert!(urls.contains(&"http://example.net/page3".to_string()));
 
         Ok(())
     }

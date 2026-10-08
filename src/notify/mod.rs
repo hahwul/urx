@@ -260,7 +260,9 @@ fn fit_lines(lines: &[String], max_chars: usize) -> String {
         // the one before the marker.
         let with_line = used + len + usize::from(i > 0);
         let marker_cost = marker.chars().count() + 1;
-        if with_line + marker_cost > max_chars {
+        // The header is always kept; one too long is cut down below rather
+        // than lost whole, which left a message of nothing but the marker.
+        if i > 0 && with_line + marker_cost > max_chars {
             break;
         }
         kept.push(line);
@@ -665,6 +667,8 @@ mod tests {
         let out = fit_lines(&lines, 60);
         assert!(out.chars().count() <= 60, "{}", out.chars().count());
         assert!(out.ends_with("cut to fit the message limit]"), "{out}");
+        // ...and what fits of the header is still there.
+        assert!(out.starts_with("hhhh"), "{out}");
     }
 
     // ---- --notify-on ------------------------------------------------------

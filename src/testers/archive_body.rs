@@ -53,7 +53,7 @@ use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
 use super::shared::{content_type, found, send};
 use super::spec_expander::{expand_spec_body, spec_body_kind};
 use super::{JsEndpointExtractor, Tester};
-use crate::network::client::read_body_capped;
+use crate::network::client::read_bytes_capped;
 use crate::network::{NetConfig, RateLimiter};
 use crate::output::UrlData;
 use crate::providers::archived::{replay_url, WAYBACK_ORIGIN};
@@ -256,6 +256,22 @@ impl ArchiveBodyExtractor {
         Some(capture)
     }
 
+    /// Give back a digest [`reserve`](Self::reserve) claimed for a fetch that
+    /// produced no body, so another URL with the same content can try. The
+    /// limit slot stays spent: the request was made.
+    ///
+    /// ponytail: a URL that reserved the same digest while the failing fetch
+    /// was still in flight was already counted a duplicate and is not retried;
+    /// have duplicates wait on the claim's outcome if that loss shows up.
+    fn release(&self, capture: &ArchiveCapture) {
+        if let Some(digest) = &capture.digest {
+            self.claimed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(digest);
+        }
+    }
+
     /// Write one replayed body to `--archive-body-dir`, if that flag is on.
     ///
     /// A failed write is reported and then dropped rather than failing the
@@ -268,7 +284,7 @@ impl ArchiveBodyExtractor {
         url: &str,
         capture: &ArchiveCapture,
         content_type: &Option<String>,
-        body: &str,
+        body: &[u8],
     ) {
         let Some(archive) = &self.body_archive else {
             return;
@@ -390,18 +406,26 @@ impl Tester for ArchiveBodyExtractor {
             let client = self.client().await?;
             let target = replay_url(&self.origin, &capture.timestamp, url);
 
-            let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
+            let response = match send(self.net.retries, self.net.rate_limit.as_ref(), || {
                 client.get(&target)
             })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to fetch archived body of {}: {:?}", url, e))?;
-            // 404 means the Wayback Machine holds no capture of
-            // this URL (the timestamp may have come from another
-            // archive). Not an error; there is simply no body.
-            if !response.status().is_success() {
-                return Ok(Vec::new());
-            }
-            // Read before `read_body_capped` consumes the
+            {
+                Ok(response) if response.status().is_success() => response,
+                // No body was read, so the digest is still unseen content:
+                // release it, or every other URL carrying it is skipped as a
+                // "duplicate" of a body nobody has (a 429 under throttling).
+                // 404 means the Wayback Machine holds no capture of this URL
+                // (the timestamp may have come from another archive). Not an
+                // error; there is simply no body.
+                result => {
+                    self.release(capture);
+                    return result.map(|_| Vec::new()).map_err(|e| {
+                        anyhow::anyhow!("Failed to fetch archived body of {}: {:?}", url, e)
+                    });
+                }
+            };
+            // Read before `read_bytes_capped` consumes the
             // response; the index records it verbatim.
             let content_type = response
                 .headers()
@@ -418,8 +442,11 @@ impl Tester for ArchiveBodyExtractor {
             // `application/json` outright.
             if self.expand_specs {
                 if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
-                    let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-                    self.persist(url, capture, &content_type, &body).await;
+                    let bytes = read_bytes_capped(response, MAX_BODY_BYTES)
+                        .await
+                        .inspect_err(|_| self.release(capture))?;
+                    self.persist(url, capture, &content_type, &bytes).await;
+                    let body = String::from_utf8_lossy(&bytes);
                     return Ok(found(expand_spec_body(&base_url, kind, &body)));
                 }
             }
@@ -452,10 +479,16 @@ impl Tester for ArchiveBodyExtractor {
                 return Ok(Vec::new());
             }
 
-            let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+            // The corpus keeps the bytes as archived — a Shift_JIS or
+            // windows-1252 page stays greppable in its own encoding and
+            // matches its digest; only the extractors read a lossy decode.
+            let bytes = read_bytes_capped(response, MAX_BODY_BYTES)
+                .await
+                .inspect_err(|_| self.release(capture))?;
             if keep {
-                self.persist(url, capture, &content_type, &body).await;
+                self.persist(url, capture, &content_type, &bytes).await;
             }
+            let body = String::from_utf8_lossy(&bytes);
 
             if script {
                 return Ok(found(JsEndpointExtractor::extract_endpoints(
@@ -674,6 +707,54 @@ mod tests {
             ]
         );
         replay.assert();
+    }
+
+    #[tokio::test]
+    async fn a_failed_replay_releases_its_digest() {
+        // Regression: the digest was claimed before the request and kept even
+        // when the archive served nothing, so /b — same bytes, replayable —
+        // was skipped as a duplicate of a body nobody ever read.
+        let mut server = mockito::Server::new_async().await;
+        let _a = server
+            .mock("GET", "/web/20200101000000id_/https://example.com/a")
+            .with_status(404)
+            .create_async()
+            .await;
+        let _b = server
+            .mock("GET", "/web/20210101000000id_/https://example.com/b")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="/found">x</a>"#)
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[
+                (
+                    "https://example.com/a",
+                    capture("20200101000000", Some("D")),
+                ),
+                (
+                    "https://example.com/b",
+                    capture("20210101000000", Some("D")),
+                ),
+            ],
+            10,
+        );
+        ex.with_origin(server.url());
+
+        assert!(ex
+            .test_url("https://example.com/a")
+            .await
+            .unwrap()
+            .is_empty());
+        let links = ex
+            .test_url("https://example.com/b")
+            .await
+            .map(urls)
+            .unwrap();
+        assert_eq!(links, vec!["https://example.com/found".to_string()]);
+        assert_eq!(ex.stats().duplicate_bodies(), 0);
     }
 
     #[test]
@@ -930,6 +1011,40 @@ mod tests {
             std::fs::read_to_string(dir.path().join(entry["file"].as_str().unwrap())).unwrap();
         // The comment is the point: no extractor would ever have reported it.
         assert!(stored.contains("staging.internal"), "{stored}");
+    }
+
+    #[tokio::test]
+    async fn stored_bodies_are_the_archived_bytes_not_a_utf8_decode() {
+        // Regression: the body was decoded lossily before it was written, so
+        // every non-UTF-8 byte of a windows-1252 page became U+FFFD on disk.
+        let page: &[u8] = b"<a href=\"/caf\xe9\">caf\xe9</a>";
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "text/html; charset=windows-1252")
+            .with_body(page)
+            .create_async()
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Arc::new(BodyArchive::create(dir.path().to_path_buf()).unwrap());
+        let mut ex = extractor(
+            &[(
+                "https://example.com/page.html",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+        ex.with_body_archive(Some(Arc::clone(&archive)));
+        ex.test_url("https://example.com/page.html").await.unwrap();
+
+        let index = std::fs::read_to_string(dir.path().join(BodyArchive::INDEX_FILE)).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(index.trim()).unwrap();
+        let stored = std::fs::read(dir.path().join(entry["file"].as_str().unwrap())).unwrap();
+        assert_eq!(stored, page);
+        assert_eq!(entry["bytes"], page.len());
     }
 
     #[tokio::test]

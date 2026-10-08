@@ -90,21 +90,18 @@ fn read_urls_capped(file_path: &Path, max_urls: usize, max_bytes: u64) -> Result
     Ok(urls)
 }
 
-/// Extract URL from a line that might contain additional data
+/// Extract URL from a line that might contain additional data.
+///
+/// URLTeam releases are BEACON files: `shortcode|target` lines. Only that
+/// first `|` separates; a target may hold raw `|`s of its own.
 fn extract_url_from_line(line: &str) -> Option<String> {
-    // Split by whitespace and look for URL-like strings
-    for part in line.split_whitespace() {
-        if part.starts_with("http://") || part.starts_with("https://") {
-            return Some(part.to_string());
-        }
-    }
-
-    // If no http/https found, check if the whole line looks like a URL
-    if line.starts_with("http://") || line.starts_with("https://") {
-        Some(line.to_string())
-    } else {
-        None
-    }
+    line.split_whitespace()
+        .map(|part| match part.split_once('|') {
+            Some((code, target)) if !code.contains("://") => target,
+            _ => part,
+        })
+        .find(|part| part.starts_with("http://") || part.starts_with("https://"))
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -167,6 +164,12 @@ mod tests {
         );
 
         assert_eq!(extract_url_from_line("some text without url"), None);
+
+        // A URLTeam release line: BEACON `shortcode|target`.
+        assert_eq!(
+            extract_url_from_line("abc123|http://example.com/x?ids=1|2|3"),
+            Some("http://example.com/x?ids=1|2|3".to_string())
+        );
     }
 
     #[test]

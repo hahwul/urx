@@ -29,8 +29,9 @@ domain (or path-scoped target), the effective provider list, and the options tha
 change what is collected: `--subs`, `-e` / `--exclude-extensions`, `--patterns` /
 `--exclude-patterns`, `--match-regex` / `--filter-regex`, `-p`, `--min-length` /
 `--max-length`, `--strict`, `--normalize-url`, `--merge-endpoint`,
-`--dedup-similar`, `--cc-index`, `--from` / `--to`, the `--archive-*` filters and
-`--archived-discovery`. Change any of these and the run starts a new baseline,
+`--dedup-similar`, `--cc-index`, `--from` / `--to`, the `--archive-*` filters,
+`--archived-discovery` (and a non-default `--archived-discovery-limit`), and
+`--cdx-endpoint` / `--cdx-dialect`. Change any of these and the run starts a new baseline,
 so an incremental scan re-reports everything once. Setting a `URX_*_API_KEY`
 variable also changes the provider list (the provider joins automatically), and
 with it the key. `--incremental` itself is not part of the key: a normal run

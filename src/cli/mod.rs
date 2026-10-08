@@ -2,6 +2,9 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// `--archived-discovery-limit` when not given.
+pub const DEFAULT_ARCHIVED_DISCOVERY_LIMIT: usize = 50;
+
 #[derive(Parser, Debug, Clone)]
 #[clap(
     name = "urx",
@@ -261,7 +264,7 @@ pub struct Args {
         long,
         help_heading = "Discovery Options",
         value_name = "N",
-        default_value = "50"
+        default_value_t = DEFAULT_ARCHIVED_DISCOVERY_LIMIT
     )]
     pub archived_discovery_limit: usize,
 
@@ -876,9 +879,11 @@ fn target_path(raw: &str) -> Option<String> {
     } else {
         trimmed.trim_start_matches("//")
     };
+    // A query or fragment narrows a request, not a scope — and is cut first,
+    // so the `/` in `example.com?next=/admin` or `example.com#/dashboard`
+    // isn't read as the start of a path.
+    let after_authority = after_authority.split(['?', '#']).next().unwrap_or("");
     let (_, path) = after_authority.split_once('/')?;
-    // A query or fragment narrows a request, not a scope.
-    let path = path.split(['?', '#']).next().unwrap_or("");
     // Run it through the URL parser rather than keeping the user's bytes.
     // Host validation compares against `Url::path()`, which reports a path
     // percent-encoded — a candidate `https://example.com/über` reports
@@ -1624,6 +1629,9 @@ mod tests {
             "https://example.com/",
             "example.com/?utm=x",
             "https://example.com/#top",
+            // A `/` inside a query or fragment is not a path.
+            "https://example.com?next=/admin",
+            "example.com#/dashboard",
         ] {
             assert_eq!(
                 normalize_target(raw).as_deref(),
