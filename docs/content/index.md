@@ -191,7 +191,7 @@ https://target.com/v1/users.js</span></pre>
   <div class="wrap">
     <div class="install rv">
       <h2>Install urx and start collecting.</h2>
-      <p>Available on Cargo, Homebrew, the AUR, as prebuilt release binaries and as a container image. No account, no key to get going.</p>
+      <p>Available on Cargo, Homebrew, the AUR, Chocolatey, as prebuilt release binaries and as a container image. No account, no key to get going.</p>
       <div class="install-cmds">
         <div class="cmd"><span class="prompt">$</span> cargo install urx <span class="via">Cargo</span></div>
         <div class="cmd"><span class="prompt">$</span> brew install urx <span class="via">Homebrew</span></div>
