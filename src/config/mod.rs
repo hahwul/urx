@@ -219,8 +219,11 @@ impl ProviderKeysConfig {
             if supplied.api_keys.contains(&id) {
                 continue;
             }
-            if let Some(keys) = keys {
-                *api_keys_mut(args, id) = split_csv(keys);
+            // An empty placeholder (`vt_api_key = ""`) is no key, not an
+            // instruction to clear the one the main config just set.
+            let keys = keys.as_deref().map(split_csv).unwrap_or_default();
+            if !keys.is_empty() {
+                *api_keys_mut(args, id) = keys;
             }
         }
     }
@@ -1182,6 +1185,25 @@ mod tests {
         let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
         cfg.apply_to_args(&mut args, CliSuppliedKeys::default());
         assert_eq!(args.vt_api_key, vec!["k1", "k2", "k3"]);
+    }
+
+    #[test]
+    fn test_provider_keys_empty_placeholder_keeps_the_main_config_key() {
+        // Regression: `vt_api_key = ""` in provider-config wiped the key the
+        // main config had just set, and VirusTotal silently ran keyless.
+        let cfg = ProviderKeysConfig {
+            vt_api_key: Some(String::new()),
+            urlscan_api_key: None,
+            zoomeye_api_key: None,
+            github_api_key: None,
+            bevigil_api_key: None,
+            notify_url: None,
+            unknown: Default::default(),
+        };
+        let mut args = <Args as clap::Parser>::parse_from(["urx", "example.com"]);
+        args.vt_api_key = vec!["realkey".to_string()];
+        cfg.apply_to_args(&mut args, CliSuppliedKeys::default());
+        assert_eq!(args.vt_api_key, vec!["realkey"]);
     }
 
     #[test]

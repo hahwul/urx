@@ -46,7 +46,13 @@ pub async fn create_cache_manager(args: &Args) -> Result<Option<CacheManager>> {
                 }
                 return Err(anyhow::anyhow!("Redis URL required for Redis cache type"));
             };
-            verbose_print(args, format!("Using Redis cache at: {redis_url}"));
+            verbose_print(
+                args,
+                format!(
+                    "Using Redis cache at: {}",
+                    crate::cache::redact_redis_url(redis_url)
+                ),
+            );
             Ok(Some(CacheManager::new_redis(redis_url).await?))
         }
         #[cfg(not(feature = "redis-cache"))]
@@ -88,6 +94,17 @@ pub fn create_cache_key(domain: &str, args: &Args) -> CacheKey {
         archive_mime: args.archive_mime.clone(),
         archive_exclude_mime: args.archive_exclude_mime.clone(),
         archived_discovery: args.archived_discovery,
+        cdx_endpoints: args.cdx_endpoint.clone(),
+        // A dialect with no endpoint to read changes nothing, so it must not
+        // change the key either. Keyed by its CLI spelling, not a Rust name.
+        cdx_dialect: args
+            .cdx_dialect
+            .filter(|_| !args.cdx_endpoint.is_empty())
+            .and_then(|d| clap::ValueEnum::to_possible_value(&d))
+            .map(|v| v.get_name().to_string()),
+        archived_discovery_limit: (args.archived_discovery
+            && args.archived_discovery_limit != crate::cli::DEFAULT_ARCHIVED_DISCOVERY_LIMIT)
+            .then_some(args.archived_discovery_limit),
     };
 
     CacheKey::new(domain, &effective_provider_ids(args), &filters)
@@ -370,6 +387,39 @@ mod tests {
             baseline.filters_hash, narrowed.filters_hash,
             "--from must not reuse an unscoped run's cached answer"
         );
+    }
+
+    #[test]
+    fn test_cache_key_tells_cdx_collections_and_discovery_limits_apart() {
+        // Regression: the provider id names only the endpoint's host, so two
+        // collections on one server shared a cache entry.
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        let hash = |args: &Args| create_cache_key("example.com", args).filters_hash;
+        let plain = hash(&args);
+
+        args.cdx_endpoint = vec!["https://archive.example/colA/cdx".to_string()];
+        let col_a = hash(&args);
+        args.cdx_endpoint = vec!["https://archive.example/colB/cdx".to_string()];
+        assert_ne!(col_a, hash(&args));
+
+        args.cdx_dialect = Some(crate::providers::CdxDialect::Classic);
+        let classic = hash(&args);
+        args.cdx_dialect = Some(crate::providers::CdxDialect::Pywb);
+        assert_ne!(classic, hash(&args));
+        // ...and a dialect with no endpoint to apply to keys like none.
+        args.cdx_endpoint.clear();
+        assert_eq!(plain, hash(&args));
+
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.archived_discovery = true;
+        let default_limit = hash(&args);
+        args.archived_discovery_limit = 5;
+        assert_ne!(default_limit, hash(&args));
+        // The limit means nothing without archived discovery.
+        args.archived_discovery = false;
+        assert_eq!(plain, hash(&args));
     }
 
     /// A cache that actually stores, so cache-hit paths can be exercised.

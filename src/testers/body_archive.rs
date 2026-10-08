@@ -130,11 +130,11 @@ impl BodyArchive {
         timestamp: &str,
         digest: Option<&str>,
         content_type: Option<&str>,
-        body: &str,
+        body: &[u8],
     ) -> Result<String> {
         let name = body_filename(url);
         let path = self.dir.join(&name);
-        tokio::fs::write(&path, body.as_bytes())
+        tokio::fs::write(&path, body)
             .await
             .with_context(|| format!("Failed to write {}", path.display()))?;
 
@@ -305,7 +305,7 @@ mod tests {
                 "20180101000000",
                 Some("ABCDEF"),
                 Some("text/html"),
-                "<html><!-- staging.internal --></html>",
+                b"<html><!-- staging.internal --></html>",
             )
             .await
             .unwrap();
@@ -346,7 +346,7 @@ mod tests {
                     "20200101000000",
                     None,
                     None,
-                    "body",
+                    b"body",
                 )
                 .await
                 .unwrap();
@@ -365,7 +365,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let archive = BodyArchive::create(dir.path().to_path_buf()).unwrap();
         archive
-            .store("https://example.com/x", "20200101000000", None, None, "hi")
+            .store("https://example.com/x", "20200101000000", None, None, b"hi")
             .await
             .unwrap();
         let index = std::fs::read_to_string(dir.path().join(BodyArchive::INDEX_FILE)).unwrap();

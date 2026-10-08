@@ -866,6 +866,12 @@ All three views need the complete result set, so they cannot be combined with
 exclusive with each other. A command-line view replaces any configured
 `show_only_*` view; a config file that sets more than one of those keys to
 `true` is rejected.
+`--params`, `--params-by-endpoint` and the `--show-only-*` views are also
+rejected alongside a tester that requests URLs (`--check-status` and the status
+filters, `--check-title`, `--extract-links`, `--extract-js-endpoints`,
+`--archive-body`, `--expand-specs`): they rewrite URLs into names before those
+would be requested. `--fuzz-placeholder` templates are real URLs and can be
+checked.
 
 ## Wordlist Output
 
@@ -1152,8 +1158,8 @@ the first byte of the body, so an untyped `/v3/api-docs` still parses.
 - `--max-spec-files` (default 50) caps the documents fetched per run; `0` means
   unlimited.
 - Each body is capped at 10 MiB, the same guard the other body-reading testers
-  use. A YAML document with more than 32 alias references is refused before
-  parsing starts: YAML aliases expand by copying, so a few hundred bytes can
+  use. A YAML document whose aliases would copy more than 10 MiB of nodes is
+  refused before the tree is built: YAML aliases expand by copying, so a few hundred bytes can
   expand to gigabytes of nodes ("billion laughs"), which a byte cap cannot
   catch. Published specifications use `$ref`, a plain string, and the rare
   document that uses YAML anchors uses a handful.

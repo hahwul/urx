@@ -159,7 +159,14 @@ pub const MAX_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 /// endpoint that streams gigabytes — by accident or on purpose — can't exhaust
 /// memory before any parsing happens. Every caller that fetches a document from
 /// a host urx does not control should go through this.
-pub async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result<String> {
+pub async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<String> {
+    let buf = read_bytes_capped(resp, max).await?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// [`read_body_capped`] without the UTF-8 decode: the bytes as served, for a
+/// caller that keeps them.
+pub async fn read_bytes_capped(mut resp: reqwest::Response, max: usize) -> Result<Vec<u8>> {
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await? {
         let remaining = max.saturating_sub(buf.len());
@@ -172,7 +179,7 @@ pub async fn read_body_capped(mut resp: reqwest::Response, max: usize) -> Result
         }
         buf.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(buf)
 }
 
 /// Whether an HTTP status is worth another attempt.

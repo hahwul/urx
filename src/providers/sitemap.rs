@@ -235,6 +235,12 @@ impl SitemapProvider {
             walk.answered = true;
             return Ok(Vec::new());
         }
+        // Children may live on the host asked or on the one a redirect landed
+        // on: `example.com/sitemap.xml` → 301 → `www.example.com/…` lists
+        // `www.` children, and comparing them to the requested URL alone
+        // dropped every one. The redirect was the target's own choice, so this
+        // opens nothing the redirect itself hadn't already.
+        let served_from = resp.url().to_string();
 
         let is_text = is_text_sitemap(
             sitemap_url,
@@ -265,7 +271,9 @@ impl SitemapProvider {
                     // A child sitemap must live on the same host as the index
                     // that names it; anything else is the document steering
                     // us off the target.
-                    if !same_host_as_parent(sitemap_url, &nested_sitemap_url) {
+                    if !same_host_as_parent(sitemap_url, &nested_sitemap_url)
+                        && !same_host_as_parent(&served_from, &nested_sitemap_url)
+                    {
                         continue;
                     }
                     // Recursively fetch and parse nested sitemaps. Box::pin
@@ -615,6 +623,53 @@ mod tests {
 
         assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
         offsite.assert(); // never requested
+    }
+
+    #[tokio::test]
+    async fn test_redirected_sitemap_index_children_are_checked_against_final_host() {
+        // Regression: `example.com/sitemap.xml` → 301 → `www.example.com/…`
+        // whose index lists `www.` children. The host check compared them to
+        // the *requested* URL, so every child was dropped and the provider
+        // reported a clean zero.
+        let mut www = Server::new_async().await;
+        let www_host = www.host_with_port();
+        let _index = www
+            .mock("GET", "/sitemap.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(format!(
+                r#"<?xml version="1.0"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>http://{www_host}/child.xml</loc></sitemap>
+</sitemapindex>"#
+            ))
+            .create_async()
+            .await;
+        let _child = www
+            .mock("GET", "/child.xml")
+            .with_status(200)
+            .with_header("content-type", "application/xml")
+            .with_body(
+                r#"<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/kept</loc></url>
+</urlset>"#,
+            )
+            .create_async()
+            .await;
+
+        let mut apex = Server::new_async().await;
+        let _redirect = apex
+            .mock("GET", "/sitemap.xml")
+            .with_status(301)
+            .with_header("location", &format!("{}/sitemap.xml", www.url()))
+            .create_async()
+            .await;
+
+        let provider = SitemapProvider::new();
+        let urls = urls_of(provider.fetch_urls(&apex.host_with_port()).await.unwrap());
+
+        assert_eq!(urls, vec!["https://example.com/kept".to_string()]);
     }
 
     #[tokio::test]

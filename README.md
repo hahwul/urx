@@ -751,6 +751,12 @@ exclusive with each other and with the `--show-only-*` views. The three
 `--show-only-*` views are also mutually exclusive with each other. A command
 line view replaces any configured `show_only_*` view; a config file that sets
 more than one of those keys to `true` is rejected.
+`--params`, `--params-by-endpoint` and the `--show-only-*` views are also
+rejected alongside a tester that requests URLs (`--check-status` and the status
+filters, `--check-title`, `--extract-links`, `--extract-js-endpoints`,
+`--archive-body`, `--expand-specs`): they rewrite URLs into names before those
+would be requested. `--fuzz-placeholder` templates are real URLs and can be
+checked.
 
 ### Wordlist Output
 
@@ -1037,8 +1043,9 @@ spec-marker substring — `swagger`, `openapi`, `api-docs`, `graphql`,
 `introspection` — plus a `json`/`yaml`/`yml` extension when there is one, so
 `swagger-ui.html` costs no request), then by the response's `Content-Type`. Path
 templates are emitted as the document writes them (`/users/{id}`, not
-`/users/%7Bid%7D`). Bodies are capped at 10 MiB, and a YAML document with more
-than 32 alias references is refused before parsing to rule out expansion bombs.
+`/users/%7Bid%7D`). Bodies are capped at 10 MiB, and a YAML document whose
+aliases would copy more than 10 MiB of nodes is refused before the tree is built
+to rule out expansion bombs.
 `--max-spec-files` (default 50) bounds the documents fetched. With
 `--archive-body` also on, an archived specification is read as one at no extra
 request cost — the body was already being fetched.

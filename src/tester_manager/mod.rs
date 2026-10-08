@@ -231,10 +231,12 @@ pub async fn process_urls_with_testers(
         if dropped.url != kept.url {
             return false;
         }
-        // Keep whichever copy carries the status; a checked URL rediscovered by
-        // the extractor must not lose its status code to the bare copy.
-        if kept.status.is_none() {
-            kept.status = dropped.status.take();
+        // Keep whichever copy carries the status — the whole record, so the
+        // title, location and content type the check found come with it; a
+        // checked URL rediscovered by the extractor must not lose them to the
+        // bare copy.
+        if kept.status.is_none() && dropped.status.is_some() {
+            std::mem::swap(kept, dropped);
         }
         true
     });
@@ -633,7 +635,12 @@ mod tests {
             url: &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
             let url = url.to_string();
-            Box::pin(async move { Ok(vec![UrlData::with_status(url, "200 OK".to_string())]) })
+            Box::pin(async move {
+                Ok(vec![UrlData {
+                    title: Some("Title".to_string()),
+                    ..UrlData::with_status(url, "200 OK".to_string())
+                }])
+            })
         }
     }
 
@@ -653,22 +660,29 @@ mod tests {
         let progress = ProgressManager::new(true);
 
         let out = process_urls_with_testers(
-            vec!["https://example.com/a".to_string()],
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ],
             &args,
             &progress,
             vec![
                 Box::new(OkStatusTester),
-                // The page links back to itself.
-                Box::new(FixedLinkTester(vec!["https://example.com/a".to_string()])),
+                // Every page links to /b, so a bare /b sorts beside the
+                // checked one — on either side of it.
+                Box::new(FixedLinkTester(vec!["https://example.com/b".to_string()])),
             ],
             true,
             None,
         )
         .await;
 
-        assert_eq!(out.len(), 1, "{out:?}");
-        assert_eq!(out[0].url, "https://example.com/a");
-        assert_eq!(out[0].status.as_deref(), Some("200 OK"));
+        assert_eq!(out.len(), 2, "{out:?}");
+        for entry in &out {
+            assert_eq!(entry.status.as_deref(), Some("200 OK"), "{entry:?}");
+            // The whole checked record survives, not just its status.
+            assert_eq!(entry.title.as_deref(), Some("Title"), "{entry:?}");
+        }
     }
 
     #[tokio::test]
