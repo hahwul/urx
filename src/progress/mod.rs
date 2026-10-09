@@ -346,7 +346,7 @@ impl ProgressManager {
         let style = ProgressStyle::with_template(&format!(
             "  {{prefix:.#a7b6c2}} {{bar:26.{color}/#3b424d}}  {counter}{{wide_msg:.#8b949e}}"
         ))
-        .unwrap()
+        .expect("stage bar template is valid")
         .progress_chars(BAR_FILL);
         let bar = ProgressBar::new(len as u64).with_style(style);
         // "◇ <label>" — the ◇ sits in the same gutter column as the provider
