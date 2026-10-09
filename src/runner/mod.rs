@@ -839,6 +839,23 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
 
+    #[test]
+    fn test_fmt_count_inserts_thousands_separators() {
+        let cases = [
+            (0, "0"),
+            (7, "7"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (12_345, "12,345"),
+            (999_999, "999,999"),
+            (1_000_000, "1,000,000"),
+            (1_234_567_890, "1,234,567,890"),
+        ];
+        for (n, expected) in cases {
+            assert_eq!(fmt_count(n), expected, "fmt_count({n})");
+        }
+    }
+
     /// A provider that paginates: it collects one URL every `step`, and honours
     /// the run-wide stop signal the way a real cursor-walking provider is meant
     /// to — flag the result partial and return what it already has, rather than

@@ -511,6 +511,13 @@ mod tests {
     }
 
     #[test]
+    fn test_csv_escape_with_newline() {
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+        // A newline combined with a quote doubles the quote as well.
+        assert_eq!(csv_escape("a\n\"b\""), "\"a\n\"\"b\"\"\"");
+    }
+
+    #[test]
     fn test_csv_escape_with_quote() {
         assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
     }
