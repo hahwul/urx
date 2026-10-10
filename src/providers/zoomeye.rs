@@ -32,6 +32,9 @@ const ZOOMEYE_MAX_PAGES: u32 = 1_000;
 struct ZoomEyeResponse {
     #[serde(default)]
     code: i32,
+    /// Human-readable explanation that accompanies a non-success `code`.
+    #[serde(default)]
+    message: String,
     #[serde(default)]
     total: u64,
     #[serde(default)]
@@ -58,6 +61,18 @@ struct ZoomEyeRequest {
     page: u32,
     pagesize: u32,
     sub_type: String,
+}
+
+/// Error text for a response whose `code` is not the success code. Includes
+/// ZoomEye's own `message` when it sent one, so the user sees e.g. "auth failed"
+/// instead of a bare numeric code.
+fn api_error_message(response: &ZoomEyeResponse) -> String {
+    let message = response.message.trim();
+    if message.is_empty() {
+        format!("ZoomEye API error: code {}", response.code)
+    } else {
+        format!("ZoomEye API error: code {} ({message})", response.code)
+    }
 }
 
 impl ZoomEyeProvider {
@@ -153,11 +168,9 @@ impl Provider for ZoomEyeProvider {
                     // A 200 with a non-success code is an API error (rejected
                     // key, quota, bad query) — don't mistake it for an empty
                     // result set.
-                    anyhow::ensure!(
-                        response.code == ZOOMEYE_SUCCESS_CODE,
-                        "ZoomEye API error: code {}",
-                        response.code
-                    );
+                    if response.code != ZOOMEYE_SUCCESS_CODE {
+                        anyhow::bail!("{}", api_error_message(&response));
+                    }
                     Ok(response)
                 });
 
@@ -405,6 +418,21 @@ mod tests {
             .await
             .expect_err("non-success code should be an error");
         assert!(err.to_string().contains("60500"), "got: {err}");
+        assert!(err.to_string().contains("auth failed"), "got: {err}");
+    }
+
+    #[test]
+    fn test_api_error_message_without_message() {
+        let response = ZoomEyeResponse {
+            code: 60500,
+            message: "  ".to_string(),
+            total: 0,
+            data: vec![],
+        };
+        assert_eq!(
+            api_error_message(&response),
+            "ZoomEye API error: code 60500"
+        );
     }
 
     #[tokio::test]
