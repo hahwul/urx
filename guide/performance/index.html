@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script>
+    /* Resolve the theme before first paint so there is no flash. No stored choice
+       means no attribute, which lets color-scheme + light-dark() follow the OS. */
+    (function () {
+      document.documentElement.classList.add("has-js");
+      try {
+        var t = localStorage.getItem("urx-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Tune throughput with parallelism, network settings, provider choice, archive-side filtering and streaming.">
+  <meta name="theme-color" content="#FBFBF9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0B0B0E" media="(prefers-color-scheme: dark)">
+  <title>Performance - Urx</title>
+
+  <link rel="icon" type="image/png" sizes="96x96" href="/icons/favicon-96x96.png">
+  <link rel="shortcut icon" href="/icons/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="urx">
+  <link rel="manifest" href="/icons/site.webmanifest">
+
+  <meta property="og:title" content="Performance">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="/guide/performance/">
+  <meta property="og:description" content="Tune throughput with parallelism, network settings, provider choice, archive-side filtering and streaming.">
+  <meta property="og:image" content="/images/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Performance">
+  <meta name="twitter:description" content="Tune throughput with parallelism, network settings, provider choice, archive-side filtering and streaming.">
+  <meta name="twitter:image" content="/images/og-card.png">
+  <meta name="twitter:site" content="@hahwul">
+  <meta name="twitter:creator" content="@hahwul">
+  <link rel="canonical" href="/guide/performance/">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Performance","url":"/guide/performance/","description":"Tune throughput with parallelism, network settings, provider choice, archive-side filtering and streaming."}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Urx","item":"/"},{"@type":"ListItem","position":2,"name":"Guide","item":"/guide/"},{"@type":"ListItem","position":3,"name":"Performance"}]}</script>
+
+  <link rel="preload" href="/fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/css/style.css">
+  
+  
+  
+</head>
+<body class="is-doc" data-section="guide">
+  <a class="skip-link" href="#main">Skip to content</a>
+<header class="docs-header">
+  <a href="/" class="brand" aria-label="urx home">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-word">urx</span>
+  </a>
+
+  <nav class="top-nav" aria-label="Main">
+    <a href="/getting-started/">Getting Started</a>
+    <a href="/guide/" class="active">Guide</a>
+    <a href="/about/">About</a>
+  </nav>
+
+  <details class="nav-compact">
+    <summary aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </summary>
+    <div class="nav-compact-panel">
+      <a href="/getting-started/">Getting Started</a>
+      <a href="/guide/">Guide</a>
+      <a href="/about/">About</a>
+      <a href="/getting-started/installation/">Install</a>
+    </div>
+  </details>
+
+  <div class="header-right">
+    <button class="icon-btn search-btn" data-search-open aria-label="Search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <kbd>&#8984;K</kbd>
+    </button>
+    <button class="icon-btn theme-toggle" data-theme-toggle aria-label="Toggle theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a href="https://github.com/hahwul/urx" class="icon-btn" target="_blank" rel="noopener" aria-label="urx on GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+    </a>
+  </div>
+</header>
+<div class="docs-container">
+  
+<aside class="docs-sidebar">
+  <details class="docs-navigation" open>
+    <summary class="docs-navigation-toggle">Documentation</summary>
+    <nav class="manual-nav" aria-label="Documentation">
+      
+      
+      <details class="nav-group">
+        <summary>Getting Started</summary>
+        <ul class="nav-links">
+          <li><a href="/getting-started/">Overview</a></li>
+          
+          <li><a href="/getting-started/installation/">Installation</a></li>
+          
+          <li><a href="/getting-started/quick-start/">Quick Start</a></li>
+          
+        </ul>
+      </details>
+      
+      
+      
+      <details class="nav-group" open>
+        <summary>Guide</summary>
+        <ul class="nav-links">
+          <li><a href="/guide/">Overview</a></li>
+          
+          <li><a href="/guide/cli-options/">CLI Options</a></li>
+          
+          <li><a href="/guide/configuration/">Configuration</a></li>
+          
+          <li><a href="/guide/examples/">Examples</a></li>
+          
+          <li><a href="/guide/environment-variables/">Environment Variables</a></li>
+          
+          <li><a href="/guide/caching/">Caching</a></li>
+          
+          <li><a href="/guide/integration/">Integration</a></li>
+          
+          <li><a href="/guide/performance/" class="active" aria-current="page">Performance</a></li>
+          
+        </ul>
+      </details>
+      
+      
+      
+      <details class="nav-group">
+        <summary>About</summary>
+        <ul class="nav-links">
+          <li><a href="/about/">Overview</a></li>
+          
+          <li><a href="/about/contributing/">Contributing</a></li>
+          
+        </ul>
+      </details>
+      
+      
+    </nav>
+  </details>
+</aside>
+  <main id="main" class="docs-main">
+    <nav class="document-path" aria-label="Breadcrumb">
+      <a href="/">Urx</a>
+      
+      <span aria-hidden="true">/</span><a href="/guide/">Guide</a>
+      
+    </nav>
+
+    <header class="document-heading">
+      <h1>Performance</h1>
+      <span class="contrail" aria-hidden="true"></span>
+      <p class="document-lede">Tune throughput with parallelism, network settings, provider choice, archive-side filtering and streaming.</p>
+    </header>
+
+    <article class="document-body"><h2 id="optimizing-urx-performance">Optimizing Urx Performance</h2>
+<p>All selected providers always run concurrently. The settings below control how
+much work each one does, how patiently it waits, and how fast results reach you.</p>
+<p>Defaults worth knowing: <code>--timeout 120</code>, <code>--retries 2</code>, <code>--parallel 5</code>, no
+<code>--rate-limit</code>, no <code>--max-time</code>.</p>
+<h3 id="parallel-processing">Parallel Processing</h3>
+<h4 id="adjust-parallelism">Adjust Parallelism</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Default: 5 domains per provider at once</span>
+urx --domain-list domains.txt
+
+<span class="hljs-comment"># More domains in flight per provider</span>
+urx --domain-list domains.txt --parallel <span class="hljs-number">20</span>
+
+<span class="hljs-comment"># Gentler on rate-limited providers and targets</span>
+urx --domain-list domains.txt --parallel <span class="hljs-number">2</span>
+</code></pre>
+<p><code>--parallel</code> (default 5) bounds how many domains each provider fetches
+concurrently, and how many URLs <code>--check-status</code> and the extractors request at
+once. It matters for multi-domain runs and for the testers; for a single target's
+collection it changes nothing, because each provider has only one domain to
+fetch. A provider's <code>--rate-limit</code> is shared across its concurrent domains, so
+raising <code>--parallel</code> never exceeds the configured rate.</p>
+<p><strong>Recommendations:</strong></p>
+<ul>
+<li>Fast connections: <code>--parallel 15-20</code></li>
+<li>Normal connections: <code>--parallel 5-10</code></li>
+<li>Slow/rate-limited: <code>--parallel 2-3</code></li>
+</ul>
+<h3 id="network-optimization">Network Optimization</h3>
+<h4 id="timeout-configuration">Timeout Configuration</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Fast per-request timeout for quick scans</span>
+urx example.com --timeout <span class="hljs-number">15</span>
+
+<span class="hljs-comment"># Cap the whole collection phase at 5 minutes, keeping what arrived in time</span>
+urx example.com --max-time <span class="hljs-number">300</span>
+</code></pre>
+<p><code>--timeout</code> (default 120 seconds) applies to each request. <code>--max-time</code> is the
+ceiling on the whole provider phase: when it elapses, in-flight fetches are
+stopped and urx continues with the URLs collected so far. <code>--stats</code> counts the
+fetches that were cut short in its <code>partial</code> column. A cut-short result is
+cached like any other.</p>
+<h4 id="retry-settings">Retry Settings</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Fewer retries for speed</span>
+urx example.com --retries <span class="hljs-number">1</span>
+
+<span class="hljs-comment"># More retries for reliability</span>
+urx example.com --retries <span class="hljs-number">5</span>
+</code></pre>
+<p><code>--retries</code> (default 2) is the number of extra attempts after the first:</p>
+<ul>
+<li>The archive indexes (wayback, cc, arquivo, <code>--cdx-endpoint</code>, and the
+archived-discovery listings) retry network errors and HTTP <code>408</code>, <code>429</code> and
+<code>5xx</code>, backing off linearly (0.5 s, 1 s, …) unless the server sends
+<code>Retry-After</code> (seconds, capped at 60 s), which replaces the back-off.</li>
+<li>bevigil retries network errors, <code>429</code> and <code>5xx</code> the same way; a <code>404</code> means no
+data, and any other error status fails at once.</li>
+<li>vt, urlscan, zoomeye and github retry any non-2xx answer (except vt's 404 and
+github's 422, which mean no data) with the same back-off. They first wait out
+the <code>Retry-After</code> of a 429 (and, for github, of a 403 secondary rate limit).</li>
+<li>otx retries any failure a flat 1 s apart.</li>
+<li>The testers (<code>--check-status</code>, the extractors, <code>--expand-specs</code>,
+<code>--archive-body</code>) retry only network errors, 0.5 s apart, because the HTTP
+status is their answer.</li>
+<li>The live robots.txt / sitemap.xml probes make a single attempt.</li>
+</ul>
+<h4 id="network-scope">Network Scope</h4>
+<p><code>--network-scope</code> decides which components get the network settings: timeout,
+retries, proxy, <code>--insecure</code>, <code>--random-agent</code>, the rate limit, and the <code>-H</code> /
+<code>--cookie</code> / <code>--user-agent</code> headers (sent only to the target: the testers and the
+robots/sitemap probes). It does not change <code>--parallel</code>. Components outside the
+scope use their built-in defaults (3 retries, a 30 s timeout — 60 s for wayback,
+arquivo and <code>--cdx-endpoint</code>, 10 s for cc — the default User-Agent, and any
+<code>HTTP(S)_PROXY</code> / system proxy). The <code>--notify</code> webhook takes only <code>--proxy</code>
+(with <code>--proxy-auth</code>), <code>--timeout</code> and <code>--insecure</code>, whatever the scope, and makes a single attempt.</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Apply to all components (default)</span>
+urx example.com --network-scope all --proxy http://127.0.0.1:8080
+
+<span class="hljs-comment"># Only the providers go through the proxy</span>
+urx example.com --network-scope providers --proxy http://127.0.0.1:8080
+
+<span class="hljs-comment"># Only the testers (status checks, extractors) go through the proxy</span>
+urx example.com --network-scope testers --check-status --proxy http://127.0.0.1:8080
+</code></pre>
+<h3 id="provider-selection">Provider Selection</h3>
+<h4 id="choose-fast-providers">Choose Fast Providers</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Only the Wayback Machine (plus the robots.txt / sitemap.xml probes)</span>
+urx example.com --providers wayback
+
+<span class="hljs-comment"># Drop one provider from the default set</span>
+urx example.com --exclude-providers otx
+
+<span class="hljs-comment"># Nothing but the archive: no live requests to the target</span>
+urx example.com --providers wayback --exclude-robots --exclude-sitemap
+</code></pre>
+<p><code>--providers wayback</code> is not quite &quot;one provider&quot;: the <code>robots</code> and <code>sitemap</code>
+probes of the target run by default, and a keyed provider joins automatically
+whenever its <code>URX_*_API_KEY</code> variable is set. Use <code>--exclude-robots</code>,
+<code>--exclude-sitemap</code> or <code>--exclude-providers</code> to keep them out.</p>
+<h4 id="rate-limits">Rate Limits</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># At most 10 requests per second per provider</span>
+urx example.com --rate-limit <span class="hljs-number">10</span>
+
+<span class="hljs-comment"># Per-provider overrides; others fall back to --rate-limit</span>
+urx example.com --rate-limit-by <span class="hljs-variable">vt</span><span class="hljs-operator">=</span>1,wayback<span class="hljs-operator">=</span><span class="hljs-number">10</span>
+</code></pre>
+<p>The rate applies per provider, and may be fractional: <code>--rate-limit-by vt=0.066</code>
+is about 4 requests a minute, VirusTotal's public-API quota. It also paces
+<code>--extract-js-endpoints</code>, <code>--expand-specs</code> and <code>--archive-body</code>.</p>
+<h4 id="api-key-rotation">API Key Rotation</h4>
+<p>Distribute load across multiple API keys to bypass rate limits:</p>
+<pre><code class="language-bash hljs">urx example.com <span class="hljs-string">\
+</span>  --vt-api-key<span class="hljs-operator">=</span>key1 <span class="hljs-string">\
+</span>  --vt-api-key<span class="hljs-operator">=</span>key2 <span class="hljs-string">\
+</span>  --vt-api-key<span class="hljs-operator">=</span>key3 <span class="hljs-string">\
+</span>  --providers vt
+</code></pre>
+<h3 id="filtering-early">Filtering Early</h3>
+<p>Most filters (<code>-e</code>, <code>--patterns</code>, <code>-p</code>, the regex filters) run after collection,
+so they cut the output and the work the testers do, but not the amount fetched.
+The filters that shrink the fetch itself are the ones the archive applies on its
+side:</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Only captures from a date range (wayback, cc, arquivo, --cdx-endpoint)</span>
+urx example.com --from <span class="hljs-number">2023</span> --to <span class="hljs-number">2024</span>
+
+<span class="hljs-comment"># Only what the archive recorded as 200 / as JSON</span>
+urx example.com --archive-status <span class="hljs-number">200</span> --archive-mime application/json
+
+<span class="hljs-comment"># A path-scoped target: the CDX archives only ask for that path</span>
+urx example.com/api
+</code></pre>
+<p>Filtering in urx rather than piping to <code>grep</code> still pays off when testers run,
+since they then request only the URLs that survive:</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Status checks only for the JavaScript files that mention &quot;api&quot;</span>
+urx example.com -e js --patterns api --check-status
+</code></pre>
+<h4 id="use-presets">Use Presets</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Exclude a whole family of static files by name</span>
+urx example.com -p no-images,no-resources
+
+<span class="hljs-comment"># Or pick exactly the extensions to drop</span>
+urx example.com --exclude-extensions jpg,png,gif,css,woff,woff2,ttf
+</code></pre>
+<p>Presets and <code>--exclude-extensions</code> go through the same filter; presets are a
+shorthand, not a faster path.</p>
+<h3 id="output-optimization">Output Optimization</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Write results to a file with no terminal output</span>
+urx example.com --silent -o results.txt
+
+<span class="hljs-comment"># Start processing results as soon as each provider reports them</span>
+urx example.com --stream <span class="hljs-punctuation">|</span> httpx -silent
+</code></pre>
+<p>The progress bar is drawn on stderr and hidden automatically when stderr is not
+a terminal, so scripts need no <code>--no-progress</code>. <code>--silent</code> suppresses <strong>all</strong>
+output, including results on stdout (except under <code>--stream</code>), so use it only
+together with <code>-o</code> or <code>--notify</code>.</p>
+<p>Batch output is held in memory until the run ends, whether it goes to <code>-o</code> or to
+stdout. <code>--stream</code> writes each provider's URLs as soon as it finishes a domain,
+and keeps only the set of URLs already written (for de-duplication) instead of
+the full result set with sources and metadata. It is unsorted, bypasses the cache, supports only <code>plain</code>, <code>jsonl</code> and
+<code>csv</code>, and rejects options that need the complete result set (see
+<a href="/guide/cli-options/">CLI Options</a>).</p>
+<h3 id="batch-processing">Batch Processing</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Many domains in one run; urx fetches them concurrently itself</span>
+urx --domain-list domains.txt --no-progress -o results.txt
+
+<span class="hljs-comment"># One output file per host (www. and each subdomain get their own)</span>
+urx --domain-list domains.txt --incremental --output-dir out/
+
+<span class="hljs-comment"># Lowest memory: stream the results</span>
+urx --domain-list domains.txt --stream -o results.txt
+</code></pre>
+<h2 id="best-practices-by-use-case">Best Practices by Use Case</h2>
+<h3 id="rapid-testing">Rapid Testing</h3>
+<pre><code class="language-bash hljs">urx example.com <span class="hljs-string">\
+</span>  --providers wayback <span class="hljs-string">\
+</span>  --exclude-robots --exclude-sitemap <span class="hljs-string">\
+</span>  --timeout <span class="hljs-number">15</span> <span class="hljs-string">\
+</span>  --retries <span class="hljs-number">1</span> <span class="hljs-string">\
+</span>  --max-time <span class="hljs-number">120</span>
+</code></pre>
+<h3 id="production-monitoring">Production Monitoring</h3>
+<pre><code class="language-bash hljs">urx example.com <span class="hljs-string">\
+</span>  --incremental <span class="hljs-string">\
+</span>  --cache-ttl <span class="hljs-number">172800</span> <span class="hljs-string">\
+</span>  --timeout <span class="hljs-number">60</span> <span class="hljs-string">\
+</span>  --retries <span class="hljs-number">3</span> <span class="hljs-string">\
+</span>  --silent <span class="hljs-string">\
+</span>  --notify <span class="hljs-string">&quot;</span><span class="hljs-variable">$URX_HOOK</span><span class="hljs-string">&quot;</span> --notify-format slack
+</code></pre>
+<p>For a cache shared across machines, add <code>--cache-type redis --redis-url …</code>
+(needs a <code>redis-cache</code> build; see <a href="/guide/caching/">Caching</a>).</p>
+<h3 id="comprehensive-discovery">Comprehensive Discovery</h3>
+<p>vt and zoomeye need <code>URX_VT_API_KEY</code> / <code>URX_ZOOMEYE_API_KEY</code> (or the matching
+flags); without a key they report an error and are skipped.</p>
+<pre><code class="language-bash hljs">urx example.com <span class="hljs-string">\
+</span>  --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye <span class="hljs-string">\
+</span>  --subs <span class="hljs-string">\
+</span>  --timeout <span class="hljs-number">120</span> <span class="hljs-string">\
+</span>  --retries <span class="hljs-number">5</span> <span class="hljs-string">\
+</span>  --incremental
+</code></pre>
+<h3 id="resource-constrained-environment">Resource-Constrained Environment</h3>
+<pre><code class="language-bash hljs">urx example.com <span class="hljs-string">\
+</span>  --providers wayback <span class="hljs-string">\
+</span>  --exclude-robots --exclude-sitemap <span class="hljs-string">\
+</span>  --timeout <span class="hljs-number">30</span> <span class="hljs-string">\
+</span>  --no-cache <span class="hljs-string">\
+</span>  --stream
+</code></pre>
+<h2 id="troubleshooting-performance-issues">Troubleshooting Performance Issues</h2>
+<h3 id="slow-scans">Slow Scans</h3>
+<ol>
+<li>Re-runs within <code>--cache-ttl</code> are served from the cache automatically (don't
+pass <code>--no-cache</code>); raise <code>--cache-ttl</code> to reuse results longer</li>
+<li>Cap the run with <code>--max-time</code></li>
+<li>Reduce <code>--timeout</code> if appropriate</li>
+<li>Select fewer providers, or use <code>--exclude-providers</code></li>
+<li>Narrow the fetch with <code>--from</code> / <code>--to</code>, the <code>--archive-*</code> filters or a
+path-scoped target</li>
+<li>For many domains, increase <code>--parallel</code></li>
+</ol>
+<h3 id="high-memory-usage">High Memory Usage</h3>
+<ol>
+<li>Use <code>--stream</code>, which keeps only the written URLs rather than the full result set</li>
+<li>Decrease <code>--parallel</code> value</li>
+<li>Process fewer domains per run</li>
+<li>Narrow the fetch with <code>--from</code> / <code>--to</code> or the <code>--archive-*</code> filters</li>
+</ol>
+<h3 id="rate-limiting">Rate Limiting</h3>
+<ol>
+<li>Use <code>--rate-limit</code>, or <code>--rate-limit-by</code> for one provider</li>
+<li>Reduce <code>--parallel</code> value</li>
+<li>Implement API key rotation</li>
+<li>Increase <code>--timeout</code> value</li>
+</ol>
+<h3 id="network-timeouts">Network Timeouts</h3>
+<ol>
+<li>Increase <code>--timeout</code> value</li>
+<li>Increase <code>--retries</code> value</li>
+<li>Check network connectivity</li>
+<li>Try different providers</li>
+</ol>
+</article>
+
+    
+    
+
+    
+
+
+
+<nav class="page-navigation" aria-label="Page navigation">
+  
+  <a class="page-nav-link" href="/guide/integration/" rel="prev">
+    <span>&#8592; Previous</span><strong class="page-nav-title">Integration</strong>
+  </a>
+  
+  
+</nav>
+
+
+  </main>
+
+  
+  
+  <aside class="docs-toc-rail" id="tocRail" aria-label="On this page">
+    <p class="docs-toc-title">On this page</p>
+    <ul><li><a href="#optimizing-urx-performance">Optimizing Urx Performance</a><ul><li><a href="#parallel-processing">Parallel Processing</a><ul><li><a href="#adjust-parallelism">Adjust Parallelism</a></li></ul></li><li><a href="#network-optimization">Network Optimization</a><ul><li><a href="#timeout-configuration">Timeout Configuration</a></li><li><a href="#retry-settings">Retry Settings</a></li><li><a href="#network-scope">Network Scope</a></li></ul></li><li><a href="#provider-selection">Provider Selection</a><ul><li><a href="#choose-fast-providers">Choose Fast Providers</a></li><li><a href="#rate-limits">Rate Limits</a></li><li><a href="#api-key-rotation">API Key Rotation</a></li></ul></li><li><a href="#filtering-early">Filtering Early</a><ul><li><a href="#use-presets">Use Presets</a></li></ul></li><li><a href="#output-optimization">Output Optimization</a></li><li><a href="#batch-processing">Batch Processing</a></li></ul></li><li><a href="#best-practices-by-use-case">Best Practices by Use Case</a><ul><li><a href="#rapid-testing">Rapid Testing</a></li><li><a href="#production-monitoring">Production Monitoring</a></li><li><a href="#comprehensive-discovery">Comprehensive Discovery</a></li><li><a href="#resource-constrained-environment">Resource-Constrained Environment</a></li></ul></li><li><a href="#troubleshooting-performance-issues">Troubleshooting Performance Issues</a><ul><li><a href="#slow-scans">Slow Scans</a></li><li><a href="#high-memory-usage">High Memory Usage</a></li><li><a href="#rate-limiting">Rate Limiting</a></li><li><a href="#network-timeouts">Network Timeouts</a></li></ul></li></ul>
+  </aside>
+  
+</div>
+<footer class="docs-footer">
+  <p class="footer-meta">
+    <a class="footer-sig" href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul, built with love">
+      <span class="hahwul-img" aria-hidden="true"></span>
+      <span class="footer-love">Built with Love</span>
+    </a>
+    <span aria-hidden="true">&#183;</span>
+    <span>MIT &#183; &#169; HAHWUL</span>
+  </p>
+</footer>
+
+<div class="search-overlay" id="searchOverlay" role="dialog" aria-modal="true" aria-label="Search documentation">
+  <div class="search-panel">
+    <input class="search-input" id="searchInput" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+    <ul class="search-results" id="searchResults"></ul>
+    <div class="search-hints">
+      <span><kbd>&#8593;</kbd><kbd>&#8595;</kbd> navigate</span>
+      <span><kbd>&#8629;</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+
+<script src="/js/theme.js" defer></script>
+<script src="/js/search.js" defer></script>
+
+
+<script src="/js/toc.js" defer></script>
+<script src="/js/docs.js" defer></script>
+<script src="/js/codecopy.js" defer></script>
+
+
+</body>
+</html>
