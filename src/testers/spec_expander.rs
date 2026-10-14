@@ -42,6 +42,11 @@ use crate::output::UrlData;
 /// specification (a very large one is a few hundred KiB).
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
+/// Upper bound on raw URLs one OpenAPI document expands to, counted before
+/// dedup. Paths multiply by servers, so a crafted document inside the body cap
+/// could otherwise yield 1e8+ strings. GraphQL output is bounded by its schema.
+const MAX_EXPANDED_URLS: usize = 100_000;
+
 /// Extensions a specification is served with. A URL carrying any *other*
 /// extension is not one whatever its name says — `swagger-ui.html` is the
 /// viewer, `swagger-ui-bundle.js` is its code — so the request is never made.
@@ -167,19 +172,23 @@ const MAX_YAML_ALIAS_BYTES: usize = MAX_BODY_BYTES;
 /// [`MAX_YAML_ALIAS_BYTES`] accounting.
 const YAML_NODE_COST: usize = 64;
 
-/// Whether expanding `body`'s aliases stays within [`MAX_YAML_ALIAS_BYTES`].
+/// Deepest collection nesting a spec may have. The loader recurses once per
+/// level and overflows a 2 MiB worker stack at a few thousand, which aborts
+/// the whole process; real specs stay within a few dozen.
+const MAX_YAML_DEPTH: usize = 128;
+
+/// Whether expanding `body`'s aliases stays within [`MAX_YAML_ALIAS_BYTES`]
+/// and its nesting within [`MAX_YAML_DEPTH`].
 ///
 /// Walks the parser's event stream — no tree is built — tracking the size
 /// each anchored node would expand to and charging that size every time an
 /// alias copies it. Bounding the copies themselves, rather than counting
 /// `*name` tokens in the text, means no spelling of an anchor name and no
 /// arrangement of a handful of aliases gets past it. A stream that does not
-/// parse is refused too; the loader would reject it anyway.
+/// parse is refused too; the loader would reject it anyway. The walk runs for
+/// every body, not only those with a `*`, because depth is a risk with no
+/// alias at all.
 fn yaml_expansion_within_budget(body: &str) -> bool {
-    // No `*`, no alias: skip the extra parse for the usual `$ref`-only spec.
-    if !body.contains('*') {
-        return true;
-    }
     let mut parser = Parser::new_from_str(body);
     let mut anchored: HashMap<usize, usize> = HashMap::new();
     // Each open collection's anchor and the size of what it holds so far.
@@ -193,6 +202,9 @@ fn yaml_expansion_within_budget(body: &str) -> bool {
             Event::StreamEnd => return true,
             Event::Scalar(text, _, anchor, _) => (anchor, YAML_NODE_COST + text.len()),
             Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
+                if open.len() >= MAX_YAML_DEPTH {
+                    return false;
+                }
                 open.push((anchor, YAML_NODE_COST));
                 continue;
             }
@@ -426,12 +438,15 @@ fn openapi_urls(spec_url: &Url, doc: &Value) -> Vec<String> {
         }
         // OpenAPI 3 lets a path item override the document's servers, and
         // gateways that front several backends actually use it.
-        let bases = item
+        let own_bases = item
             .get("servers")
             .map(|servers| servers_bases(spec_url, servers))
-            .filter(|bases| !bases.is_empty())
-            .unwrap_or_else(|| document_bases.clone());
-        for base in &bases {
+            .filter(|bases| !bases.is_empty());
+        let bases = own_bases.as_deref().unwrap_or(document_bases.as_slice());
+        for base in bases {
+            if out.len() == MAX_EXPANDED_URLS {
+                return out;
+            }
             out.push(join_path(base, path));
         }
     }
@@ -942,6 +957,21 @@ mod tests {
     }
 
     #[test]
+    fn test_expansion_stops_at_the_url_cap() {
+        // 2 000 paths x 100 servers is 200 000 URLs before the cap.
+        let servers: Vec<Value> = (0..100)
+            .map(|i| json!({"url": format!("https://s{i}.example.com")}))
+            .collect();
+        let paths: serde_json::Map<String, Value> =
+            (0..2_000).map(|i| (format!("/p{i}"), json!({}))).collect();
+        let doc = json!({"openapi": "3.0.0", "servers": servers, "paths": paths});
+        assert_eq!(
+            expand("https://example.com/openapi.json", doc).len(),
+            MAX_EXPANDED_URLS
+        );
+    }
+
+    #[test]
     fn test_duplicate_urls_are_emitted_once() {
         // Two servers that resolve to the same base.
         let doc = json!({
@@ -1117,6 +1147,19 @@ paths:
             doubling.push_str(&format!("a{level}: &a{level} [*a{prev}, *a{prev}]\n"));
         }
         assert!(!yaml_expansion_within_budget(&doubling));
+    }
+
+    #[test]
+    fn test_deeply_nested_yaml_is_refused_before_the_loader_recurses() {
+        // Each `- ` opens one more sequence. Without the depth cap the loader
+        // recurses 5000 levels on a 2 MiB stack and aborts the process.
+        let deep = format!("{}a", "- ".repeat(5000));
+        assert!(parse_yaml(&deep).is_none());
+
+        // Just under the cap still loads, and nothing is refused for having
+        // no `*`.
+        let shallow = format!("{}a", "- ".repeat(MAX_YAML_DEPTH - 1));
+        assert!(parse_yaml(&shallow).is_some());
     }
 
     #[test]

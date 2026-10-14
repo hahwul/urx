@@ -178,8 +178,8 @@ pub fn missing_api_key_message(id: &str) -> String {
 /// `cdx:<host>` providers `--cdx-endpoint` creates. Their row is always shown
 /// (so the option is discoverable), and any endpoint named on this very
 /// command line is listed underneath with the id it will run as.
-pub fn print_provider_list(args: &Args) {
-    print!("{}", render_provider_list(args));
+pub fn print_provider_list(args: &Args) -> anyhow::Result<()> {
+    crate::app::shell::write_stdout(render_provider_list(args).as_bytes())
 }
 
 /// The `--list-providers` text. Separate from the printing so tests can read

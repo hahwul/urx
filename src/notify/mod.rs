@@ -26,6 +26,7 @@ use crate::network::client::HttpClientConfig;
 use crate::network::CustomHeaders;
 use crate::network::NetworkSettings;
 use crate::runner::ProviderStats;
+use crate::utils::stderr_line;
 
 /// When a notification is sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -467,13 +468,13 @@ pub async fn send_notifications(
 /// like every other diagnostic; the delivery still happens.
 fn log_warning(args: &Args, message: String) {
     if !args.silent {
-        eprintln!("{message}");
+        stderr_line(&message);
     }
 }
 
 fn log_verbose(args: &Args, message: String) {
     if args.verbose && !args.silent {
-        eprintln!("{message}");
+        stderr_line(&message);
     }
 }
 

@@ -335,8 +335,17 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let result = runtime.block_on(run());
+    // A streamed write can stay parked on a pipe nobody reads (`| (sleep 3600)`).
+    // Dropping the runtime would wait for that thread forever, so give it a
+    // moment and let process exit reap it.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+async fn run() -> Result<()> {
     // Wall-clock for the whole run, reported in the notification.
     let started = std::time::Instant::now();
     let (mut args, provided) = cli::parse_args();
@@ -351,8 +360,7 @@ async fn main() -> Result<()> {
         return app::shell::write_stdout(&app::shell::man_page()?);
     }
     if args.list_providers {
-        print_provider_list(&args);
-        return Ok(());
+        return print_provider_list(&args);
     }
 
     apply_config_layers(&mut args, &provided)?;

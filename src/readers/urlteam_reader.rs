@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::Path;
 
 use super::{StopOnDecodeError, MAX_FILE_BYTES, MAX_FILE_URLS};
+use crate::utils::stderr_line;
 
 /// Read URL lines from `src`, bounded by the given caps. URLTeam lines can
 /// carry timestamps or status columns alongside the URL, so extraction picks
@@ -59,10 +60,10 @@ fn read_urls_capped(file_path: &Path, max_urls: usize, max_bytes: u64) -> Result
             collected.map(
                 |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
                 if let Some(error) = decode_error {
-                    eprintln!(
+                    stderr_line(&format!(
                         "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
                         file_path.display()
-                    );
+                    ));
                     // A URL without its terminating newline may be the partial
                     // record at the damaged end of the compressed stream.
                     if final_fragment_url {

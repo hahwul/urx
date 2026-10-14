@@ -180,9 +180,12 @@ pub async fn process_domains_with_cache(
     }
 
     if domains_to_process.is_empty() {
-        cache
-            .delete_expired(args.cache_ttl.saturating_mul(2))
-            .await?;
+        // Housekeeping: a failed sweep must not discard results already in hand.
+        if let Err(e) = cache.delete_expired(args.cache_ttl.saturating_mul(2)).await {
+            if !args.silent {
+                crate::utils::stderr_line(&format!("Cache sweep failed: {e}"));
+            }
+        }
         return Ok(final_result);
     }
 
@@ -252,9 +255,11 @@ pub async fn process_domains_with_cache(
 
     // Saturating: `--cache-ttl` is an unvalidated u64, and `* 2` on a large one
     // overflows (a debug-build panic, a wrap in release).
-    cache
-        .delete_expired(args.cache_ttl.saturating_mul(2))
-        .await?;
+    if let Err(e) = cache.delete_expired(args.cache_ttl.saturating_mul(2)).await {
+        if !args.silent {
+            crate::utils::stderr_line(&format!("Cache sweep failed: {e}"));
+        }
+    }
 
     Ok(final_result)
 }
@@ -296,7 +301,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_domains_with_cache_surfaces_backend_errors() {
+    async fn test_process_domains_with_cache_surfaces_write_errors_but_not_read_errors() {
+        // A failed read is a miss, so the run still fetches; a failed write
+        // still fails the run.
         let providers: Vec<Box<dyn Provider>> = vec![Box::new(MockProvider::new(
             vec!["https://example.com/page1".to_string()],
             false,
@@ -316,7 +323,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("cache get failed"));
+        assert!(err.to_string().contains("cache set failed"), "{err}");
     }
 
     #[tokio::test]

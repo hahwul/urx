@@ -1,3 +1,4 @@
+use crate::utils::stderr_line;
 use anyhow::{Context, Result};
 use flate2::read::MultiGzDecoder;
 use std::fs::File;
@@ -72,10 +73,10 @@ pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
             collected.map(
                 |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
                 if let Some(error) = decode_error {
-                    eprintln!(
+                    stderr_line(&format!(
                         "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
                         file_path.display()
-                    );
+                    ));
                     if final_fragment_url {
                         urls.pop();
                     }

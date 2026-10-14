@@ -57,6 +57,7 @@ use crate::network::client::read_bytes_capped;
 use crate::network::{NetConfig, RateLimiter};
 use crate::output::UrlData;
 use crate::providers::archived::{replay_url, WAYBACK_ORIGIN};
+use crate::utils::stderr_line;
 
 /// The capture to replay for one URL: when it was taken and, when the index
 /// recorded one, the digest of the body that replay will return.
@@ -299,7 +300,9 @@ impl ArchiveBodyExtractor {
             )
             .await
         {
-            eprintln!("[urx] --archive-body-dir: failed to store {url}: {e}");
+            stderr_line(&format!(
+                "[urx] --archive-body-dir: failed to store {url}: {e}"
+            ));
         }
     }
 }
