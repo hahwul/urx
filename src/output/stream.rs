@@ -43,6 +43,10 @@ pub struct StreamSink {
     /// closes the pipe long before the providers are done. Later batches are
     /// then dropped instead of re-attempting a write that can only fail again.
     closed: AtomicBool,
+    /// A write failure other than a closed pipe (disk full, `-o` on a dying
+    /// mount). It closes the sink too, and is kept for [`StreamSink::finish`]
+    /// so the run can still fail once it has wound down.
+    failure: Mutex<Option<anyhow::Error>>,
 }
 
 impl StreamSink {
@@ -67,6 +71,7 @@ impl StreamSink {
             format,
             emitted: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
+            failure: Mutex::new(None),
         };
 
         // CSV needs its header up front. A streamed run carries no status, no
@@ -112,6 +117,9 @@ impl StreamSink {
     /// Output is flushed before returning: when stdout is a pipe it is block
     /// buffered, so without an explicit flush a downstream `grep` would see
     /// nothing until the buffer filled — which would defeat the whole point.
+    ///
+    /// A failed write closes the sink (see [`StreamSink::is_closed`]); one that
+    /// is not a closed pipe is held for [`StreamSink::finish`].
     pub fn emit(&self, records: &[UrlRecord]) -> Result<usize> {
         if self.closed.load(Ordering::Relaxed) {
             return Ok(0);
@@ -155,11 +163,22 @@ impl StreamSink {
         .or_else(broken_pipe_is_ok);
         drop(w);
 
-        if !written.context("Failed to write streamed output")? {
+        match written.context("Failed to write streamed output") {
+            Ok(true) => {}
             // `urx --stream | head -1`: the consumer has what it wanted. Stop
             // emitting quietly instead of failing the whole run.
-            self.closed.store(true, Ordering::Relaxed);
-            return Ok(0);
+            Ok(false) => {
+                self.closed.store(true, Ordering::Relaxed);
+                return Ok(0);
+            }
+            Err(e) => {
+                self.closed.store(true, Ordering::Relaxed);
+                self.failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert(e);
+                return Ok(0);
+            }
         }
 
         self.emitted.fetch_add(batch.len(), Ordering::Relaxed);
@@ -169,6 +188,22 @@ impl StreamSink {
     /// Total URLs written so far.
     pub fn emitted(&self) -> usize {
         self.emitted.load(Ordering::Relaxed)
+    }
+
+    /// Whether the destination stopped accepting writes. The runner stops the
+    /// providers on this: nothing they fetch from here on can be delivered.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    /// The write failure that closed the sink, if any. A closed pipe is not one.
+    pub fn finish(&self) -> Result<()> {
+        let failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        failure.map_or(Ok(()), Err)
     }
 }
 
@@ -453,6 +488,9 @@ mod tests {
         // Later batches are dropped without retrying a write that cannot work.
         assert_eq!(sink.emit(&records(&["https://a.com/2"])).unwrap(), 0);
         assert_eq!(sink.emitted(), 0);
+        // Closed, so the runner stops fetching — but not a failure.
+        assert!(sink.is_closed());
+        assert!(sink.finish().is_ok());
     }
 
     #[test]
@@ -485,11 +523,14 @@ mod tests {
         )
         .unwrap();
 
-        let err = sink.emit(&records(&["https://a.com/1"])).unwrap_err();
-        assert!(
-            err.to_string().contains("Failed to write streamed output"),
-            "{err}"
-        );
+        assert_eq!(sink.emit(&records(&["https://a.com/1"])).unwrap(), 0);
+        // The sink closes so the run stops, and the failure is kept — cause
+        // included — for the exit code, which used to stay 0.
+        assert!(sink.is_closed());
+        let err = sink.finish().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("Failed to write streamed output"), "{msg}");
+        assert!(msg.contains("synthetic failure"), "{msg}");
     }
 
     #[test]

@@ -206,7 +206,9 @@ keep the results.
 }
 ```
 
-`providers` has the same numbers `--stats` prints. `sample` holds up to 20
+`incremental` is `true` only when the run diffed against the cache, so it is
+`false` under `--no-cache` or `--files`. `providers` has the same numbers
+`--stats` prints. `sample` holds up to 20
 emitted URLs in output order, and `sample_truncated` is `true` when there were
 more. Under `--stream` the payload has the count and an empty sample
 (`sample_truncated` is `true` if any URL was emitted).
@@ -217,6 +219,8 @@ totals, the URL sample, and `… N more not shown` when the sample is short of
 the total. The text is cut on a line boundary at 2000 characters for Discord
 and 4000 for Slack, and ends with
 `[truncated: N lines cut to fit the message limit]`. A URL is never split.
+Archived URLs cannot ping anyone: Slack text escapes `&`, `<` and `>`, and the
+Discord payload sets `"allowed_mentions": {"parse": []}`.
 
 ### Failure handling
 
@@ -948,6 +952,7 @@ urx big-target.com --stream -f jsonl | jq -r 'select(.url | test("/api/")) | .ur
   until every URL is in).
 - The cache is bypassed.
 - `--silent` does not hide streamed URLs.
+- When the reader goes away (`| head -1`), fetching stops and the run exits 0.
 - Memory use is lower: only the set of URLs already written is kept.
 - `--normalize-url`, the `--show-only-*` views, `--scope-file` and
   `--archived-discovery` work with it.

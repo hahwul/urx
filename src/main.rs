@@ -81,7 +81,7 @@ async fn collect_urls(
     domains: Vec<String>,
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
-    stream_sink: Option<&Arc<output::StreamSink>>,
+    stream_sink: &mut Option<Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
 ) -> Result<(ProviderRunResult, Vec<String>)> {
     // File input skips provider processing entirely. Every URL is attributed to
@@ -143,6 +143,10 @@ async fn collect_urls(
     }
 
     let (providers, provider_names) = initialize_providers(args, network_settings)?;
+
+    // Built only now, after every check above that can still fail: `-o`
+    // truncates its file, and a usage error must not wipe a previous run's.
+    *stream_sink = build_stream_sink(args, &domains)?;
 
     *header = Some(
         progress_manager.create_header_line(render_header(domains.len(), provider_names.len())),
@@ -410,15 +414,14 @@ async fn run() -> Result<()> {
     } else {
         Vec::new()
     };
-    let stream_sink = build_stream_sink(&args, &domains)?;
-
+    let mut stream_sink = None;
     let mut header = None;
     let (run_result, domains) = collect_urls(
         &args,
         domains,
         &network_settings,
         &progress_manager,
-        stream_sink.as_ref(),
+        &mut stream_sink,
         &mut header,
     )
     .await?;
@@ -443,7 +446,11 @@ async fn run() -> Result<()> {
             started.elapsed(),
         );
         notify::send_notifications(&args, &network_settings, &summary).await;
-        return Ok(());
+        // Like the batch path: a failed write fails the run, after the stats
+        // and notifications, and even under --silent.
+        return sink
+            .finish()
+            .map_err(|e| anyhow::anyhow!("Error writing output: {e:#}"));
     }
 
     // URL-only view for filters (they don't care about sources).
@@ -534,13 +541,50 @@ mod tests {
             Vec::new(),
             &NetworkSettings::default(),
             &ProgressManager::new(true),
-            None,
+            &mut None,
             &mut None,
         )
         .await
         .expect_err("a run with no resolvable target must not succeed");
 
         assert!(err.to_string().contains("No domains provided"), "{err}");
+    }
+
+    /// Regression: `--stream -o FILE` created (truncated) the file before the
+    /// startup checks, so a usage error wiped the previous run's results.
+    #[tokio::test]
+    async fn a_failed_stream_startup_leaves_the_output_file_alone() {
+        let mut targets = tempfile::NamedTempFile::new().unwrap();
+        writeln!(targets, "https://\n/").unwrap();
+        let mut out = tempfile::NamedTempFile::new().unwrap();
+        writeln!(out, "previous results").unwrap();
+
+        let args = Args::parse_from([
+            "urx",
+            "--silent",
+            "--no-progress",
+            "--stream",
+            "-o",
+            out.path().to_str().unwrap(),
+            "--domain-list",
+            targets.path().to_str().unwrap(),
+        ]);
+
+        let mut sink = None;
+        collect_urls(
+            &args,
+            Vec::new(),
+            &NetworkSettings::default(),
+            &ProgressManager::new(true),
+            &mut sink,
+            &mut None,
+        )
+        .await
+        .expect_err("no resolvable target");
+
+        assert!(sink.is_none());
+        let kept = std::fs::read_to_string(out.path()).unwrap();
+        assert_eq!(kept, "previous results\n");
     }
 
     #[test]
@@ -602,7 +646,7 @@ mod tests {
             Vec::new(),
             &NetworkSettings::default(),
             &ProgressManager::new(true),
-            None,
+            &mut None,
             &mut None,
         )
         .await

@@ -370,7 +370,8 @@ pub async fn process_domains(
     let run_start = std::time::Instant::now();
     let notifier = progress_manager.notifier();
     // Raised when --max-time or Ctrl-C ends the run, so a provider mid-cursor
-    // can return what it has instead of losing it to a cancelled future.
+    // can return what it has instead of losing it to a cancelled future. A
+    // closed --stream destination raises it from inside a provider task.
     let stop_signal = StopSignal::default();
 
     for (provider_clone, provider_name, original_idx) in provider_data.into_iter() {
@@ -524,21 +525,22 @@ pub async fn process_domains(
                                         // The write blocks on the pipe, so it
                                         // runs on the blocking pool: a stalled
                                         // reader must not park a runtime worker.
-                                        let sink = Arc::clone(sink);
+                                        let emitter = Arc::clone(sink);
                                         let written = task::spawn_blocking(move || {
-                                            sink.emit(&records)
+                                            emitter.emit(&records)
                                         })
                                         .await;
-                                        match written {
-                                            Ok(Err(e)) if !silent => {
-                                                notifier.note(format!(
-                                                    "Error writing streamed output: {e}"
-                                                ));
-                                            }
-                                            Err(join) if join.is_panic() => {
+                                        if let Err(join) = written {
+                                            if join.is_panic() {
                                                 std::panic::resume_unwind(join.into_panic())
                                             }
-                                            _ => {}
+                                        }
+                                        // `| head -1` closed the pipe, or the
+                                        // write failed (kept for the exit
+                                        // code): nothing fetched from here on
+                                        // can be delivered, so end the run.
+                                        if sink.is_closed() {
+                                            stop_signal.request_stop();
                                         }
                                     }
                                     None => {
@@ -710,6 +712,8 @@ pub async fn process_domains(
         Completed,
         TimedOut,
         Interrupted,
+        /// The --stream destination closed: no point fetching further.
+        OutputClosed,
     }
 
     // Pinned in the enclosing scope, not inside the `select!` block: after the
@@ -734,6 +738,8 @@ pub async fn process_domains(
             _ = &mut timeout => RunEnd::TimedOut,
             // First Ctrl-C becomes a graceful stop.
             _ = &mut ctrl_c => RunEnd::Interrupted,
+            // Only the stream sink raises it before this point.
+            _ = stop_signal.stopped() => RunEnd::OutputClosed,
         }
     };
 
@@ -762,9 +768,11 @@ pub async fn process_domains(
                     "[urx] --max-time {}s elapsed; stopping in-flight provider fetches and returning partial results",
                     deadline.map(|d| d.as_secs()).unwrap_or(0)
                 )),
-                _ => progress_manager.note(
+                RunEnd::Interrupted => progress_manager.note(
                     "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
                 ),
+                // `| head -1` getting what it wanted is not news.
+                RunEnd::OutputClosed | RunEnd::Completed => {}
             }
         }
 
@@ -801,10 +809,10 @@ pub async fn process_domains(
 
         // A timeout/interrupt leaves the provider(s) that were mid-fetch on a
         // spinning "fetching…" line; freeze them so the final display is honest.
-        let label = if matches!(run_end, RunEnd::TimedOut) {
-            "timed out"
-        } else {
-            "interrupted"
+        let label = match run_end {
+            RunEnd::TimedOut => "timed out",
+            RunEnd::OutputClosed => "output closed",
+            _ => "interrupted",
         };
         for (i, bar) in provider_bars.iter().enumerate() {
             if !bar.is_finished() {
@@ -821,6 +829,7 @@ pub async fn process_domains(
         RunEnd::Completed => overall_bar.finish_with_message("All domains processed"),
         RunEnd::TimedOut => overall_bar.finish_with_message("Stopped by --max-time deadline"),
         RunEnd::Interrupted => overall_bar.finish_with_message("Interrupted by Ctrl-C"),
+        RunEnd::OutputClosed => overall_bar.finish_with_message("Stopped: output closed"),
     }
 
     // Reclaim the shared state. If tasks were aborted the inner Arc may still
@@ -1329,6 +1338,64 @@ mod tests {
         assert_eq!(sink.emitted(), 2);
         // Stats are still tallied so --stats keeps working.
         assert_eq!(result.stats[0].url_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_closed_stream_stops_the_remaining_providers() {
+        // `urx t.com --stream | head -1`: once the pipe is closed nothing more
+        // can be delivered, so a still-paginating provider must be told to stop
+        // rather than walk its whole cursor for nobody.
+        use std::io::Write;
+
+        struct ClosedPipe;
+        impl Write for ClosedPipe {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let fast = MockProvider::new(vec!["https://example.com/fast".to_string()], false);
+        // 1000 pages × 50ms: far longer than the test allows.
+        let slow = PaginatingProvider {
+            step: std::time::Duration::from_millis(50),
+            pages: 1_000,
+        };
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(fast), Box::new(slow)];
+        let provider_names = vec!["Fast".to_string(), "Slow".to_string()];
+
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::default(),
+                None,
+                output::Format::Plain,
+                Box::new(ClosedPipe),
+            )
+            .unwrap(),
+        );
+
+        let started = std::time::Instant::now();
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &build_test_args(),
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            Some(Arc::clone(&sink)),
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "closed output should stop the run, took {:?}",
+            started.elapsed()
+        );
+        assert!(sink.is_closed());
+        assert!(sink.finish().is_ok(), "a closed pipe is not a failure");
+        assert_eq!(result.stats[1].partial_count, 1, "{:?}", result.stats[1]);
     }
 
     #[tokio::test]

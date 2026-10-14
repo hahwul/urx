@@ -65,8 +65,10 @@ impl Format {
                 for (i, url_data) in urls.iter().enumerate() {
                     out.write_all(self.format(url_data, i == urls.len() - 1).as_bytes())?;
                 }
+                // The trailing newline ends an interactive run on its own line
+                // and makes the file a proper text file.
                 if self == Format::Json {
-                    out.write_all(b"]")?;
+                    out.write_all(b"]\n")?;
                 }
             }
         }
@@ -101,15 +103,7 @@ impl Format {
                 result
             }
             None if silent => Ok(()),
-            // JSON on stdout gets a trailing newline so an interactive run
-            // ends on its own line.
-            None => write_stdout(|out| {
-                self.render(urls, out)?;
-                if self == Format::Json {
-                    out.write_all(b"\n")?;
-                }
-                Ok(())
-            }),
+            None => write_stdout(|out| self.render(urls, out)),
         }
     }
 }
@@ -238,7 +232,7 @@ mod tests {
 
         assert_eq!(
             content,
-            "[{\"url\":\"https://example.com/page1\"},{\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]"
+            "[{\"url\":\"https://example.com/page1\"},{\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]\n"
         );
 
         Ok(())
@@ -418,7 +412,7 @@ mod tests {
         assert_eq!(
             rendered(|out| Format::Json.render(&urls, out)),
             "[{\"url\":\"https://example.com/page1\"},\
-             {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]"
+             {\"url\":\"https://example.com/page2\",\"status\":\"200 OK\"}\n]\n"
         );
         assert_eq!(
             rendered(|out| Format::Jsonl.render(&urls, out)),
@@ -435,7 +429,7 @@ mod tests {
     fn test_render_of_an_empty_result_set() {
         let none: Vec<UrlData> = Vec::new();
         // json stays a valid (empty) array; csv still declares its columns.
-        assert_eq!(rendered(|out| Format::Json.render(&none, out)), "[]");
+        assert_eq!(rendered(|out| Format::Json.render(&none, out)), "[]\n");
         assert_eq!(rendered(|out| Format::Csv.render(&none, out)), "url\n");
         assert_eq!(rendered(|out| Format::Plain.render(&none, out)), "");
         assert_eq!(rendered(|out| Format::Jsonl.render(&none, out)), "");
