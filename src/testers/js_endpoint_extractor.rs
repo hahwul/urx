@@ -160,8 +160,6 @@ struct Patterns {
     /// the same treatment as an external bundle. `(?is)` so a `<SCRIPT>` with
     /// attributes and newlines inside still matches.
     inline_script: Regex,
-    /// The first `<base href>` of a page, any quoting.
-    base_href: Regex,
 }
 
 static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
@@ -192,8 +190,6 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
         .expect("request-call pattern is valid"),
         inline_script: Regex::new(r"(?is)<script\b[^>]*>(.*?)</script\s*>")
             .expect("inline-script pattern is valid"),
-        base_href: Regex::new(r#"(?is)<base\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
-            .expect("base-href pattern is valid"),
     }
 });
 
@@ -596,12 +592,9 @@ impl JsEndpointExtractor {
     /// candidates resolve against the page (or its first `<base href>`), not
     /// the origin root: here the document URL is known.
     pub fn extract_inline_endpoints(base: &Url, html: &str) -> Vec<String> {
-        let doc_base = PATTERNS
-            .base_href
-            .captures(html)
-            .and_then(|cap| quoted(&cap))
-            .and_then(|href| base.join(href.as_str().trim()).ok())
-            .unwrap_or_else(|| base.clone());
+        // Parsed as HTML, not pattern-matched: a `data-href` or a `<base`
+        // inside a script string must not rebase the page.
+        let doc_base = super::link_extractor::html_document_base(base, html);
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         for cap in PATTERNS.inline_script.captures_iter(html) {
@@ -844,7 +837,10 @@ mod tests {
                 "https://ex.com/app/api/orders"
             ]
         );
-        let html = format!(r#"<head><base href="/v2/"></head>{script}"#);
+        let decoy = r#"<script>var t = '<base href="' + x + '">';</script>"#;
+        let html = format!(
+            r#"<head><base target="_blank" data-href="/cdn/"><base href="/v2/"></head>{decoy}{script}"#
+        );
         assert_eq!(
             JsEndpointExtractor::extract_inline_endpoints(&page, &html),
             vec![

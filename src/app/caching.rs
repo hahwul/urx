@@ -231,6 +231,15 @@ pub async fn process_domains_with_cache(
     } else {
         off_host_urls(&fresh_run.urls, &domains_to_process, args.subs)
     };
+    // Off-host URLs from several fetched targets cannot be filed under the one
+    // that returned them; filing them under every target would leak one
+    // target's URLs into another's hit or baseline.
+    let unattributable = !off_host.is_empty() && domains_to_process.len() > 1;
+    let off_host = if unattributable {
+        HashSet::new()
+    } else {
+        off_host
+    };
     let domain_urls = |domain: &str| {
         let mut urls = collect_domain_urls(&fresh_run.urls, domain, args.subs);
         urls.extend(off_host.iter().cloned());
@@ -264,11 +273,8 @@ pub async fn process_domains_with_cache(
             merge_entry(&mut final_result.urls, url.clone(), entry);
         }
 
-        // Off-host URLs from several fetched targets cannot be filed under
-        // the one that returned them; storing them under every target would
-        // leak one target's URLs into another's hit, and storing none would
-        // make the hit return less than this run did. Skip the store.
-        let unattributable = !off_host.is_empty() && domains_to_process.len() > 1;
+        // Storing without the off-host URLs would make the hit return less
+        // than this run did. Skip the store.
         if unattributable {
             verbose_print(
                 args,

@@ -86,16 +86,27 @@ fn collect_domains_with_stdin(
         domains.extend(read_stdin()?);
     }
 
-    let mut normalized = normalize_domains(&domains);
+    let normalized = normalize_domains(&domains);
     // Scope-file spelling is taken literally by every provider and by host
-    // validation, so the run would come back empty without saying why.
-    if let Some(wild) = normalized
-        .iter()
-        .map(|d| cli::split_target(d).0)
-        .find(|host| host.starts_with('.') || host.contains('*'))
-    {
-        let apex = wild.trim_start_matches(['*', '.']);
-        anyhow::bail!("{wild:?} is not a target; pass `{apex} --subs` to include subdomains");
+    // validation, so such a target would come back empty without saying why.
+    // One stray line in a long list is skipped with a warning; a run with
+    // nothing else to scan is an error.
+    let (wild, mut normalized): (Vec<String>, Vec<String>) =
+        normalized.into_iter().partition(|d| {
+            let host = cli::split_target(d).0;
+            host.starts_with('.') || host.contains('*')
+        });
+    for target in &wild {
+        let advice = format!(
+            "{target:?} is not a target; pass `{} --subs` to include subdomains",
+            cli::split_target(target).0.trim_start_matches(['*', '.'])
+        );
+        if normalized.is_empty() {
+            anyhow::bail!(advice);
+        }
+        if !args.silent {
+            crate::utils::stderr_line(&format!("Skipping {advice}"));
+        }
     }
     let mut seen = HashSet::new();
     normalized.retain(|d| seen.insert(d.clone()));
@@ -1486,6 +1497,12 @@ mod tests {
                 .to_string();
             assert!(err.contains("example.com --subs"), "{raw}: {err}");
         }
+        // Alongside real targets, a wildcard line is skipped, not fatal.
+        let args = Args::parse_from(["urx", "--silent", "*.example.com", "example.org"]);
+        assert_eq!(
+            collect_domains_with_stdin(&args, || Ok(Vec::new())).unwrap(),
+            vec!["example.org"]
+        );
     }
 
     #[test]

@@ -106,9 +106,22 @@ impl CacheManager {
         }
     }
 
-    /// Store URLs in cache
+    /// Store URLs in cache.
+    ///
+    /// A key already holding an `--incremental` baseline keeps being one: the
+    /// URLs are added to it rather than replacing it, so a normal run neither
+    /// shrinks the baseline nor strips the flag that keeps it out of the sweep.
     pub async fn store_urls(&self, key: &CacheKey, entry: &CacheEntry) -> Result<()> {
-        self.backend.set(key, entry).await
+        match self.backend.get(key).await.ok().flatten() {
+            Some(existing) if existing.baseline => {
+                let mut urls: HashSet<String> = existing.urls.into_iter().collect();
+                urls.extend(entry.urls.iter().cloned());
+                let mut merged = CacheEntry::new(urls.into_iter().collect());
+                merged.baseline = true;
+                self.backend.set(key, &merged).await
+            }
+            _ => self.backend.set(key, entry).await,
+        }
     }
 
     /// Fold `fresh` into the `--incremental` baseline for `key`, returning the
@@ -241,6 +254,14 @@ mod tests {
         // ...and the post-run sweep, whatever its TTL, leaves it alone.
         assert_eq!(cache.delete_expired(0).await?, 0);
         assert!(cache.get_fresh(&key, 3600).await?.is_some());
+
+        // A normal run on the same key adds to the baseline; it neither
+        // shrinks it nor strips the flag the sweep relies on.
+        let normal = CacheEntry::new(vec!["https://example.com/page5".to_string()]);
+        cache.store_urls(&key, &normal).await?;
+        let baseline = cache.get_fresh(&key, 3600).await?.unwrap();
+        assert_eq!(baseline.urls.len(), 5);
+        assert!(baseline.baseline);
 
         Ok(())
     }
