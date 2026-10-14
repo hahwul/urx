@@ -5,4 +5,4 @@ weight = 3
 sort_by = "weight"
 +++
 
-Contributing guidelines and project information. Release notes live in [CHANGELOG.md](https://github.com/hahwul/urx/blob/main/CHANGELOG.md).
+How to contribute to urx. Release notes are in [CHANGELOG.md](https://github.com/hahwul/urx/blob/main/CHANGELOG.md).

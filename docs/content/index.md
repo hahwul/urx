@@ -6,8 +6,8 @@ template = "landing.html"
 
 <section class="hero">
   <div class="wrap">
-    <h1>Extract every <span class="hot">URL</span> a domain ever exposed.</h1>
-    <p class="hero-sub">A fast Rust CLI that queries up to nine OSINT sources in parallel, then filters and validates what comes back.</p>
+    <h1>Collect every <span class="hot">URL</span> a domain has exposed.</h1>
+    <p class="hero-sub">A Rust CLI that queries up to nine OSINT sources in parallel, then filters and checks the results.</p>
     <div class="hero-cta">
       <a href="/getting-started/" class="btn btn-primary">
         Get started
@@ -48,84 +48,84 @@ https://dalfox.hahwul.com/sitemap.xml              <span class="ok">[200 OK]</sp
     <div class="section-head rv">
       <h2 class="section-title">Nine sources, one command.</h2>
       <span class="contrail" aria-hidden="true"></span>
-      <p class="section-sub">urx queries public web archives and threat-intel feeds at the same time, then merges and deduplicates the results. Five of them need no API key.</p>
+      <p class="section-sub">Web archives and threat-intel feeds, queried in parallel. Results are merged and deduplicated. Five sources need no API key.</p>
     </div>
     <div class="providers rv">
       <div class="provider">
         <span class="p-name">Wayback Machine</span>
         <span class="p-flag">wayback</span>
-        <span class="p-desc">The Internet Archive CDX index. Deep historical coverage, enabled by default.</span>
+        <span class="p-desc">Internet Archive CDX index. On by default.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
         <span class="p-name">Common Crawl</span>
         <span class="p-flag">cc</span>
-        <span class="p-desc">The monthly Common Crawl URL index, enabled by default.</span>
+        <span class="p-desc">Monthly Common Crawl URL index. On by default.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
         <span class="p-name">OTX</span>
         <span class="p-flag">otx</span>
-        <span class="p-desc">AlienVault Open Threat Exchange passive DNS and URLs, enabled by default.</span>
+        <span class="p-desc">AlienVault Open Threat Exchange URLs. On by default.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
         <span class="p-name">Arquivo.pt</span>
         <span class="p-flag">arquivo</span>
-        <span class="p-desc">The Portuguese web archive CDX index.</span>
+        <span class="p-desc">Portuguese web archive CDX index.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
         <span class="p-name">Urlscan</span>
         <span class="p-flag">urlscan</span>
-        <span class="p-desc">Urlscan.io search. Works anonymously; a key only raises the rate limit.</span>
+        <span class="p-desc">urlscan.io search. Works without a key; a key raises the rate limit.</span>
         <span class="p-key keyless">Keyless</span>
       </div>
       <div class="provider">
         <span class="p-name">VirusTotal</span>
         <span class="p-flag">vt</span>
-        <span class="p-desc">URLs VirusTotal has observed for the domain.</span>
+        <span class="p-desc">URLs VirusTotal has seen for the domain.</span>
         <span class="p-key">API key</span>
       </div>
       <div class="provider">
         <span class="p-name">ZoomEye</span>
         <span class="p-flag">zoomeye</span>
-        <span class="p-desc">ZoomEye search results for the target.</span>
+        <span class="p-desc">ZoomEye search results.</span>
         <span class="p-key">API key</span>
       </div>
       <div class="provider">
         <span class="p-name">GitHub</span>
         <span class="p-flag">github</span>
-        <span class="p-desc">GitHub Code Search, for URLs committed into public repositories.</span>
+        <span class="p-desc">GitHub Code Search over public repositories.</span>
         <span class="p-key">API key</span>
       </div>
       <div class="provider">
         <span class="p-name">BeVigil</span>
         <span class="p-flag">bevigil</span>
-        <span class="p-desc">Endpoints pulled out of unpacked Android apps.</span>
+        <span class="p-desc">Endpoints extracted from Android apps.</span>
         <span class="p-key">API key</span>
       </div>
     </div>
-    <p class="providers-note rv">Beyond the nine, urx also reads the target's own <code>robots.txt</code> and <code>sitemap.xml</code>, and will query any CDX server you point it at with <code>--cdx-endpoint</code>.</p>
+    <p class="providers-note rv">urx also reads the target's <code>robots.txt</code> and <code>sitemap.xml</code>, and can query any CDX server with <code>--cdx-endpoint</code>.</p>
   </div>
 </section>
 
 <section class="section" id="features">
   <div class="wrap">
     <div class="section-head rv">
-      <h2 class="section-title">Built for the whole recon loop.</h2>
+      <h2 class="section-title">Features</h2>
       <span class="contrail" aria-hidden="true"></span>
     </div>
     <div class="bento rv">
       <div class="cell cell-lead cell-accent">
         <span class="big-stat"><span>9</span> sources</span>
         <h3>Parallel collection</h3>
-        <p>Async requests fan out to every enabled provider at once, then merge and deduplicate into a single URL set. Nothing waits on the slowest archive.</p>
+        <p>All enabled providers are queried at once. Results are merged and deduplicated into one URL set.</p>
       </div>
       <div class="cell">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg></span>
-        <h3>Advanced filtering</h3>
-        <p>Filter by extension, pattern or preset. Control URL length and which host parts you keep.</p>
+        <h3>Filtering</h3>
+        <p>Filter by extension, pattern or preset. Limit URL length and choose which host parts to keep.</p>
       </div>
       <div class="cell cell-code">
         <pre><span class="prompt">$</span> urx target.com \
@@ -139,17 +139,17 @@ https://target.com/v1/users.js</span></pre>
       <div class="cell">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 6.5-7 9-4-2.5-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg></span>
         <h3>URL validation</h3>
-        <p>Check status codes, drop dead links, and pull more URLs out of the pages that answer.</p>
+        <p>Check status codes, drop dead links, and extract more URLs from live pages.</p>
       </div>
       <div class="cell">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5M14 3l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 13h8M8 17h5"/></svg></span>
-        <h3>Flexible output</h3>
-        <p>Plain text, JSON, JSON Lines, CSV or a ready-made wordlist, written to the console, a file, or streamed into the next tool in the pipe.</p>
+        <h3>Output formats</h3>
+        <p>Text, JSON, JSON Lines, CSV or a wordlist. Write to the console or a file, or stream into a pipe.</p>
       </div>
       <div class="cell cell-wide">
         <span class="c-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span>
         <h3>Caching and incremental scanning</h3>
-        <p>A local SQLite cache (or a shared Redis one, in builds with the <code>redis-cache</code> feature) reuses recent scans, and incremental mode returns only what has appeared since the last run.</p>
+        <p>A local SQLite cache (or Redis, in builds with the <code>redis-cache</code> feature) reuses recent scans. Incremental mode returns only URLs new since the last run.</p>
       </div>
     </div>
   </div>
@@ -158,30 +158,30 @@ https://target.com/v1/users.js</span></pre>
 <section class="section">
   <div class="wrap">
     <div class="section-head rv">
-      <h2 class="section-title">From a domain to a clean URL set.</h2>
+      <h2 class="section-title">How it works</h2>
       <span class="contrail" aria-hidden="true"></span>
-      <p class="section-sub">One command runs the whole pipeline, and every stage maps to a flag you can tune.</p>
+      <p class="section-sub">One command runs every stage. Each stage has its own flags.</p>
     </div>
     <div class="pipeline rv">
       <div class="stage">
         <span class="s-flag">--providers</span>
         <h3>Collect</h3>
-        <p>Query every enabled archive in parallel and merge the results into one stream.</p>
+        <p>Query enabled sources in parallel and merge the results.</p>
       </div>
       <div class="stage">
         <span class="s-flag">-e &#183; --patterns</span>
         <h3>Filter</h3>
-        <p>Keep only the extensions, patterns or presets you actually care about.</p>
+        <p>Keep only matching extensions, patterns or presets.</p>
       </div>
       <div class="stage">
         <span class="s-flag">--check-status</span>
         <h3>Validate</h3>
-        <p>Probe what is live, record the status, and mine responses for more links.</p>
+        <p>Check which URLs are live, record the status, and extract more links.</p>
       </div>
       <div class="stage">
         <span class="s-flag">-f json &#183; -o</span>
         <h3>Output</h3>
-        <p>Write text, JSON, JSON Lines, CSV or a wordlist to a file, or pipe it straight into the next tool.</p>
+        <p>Write text, JSON, JSON Lines, CSV or a wordlist to a file or a pipe.</p>
       </div>
     </div>
   </div>
@@ -190,8 +190,8 @@ https://target.com/v1/users.js</span></pre>
 <section class="section">
   <div class="wrap">
     <div class="install rv">
-      <h2>Install urx and start collecting.</h2>
-      <p>Available on Cargo, Homebrew, the AUR, Chocolatey, as prebuilt release binaries and as a container image. No account, no key to get going.</p>
+      <h2>Install</h2>
+      <p>Available via Cargo, Homebrew, the AUR, Chocolatey, release binaries and Docker. The default sources need no account or API key.</p>
       <div class="install-cmds">
         <div class="cmd"><span class="prompt">$</span> cargo install urx <span class="via">Cargo</span></div>
         <div class="cmd"><span class="prompt">$</span> brew install urx <span class="via">Homebrew</span></div>
