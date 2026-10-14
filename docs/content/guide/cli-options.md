@@ -269,6 +269,8 @@ return captures, so each URL comes with these fields:
 When the same URL comes from several captures or archives, the fields merge:
 `first_seen` is the oldest timestamp, `last_seen` the newest, and
 `mime`/`archive_status` come from the most recent capture that had them.
+Wayback returns one capture per URL, its newest, so from Wayback alone
+`first_seen` equals `last_seen`.
 Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`, `github`,
 `bevigil`, `robots`, `sitemap`) and `--files` input report the URL only. A
 domain served from cache has no metadata either (the cache stores URLs only);
@@ -728,7 +730,7 @@ urx example.com --providers wayback --archive-mime application/json
 
 | | `wayback`, `--cdx-dialect classic` endpoints | `cc`, `arquivo`, pywb endpoints |
 |---|---|---|
-| Value matching | regex (`--archive-status "30."` matches any 3xx) | exact |
+| Value matching | regex (`--archive-status "30."` matches any 3xx) | substring (give the full value: `20` also matches `201`) |
 | Positive list (`--archive-status 200,301`, `--archive-mime a,b`) | works | skipped with a warning (repeated filters are ANDed, so it could never match) |
 | Exclusion list (`--archive-exclude-*`) | works | works |
 

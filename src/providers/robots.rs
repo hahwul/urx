@@ -92,6 +92,8 @@ enum RobotsFetch {
 /// 2015 robots.txt is read by exactly the rules the current one is.
 fn parse_robots_txt(protocol: &str, domain: &str, text: &str) -> Vec<String> {
     let mut urls = Vec::new();
+    // A BOM is not whitespace to `trim`; left on, it hides the first field.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for line in text.lines() {
         if urls.len() >= MAX_ROBOTS_ENTRIES {
             break;
@@ -113,8 +115,10 @@ fn parse_robots_txt(protocol: &str, domain: &str, text: &str) -> Vec<String> {
         match field.trim().to_ascii_lowercase().as_str() {
             "disallow" if !value.is_empty() && value != "/" => {
                 // Disallow entries can be match patterns, not literal
-                // paths: skip glob (`*`) patterns and strip a trailing
-                // `$` end-anchor so we don't emit unfetchable junk URLs.
+                // paths: a trailing `*` is the plain prefix (RFC 9309), any
+                // other glob is skipped, and a trailing `$` end-anchor is
+                // stripped below, so we don't emit unfetchable junk URLs.
+                let value = value.trim_end_matches('*');
                 if value.contains('*') {
                     continue;
                 }
@@ -878,6 +882,7 @@ Sitemap: /sitemap-2015.xml
             urls,
             vec![
                 "https://example.com/old-admin/".to_string(),
+                "https://example.com/beta/".to_string(),
                 "https://example.com/legacy-api/v1".to_string(),
                 "https://example.com/secret".to_string(),
                 "https://example.com/sitemap-2015.xml".to_string(),
@@ -1141,5 +1146,20 @@ Sitemap: /sitemap-2015.xml
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls, vec!["https://example.com/live".to_string()]);
         index.assert();
+    }
+
+    #[test]
+    fn test_bom_and_trailing_wildcard_are_read_like_the_plain_form() {
+        let text = "\u{feff}Sitemap: https://example.com/sitemap.xml\n\
+                    Disallow: /wp-admin/*\n\
+                    Disallow: /*.php\n\
+                    Disallow: /*\n";
+        assert_eq!(
+            parse_robots_txt("https", "example.com", text),
+            vec![
+                "https://example.com/sitemap.xml",
+                "https://example.com/wp-admin/",
+            ]
+        );
     }
 }

@@ -135,10 +135,25 @@ impl HttpClientConfig {
 /// delta-seconds form (the common API case, e.g. `Retry-After: 30`) is honored;
 /// the HTTP-date form returns `None` and the caller falls back to its normal
 /// back-off. The value is capped so a hostile or absurd header can't stall a run.
+///
+/// Without `Retry-After`, an exhausted `x-ratelimit-remaining: 0` with an
+/// `x-ratelimit-reset` epoch (GitHub's code search: 10 requests a minute) waits
+/// until the reset, under the same cap; the default back-off would give up
+/// seconds into the window.
 pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     const MAX_RETRY_AFTER_SECS: u64 = 60;
-    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    let secs: u64 = raw.trim().parse().ok()?;
+    let header = |name: &str| headers.get(name)?.to_str().ok()?.trim().parse::<u64>().ok();
+    let secs = match header(reqwest::header::RETRY_AFTER.as_str()) {
+        Some(secs) => secs,
+        None if header("x-ratelimit-remaining") == Some(0) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            header("x-ratelimit-reset")?.saturating_sub(now) + 1
+        }
+        None => return None,
+    };
     Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
 }
 
@@ -359,6 +374,23 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
         assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_retry_after_delay_waits_for_an_exhausted_rate_limit_window() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-reset", (now + 20).to_string().parse().unwrap());
+        let delay = retry_after_delay(&headers).unwrap();
+        assert!((19..=21).contains(&delay.as_secs()), "{delay:?}");
+
+        // Budget left: the normal back-off applies.
+        headers.insert("x-ratelimit-remaining", "3".parse().unwrap());
+        assert_eq!(retry_after_delay(&headers), None);
     }
 
     #[test]

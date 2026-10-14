@@ -178,8 +178,9 @@ pub struct Args {
     /// --include-status it costs no extra requests. CDX-backed providers only
     /// (wayback, cc, arquivo, --cdx-endpoint). Wayback and classic-dialect
     /// endpoints treat the value as a regex ("30." = any 3xx); cc, arquivo and
-    /// pywb endpoints match exactly and cannot take a multi-value list here —
-    /// urx warns and skips it for them.
+    /// pywb endpoints match a substring (give the full code: "20" also keeps
+    /// 201) and cannot take a multi-value list here — urx warns and skips it
+    /// for them.
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',')]
     pub archive_status: Vec<String>,

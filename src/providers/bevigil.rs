@@ -161,10 +161,17 @@ impl Provider for BeVigilProvider {
                 r.detail("fetching…");
             }
 
+            // A rejected key is worth retrying only when there is another key
+            // to rotate to; with one key it is deterministic (see `parse`).
+            let rotate_on_reject = self.api_key_rotator.has_alternatives();
             let body = send_with_retry(
                 self.net.retries,
                 self.net.rate_limit.as_ref(),
-                |status| status == 429 || status.is_server_error(),
+                |status| {
+                    status == 429
+                        || status.is_server_error()
+                        || (rotate_on_reject && matches!(status.as_u16(), 401 | 403))
+                },
                 || {
                     // Rotate per attempt so a throttled key is retried with a
                     // different one when several are configured.
@@ -372,6 +379,32 @@ mod tests {
         assert!(err.contains("rejected the API key"), "{err}");
         assert!(err.contains("URX_BEVIGIL_API_KEY"), "{err}");
         mock.assert();
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_rotates_to_the_next_one() {
+        let mut server = mockito::Server::new_async().await;
+        let rejected = server
+            .mock("GET", "/api/example.com/urls/")
+            .match_header("x-access-token", "expired")
+            .with_status(401)
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("GET", "/api/example.com/urls/")
+            .match_header("x-access-token", "valid")
+            .with_body(r#"{"urls":["https://example.com/a"]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut p = provider(&server, &["expired", "valid"]);
+        p.net.retries = 1;
+        let urls = urls_of(p.fetch_urls("example.com").await.unwrap());
+        assert_eq!(urls, vec!["https://example.com/a"]);
+        rejected.assert();
+        ok.assert();
     }
 
     #[tokio::test]
