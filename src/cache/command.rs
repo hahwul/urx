@@ -146,20 +146,19 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
             // Resolved before the delete so the report can name the patterns
             // that matched nothing — a typo'd domain otherwise looks exactly
             // like a successful no-op.
+            // Counted per entry, not per pattern: an entry two patterns match
+            // is still one entry dropped.
             let mut hits: BTreeMap<String, usize> = BTreeMap::new();
-            let mut unmatched = Vec::new();
-            for pattern in domains {
-                let mut matched = false;
-                for entry in &entries {
-                    if domain_matches(pattern, &entry.domain) {
-                        *hits.entry(entry.domain.clone()).or_default() += 1;
-                        matched = true;
-                    }
-                }
-                if !matched {
-                    unmatched.push(pattern.clone());
+            for entry in &entries {
+                if domains.iter().any(|p| domain_matches(p, &entry.domain)) {
+                    *hits.entry(entry.domain.clone()).or_default() += 1;
                 }
             }
+            let unmatched: Vec<String> = domains
+                .iter()
+                .filter(|p| !entries.iter().any(|e| domain_matches(p, &e.domain)))
+                .cloned()
+                .collect();
 
             let dropped = admin.delete_domains(domains).await?;
             let report = DropReport {

@@ -104,7 +104,16 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
     }
 
     let excluded_ids = trimmed_ids(&args.exclude_providers);
-    let excluded: HashSet<&str> = excluded_ids.iter().map(String::as_str).collect();
+    let mut excluded: HashSet<&str> = excluded_ids.iter().map(String::as_str).collect();
+    // The documented equivalents of `--exclude-providers robots,sitemap`: they
+    // must also remove an id that `--providers` named, not only skip the
+    // automatic add.
+    if args.exclude_robots {
+        excluded.insert("robots");
+    }
+    if args.exclude_sitemap {
+        excluded.insert("sitemap");
+    }
     providers_list.retain(|p| !excluded.contains(p.as_str()));
 
     for (id, requested) in [
@@ -671,6 +680,15 @@ mod tests {
             !ids.iter().any(|p| p == "vt"),
             "--exclude-providers must beat key-driven auto-enable; got {ids:?}"
         );
+    }
+
+    #[test]
+    fn test_exclude_robots_and_sitemap_beat_an_explicit_providers_list() {
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".into(), "robots".into(), "sitemap".into()];
+        args.exclude_robots = true;
+        args.exclude_sitemap = true;
+        assert_eq!(effective_provider_ids(&args), vec!["wayback".to_string()]);
     }
 
     #[test]

@@ -87,6 +87,16 @@ fn collect_domains_with_stdin(
     }
 
     let mut normalized = normalize_domains(&domains);
+    // Scope-file spelling is taken literally by every provider and by host
+    // validation, so the run would come back empty without saying why.
+    if let Some(wild) = normalized
+        .iter()
+        .map(|d| cli::split_target(d).0)
+        .find(|host| host.starts_with('.') || host.contains('*'))
+    {
+        let apex = wild.trim_start_matches(['*', '.']);
+        anyhow::bail!("{wild:?} is not a target; pass `{apex} --subs` to include subdomains");
+    }
     let mut seen = HashSet::new();
     normalized.retain(|d| seen.insert(d.clone()));
     Ok(normalized)
@@ -276,6 +286,13 @@ pub fn validate_result_filters(args: &Args) -> Result<()> {
     if let (Some(view), Some(tester)) = (view, tester) {
         anyhow::bail!(
             "{view} cannot be combined with {tester}: the view rewrites URLs before they would be requested"
+        );
+    }
+    // A wordlist is cut from URLs; a view has already turned them into hosts,
+    // paths or parameter names, which yield no terms — an empty run, exit 0.
+    if let (Some(view), crate::output::Format::Wordlist) = (view, args.format) {
+        anyhow::bail!(
+            "{view} cannot be combined with --format wordlist: the wordlist is built from whole URLs"
         );
     }
     // A merged endpoint carries the union of several URLs' queries — a URL no
@@ -1411,6 +1428,13 @@ mod tests {
     }
 
     #[test]
+    fn test_views_are_rejected_with_the_wordlist_format() {
+        let args = Args::parse_from(["urx", "-f", "wordlist", "--show-only-path", "example.com"]);
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("wordlist"), "{err}");
+    }
+
+    #[test]
     fn test_merge_endpoint_is_rejected_with_archive_body() {
         let mut args = build_test_args();
         args.merge_endpoint = true;
@@ -1451,6 +1475,17 @@ mod tests {
             filter.accept("https://anywhere.test/x").as_deref(),
             Some("https://anywhere.test/x")
         );
+    }
+
+    #[test]
+    fn test_wildcard_targets_are_rejected_with_the_subs_spelling() {
+        for raw in ["*.example.com", ".example.com"] {
+            let args = Args::parse_from(["urx", raw]);
+            let err = collect_domains_with_stdin(&args, || Ok(Vec::new()))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("example.com --subs"), "{raw}: {err}");
+        }
     }
 
     #[test]

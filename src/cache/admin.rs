@@ -158,7 +158,17 @@ pub fn ttl_remaining(timestamp: DateTime<Utc>, ttl_seconds: u64) -> Option<i64> 
 /// destructive `urx cache drop`: a substring rule would let
 /// `drop example.com` also take out `notexample.com`. Ask for the loose match
 /// explicitly with `*example.com*`, or for subdomains with `*.example.com`.
+///
+/// A path-scoped scan is cached under `host/path`; its host alone matches too,
+/// so `drop example.com` also removes `example.com/shop`.
 pub fn domain_matches(pattern: &str, domain: &str) -> bool {
+    glob_matches(pattern, domain)
+        || domain
+            .split_once('/')
+            .is_some_and(|(host, _)| glob_matches(pattern, host))
+}
+
+fn glob_matches(pattern: &str, domain: &str) -> bool {
     let pattern = pattern.to_lowercase();
     let domain = domain.to_lowercase();
 
@@ -359,6 +369,12 @@ mod tests {
         assert!(!domain_matches("example.com", "notexample.com"));
         assert!(!domain_matches("example.com", "example.com.evil.test"));
         assert!(!domain_matches("example.com", "api.example.com"));
+        // A path-scoped entry belongs to its host.
+        assert!(domain_matches("example.com", "example.com/shop"));
+        assert!(domain_matches("*example.com", "example.com/shop"));
+        assert!(domain_matches("example.com/shop", "example.com/shop"));
+        assert!(!domain_matches("example.com/shop", "example.com"));
+        assert!(!domain_matches("example.com", "notexample.com/shop"));
     }
 
     #[test]

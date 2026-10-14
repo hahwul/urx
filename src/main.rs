@@ -364,14 +364,17 @@ async fn run() -> Result<()> {
     if args.manpage {
         return app::shell::write_stdout(&app::shell::man_page()?);
     }
-    if args.list_providers {
-        return print_provider_list(&args);
-    }
 
     apply_config_layers(&mut args, &provided)?;
 
     // Honor --no-color / NO_COLOR before any styled output is produced.
     configure_colors(&args);
+
+    // After the config layers, unlike the two above: a config file's API keys
+    // and `cdx_endpoint` list change which providers are available.
+    if args.list_providers {
+        return print_provider_list(&args);
+    }
 
     // `urx cache …` is its own errand: it reports on the store rather than
     // scanning anything, so it returns before the network settings, the
