@@ -159,8 +159,21 @@ pub const MAX_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 /// endpoint that streams gigabytes — by accident or on purpose — can't exhaust
 /// memory before any parsing happens. Every caller that fetches a document from
 /// a host urx does not control should go through this.
+///
+/// A gzip body served *without* `Content-Encoding` (a `.xml.gz` sitemap sent as
+/// `application/x-gzip`) is inflated here, since as text it is only noise. The
+/// inflated size is capped at `max` too, so a decompression bomb stops there.
 pub async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<String> {
-    let buf = read_bytes_capped(resp, max).await?;
+    let mut buf = read_bytes_capped(resp, max).await?;
+    if buf.starts_with(&[0x1f, 0x8b]) {
+        use std::io::Read;
+        let mut inflated = Vec::new();
+        // A truncated or corrupt stream keeps whatever inflated before the error.
+        let _ = flate2::read::MultiGzDecoder::new(buf.as_slice())
+            .take(max as u64)
+            .read_to_end(&mut inflated);
+        buf = inflated;
+    }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -279,9 +292,19 @@ pub async fn send_with_retry<T>(
 ///
 /// Returns the last encountered error if all attempts are exhausted.
 pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Result<String> {
+    get_with_retry_paced(client, url, max_retries, None).await
+}
+
+/// [`get_with_retry`] with `limiter` acquired before every attempt.
+pub async fn get_with_retry_paced(
+    client: &Client,
+    url: &str,
+    max_retries: u32,
+    limiter: Option<&RateLimiter>,
+) -> Result<String> {
     send_with_retry(
         max_retries,
-        None,
+        limiter,
         is_retryable_status,
         || client.get(url),
         |status, body| {
