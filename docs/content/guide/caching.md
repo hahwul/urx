@@ -106,7 +106,7 @@ With `--no-cache`, `--incremental` has no baseline and is ignored: every URL is 
 
 ### What the Cache Does and Does Not Hold
 
-- It stores the host-validated URLs the providers returned, before filters run. Filters and output views apply afterwards, on hits and misses alike. Under `--no-strict` it also keeps the off-host URLs, so a hit returns what the miss did; in a multi-domain run each off-host URL is stored under every domain of that run.
+- It stores the host-validated URLs the providers returned, before filters run. Filters and output views apply afterwards, on hits and misses alike. Under `--no-strict` it also keeps the off-host URLs, so a hit returns what the miss did; a multi-domain `--no-strict` run that found off-host URLs is not cached, because they cannot be attributed to one domain.
 - It stores URLs only: no provider attribution and no archive capture metadata. On a hit, `--show-sources` has nothing to show, JSON/CSV lack `first_seen` / `last_seen` / `mime` / `archive_status` / `digest`, positive `--meta-*` filters drop everything (`--meta-exclude-*` drop nothing), `--archive-body` has nothing to replay, and `--stats` stays empty. Add `--no-cache` when you need those.
 - `--stream` and `--files` bypass the cache.
 - A normal run does not cache a domain that `--max-time`, Ctrl-C or a provider error left incomplete, nor one that returned no URLs; the next run fetches it again. An `--incremental` run adds whatever it got to the baseline, even a partial set, which is safe because the baseline never shrinks.

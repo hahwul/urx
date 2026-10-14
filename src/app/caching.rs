@@ -128,7 +128,7 @@ pub fn collect_domain_urls(
 /// URLs on none of `domains`' hosts. `--no-strict` outputs them, so the
 /// cache has to keep them too, or a hit returns less than the miss did.
 // ponytail: which target's fetch returned one isn't tracked, so a multi-domain
-// run files each under every domain; tag records with their target if it matters.
+// run cannot attribute them; tag records with their target to cache that case.
 fn off_host_urls(
     urls: &HashMap<String, UrlEntry>,
     domains: &[String],
@@ -264,7 +264,18 @@ pub async fn process_domains_with_cache(
             merge_entry(&mut final_result.urls, url.clone(), entry);
         }
 
-        for domain in &domains_to_process {
+        // Off-host URLs from several fetched targets cannot be filed under
+        // the one that returned them; storing them under every target would
+        // leak one target's URLs into another's hit, and storing none would
+        // make the hit return less than this run did. Skip the store.
+        let unattributable = !off_host.is_empty() && domains_to_process.len() > 1;
+        if unattributable {
+            verbose_print(
+                args,
+                "Not caching: --no-strict URLs from several targets cannot be attributed",
+            );
+        }
+        for domain in domains_to_process.iter().filter(|_| !unattributable) {
             // A partial answer stored here would be served as the whole one
             // for the entire TTL.
             if fresh_run.incomplete_domains.contains(domain) {
