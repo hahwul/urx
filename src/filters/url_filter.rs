@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 
 use anyhow::Context;
 use regex::Regex;
@@ -10,8 +9,8 @@ use super::scope_file::ScopeMatcher;
 
 /// Normalise one user-supplied extension.
 ///
-/// The extension we compare against comes from `Path::extension()`, which never
-/// includes the leading dot — so `-e .js`, the spelling half of the world types,
+/// The extension we compare against is what follows the last name's `.`, never
+/// including the dot itself — so `-e .js`, the spelling half of the world types,
 /// matched nothing at all and produced a silently empty result set. Surrounding
 /// whitespace (`-e "js, php"`) had the same effect. Both are stripped here, and
 /// an entry that names no extension after stripping (an empty item from a
@@ -223,33 +222,33 @@ impl UrlFilter {
             }
         }
 
-        // The extension of the last path segment, cut before any query,
-        // fragment or `;` path parameter: `app.js?v=1.2.3` and
-        // `app.js;jsessionid=…` are both `.js`.
+        // The last path segment, cut before any query, fragment or `;` path
+        // parameter: `app.js?v=1.2.3` and `app.js;jsessionid=…` are both
+        // `.js`. An extension is matched as a `.`-suffix of the name with a
+        // non-empty stem, so a multi-dot entry (`tar.gz`, `min.js`) works too.
         let onward = lower_path_onward(url);
         let path = onward.split(['?', '#']).next().unwrap_or("");
-        let extension = path
+        let name = path
             .rsplit('/')
             .next()
             .and_then(|segment| segment.split(';').next())
-            .and_then(|name| Path::new(name).extension())
-            .and_then(|ext| ext.to_str())
-            .map(str::to_string);
+            .unwrap_or("");
+        let has_extension = |ext: &str| {
+            name.strip_suffix(ext)
+                .and_then(|rest| rest.strip_suffix('.'))
+                .is_some_and(|stem| !stem.is_empty())
+        };
 
         // Compute url_lower once per URL if needed
         let mut url_lower = None;
 
         // Check exclusions first
-        if !self.exclude_extensions.is_empty() {
-            if let Some(ext) = &extension {
-                if self
-                    .exclude_extensions
-                    .iter()
-                    .any(|excluded_ext| excluded_ext == ext)
-                {
-                    return false;
-                }
-            }
+        if self
+            .exclude_extensions
+            .iter()
+            .any(|excluded_ext| has_extension(excluded_ext))
+        {
+            return false;
         }
 
         if !self.exclude_patterns.is_empty() {
@@ -277,14 +276,7 @@ impl UrlFilter {
         let mut include = true;
 
         if !self.extensions.is_empty() || !self.path_rules.is_empty() {
-            let by_extension = match &extension {
-                Some(ext) => self
-                    .extensions
-                    .iter()
-                    .any(|included_ext| included_ext == ext),
-                // No extension found but an extensions filter is set.
-                None => false,
-            };
+            let by_extension = self.extensions.iter().any(|ext| has_extension(ext));
             include = by_extension || self.matches_path_rule(path, &onward);
         }
 
@@ -482,10 +474,36 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_dot_extensions_match() {
+        let urls: HashSet<String> = [
+            "https://example.com/site.tar.gz",
+            "https://example.com/app.min.js",
+            "https://example.com/app.js",
+            "https://example.com/tar.gz",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let mut include = UrlFilter::new();
+        include.with_extensions(vec!["tar.gz".to_string()]);
+        assert_eq!(
+            include.apply_filters(&urls),
+            vec!["https://example.com/site.tar.gz".to_string()]
+        );
+
+        let mut exclude = UrlFilter::new();
+        exclude.with_exclude_extensions(vec!["min.js".to_string()]);
+        let kept = exclude.apply_filters(&urls);
+        assert!(!kept.contains(&"https://example.com/app.min.js".to_string()));
+        assert!(kept.contains(&"https://example.com/app.js".to_string()));
+    }
+
+    #[test]
     fn test_extension_entries_that_name_nothing_are_dropped() {
         // A trailing comma (`-e "js,"`) yields an empty item. Kept as-is it
-        // would be compared against the extension of `/file.`, which
-        // `Path::extension()` reports as "" — a match nobody asked for.
+        // would be compared against the empty extension of `/file.` — a
+        // match nobody asked for.
         let mut filter = UrlFilter::new();
         filter.with_extensions(vec!["js".to_string(), String::new(), ".".to_string()]);
         assert_eq!(filter.extensions, vec!["js".to_string()]);

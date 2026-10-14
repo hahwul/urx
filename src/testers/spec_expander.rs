@@ -178,7 +178,9 @@ const YAML_NODE_COST: usize = 64;
 const MAX_YAML_DEPTH: usize = 128;
 
 /// Whether expanding `body`'s aliases stays within [`MAX_YAML_ALIAS_BYTES`]
-/// and its nesting within [`MAX_YAML_DEPTH`].
+/// and its nesting within [`MAX_YAML_DEPTH`] — the nesting *after* expansion:
+/// an alias splices its anchor's whole subtree in, so a chain of anchors each
+/// nesting the previous one is deep without being deep in the text.
 ///
 /// Walks the parser's event stream — no tree is built — tracking the size
 /// each anchored node would expand to and charging that size every time an
@@ -190,44 +192,47 @@ const MAX_YAML_DEPTH: usize = 128;
 /// alias at all.
 fn yaml_expansion_within_budget(body: &str) -> bool {
     let mut parser = Parser::new_from_str(body);
-    let mut anchored: HashMap<usize, usize> = HashMap::new();
-    // Each open collection's anchor and the size of what it holds so far.
-    let mut open: Vec<(usize, usize)> = Vec::new();
+    // Anchor → (expanded size, expanded height).
+    let mut anchored: HashMap<usize, (usize, usize)> = HashMap::new();
+    // Each open collection's anchor, the size of what it holds so far, and
+    // the height of its tallest child.
+    let mut open: Vec<(usize, usize, usize)> = Vec::new();
     let mut copied = 0usize;
     loop {
         let Ok((event, _)) = parser.next_token() else {
             return false;
         };
-        let (anchor, size) = match event {
+        let (anchor, size, height) = match event {
             Event::StreamEnd => return true,
-            Event::Scalar(text, _, anchor, _) => (anchor, YAML_NODE_COST + text.len()),
+            Event::Scalar(text, _, anchor, _) => (anchor, YAML_NODE_COST + text.len(), 0),
             Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
                 if open.len() >= MAX_YAML_DEPTH {
                     return false;
                 }
-                open.push((anchor, YAML_NODE_COST));
+                open.push((anchor, YAML_NODE_COST, 0));
                 continue;
             }
             Event::SequenceEnd | Event::MappingEnd => match open.pop() {
-                Some(closed) => closed,
+                Some((anchor, size, tallest)) => (anchor, size, tallest + 1),
                 None => return false,
             },
             Event::Alias(id) => {
-                let size = anchored.get(&id).copied().unwrap_or(YAML_NODE_COST);
+                let (size, height) = anchored.get(&id).copied().unwrap_or((YAML_NODE_COST, 0));
                 copied = copied.saturating_add(size);
-                if copied > MAX_YAML_ALIAS_BYTES {
+                if copied > MAX_YAML_ALIAS_BYTES || open.len() + height > MAX_YAML_DEPTH {
                     return false;
                 }
-                (0, size)
+                (0, size, height)
             }
             _ => continue,
         };
         // Anchor id 0 is the parser's "no anchor".
         if anchor != 0 {
-            anchored.insert(anchor, size);
+            anchored.insert(anchor, (size, height));
         }
-        if let Some((_, parent)) = open.last_mut() {
+        if let Some((_, parent, tallest)) = open.last_mut() {
             *parent = parent.saturating_add(size);
+            *tallest = (*tallest).max(height);
         }
     }
 }
@@ -1160,6 +1165,26 @@ paths:
         // no `*`.
         let shallow = format!("{}a", "- ".repeat(MAX_YAML_DEPTH - 1));
         assert!(parse_yaml(&shallow).is_some());
+    }
+
+    #[test]
+    fn test_aliases_cannot_stack_nesting_past_the_depth_cap() {
+        // Each anchor nests the previous alias 100 levels deep: shallow in the
+        // text, 30 × 100 levels once the loader splices the aliases in.
+        let mut body = format!("a0: &a0 {}x{}\n", "[".repeat(100), "]".repeat(100));
+        for k in 1..30 {
+            body.push_str(&format!(
+                "a{k}: &a{k} {}*a{}{}\n",
+                "[".repeat(100),
+                k - 1,
+                "]".repeat(100)
+            ));
+        }
+        assert!(!yaml_expansion_within_budget(&body));
+
+        // One level of reuse that stays under the cap is fine.
+        let one = format!("a: &a {}x{}\nb: [*a]\n", "[".repeat(100), "]".repeat(100));
+        assert!(yaml_expansion_within_budget(&one));
     }
 
     #[test]

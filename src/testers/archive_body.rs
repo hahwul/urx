@@ -398,13 +398,14 @@ impl Tester for ArchiveBodyExtractor {
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
         Box::pin(async move {
+            // Relative links inside the body resolve against the page the
+            // archive captured, not against the replay URL. Parsed before the
+            // reservation so a bad URL cannot hold a digest and a slot.
+            let base_url =
+                Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
             let Some(capture) = self.reserve(url) else {
                 return Ok(Vec::new());
             };
-            // Relative links inside the body resolve against the page the
-            // archive captured, not against the replay URL.
-            let base_url =
-                Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
 
             let client = self.client().await?;
             let target = replay_url(&self.origin, &capture.timestamp, url);

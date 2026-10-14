@@ -547,7 +547,7 @@ Singular spellings (e.g. `no-image`, `only-font`) work too.
 ### Security Presets
 
 These match a listed extension **or** a listed shape. Substring shape rules are
-checked against the whole lower-cased URL, query included. So `only-secrets`
+checked against the lower-cased path, query and fragment (never the host). So `only-secrets`
 catches `/.env` (no extension) and `only-backup` catches `/index.php~`.
 
 | Preset | Description |

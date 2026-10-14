@@ -278,6 +278,13 @@ pub fn validate_result_filters(args: &Args) -> Result<()> {
             "{view} cannot be combined with {tester}: the view rewrites URLs before they would be requested"
         );
     }
+    // A merged endpoint carries the union of several URLs' queries — a URL no
+    // archive ever captured, so `--archive-body` would have nothing to replay.
+    if args.merge_endpoint && args.archive_body {
+        anyhow::bail!(
+            "--merge-endpoint cannot be combined with --archive-body: merged URLs were never captured, so there is nothing to replay"
+        );
+    }
     // clap's `requires` covers the command line, but a config file can set
     // `archive_body_dir` on its own, and the run would then quietly write
     // nothing at all — the exact failure mode the unknown-key warning exists
@@ -915,8 +922,19 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
 /// Built from the run result rather than the output list on purpose: the
 /// output may have been reshaped by `--show-only-*`, and a URL that no longer
 /// matches what the providers reported has no capture to look up.
-pub fn archive_captures(run_result: &ProviderRunResult) -> HashMap<String, ArchiveCapture> {
-    run_result
+///
+/// With `normalize` (`--normalize-url`) each capture is also keyed by the
+/// normalised form the tester will be handed; when several URLs collapse into
+/// one, the newest capture wins.
+pub fn archive_captures(
+    run_result: &ProviderRunResult,
+    normalize: bool,
+) -> HashMap<String, ArchiveCapture> {
+    let normalizer = UrlTransformer {
+        normalize_url: true,
+        ..Default::default()
+    };
+    let mut captures: HashMap<String, ArchiveCapture> = run_result
         .urls
         .iter()
         .filter_map(|(url, entry)| {
@@ -934,7 +952,26 @@ pub fn archive_captures(run_result: &ProviderRunResult) -> HashMap<String, Archi
                 },
             ))
         })
-        .collect()
+        .collect();
+    if normalize {
+        let aliases: Vec<(String, ArchiveCapture)> = captures
+            .iter()
+            .filter_map(|(url, capture)| {
+                let key = normalizer.transform_one(url)?;
+                (&key != url).then(|| (key, capture.clone()))
+            })
+            .collect();
+        for (key, capture) in aliases {
+            match captures.get(&key) {
+                // 14-digit timestamps order lexicographically.
+                Some(existing) if existing.timestamp >= capture.timestamp => {}
+                _ => {
+                    captures.insert(key, capture);
+                }
+            }
+        }
+    }
+    captures
 }
 
 /// Build the `--archive-body` tester over the run result, or `None` when the
@@ -950,8 +987,10 @@ pub fn build_archive_body_extractor(
     }
     verbose_print(args, "Extracting links from archived response bodies");
 
-    let mut extractor =
-        ArchiveBodyExtractor::new(archive_captures(run_result), args.archive_body_limit);
+    let mut extractor = ArchiveBodyExtractor::new(
+        archive_captures(run_result, args.normalize_url),
+        args.archive_body_limit,
+    );
     apply_network_settings_to_tester(&mut extractor, network_settings);
     // Every replay request goes to the Wayback Machine, so the rate that
     // applies is the one the user set for it — `--rate-limit-by wayback=N`
@@ -1324,7 +1363,7 @@ mod tests {
             .urls
             .insert("https://example.com/c".to_string(), UrlEntry::default());
 
-        let captures = archive_captures(&run_result);
+        let captures = archive_captures(&run_result, false);
         assert_eq!(
             captures["https://example.com/a"],
             ArchiveCapture {
@@ -1340,6 +1379,44 @@ mod tests {
             }
         );
         assert!(!captures.contains_key("https://example.com/c"));
+    }
+
+    #[test]
+    fn test_archive_captures_are_found_under_the_normalized_url() {
+        use crate::providers::CaptureMeta;
+        use crate::runner::UrlEntry;
+
+        let mut run_result = ProviderRunResult::default();
+        for (url, ts) in [
+            ("https://example.com/about/", "20100101000000"),
+            ("https://example.com/about", "20200101000000"),
+            ("http://example.com:80/a?z=1&a=2", "20150101000000"),
+        ] {
+            let mut entry = UrlEntry::default();
+            entry.absorb("wayback", &CaptureMeta::capture(Some(ts), None, None, None));
+            run_result.urls.insert(url.to_string(), entry);
+        }
+
+        let captures = archive_captures(&run_result, true);
+        // The newer capture wins when two URLs normalise to one.
+        assert_eq!(
+            captures["https://example.com/about"].timestamp,
+            "20200101000000"
+        );
+        assert_eq!(
+            captures["http://example.com/a?a=2&z=1"].timestamp,
+            "20150101000000"
+        );
+        assert!(!archive_captures(&run_result, false).contains_key("http://example.com/a?a=2&z=1"));
+    }
+
+    #[test]
+    fn test_merge_endpoint_is_rejected_with_archive_body() {
+        let mut args = build_test_args();
+        args.merge_endpoint = true;
+        args.archive_body = true;
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("--merge-endpoint"), "{err}");
     }
 
     #[test]
