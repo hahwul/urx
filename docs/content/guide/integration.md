@@ -7,37 +7,31 @@ weight = 6
 
 ## Pipeline Integration
 
-Urx is designed to work seamlessly in command-line pipelines and with other security tools.
-
 ### Standard Input/Output
-
-Urx reads domains from standard input and outputs URLs to standard output, making it perfect for piping:
 
 ```bash
 cat domains.txt | urx | grep "api"
 
-# Or name the file directly (alias --dL); repeatable
+# or name the file (alias --dL); repeatable
 urx --domain-list domains.txt | grep "api"
 ```
 
-Standard input is read only when the command line and any `--domain-list` files
-name no domains at all.
+Stdin is read only when the command line and `--domain-list` files name no
+domains.
 
-Results go to stdout; the progress bar, warnings and errors go to stderr, and the
-progress bar hides itself when stderr is not a terminal. Two things to keep in
-mind in a pipe:
+Results go to stdout. The progress bar, warnings and errors go to stderr, and
+the progress bar hides itself when stderr is not a terminal. In a pipe:
 
-- `--silent` suppresses **all** output, results included (except under
-  `--stream`, which still writes results and only loses its diagnostics). Use it
-  only with `-o` or `--notify`; to quiet a pipe, use `--no-progress` instead.
-- `-v` / `--verbose` writes its setup and stage messages to stdout, mixed into
-  the URL list, where the next tool would read them as URLs (its per-provider
-  progress and errors go to stderr). Leave it off in pipelines.
+- `--silent` hides all output, results included (except under `--stream`, which
+  still writes results). Use it only with `-o` or `--notify`. To quiet a pipe,
+  use `--no-progress`.
+- `-v` / `--verbose` writes setup and stage messages to stdout, mixed into the
+  URL list (per-provider progress and errors go to stderr). Leave it off in
+  pipelines.
 
-For JSON consumers, `-f jsonl` writes one object per line, while `-f json` writes
-a single array. `--stream` starts writing before the run ends, so the next tool
-starts working at once (plain, `jsonl` and `csv` only; unsorted; bypasses the
-cache):
+`-f jsonl` writes one object per line; `-f json` writes a single array.
+`--stream` writes before the run ends (plain, `jsonl` and `csv` only; unsorted;
+skips the cache):
 
 ```bash
 urx example.com --stream | httpx -silent
@@ -47,75 +41,49 @@ urx example.com --stream | httpx -silent
 
 | Code | Meaning |
 |------|---------|
-| `0` | The run completed, including runs where some providers failed, results were partial, or the webhook could not be delivered (an unwritable `-o` under `--stream` is caught earlier as an exit-1 startup error) |
-| `1` | A runtime error: no domains given, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes`, or a failed `-o` / `--output-dir` write |
-| `2` | Invalid command-line usage, such as an unknown flag or `--parallel 0` |
-| `130` | A Ctrl-C after collection has ended exits immediately. During provider collection, the first Ctrl-C stops fetching gracefully and returns collected URLs; a second Ctrl-C during the remaining pipeline force-quits |
+| `0` | Run completed, even if some providers failed, results were partial, or the webhook was not delivered (an unwritable `-o` under `--stream` is caught at startup and exits 1) |
+| `1` | Runtime error: no domains, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes`, or a failed `-o` / `--output-dir` write |
+| `2` | Invalid usage, such as an unknown flag or `--parallel 0` |
+| `130` | Ctrl-C after collection exits at once. During collection, the first Ctrl-C stops fetching and keeps the URLs collected so far; a second Ctrl-C force-quits |
 
-In batch mode, urx attempts both `-o` and `--output-dir` when both are set. It
-then attempts configured `--notify` webhooks before returning any output error,
-which exits 1 and is reported even with `--silent`. Stdout-only runs keep their
-existing behavior: a closed pipe is treated as successful output completion.
+In batch mode, urx tries both `-o` and `--output-dir` when both are set, then
+sends any `--notify` webhooks, then returns the output error (exit 1, reported
+even with `--silent`). For stdout-only runs, a closed pipe counts as success.
 
 ### With Security Tools
 
-#### Nuclei
-Scan for vulnerabilities in discovered JavaScript files:
 ```bash
+# nuclei on JS files
 urx example.com -e js | nuclei -t xss
-```
 
-#### httpx
-Probe discovered URLs for HTTP information:
-```bash
+# httpx probing
 urx example.com | httpx -silent -status-code
-```
 
-#### gf (Go Filters)
-Filter URLs for specific patterns:
-```bash
+# gf patterns
 urx example.com | gf xss
 urx example.com | gf redirect
 urx example.com | gf ssrf
-```
 
-#### ffuf
-Fuzz discovered endpoints:
-```bash
+# ffuf: each URL as the target
 urx example.com --patterns api | ffuf -w - -u FUZZ
-```
 
-`--fuzz-placeholder` hands ffuf the parameter templates directly — every query
-value replaced, one URL per parameter signature:
-```bash
+# ffuf / dalfox: one URL per parameter signature, values replaced
 urx example.com --fuzz-placeholder FUZZ | ffuf -w - -u FUZZ
-```
+urx example.com --fuzz-placeholder FUZZ | dalfox pipe
 
-`-f wordlist` turns the run into a target-specific wordlist instead — the path
-segments and parameter names the target is built from, with ids, hashes and
-dates left out:
-```bash
+# target-specific wordlist (path segments and parameter names)
 urx example.com --subs -f wordlist -o words.txt
 ffuf -w words.txt -u https://example.com/FUZZ
-```
 
-#### dalfox
-Parameter templates feed a scanner just as well as a fuzzer:
-```bash
-urx example.com --fuzz-placeholder FUZZ | dalfox pipe
-```
-
-#### waybackurls / gau
-Combine with other URL collection tools:
-```bash
+# merge with gau
 (urx example.com && gau example.com) | sort -u
 ```
 
 ### Notification Integration
 
 #### Built-in Webhook (`--notify`)
-urx can POST a run summary itself — no extra tool in the pipe. Paired with
-`--incremental` the webhook fires only when the run finds new URLs:
+urx POSTs a run summary itself. With `--incremental`, it fires only when the run
+finds new URLs:
 ```bash
 # Slack (--silent keeps stdout quiet; the webhook still fires)
 urx target.com --incremental --silent \
@@ -124,7 +92,7 @@ urx target.com --incremental --silent \
 # Discord
 urx target.com --incremental --silent --notify "$DISCORD_HOOK" --notify-format discord
 
-# Anything that takes JSON (n8n, ntfy, a Lambda, your own receiver)
+# anything that takes JSON (n8n, ntfy, a Lambda, your own receiver)
 export URX_NOTIFY_URL=https://n8n.example/webhook/urx
 urx target.com --incremental --silent
 ```
@@ -132,39 +100,25 @@ See [CLI Options → Webhook Notifications](/guide/cli-options/#webhook-notifica
 for the payload schema, `--notify-on`, and the length limits.
 
 #### Notify
-Send the new URLs themselves, one per message, through an external notifier:
 ```bash
+# one message per new URL
 urx target.com --incremental --no-progress | notify -silent
-```
-
-#### Discord Webhook (per URL)
-```bash
-urx example.com | while read url; do
-  curl -X POST "webhook_url" -d "{\"content\":\"$url\"}"
-done
 ```
 
 ### Database Integration
 
-#### PostgreSQL
-Store results in a database:
 ```bash
-urx example.com -f jsonl | jq -r '.url' | while read url; do
-  psql -c "INSERT INTO urls (url) VALUES ('$url')"
-done
-```
+# PostgreSQL
+urx example.com | psql -c "\copy urls(url) FROM pstdin"
 
-#### MongoDB
-```bash
+# MongoDB
 urx example.com -f jsonl | mongoimport --db security --collection urls
 ```
 
 ### Continuous Monitoring
 
 #### Daily Cron Job
-Monitor targets daily for new URLs:
 ```bash
-# Add to crontab
 0 0 * * * /usr/local/bin/urx target.com --incremental --no-progress >> /var/log/urx.log 2>/dev/null
 ```
 
@@ -173,9 +127,8 @@ Monitor targets daily for new URLs:
 urx example.com --cache-type redis --redis-url redis://central-cache:6379 --incremental
 ```
 
-Redis needs a build with `--features redis-cache`, and the machines only share
-cache entries when they run with the same flags and the same keyed providers
-enabled. See
+Needs a build with `--features redis-cache`. Machines share cache entries only
+when they run with the same flags and the same keyed providers. See
 [Caching](/guide/caching/).
 
 ### CI/CD Integration
@@ -192,8 +145,8 @@ jobs:
     steps:
       - name: Install Urx
         run: cargo install urx
-      # Without a persisted cache, every run on a fresh runner is a first run
-      # and --incremental reports everything.
+      # without a persisted cache every run is a first run,
+      # and --incremental reports everything
       - name: Restore URL cache
         uses: actions/cache@v4
         with:
@@ -211,8 +164,8 @@ jobs:
 
 ### Docker Integration
 
-The image has no entrypoint: its default command is `./urx`, so arguments
-passed to the container must start with `./urx` (or use `--entrypoint ./urx`).
+The image has no entrypoint (its default command is `./urx`), so container
+arguments must start with `./urx`, or use `--entrypoint ./urx`.
 
 #### Run in Container
 ```bash
@@ -225,12 +178,12 @@ docker run --rm \
 The container runs as uid 100 (`app`). On Linux, make the mounted directory
 writable by it, or run with `--user "$(id -u):$(id -g)" -e HOME=/tmp` (the
 `HOME` override keeps the cache writable). A failed `-o` or `--output-dir`
-write is reported on stderr and exits 1, including under `--silent`.
+write goes to stderr and exits 1, even under `--silent`.
 
 #### Docker Compose for Monitoring Stack
 
-The published image is built without Redis support, so keep the SQLite cache on a
-volume instead (the container runs as the `app` user, whose home is `/home/app`):
+The published image has no Redis support, so keep the SQLite cache on a volume
+(the `app` user's home is `/home/app`):
 
 ```yaml
 services:
@@ -290,18 +243,13 @@ spec:
 #!/bin/bash
 TARGET=$1
 
-# Discover URLs
-urx $TARGET --subs -e js,json,xml -o urls.txt
+urx "$TARGET" --subs -e js,json,xml -o urls.txt
+httpx -silent -l urls.txt -o live.txt
+nuclei -l live.txt -t cves/ -o vulnerabilities.txt
 
-# Probe for live URLs
-cat urls.txt | httpx -silent -o live.txt
-
-# Scan for vulnerabilities
-cat live.txt | nuclei -t cves/ -o vulnerabilities.txt
-
-# Check for secrets in JS files
-cat urls.txt | grep "\.js$" | while read url; do
-  curl -s $url | grep -i "api.*key"
+# grep JS files for key-looking strings
+grep '\.js$' urls.txt | while read -r url; do
+  curl -s "$url" | grep -i "api.*key"
 done
 ```
 
@@ -310,17 +258,11 @@ done
 #!/bin/bash
 TARGET=$1
 
-# Initial discovery
-urx $TARGET --subs --incremental -o new-urls.txt
+# new URLs only; Slack summary when there are any
+urx "$TARGET" --subs --incremental -o new-urls.txt \
+  --notify "$SLACK_WEBHOOK" --notify-format slack
 
-# Filter interesting endpoints
-cat new-urls.txt | gf redirect > potential-redirects.txt
-cat new-urls.txt | gf xss > potential-xss.txt
-cat new-urls.txt | gf sqli > potential-sqli.txt
-
-# Notify on Slack
-if [ -s new-urls.txt ]; then
-  COUNT=$(wc -l < new-urls.txt)
-  curl -X POST $SLACK_WEBHOOK -d "{\"text\":\"Found $COUNT new URLs for $TARGET\"}"
-fi
+gf redirect < new-urls.txt > potential-redirects.txt
+gf xss < new-urls.txt > potential-xss.txt
+gf sqli < new-urls.txt > potential-sqli.txt
 ```

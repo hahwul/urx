@@ -7,34 +7,27 @@ weight = 2
 
 ## Basic Usage
 
-Get started with Urx in minutes using these simple examples.
-
 ### Single Domain
-
-Fetch URLs for a single domain:
 
 ```bash
 urx example.com
 ```
 
-This retrieves URLs from the default providers (Wayback Machine, Common Crawl and
-OTX), plus the target's live `robots.txt` and `sitemap.xml` (turn those off with
-`--exclude-robots` / `--exclude-sitemap`), and prints them to the console.
-Any provider that takes an API key (vt, urlscan, zoomeye, github, bevigil) joins
-automatically when its key is set, even alongside an explicit `--providers`
-list; see [Environment Variables](/guide/environment-variables/).
+This queries the default providers (Wayback Machine, Common Crawl, OTX) plus the
+target's live `robots.txt` and `sitemap.xml`, and prints the URLs. Turn the last
+two off with `--exclude-robots` / `--exclude-sitemap`.
+
+A provider that takes an API key (vt, urlscan, zoomeye, github, bevigil) is added
+when its key is set, even with an explicit `--providers` list. See
+[Environment Variables](/guide/environment-variables/).
 
 ### Multiple Domains
-
-Process multiple domains at once:
 
 ```bash
 urx example.com example.org
 ```
 
 ### From Standard Input
-
-Read domains from a file or pipeline:
 
 ```bash
 cat domains.txt | urx
@@ -45,15 +38,11 @@ urx --domain-list domains.txt
 
 ### Save Output to File
 
-Save results to a file instead of displaying in console:
-
 ```bash
 urx example.com -o results.txt
 ```
 
 ### JSON Output
-
-Output in JSON format for parsing with other tools:
 
 ```bash
 urx example.com -f json -o results.json
@@ -63,7 +52,7 @@ urx example.com -f json -o results.json
 
 ### Security Scanning
 
-Filter for JavaScript files that may contain sensitive information:
+JavaScript files only:
 
 ```bash
 urx example.com -e js -o js-files.txt
@@ -71,7 +60,7 @@ urx example.com -e js -o js-files.txt
 
 ### API Endpoint Discovery
 
-Find API endpoints using pattern matching:
+URLs containing any of these patterns:
 
 ```bash
 urx example.com --patterns api,v1,v2,graphql
@@ -79,7 +68,7 @@ urx example.com --patterns api,v1,v2,graphql
 
 ### Exclude Common Resources
 
-Use presets to exclude images and other non-interesting files:
+Drop images and static resources with presets:
 
 ```bash
 urx example.com -p no-images,no-resources
@@ -87,7 +76,7 @@ urx example.com -p no-images,no-resources
 
 ### With HTTP Status Checking
 
-Validate which URLs are still active:
+Keep only URLs that return 200:
 
 ```bash
 urx example.com --check-status --include-status 200
@@ -95,14 +84,12 @@ urx example.com --check-status --include-status 200
 
 ## Getting Help
 
-For a complete list of options and flags:
-
 ```bash
 urx --help
 ```
 
 ## Next Steps
 
-- Learn about all available [CLI Options](/guide/cli-options/)
-- Explore more [Examples](/guide/examples/)
-- Set up a [Configuration](/guide/configuration/) file for advanced use
+- [CLI Options](/guide/cli-options/)
+- [Examples](/guide/examples/)
+- [Configuration](/guide/configuration/) file
