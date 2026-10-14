@@ -684,11 +684,18 @@ mod tests {
 
     #[test]
     fn test_exclude_robots_and_sitemap_beat_an_explicit_providers_list() {
+        // Under ENV: other tests set provider keys, which auto-add providers.
+        let _env_lock = ENV.lock().unwrap();
         let mut args = build_test_args();
         args.providers = vec!["wayback".into(), "robots".into(), "sitemap".into()];
         args.exclude_robots = true;
         args.exclude_sitemap = true;
-        assert_eq!(effective_provider_ids(&args), vec!["wayback".to_string()]);
+        let ids = effective_provider_ids(&args);
+        assert!(ids.iter().any(|p| p == "wayback"), "{ids:?}");
+        assert!(
+            !ids.iter().any(|p| p == "robots" || p == "sitemap"),
+            "{ids:?}"
+        );
     }
 
     #[test]
