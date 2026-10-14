@@ -127,7 +127,7 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                 .iter()
                 .filter(|e| is_expired(e.timestamp, ttl))
                 .count();
-            let pruned = admin.delete_expired(ttl).await?;
+            let pruned = admin.delete_expired(ttl, false).await?;
             let report = PruneReport {
                 pruned,
                 remaining: before.len().saturating_sub(pruned),

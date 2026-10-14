@@ -139,8 +139,14 @@ impl DomainCompletionCtx {
     }
 }
 
-/// Helper function to apply network settings to a provider
-pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
+/// Helper function to apply network settings to a provider. `rate_limit` is
+/// passed in rather than built from `settings`, so instances that share a
+/// provider id can share one limiter.
+pub fn apply_network_settings_to_provider(
+    provider: &mut dyn Provider,
+    settings: &NetworkSettings,
+    rate_limit: Option<RateLimiter>,
+) {
     // `--subs` is a *search scope* option, not a network setting: it decides
     // which hosts the archive query asks for. `--network-scope testers` narrows
     // where proxy/timeout/TLS/rate-limit apply, and used to take subdomain
@@ -164,18 +170,21 @@ pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings:
             headers: Default::default(),
         },
         retries: settings.retries,
-        rate_limit: settings.rate_limit.and_then(RateLimiter::new),
+        rate_limit,
     });
     // A no-op for every provider that queries an archive; see
     // `Provider::with_headers`. After `with_network`, which resets them.
     provider.with_headers(settings.headers.clone());
 }
 
+// The registry's accumulators, passed as-is from one call site's macro.
+#[allow(clippy::too_many_arguments)]
 pub fn add_provider<T: Provider + 'static>(
     args: &Args,
     network_settings: &NetworkSettings,
     providers: &mut Vec<Box<dyn Provider>>,
     provider_names: &mut Vec<String>,
+    limiters: &mut HashMap<String, Option<RateLimiter>>,
     provider_id: &str,
     provider_name: String,
     provider_builder: impl FnOnce() -> T,
@@ -223,8 +232,16 @@ pub fn add_provider<T: Provider + 'static>(
         eprintln!("{}", config_info.join("\n"));
     }
 
+    // One limiter per provider id, not per instance: every --cc-index, and
+    // robots/sitemap with their archived twins, register under one id, and
+    // `--rate-limit-by cc=1` must hold for all of them together.
+    let rate_limit = limiters
+        .entry(provider_id.to_string())
+        .or_insert_with(|| effective_settings.rate_limit.and_then(RateLimiter::new))
+        .clone();
+
     let mut provider = provider_builder();
-    apply_network_settings_to_provider(&mut provider, &effective_settings);
+    apply_network_settings_to_provider(&mut provider, &effective_settings, rate_limit);
     providers.push(Box::new(provider));
     provider_names.push(provider_name);
 }
@@ -280,6 +297,10 @@ impl UrlEntry {
 pub struct ProviderRunResult {
     pub urls: HashMap<String, UrlEntry>,
     pub stats: Vec<ProviderStats>,
+    /// Domains some provider failed on, returned partial results for, or never
+    /// finished before `--max-time` / Ctrl-C: what the run has for them is not
+    /// the whole answer, so it must not be cached as one.
+    pub incomplete_domains: HashSet<String>,
 }
 
 /// Process domains using a provider-based concurrency pattern.
@@ -313,6 +334,8 @@ pub async fn process_domains(
             })
             .collect(),
     ));
+
+    let incomplete_domains: Arc<Mutex<HashSet<String>>> = Arc::default();
 
     // Create a progress bar for overall progress
     let overall_bar = progress_manager.create_domain_bar(total_domains);
@@ -378,6 +401,7 @@ pub async fn process_domains(
         let all_urls = Arc::clone(&all_urls);
         let stream = stream.clone();
         let stats = Arc::clone(&stats);
+        let incomplete_domains = Arc::clone(&incomplete_domains);
         let provider_bar = provider_bars[original_idx].clone();
         let domains = domains.clone();
         let notifier = notifier.clone();
@@ -443,6 +467,7 @@ pub async fn process_domains(
                     let provider_name = provider_name.clone();
                     let all_urls = Arc::clone(&all_urls);
                     let stats = Arc::clone(&stats);
+                    let incomplete_domains = Arc::clone(&incomplete_domains);
                     let completion_ctx = Arc::clone(&completion_ctx);
                     let url_total = Arc::clone(&url_total);
                     let err_total = Arc::clone(&err_total);
@@ -515,6 +540,7 @@ pub async fn process_domains(
                                     .is_some_and(|r| r.is_partial() || r.stop_requested());
                                 if partial {
                                     partial_total.fetch_add(1, Ordering::Relaxed);
+                                    lock_ignore_poison(&incomplete_domains).insert(domain.clone());
                                 }
 
                                 // Hand this batch to the streaming sink, or —
@@ -610,6 +636,7 @@ pub async fn process_domains(
                             }
                             Err(e) => {
                                 err_total.fetch_add(1, Ordering::Relaxed);
+                                lock_ignore_poison(&incomplete_domains).insert(domain.clone());
 
                                 {
                                     let mut s = lock_ignore_poison(&stats);
@@ -847,7 +874,20 @@ pub async fn process_domains(
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         Err(arc) => lock_ignore_poison(&arc).clone(),
     };
-    ProviderRunResult { urls, stats }
+    // A domain some provider never got to the end of (cancelled by --max-time
+    // or Ctrl-C) is as incomplete as one it failed on.
+    let mut incomplete_domains = lock_ignore_poison(&incomplete_domains).clone();
+    incomplete_domains.extend(
+        lock_ignore_poison(&domain_completion)
+            .iter()
+            .filter(|(_, &done)| done < total_providers)
+            .map(|(domain, _)| domain.clone()),
+    );
+    ProviderRunResult {
+        urls,
+        stats,
+        incomplete_domains,
+    }
 }
 
 #[cfg(test)]
@@ -927,10 +967,12 @@ mod tests {
         fn with_network(&mut self, _net: crate::network::NetConfig) {}
     }
 
-    /// A provider that records what `with_subdomains` was told.
+    /// A provider that records what `with_subdomains` was told, and every
+    /// rate limiter `with_network` hands it.
     #[derive(Clone, Default)]
     struct SubdomainRecordingProvider {
         include_subdomains: bool,
+        limiters: Arc<Mutex<Vec<Option<RateLimiter>>>>,
     }
 
     impl Provider for SubdomainRecordingProvider {
@@ -948,7 +990,9 @@ mod tests {
         fn with_subdomains(&mut self, include: bool) {
             self.include_subdomains = include;
         }
-        fn with_network(&mut self, _net: crate::network::NetConfig) {}
+        fn with_network(&mut self, net: crate::network::NetConfig) {
+            self.limiters.lock().unwrap().push(net.rate_limit);
+        }
     }
 
     /// A provider returning canned records, so a test can hand two providers
@@ -1470,6 +1514,7 @@ mod tests {
         // The one domain it never finished is reported as an incomplete result
         // rather than a silent zero.
         assert_eq!(stats.partial_count, 1, "{stats:?}");
+        assert!(result.incomplete_domains.contains("example.com"));
     }
 
     #[tokio::test]
@@ -1517,6 +1562,36 @@ mod tests {
     }
 
     #[test]
+    fn test_instances_sharing_a_provider_id_share_one_rate_limiter() {
+        // Regression: each --cc-index instance built its own limiter, so
+        // `--rate-limit-by cc=1` with two indexes went out at 2 req/s.
+        let mut args = build_test_args();
+        args.rate_limit_by = vec!["cc=1".to_string()];
+        let settings = NetworkSettings::default();
+        let provider = SubdomainRecordingProvider::default();
+        let seen = Arc::clone(&provider.limiters);
+        let (mut providers, mut names, mut limiters) = (Vec::new(), Vec::new(), HashMap::new());
+        for id in ["cc", "cc", "wayback"] {
+            let provider = provider.clone();
+            add_provider(
+                &args,
+                &settings,
+                &mut providers,
+                &mut names,
+                &mut limiters,
+                id,
+                id.to_string(),
+                move || provider,
+            );
+        }
+
+        let seen = seen.lock().unwrap();
+        let (a, b) = (seen[0].as_ref().unwrap(), seen[1].as_ref().unwrap());
+        assert!(a.shares_with(b), "both cc instances must share one limiter");
+        assert!(seen[2].is_none(), "wayback has no limit configured");
+    }
+
+    #[test]
     fn test_subdomain_inclusion_is_not_a_network_setting() {
         // Regression: --network-scope testers made
         // apply_network_settings_to_provider bail before it applied --subs, so
@@ -1536,7 +1611,7 @@ mod tests {
             let mut settings = settings.clone();
             settings.scope = scope;
             let mut provider = SubdomainRecordingProvider::default();
-            apply_network_settings_to_provider(&mut provider, &settings);
+            apply_network_settings_to_provider(&mut provider, &settings, None);
             assert!(
                 provider.include_subdomains,
                 "--subs must survive --network-scope {scope:?}"

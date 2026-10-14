@@ -111,28 +111,37 @@ impl CacheManager {
         self.backend.set(key, entry).await
     }
 
-    /// Get only new URLs compared to cached results (for incremental scanning)
-    pub async fn get_new_urls(
+    /// Fold `fresh` into the `--incremental` baseline for `key`, returning the
+    /// URLs it had not seen.
+    ///
+    /// The baseline is the union of every run, never just the latest: a run
+    /// cut short by `--max-time` or a provider error would otherwise shrink it,
+    /// and the next good run re-report everything it lost as new.
+    pub async fn update_baseline(
         &self,
         key: &CacheKey,
-        new_urls: &HashSet<String>,
+        fresh: HashSet<String>,
     ) -> Result<HashSet<String>> {
         // Not a miss: an unreadable baseline would report every URL as new.
-        match self.backend.get(key).await? {
-            Some(cached_entry) => {
-                let cached_urls: HashSet<String> = cached_entry.urls.into_iter().collect();
-                Ok(new_urls.difference(&cached_urls).cloned().collect())
-            }
-            // No cached data, all URLs are new
-            None => Ok(new_urls.clone()),
-        }
+        let mut known: HashSet<String> = match self.backend.get(key).await? {
+            Some(entry) => entry.urls.into_iter().collect(),
+            None => HashSet::new(),
+        };
+        let new: HashSet<String> = fresh.difference(&known).cloned().collect();
+        known.extend(new.iter().cloned());
+
+        let mut entry = CacheEntry::new(known.into_iter().collect());
+        entry.baseline = true;
+        self.backend.set(key, &entry).await?;
+        Ok(new)
     }
 
-    /// Delete entries older than `ttl_seconds`; a no-op for a backend without
-    /// an admin side.
+    /// The post-run sweep: delete entries older than `ttl_seconds`, except
+    /// `--incremental` baselines, which are read with no TTL and which this run
+    /// may not even own. A no-op for a backend without an admin side.
     pub async fn delete_expired(&self, ttl_seconds: u64) -> Result<usize> {
         match self.backend.admin() {
-            Some(admin) => admin.delete_expired(ttl_seconds).await,
+            Some(admin) => admin.delete_expired(ttl_seconds, true).await,
             None => Ok(0),
         }
     }
@@ -162,13 +171,10 @@ mod tests {
             filters_hash: "test_hash".to_string(),
         };
 
-        let entry = CacheEntry {
-            urls: vec![
-                "https://example.com/page1".to_string(),
-                "https://example.com/page2".to_string(),
-            ],
-            timestamp: chrono::Utc::now(),
-        };
+        let entry = CacheEntry::new(vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ]);
 
         // Store and retrieve
         cache.store_urls(&key, &entry).await?;
@@ -201,13 +207,10 @@ mod tests {
         };
 
         // Store initial URLs
-        let initial_entry = CacheEntry {
-            urls: vec![
-                "https://example.com/page1".to_string(),
-                "https://example.com/page2".to_string(),
-            ],
-            timestamp: chrono::Utc::now(),
-        };
+        let initial_entry = CacheEntry::new(vec![
+            "https://example.com/page1".to_string(),
+            "https://example.com/page2".to_string(),
+        ]);
         cache.store_urls(&key, &initial_entry).await?;
 
         // New scan with some overlapping URLs
@@ -219,13 +222,25 @@ mod tests {
         .into_iter()
         .collect();
 
-        let incremental_urls = cache.get_new_urls(&key, &new_urls).await?;
+        let incremental_urls = cache.update_baseline(&key, new_urls).await?;
 
         // Should only return new URLs
         assert_eq!(incremental_urls.len(), 2);
         assert!(incremental_urls.contains("https://example.com/page3"));
         assert!(incremental_urls.contains("https://example.com/page4"));
         assert!(!incremental_urls.contains("https://example.com/page2"));
+
+        // A later run that saw less (cut short, or a provider down) must not
+        // shrink the baseline: page1 is still known, nothing is new.
+        let partial = HashSet::from(["https://example.com/page1".to_string()]);
+        assert!(cache.update_baseline(&key, partial).await?.is_empty());
+        let baseline = cache.get_fresh(&key, 3600).await?.unwrap();
+        assert_eq!(baseline.urls.len(), 4);
+        assert!(baseline.baseline);
+
+        // ...and the post-run sweep, whatever its TTL, leaves it alone.
+        assert_eq!(cache.delete_expired(0).await?, 0);
+        assert!(cache.get_fresh(&key, 3600).await?.is_some());
 
         Ok(())
     }

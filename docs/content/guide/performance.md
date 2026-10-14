@@ -38,7 +38,7 @@ urx example.com --max-time 300
 
 When `--max-time` elapses, in-flight fetches stop and urx continues with the
 URLs collected so far. `--stats` counts cut-short fetches in its `partial`
-column. A cut-short result is cached like any other.
+column. A cut-short domain is not cached, so the next run fetches it again.
 
 #### Retry Settings
 ```bash
@@ -106,7 +106,8 @@ urx example.com --rate-limit-by vt=1,wayback=10
 ```
 
 Rates may be fractional: `--rate-limit-by vt=0.066` is about 4 requests a
-minute, VirusTotal's public-API quota. The rate also paces
+minute, VirusTotal's public-API quota. A rate covers every instance of a
+provider together: two `--cc-index` values share one `cc` budget. The rate also paces
 `--extract-js-endpoints`, `--expand-specs` and `--archive-body`.
 
 #### API Key Rotation

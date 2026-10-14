@@ -4,7 +4,7 @@
 //! is pure and cheap, so the cache key can ask "which providers would this run
 //! use?" without instantiating a single HTTP client.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
@@ -244,6 +244,7 @@ pub fn initialize_providers(
 
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut names: Vec<String> = Vec::new();
+    let mut limiters = HashMap::new();
 
     // Every provider is registered the same way; the macro keeps the shared
     // `args`/`network_settings`/accumulator arguments out of ten call sites.
@@ -257,6 +258,7 @@ pub fn initialize_providers(
                 network_settings,
                 &mut providers,
                 &mut names,
+                &mut limiters,
                 $id,
                 $label,
                 $builder,

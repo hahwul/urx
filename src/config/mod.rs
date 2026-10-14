@@ -639,9 +639,22 @@ impl Config {
         // Headers are additive nowhere: a config file that sets them is a
         // default, and any -H on the command line replaces the set wholesale,
         // so a run can always be made anonymous again without editing a file.
+        // A CLI `-H "Cookie: …"` outranks the config's `cookie` key too, which
+        // `CustomHeaders::parse` would otherwise apply over it (likewise UA).
+        let cli_sets = |name: &str| {
+            args.header.iter().any(|h| {
+                h.split_once(':')
+                    .is_some_and(|(n, _)| n.trim().eq_ignore_ascii_case(name))
+            })
+        };
+        let (cli_cookie, cli_user_agent) = (cli_sets("cookie"), cli_sets("user-agent"));
         args.header.fill(&n.header.clone().map(OneOrMany::into_vec));
-        args.cookie.fill(&n.cookie);
-        args.user_agent.fill(&n.user_agent);
+        if !cli_cookie {
+            args.cookie.fill(&n.cookie);
+        }
+        if !cli_user_agent {
+            args.user_agent.fill(&n.user_agent);
+        }
 
         if !provided.has("timeout") {
             if let Some(timeout) = n.timeout {
@@ -1965,6 +1978,21 @@ mod tests {
             crate::cli::parse_args_from(["urx", "-H", "X-Only: cli", "example.com"]);
         config.apply_to_args(&mut args, &provided);
         assert_eq!(args.header, vec!["X-Only: cli"]);
+
+        // ...and a CLI -H naming Cookie or User-Agent beats the configured key
+        // for it, which would otherwise be applied on top.
+        let config = Config::from_file(file.path()).unwrap();
+        let (mut args, provided) = crate::cli::parse_args_from([
+            "urx",
+            "-H",
+            "cookie: session=cli",
+            "-H",
+            "User-Agent: urx-cli/1",
+            "example.com",
+        ]);
+        config.apply_to_args(&mut args, &provided);
+        assert_eq!(args.cookie, None);
+        assert_eq!(args.user_agent, None);
     }
 
     #[test]

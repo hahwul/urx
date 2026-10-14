@@ -26,7 +26,7 @@ urx example.com
 Command-line flags override config values, with these exceptions:
 
 - A boolean key set to `true` (`subs`, `check_status`, `random_agent`, `incremental`, `no_cache`, ...) can't be turned off from the command line, since there is no `--no-...` flag. Keep such keys out of a shared default config, or switch profiles with `-c`. `exclude_robots` / `exclude_sitemap` are the exception: `--include-robots` / `--include-sitemap` override them.
-- A list given on the command line replaces the configured list. Any `-H` replaces the whole `header` set; `--providers` replaces `providers`.
+- A list given on the command line replaces the configured list. Any `-H` replaces the whole `header` set, and a `-H` naming `Cookie` or `User-Agent` also overrides the `cookie` / `user_agent` key; `--providers` replaces `providers`.
 - A configured `include_status` beats `--exclude-status` on the command line. Whenever an include list is present, it alone decides; pass `--include-status` to replace it. Either list in the config also runs the live status check on every run and makes `--stream` refuse to run.
 - An output view chosen on the command line replaces any configured `show_only_*` view. The three `show_only_*` keys are mutually exclusive; the config is rejected if more than one is `true`.
 

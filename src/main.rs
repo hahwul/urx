@@ -121,6 +121,7 @@ async fn collect_urls(
                     // Reading local files has no deadline to be cut off by.
                     aborted: false,
                 }],
+                incomplete_domains: Default::default(),
             },
             domains,
         ));

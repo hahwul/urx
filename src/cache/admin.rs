@@ -41,8 +41,9 @@ pub trait CacheAdmin: Send + Sync {
     /// Bytes the cache occupies, or `None` when the backend can't say.
     async fn size_bytes(&self) -> Result<Option<u64>>;
 
-    /// Delete entries older than `ttl_seconds`. Returns how many went.
-    async fn delete_expired(&self, ttl_seconds: u64) -> Result<usize>;
+    /// Delete entries older than `ttl_seconds`, sparing `--incremental`
+    /// baselines when `keep_baselines` is set. Returns how many went.
+    async fn delete_expired(&self, ttl_seconds: u64, keep_baselines: bool) -> Result<usize>;
 
     /// Delete every entry whose domain matches one of `patterns`
     /// (see [`domain_matches`]). Returns how many went.
@@ -81,7 +82,7 @@ impl CacheAdmin for MissingCache {
         Ok(Some(0))
     }
 
-    async fn delete_expired(&self, _ttl_seconds: u64) -> Result<usize> {
+    async fn delete_expired(&self, _ttl_seconds: u64, _keep_baselines: bool) -> Result<usize> {
         Ok(0)
     }
 
@@ -336,7 +337,7 @@ mod tests {
         };
         assert!(missing.entries().await.unwrap().is_empty());
         assert_eq!(missing.size_bytes().await.unwrap(), Some(0));
-        assert_eq!(missing.delete_expired(3600).await.unwrap(), 0);
+        assert_eq!(missing.delete_expired(3600, false).await.unwrap(), 0);
         assert_eq!(
             missing
                 .delete_domains(&["x.test".to_string()])
