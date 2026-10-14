@@ -1,0 +1,276 @@
+/* =============================================================================
+   urx - landing page
+   Loaded only on the home page. Tokens come from style.css.
+   ============================================================================= */
+
+.landing { padding-bottom: 4rem; }
+.wrap { width: min(100%, 1180px); margin-inline: auto; padding-inline: clamp(20px, 4vw, 40px); }
+.section { padding: clamp(4rem, 9vh, 7rem) 0; }
+
+.section-head { max-width: 60ch; margin-bottom: 2.6rem; }
+.section-title {
+  font-size: clamp(28px, 3.6vw, 42px);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.14;
+}
+.section-head .contrail { margin: 14px 0 0; }
+.section-sub { margin-top: 1rem; color: var(--muted); font-size: 1.02rem; line-height: 1.7; }
+
+/* --- Hero ----------------------------------------------------------------- */
+/* Deliberately not min-height:100dvh. The hero copy and both CTAs sit above the
+   fold and the terminal below starts just inside it, so its top edge peeks and
+   invites the scroll instead of being a separate screen. */
+.hero {
+  padding: calc(var(--header-h) + clamp(2.5rem, 7vh, 4.5rem)) 0 0;
+  text-align: center;
+}
+.hero h1 {
+  max-width: 17ch;
+  margin-inline: auto;
+  font-size: clamp(38px, 6.4vw, 68px);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+}
+.hero h1 .hot { color: var(--accent-text); }
+.hero-sub {
+  max-width: 52ch;
+  margin: 1.3rem auto 0;
+  color: var(--muted);
+  font-size: clamp(1rem, 1.6vw, 1.14rem);
+  line-height: 1.65;
+}
+.hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+/* --- Terminal showcase ---------------------------------------------------- */
+/* A real transcript in a <pre>, not a picture of one: selectable, copyable,
+   theme-aware and a fraction of the weight. */
+.showcase { margin-top: clamp(2.5rem, 6vh, 4rem); }
+.term {
+  width: min(100%, 900px);
+  text-align: left;       /* the hero centres its copy; a transcript must not inherit it */
+  margin-inline: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--code-bg);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+  color: var(--quiet);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.term-bar .dot { width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--accent); }
+.term-body { padding: 1.1rem 1.2rem; overflow-x: auto; scrollbar-width: thin; }
+.term-body pre {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1.15vw, 13px);
+  line-height: 1.75;
+  color: var(--text);
+}
+.term .prompt { color: var(--accent); }
+.term .flag { color: var(--syn-number); }
+.term .bar { color: var(--syn-comment); }
+.term .done { color: var(--syn-string); }
+.term .ok { color: var(--syn-string); }
+.term .gone { color: var(--quiet); }
+.term .muted { color: var(--quiet); }
+
+/* --- Providers: hairline rails -------------------------------------------- */
+.providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 2.4rem; }
+.provider {
+  position: relative;
+  display: block;
+  padding: 1.15rem 0 1.1rem;
+  border-top: 1px solid var(--line);
+  text-decoration: none;
+}
+/* The contrail again: a short amber segment on the rule that runs to full width
+   on hover. Same device as the sidebar's active marker. */
+.provider::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 2.4rem;
+  height: 1px;
+  background: var(--accent);
+  transition: width 340ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.provider:hover::before { width: 100%; }
+.p-name {
+  display: block;
+  color: var(--heading);
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.p-flag {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.p-desc { display: block; margin-top: 0.45rem; color: var(--muted); font-size: 0.86rem; line-height: 1.6; }
+.p-key {
+  display: inline-block;
+  margin-top: 0.55rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--quiet);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.p-key.keyless { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+.providers-note {
+  margin-top: 2.4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.providers-note code {
+  padding: 0.1rem 0.35rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--heading);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+}
+
+/* --- Features: asymmetric bento ------------------------------------------- */
+/* Exactly six cells for six capabilities. No filler tiles. */
+.bento { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+.cell {
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--bg-soft);
+}
+.cell h3 { font-size: 1.08rem; font-weight: 620; }
+.cell p { margin-top: 0.5rem; color: var(--muted); font-size: 0.92rem; line-height: 1.65; }
+.cell-lead { grid-column: span 2; }
+.cell-wide { grid-column: span 3; }
+/* Two cells carry real visual weight rather than being more text on a card. */
+.cell-accent {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: linear-gradient(150deg, var(--accent-wash), transparent 62%), var(--bg-soft);
+}
+.cell-code { padding: 0; overflow: hidden; background: var(--code-bg); }
+.cell-code pre {
+  padding: 1.2rem 1.3rem;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.cell-code .prompt { color: var(--accent); }
+.cell-code .muted { color: var(--quiet); }
+.big-stat {
+  display: block;
+  margin-bottom: 0.6rem;
+  color: var(--heading);
+  font-family: var(--font-display);
+  font-size: clamp(34px, 4.6vw, 52px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+.big-stat span { color: var(--accent-text); }
+.c-ico { display: block; width: 22px; height: 22px; margin-bottom: 0.8rem; color: var(--accent-text); }
+.c-ico svg { width: 100%; height: 100%; }
+
+/* --- Pipeline ------------------------------------------------------------- */
+.pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.6rem; }
+.stage { position: relative; padding-top: 1.4rem; border-top: 2px solid var(--line); }
+/* The contrail runs the length of the pipeline, brightest at the first stage. */
+.stage:nth-child(1) { border-top-color: var(--accent); }
+.stage:nth-child(2) { border-top-color: color-mix(in srgb, var(--accent) 70%, var(--line)); }
+.stage:nth-child(3) { border-top-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+.stage:nth-child(4) { border-top-color: color-mix(in srgb, var(--accent) 18%, var(--line)); }
+.s-flag {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+.stage h3 { font-size: 1.1rem; font-weight: 620; }
+.stage p { margin-top: 0.4rem; color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
+
+/* --- Install -------------------------------------------------------------- */
+.install {
+  padding: clamp(2.5rem, 6vw, 4rem);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background:
+    radial-gradient(38rem 22rem at 88% 8%, var(--accent-wash), transparent 68%),
+    var(--bg-soft);
+  text-align: center;
+}
+.install h2 { font-size: clamp(26px, 3.2vw, 38px); font-weight: 650; letter-spacing: -0.035em; }
+.install p { max-width: 48ch; margin: 0.9rem auto 0; color: var(--muted); }
+.install-cmds {
+  display: grid;
+  gap: 0.6rem;
+  width: min(100%, 30rem);
+  margin: 2rem auto 0;
+  text-align: left;
+}
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-code);
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.cmd .prompt { color: var(--accent); }
+.cmd .via { margin-left: auto; color: var(--quiet); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* --- Responsive ----------------------------------------------------------- */
+@media (max-width: 900px) {
+  .providers { grid-template-columns: repeat(2, 1fr); gap: 0 1.6rem; }
+  .bento { grid-template-columns: repeat(2, 1fr); }
+  .cell-lead, .cell-wide { grid-column: span 2; }
+  .pipeline { grid-template-columns: repeat(2, 1fr); gap: 1.4rem; }
+}
+
+@media (max-width: 620px) {
+  .providers { grid-template-columns: 1fr; }
+  .bento { grid-template-columns: 1fr; }
+  .cell-lead, .cell-wide { grid-column: span 1; }
+  .pipeline { grid-template-columns: 1fr; }
+  .hero-cta { flex-direction: column; align-items: stretch; }
+  .hero-cta .btn { justify-content: center; }
+  .term-body { padding: 0.9rem; }
+}

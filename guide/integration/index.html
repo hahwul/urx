@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script>
+    /* Resolve the theme before first paint so there is no flash. No stored choice
+       means no attribute, which lets color-scheme + light-dark() follow the OS. */
+    (function () {
+      document.documentElement.classList.add("has-js");
+      try {
+        var t = localStorage.getItem("urx-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring.">
+  <meta name="theme-color" content="#FBFBF9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0B0B0E" media="(prefers-color-scheme: dark)">
+  <title>Integration - Urx</title>
+
+  <link rel="icon" type="image/png" sizes="96x96" href="/icons/favicon-96x96.png">
+  <link rel="shortcut icon" href="/icons/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="urx">
+  <link rel="manifest" href="/icons/site.webmanifest">
+
+  <meta property="og:title" content="Integration">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="/guide/integration/">
+  <meta property="og:description" content="Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring.">
+  <meta property="og:image" content="/images/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Integration">
+  <meta name="twitter:description" content="Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring.">
+  <meta name="twitter:image" content="/images/og-card.png">
+  <meta name="twitter:site" content="@hahwul">
+  <meta name="twitter:creator" content="@hahwul">
+  <link rel="canonical" href="/guide/integration/">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Integration","url":"/guide/integration/","description":"Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring."}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Urx","item":"/"},{"@type":"ListItem","position":2,"name":"Guide","item":"/guide/"},{"@type":"ListItem","position":3,"name":"Integration"}]}</script>
+
+  <link rel="preload" href="/fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/css/style.css">
+  
+  
+  
+</head>
+<body class="is-doc" data-section="guide">
+  <a class="skip-link" href="#main">Skip to content</a>
+<header class="docs-header">
+  <a href="/" class="brand" aria-label="urx home">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-word">urx</span>
+  </a>
+
+  <nav class="top-nav" aria-label="Main">
+    <a href="/getting-started/">Getting Started</a>
+    <a href="/guide/" class="active">Guide</a>
+    <a href="/about/">About</a>
+  </nav>
+
+  <details class="nav-compact">
+    <summary aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </summary>
+    <div class="nav-compact-panel">
+      <a href="/getting-started/">Getting Started</a>
+      <a href="/guide/">Guide</a>
+      <a href="/about/">About</a>
+      <a href="/getting-started/installation/">Install</a>
+    </div>
+  </details>
+
+  <div class="header-right">
+    <button class="icon-btn search-btn" data-search-open aria-label="Search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <kbd>&#8984;K</kbd>
+    </button>
+    <button class="icon-btn theme-toggle" data-theme-toggle aria-label="Toggle theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a href="https://github.com/hahwul/urx" class="icon-btn" target="_blank" rel="noopener" aria-label="urx on GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+    </a>
+  </div>
+</header>
+<div class="docs-container">
+  
+<aside class="docs-sidebar">
+  <details class="docs-navigation" open>
+    <summary class="docs-navigation-toggle">Documentation</summary>
+    <nav class="manual-nav" aria-label="Documentation">
+      
+      
+      <details class="nav-group">
+        <summary>Getting Started</summary>
+        <ul class="nav-links">
+          <li><a href="/getting-started/">Overview</a></li>
+          
+          <li><a href="/getting-started/installation/">Installation</a></li>
+          
+          <li><a href="/getting-started/quick-start/">Quick Start</a></li>
+          
+        </ul>
+      </details>
+      
+      
+      
+      <details class="nav-group" open>
+        <summary>Guide</summary>
+        <ul class="nav-links">
+          <li><a href="/guide/">Overview</a></li>
+          
+          <li><a href="/guide/cli-options/">CLI Options</a></li>
+          
+          <li><a href="/guide/configuration/">Configuration</a></li>
+          
+          <li><a href="/guide/examples/">Examples</a></li>
+          
+          <li><a href="/guide/environment-variables/">Environment Variables</a></li>
+          
+          <li><a href="/guide/caching/">Caching</a></li>
+          
+          <li><a href="/guide/integration/" class="active" aria-current="page">Integration</a></li>
+          
+          <li><a href="/guide/performance/">Performance</a></li>
+          
+        </ul>
+      </details>
+      
+      
+      
+      <details class="nav-group">
+        <summary>About</summary>
+        <ul class="nav-links">
+          <li><a href="/about/">Overview</a></li>
+          
+          <li><a href="/about/contributing/">Contributing</a></li>
+          
+        </ul>
+      </details>
+      
+      
+    </nav>
+  </details>
+</aside>
+  <main id="main" class="docs-main">
+    <nav class="document-path" aria-label="Breadcrumb">
+      <a href="/">Urx</a>
+      
+      <span aria-hidden="true">/</span><a href="/guide/">Guide</a>
+      
+    </nav>
+
+    <header class="document-heading">
+      <h1>Integration</h1>
+      <span class="contrail" aria-hidden="true"></span>
+      <p class="document-lede">Pipe urx into other recon tooling, notify on results, and run it as continuous monitoring.</p>
+    </header>
+
+    <article class="document-body"><h2 id="pipeline-integration">Pipeline Integration</h2>
+<h3 id="standard-input-output">Standard Input/Output</h3>
+<pre><code class="language-bash hljs">cat domains.txt <span class="hljs-punctuation">|</span> urx <span class="hljs-punctuation">|</span> grep <span class="hljs-string">&quot;api&quot;</span>
+
+<span class="hljs-comment"># or name the file (alias --dL); repeatable</span>
+urx --domain-list domains.txt <span class="hljs-punctuation">|</span> grep <span class="hljs-string">&quot;api&quot;</span>
+</code></pre>
+<p>Stdin is read only when the command line and <code>--domain-list</code> files name no
+domains.</p>
+<p>Results go to stdout. The progress bar, warnings and errors go to stderr, and
+the progress bar hides itself when stderr is not a terminal. In a pipe:</p>
+<ul>
+<li><code>--silent</code> hides all output, results included (except under <code>--stream</code>, which
+still writes results). Use it only with <code>-o</code> or <code>--notify</code>. To quiet a pipe,
+use <code>--no-progress</code>.</li>
+<li><code>-v</code> / <code>--verbose</code> writes setup and stage messages to stdout, mixed into the
+URL list (per-provider progress and errors go to stderr). Leave it off in
+pipelines.</li>
+</ul>
+<p><code>-f jsonl</code> writes one object per line; <code>-f json</code> writes a single array.
+<code>--stream</code> writes before the run ends (plain, <code>jsonl</code> and <code>csv</code> only; unsorted;
+skips the cache):</p>
+<pre><code class="language-bash hljs">urx example.com --stream <span class="hljs-punctuation">|</span> httpx -silent
+</code></pre>
+<h3 id="exit-codes">Exit Codes</h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Run completed, even if some providers failed, results were partial, or the webhook was not delivered (an unwritable <code>-o</code> under <code>--stream</code> is caught at startup, and a write that fails mid-stream also exits 1)</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Runtime error: no domains, a rejected option combination (e.g. <code>--stream</code> with <code>--incremental</code>), a cache backend that cannot be opened, <code>urx cache clear</code> without a terminal or <code>--yes</code>, or a failed <code>-o</code> / <code>--output-dir</code> write</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Invalid usage, such as an unknown flag or <code>--parallel 0</code></td>
+</tr>
+<tr>
+<td><code>130</code></td>
+<td>Ctrl-C after collection exits at once. During collection, the first Ctrl-C stops fetching and keeps the URLs collected so far; a second Ctrl-C force-quits</td>
+</tr>
+</tbody>
+</table>
+<p>In batch mode, urx tries both <code>-o</code> and <code>--output-dir</code> when both are set, then
+sends any <code>--notify</code> webhooks, then returns the output error (exit 1, reported
+even with <code>--silent</code>). For stdout-only runs, a closed pipe counts as success.</p>
+<h3 id="with-security-tools">With Security Tools</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># nuclei on JS files</span>
+urx example.com -e js <span class="hljs-punctuation">|</span> nuclei -t xss
+
+<span class="hljs-comment"># httpx probing</span>
+urx example.com <span class="hljs-punctuation">|</span> httpx -silent -status-code
+
+<span class="hljs-comment"># gf patterns</span>
+urx example.com <span class="hljs-punctuation">|</span> gf xss
+urx example.com <span class="hljs-punctuation">|</span> gf redirect
+urx example.com <span class="hljs-punctuation">|</span> gf ssrf
+
+<span class="hljs-comment"># ffuf: each URL as the target</span>
+urx example.com --patterns api <span class="hljs-punctuation">|</span> ffuf -w - -u FUZZ
+
+<span class="hljs-comment"># ffuf / dalfox: one URL per parameter signature, values replaced</span>
+urx example.com --fuzz-placeholder FUZZ <span class="hljs-punctuation">|</span> ffuf -w - -u FUZZ
+urx example.com --fuzz-placeholder FUZZ <span class="hljs-punctuation">|</span> dalfox pipe
+
+<span class="hljs-comment"># target-specific wordlist (path segments and parameter names)</span>
+urx example.com --subs -f wordlist -o words.txt
+ffuf -w words.txt -u https://example.com/FUZZ
+
+<span class="hljs-comment"># merge with gau</span>
+<span class="hljs-operator">(</span>urx example.com <span class="hljs-operator">&amp;&amp;</span> gau example.com<span class="hljs-operator">)</span> <span class="hljs-punctuation">|</span> sort -u
+</code></pre>
+<h3 id="notification-integration">Notification Integration</h3>
+<h4 id="built-in-webhook-notify">Built-in Webhook (<code>--notify</code>)</h4>
+<p>urx POSTs a run summary itself. With <code>--incremental</code>, it fires only when the run
+finds new URLs:</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># Slack (--silent keeps stdout quiet; the webhook still fires)</span>
+urx target.com --incremental --silent <span class="hljs-string">\
+</span>  --notify https://hooks.slack.com/services/T000/B000/XXXX --notify-format slack
+
+<span class="hljs-comment"># Discord</span>
+urx target.com --incremental --silent --notify <span class="hljs-string">&quot;</span><span class="hljs-variable">$DISCORD_HOOK</span><span class="hljs-string">&quot;</span> --notify-format discord
+
+<span class="hljs-comment"># anything that takes JSON (n8n, ntfy, a Lambda, your own receiver)</span>
+<span class="hljs-built_in">export</span> <span class="hljs-variable">URX_NOTIFY_URL</span><span class="hljs-operator">=</span>https://n8n.example/webhook/urx
+urx target.com --incremental --silent
+</code></pre>
+<p>See <a href="/guide/cli-options/#webhook-notifications">CLI Options → Webhook Notifications</a>
+for the payload schema, <code>--notify-on</code>, and the length limits.</p>
+<h4 id="notify">Notify</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># one message per new URL</span>
+urx target.com --incremental --no-progress <span class="hljs-punctuation">|</span> notify -silent
+</code></pre>
+<h3 id="database-integration">Database Integration</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># PostgreSQL</span>
+urx example.com <span class="hljs-punctuation">|</span> psql -c <span class="hljs-string">&quot;\copy urls(url) FROM pstdin&quot;</span>
+
+<span class="hljs-comment"># MongoDB</span>
+urx example.com -f jsonl <span class="hljs-punctuation">|</span> mongoimport --db security --collection urls
+</code></pre>
+<h3 id="continuous-monitoring">Continuous Monitoring</h3>
+<h4 id="daily-cron-job">Daily Cron Job</h4>
+<pre><code class="language-bash hljs"><span class="hljs-number">0</span> <span class="hljs-number">0</span> * * * /usr/local/bin/urx target.com --incremental --no-progress &gt;&gt; /var/log/urx.log 2&gt;/dev/null
+</code></pre>
+<h4 id="with-redis-for-distributed-scanning">With Redis for Distributed Scanning</h4>
+<pre><code class="language-bash hljs">urx example.com --cache-type redis --redis-url redis://central-cache:6379 --incremental
+</code></pre>
+<p>Needs a build with <code>--features redis-cache</code>. Machines share cache entries only
+when they run with the same flags and the same keyed providers. See
+<a href="/guide/caching/">Caching</a>.</p>
+<h3 id="ci-cd-integration">CI/CD Integration</h3>
+<h4 id="github-actions">GitHub Actions</h4>
+<pre><code class="language-yaml hljs"><span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">URL Discovery</span>
+<span class="hljs-name">on</span><span class="hljs-punctuation">:</span>
+  <span class="hljs-name">schedule</span><span class="hljs-punctuation">:</span>
+    - <span class="hljs-name">cron</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&#39;0 0 * * *&#39;</span>
+<span class="hljs-name">jobs</span><span class="hljs-punctuation">:</span>
+  <span class="hljs-name">discover</span><span class="hljs-punctuation">:</span>
+    <span class="hljs-name">runs-on</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">ubuntu-latest</span>
+    <span class="hljs-name">steps</span><span class="hljs-punctuation">:</span>
+      - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">Install Urx</span>
+        <span class="hljs-name">run</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">cargo install urx</span>
+      <span class="hljs-comment"># without a persisted cache every run is a first run,</span>
+      <span class="hljs-comment"># and --incremental reports everything</span>
+      - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">Restore URL cache</span>
+        <span class="hljs-name">uses</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">actions/cache@v4</span>
+        <span class="hljs-name">with</span><span class="hljs-punctuation">:</span>
+          <span class="hljs-name">path</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">~/.urx</span>
+          <span class="hljs-name">key</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urx-cache-${{ github.run_id }}</span>
+          <span class="hljs-name">restore-keys</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urx-cache-</span>
+      - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">Run Discovery</span>
+        <span class="hljs-name">run</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urx example.com --incremental -o results.txt</span>
+      - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">Upload Results</span>
+        <span class="hljs-name">uses</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">actions/upload-artifact@v4</span>
+        <span class="hljs-name">with</span><span class="hljs-punctuation">:</span>
+          <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urls</span>
+          <span class="hljs-name">path</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">results.txt</span>
+</code></pre>
+<h3 id="docker-integration">Docker Integration</h3>
+<p>The image has no entrypoint (its default command is <code>./urx</code>), so container
+arguments must start with <code>./urx</code>, or use <code>--entrypoint ./urx</code>.</p>
+<h4 id="run-in-container">Run in Container</h4>
+<pre><code class="language-bash hljs">docker run --rm <span class="hljs-string">\
+</span>  -v <span class="hljs-string">&quot;</span><span class="hljs-keyword">$(</span><span class="hljs-built_in">pwd</span><span class="hljs-keyword">)</span><span class="hljs-string">&quot;</span>:/data <span class="hljs-string">\
+</span>  ghcr.io/hahwul/urx:latest <span class="hljs-string">\
+</span>  ./urx example.com -o /data/results.txt
+</code></pre>
+<p>The container runs as uid 100 (<code>app</code>). On Linux, make the mounted directory
+writable by it, or run with <code>--user &quot;$(id -u):$(id -g)&quot; -e HOME=/tmp</code> (the
+<code>HOME</code> override keeps the cache writable). A failed <code>-o</code> or <code>--output-dir</code>
+write goes to stderr and exits 1, even under <code>--silent</code>.</p>
+<h4 id="docker-compose-for-monitoring-stack">Docker Compose for Monitoring Stack</h4>
+<p>The published image has no Redis support, so keep the SQLite cache on a volume
+(the <code>app</code> user's home is <code>/home/app</code>):</p>
+<pre><code class="language-yaml hljs"><span class="hljs-name">services</span><span class="hljs-punctuation">:</span>
+  <span class="hljs-name">urx</span><span class="hljs-punctuation">:</span>
+    <span class="hljs-name">image</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">ghcr.io/hahwul/urx:latest</span>
+    <span class="hljs-name">command</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;./urx&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;example.com&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;--incremental&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;-o&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;/data/new-urls.txt&quot;</span><span class="hljs-punctuation">]</span>
+    <span class="hljs-name">volumes</span><span class="hljs-punctuation">:</span>
+      - <span class="hljs-literal">urx-cache:/home/app  </span> <span class="hljs-comment"># a new volume inherits the image&#39;s app:app ownership here</span>
+      - <span class="hljs-literal">./data:/data</span>
+<span class="hljs-name">volumes</span><span class="hljs-punctuation">:</span>
+  <span class="hljs-name">urx-cache</span><span class="hljs-punctuation">:</span>
+</code></pre>
+<p>For a shared Redis cache, build your own image with
+<code>cargo build --release --features redis-cache</code> and add
+<code>--cache-type redis --redis-url redis://redis:6379</code>.</p>
+<h3 id="kubernetes-cronjob">Kubernetes CronJob</h3>
+<pre><code class="language-yaml hljs"><span class="hljs-name">apiVersion</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">batch/v1</span>
+<span class="hljs-name">kind</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">CronJob</span>
+<span class="hljs-name">metadata</span><span class="hljs-punctuation">:</span>
+  <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urx-scanner</span>
+<span class="hljs-name">spec</span><span class="hljs-punctuation">:</span>
+  <span class="hljs-name">schedule</span><span class="hljs-punctuation">:</span> <span class="hljs-string">&quot;0 0 * * *&quot;</span>
+  <span class="hljs-name">jobTemplate</span><span class="hljs-punctuation">:</span>
+    <span class="hljs-name">spec</span><span class="hljs-punctuation">:</span>
+      <span class="hljs-name">template</span><span class="hljs-punctuation">:</span>
+        <span class="hljs-name">spec</span><span class="hljs-punctuation">:</span>
+          <span class="hljs-name">containers</span><span class="hljs-punctuation">:</span>
+          - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urx</span>
+            <span class="hljs-name">image</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">ghcr.io/hahwul/urx:latest</span>
+            <span class="hljs-name">command</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;./urx&quot;</span><span class="hljs-punctuation">]</span>
+            <span class="hljs-name">args</span><span class="hljs-punctuation">:</span> <span class="hljs-punctuation">[</span><span class="hljs-string">&quot;example.com&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;--incremental&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;--silent&quot;</span><span class="hljs-punctuation">,</span>
+                   <span class="hljs-string">&quot;--notify-format&quot;</span><span class="hljs-punctuation">,</span> <span class="hljs-string">&quot;slack&quot;</span><span class="hljs-punctuation">]</span>
+            <span class="hljs-name">env</span><span class="hljs-punctuation">:</span>
+            - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">URX_NOTIFY_URL</span>
+              <span class="hljs-name">valueFrom</span><span class="hljs-punctuation">:</span>
+                <span class="hljs-name">secretKeyRef</span><span class="hljs-punctuation">:</span> {<span class="hljs-name">name: urx-secrets, key</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">notify-url}</span>
+            <span class="hljs-name">volumeMounts</span><span class="hljs-punctuation">:</span>
+            - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">cache</span>
+              <span class="hljs-name">mountPath</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">/home/app/.urx  </span> <span class="hljs-comment"># keeps the --incremental baseline between runs</span>
+          <span class="hljs-name">volumes</span><span class="hljs-punctuation">:</span>
+          - <span class="hljs-name">name</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">cache</span>
+            <span class="hljs-name">persistentVolumeClaim</span><span class="hljs-punctuation">:</span>
+              <span class="hljs-name">claimName</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">urx-cache</span>
+          <span class="hljs-name">securityContext</span><span class="hljs-punctuation">:</span>
+            <span class="hljs-name">fsGroup</span><span class="hljs-punctuation">:</span> <span class="hljs-number">101</span>   <span class="hljs-comment"># the image&#39;s `app` group, so the volume is writable</span>
+          <span class="hljs-name">restartPolicy</span><span class="hljs-punctuation">:</span> <span class="hljs-literal">OnFailure</span>
+</code></pre>
+<h3 id="multi-tool-workflows">Multi-Tool Workflows</h3>
+<h4 id="complete-reconnaissance-pipeline">Complete Reconnaissance Pipeline</h4>
+<pre><code class="language-bash hljs"><span class="hljs-meta">#!/bin/bash
+</span><span class="hljs-variable">TARGET</span><span class="hljs-operator">=</span><span class="hljs-variable">$1</span>
+
+urx <span class="hljs-string">&quot;</span><span class="hljs-variable">$TARGET</span><span class="hljs-string">&quot;</span> --subs -e js,json,xml -o urls.txt
+httpx -silent -l urls.txt -o live.txt
+nuclei -l live.txt -t cves/ -o vulnerabilities.txt
+
+<span class="hljs-comment"># grep JS files for key-looking strings</span>
+grep <span class="hljs-string">&#39;\.js$&#39;</span> urls.txt <span class="hljs-punctuation">|</span> <span class="hljs-keyword">while</span> <span class="hljs-built_in">read</span> -r url<span class="hljs-punctuation">;</span> <span class="hljs-keyword">do</span>
+  curl -s <span class="hljs-string">&quot;</span><span class="hljs-variable">$url</span><span class="hljs-string">&quot;</span> <span class="hljs-punctuation">|</span> grep -i <span class="hljs-string">&quot;api.*key&quot;</span>
+<span class="hljs-keyword">done</span>
+</code></pre>
+<h4 id="bug-bounty-automation">Bug Bounty Automation</h4>
+<pre><code class="language-bash hljs"><span class="hljs-meta">#!/bin/bash
+</span><span class="hljs-variable">TARGET</span><span class="hljs-operator">=</span><span class="hljs-variable">$1</span>
+
+<span class="hljs-comment"># new URLs only; Slack summary when there are any</span>
+urx <span class="hljs-string">&quot;</span><span class="hljs-variable">$TARGET</span><span class="hljs-string">&quot;</span> --subs --incremental -o new-urls.txt <span class="hljs-string">\
+</span>  --notify <span class="hljs-string">&quot;</span><span class="hljs-variable">$SLACK_WEBHOOK</span><span class="hljs-string">&quot;</span> --notify-format slack
+
+gf redirect &lt; new-urls.txt &gt; potential-redirects.txt
+gf xss &lt; new-urls.txt &gt; potential-xss.txt
+gf sqli &lt; new-urls.txt &gt; potential-sqli.txt
+</code></pre>
+</article>
+
+    
+    
+
+    
+
+
+
+<nav class="page-navigation" aria-label="Page navigation">
+  
+  <a class="page-nav-link" href="/guide/caching/" rel="prev">
+    <span>&#8592; Previous</span><strong class="page-nav-title">Caching</strong>
+  </a>
+  
+  
+  <a class="page-nav-link page-nav-next" href="/guide/performance/" rel="next">
+    <span>Next &#8594;</span><strong class="page-nav-title">Performance</strong>
+  </a>
+  
+</nav>
+
+
+  </main>
+
+  
+  
+  <aside class="docs-toc-rail" id="tocRail" aria-label="On this page">
+    <p class="docs-toc-title">On this page</p>
+    <ul><li><a href="#pipeline-integration">Pipeline Integration</a><ul><li><a href="#standard-input-output">Standard Input/Output</a></li><li><a href="#exit-codes">Exit Codes</a></li><li><a href="#with-security-tools">With Security Tools</a></li><li><a href="#notification-integration">Notification Integration</a><ul><li><a href="#built-in-webhook-notify">Built-in Webhook (--notify)</a></li><li><a href="#notify">Notify</a></li></ul></li><li><a href="#database-integration">Database Integration</a></li><li><a href="#continuous-monitoring">Continuous Monitoring</a><ul><li><a href="#daily-cron-job">Daily Cron Job</a></li><li><a href="#with-redis-for-distributed-scanning">With Redis for Distributed Scanning</a></li></ul></li><li><a href="#ci-cd-integration">CI/CD Integration</a><ul><li><a href="#github-actions">GitHub Actions</a></li></ul></li><li><a href="#docker-integration">Docker Integration</a><ul><li><a href="#run-in-container">Run in Container</a></li><li><a href="#docker-compose-for-monitoring-stack">Docker Compose for Monitoring Stack</a></li></ul></li><li><a href="#kubernetes-cronjob">Kubernetes CronJob</a></li><li><a href="#multi-tool-workflows">Multi-Tool Workflows</a><ul><li><a href="#complete-reconnaissance-pipeline">Complete Reconnaissance Pipeline</a></li><li><a href="#bug-bounty-automation">Bug Bounty Automation</a></li></ul></li></ul></li></ul>
+  </aside>
+  
+</div>
+<footer class="docs-footer">
+  <p class="footer-meta">
+    <a class="footer-sig" href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul, built with love">
+      <span class="hahwul-img" aria-hidden="true"></span>
+      <span class="footer-love">Built with Love</span>
+    </a>
+    <span aria-hidden="true">&#183;</span>
+    <span>MIT &#183; &#169; HAHWUL</span>
+  </p>
+</footer>
+
+<div class="search-overlay" id="searchOverlay" role="dialog" aria-modal="true" aria-label="Search documentation">
+  <div class="search-panel">
+    <input class="search-input" id="searchInput" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+    <ul class="search-results" id="searchResults"></ul>
+    <div class="search-hints">
+      <span><kbd>&#8593;</kbd><kbd>&#8595;</kbd> navigate</span>
+      <span><kbd>&#8629;</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+
+<script src="/js/theme.js" defer></script>
+<script src="/js/search.js" defer></script>
+
+
+<script src="/js/toc.js" defer></script>
+<script src="/js/docs.js" defer></script>
+<script src="/js/codecopy.js" defer></script>
+
+
+</body>
+</html>

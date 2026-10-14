@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script>
+    /* Resolve the theme before first paint so there is no flash. No stored choice
+       means no attribute, which lets color-scheme + light-dark() follow the OS. */
+    (function () {
+      document.documentElement.classList.add("has-js");
+      try {
+        var t = localStorage.getItem("urx-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Worked commands for filtering, provider selection, API keys, link extraction, status checking, streaming and caching.">
+  <meta name="theme-color" content="#FBFBF9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0B0B0E" media="(prefers-color-scheme: dark)">
+  <title>Examples - Urx</title>
+
+  <link rel="icon" type="image/png" sizes="96x96" href="/icons/favicon-96x96.png">
+  <link rel="shortcut icon" href="/icons/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="urx">
+  <link rel="manifest" href="/icons/site.webmanifest">
+
+  <meta property="og:title" content="Examples">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="/guide/examples/">
+  <meta property="og:description" content="Worked commands for filtering, provider selection, API keys, link extraction, status checking, streaming and caching.">
+  <meta property="og:image" content="/images/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Examples">
+  <meta name="twitter:description" content="Worked commands for filtering, provider selection, API keys, link extraction, status checking, streaming and caching.">
+  <meta name="twitter:image" content="/images/og-card.png">
+  <meta name="twitter:site" content="@hahwul">
+  <meta name="twitter:creator" content="@hahwul">
+  <link rel="canonical" href="/guide/examples/">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Examples","url":"/guide/examples/","description":"Worked commands for filtering, provider selection, API keys, link extraction, status checking, streaming and caching."}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Urx","item":"/"},{"@type":"ListItem","position":2,"name":"Guide","item":"/guide/"},{"@type":"ListItem","position":3,"name":"Examples"}]}</script>
+
+  <link rel="preload" href="/fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/css/style.css">
+  
+  
+  
+</head>
+<body class="is-doc" data-section="guide">
+  <a class="skip-link" href="#main">Skip to content</a>
+<header class="docs-header">
+  <a href="/" class="brand" aria-label="urx home">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-word">urx</span>
+  </a>
+
+  <nav class="top-nav" aria-label="Main">
+    <a href="/getting-started/">Getting Started</a>
+    <a href="/guide/" class="active">Guide</a>
+    <a href="/about/">About</a>
+  </nav>
+
+  <details class="nav-compact">
+    <summary aria-label="Menu">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </summary>
+    <div class="nav-compact-panel">
+      <a href="/getting-started/">Getting Started</a>
+      <a href="/guide/">Guide</a>
+      <a href="/about/">About</a>
+      <a href="/getting-started/installation/">Install</a>
+    </div>
+  </details>
+
+  <div class="header-right">
+    <button class="icon-btn search-btn" data-search-open aria-label="Search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <kbd>&#8984;K</kbd>
+    </button>
+    <button class="icon-btn theme-toggle" data-theme-toggle aria-label="Toggle theme">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a href="https://github.com/hahwul/urx" class="icon-btn" target="_blank" rel="noopener" aria-label="urx on GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.52.1.71-.23.71-.5v-1.75c-2.9.63-3.52-1.4-3.52-1.4-.47-1.2-1.16-1.52-1.16-1.52-.95-.65.07-.63.07-.63 1.05.07 1.6 1.08 1.6 1.08.93 1.6 2.45 1.14 3.05.87.09-.68.36-1.14.66-1.4-2.32-.26-4.75-1.16-4.75-5.16 0-1.14.4-2.07 1.07-2.8-.1-.26-.46-1.32.1-2.75 0 0 .88-.28 2.88 1.07a9.9 9.9 0 0 1 5.24 0c2-1.35 2.87-1.07 2.87-1.07.57 1.43.21 2.49.1 2.75.67.73 1.07 1.66 1.07 2.8 0 4.01-2.44 4.9-4.76 5.15.37.32.7.95.7 1.92v2.85c0 .28.19.61.72.5A10.5 10.5 0 0 0 12 1.5z"/></svg>
+    </a>
+  </div>
+</header>
+<div class="docs-container">
+  
+<aside class="docs-sidebar">
+  <details class="docs-navigation" open>
+    <summary class="docs-navigation-toggle">Documentation</summary>
+    <nav class="manual-nav" aria-label="Documentation">
+      
+      
+      <details class="nav-group">
+        <summary>Getting Started</summary>
+        <ul class="nav-links">
+          <li><a href="/getting-started/">Overview</a></li>
+          
+          <li><a href="/getting-started/installation/">Installation</a></li>
+          
+          <li><a href="/getting-started/quick-start/">Quick Start</a></li>
+          
+        </ul>
+      </details>
+      
+      
+      
+      <details class="nav-group" open>
+        <summary>Guide</summary>
+        <ul class="nav-links">
+          <li><a href="/guide/">Overview</a></li>
+          
+          <li><a href="/guide/cli-options/">CLI Options</a></li>
+          
+          <li><a href="/guide/configuration/">Configuration</a></li>
+          
+          <li><a href="/guide/examples/" class="active" aria-current="page">Examples</a></li>
+          
+          <li><a href="/guide/environment-variables/">Environment Variables</a></li>
+          
+          <li><a href="/guide/caching/">Caching</a></li>
+          
+          <li><a href="/guide/integration/">Integration</a></li>
+          
+          <li><a href="/guide/performance/">Performance</a></li>
+          
+        </ul>
+      </details>
+      
+      
+      
+      <details class="nav-group">
+        <summary>About</summary>
+        <ul class="nav-links">
+          <li><a href="/about/">Overview</a></li>
+          
+          <li><a href="/about/contributing/">Contributing</a></li>
+          
+        </ul>
+      </details>
+      
+      
+    </nav>
+  </details>
+</aside>
+  <main id="main" class="docs-main">
+    <nav class="document-path" aria-label="Breadcrumb">
+      <a href="/">Urx</a>
+      
+      <span aria-hidden="true">/</span><a href="/guide/">Guide</a>
+      
+    </nav>
+
+    <header class="document-heading">
+      <h1>Examples</h1>
+      <span class="contrail" aria-hidden="true"></span>
+      <p class="document-lede">Worked commands for filtering, provider selection, API keys, link extraction, status checking, streaming and caching.</p>
+    </header>
+
+    <article class="document-body"><h2 id="usage-examples">Usage Examples</h2>
+<h3 id="basic-usage">Basic Usage</h3>
+<pre><code class="language-bash hljs">urx example.com
+urx example.com example.org
+cat domains.txt <span class="hljs-punctuation">|</span> urx
+
+<span class="hljs-comment"># domain list files; repeatable, merged with domains on the command line</span>
+urx --domain-list domains.txt
+urx --dL program-a.txt --dL program-b.txt
+
+<span class="hljs-comment"># only URLs under /shop</span>
+urx example.com/shop
+</code></pre>
+<h4 id="file-input">File Input</h4>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># text, WARC or compressed files; space-separated or repeated</span>
+urx --files urls.txt archive.warc data.gz
+urx --files urls.txt --files archive.warc
+
+<span class="hljs-comment"># with filters</span>
+urx --files data.txt --patterns api,admin -f json
+</code></pre>
+<h2 id="output-formats">Output Formats</h2>
+<pre><code class="language-bash hljs">urx example.com -o results.txt
+urx example.com -f json -o results.json
+urx example.com -f csv -o results.csv
+
+<span class="hljs-comment"># one JSON object per line</span>
+urx example.com -f jsonl <span class="hljs-punctuation">|</span> jq -r <span class="hljs-string">&#39;.url&#39;</span>
+</code></pre>
+<h3 id="one-file-per-host">One File per Host</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># out/example.com.json, out/example.org.json, ... plus the combined all.json</span>
+urx example.com example.org -f json --output-dir out/ -o all.json
+</code></pre>
+<p>Each host gets its own file, so <code>www.example.com</code> and every subdomain (under
+<code>--subs</code>) are split out. Output that is not URLs (<code>--show-only-host</code>,
+<code>--show-only-path</code>, <code>--show-only-param</code>, <code>--params</code>) goes to <code>_unknown.&lt;ext&gt;</code>.</p>
+<h3 id="streaming-output">Streaming Output</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># write URLs as each provider reports them</span>
+urx example.com --stream <span class="hljs-punctuation">|</span> httpx -silent
+</code></pre>
+<p><code>--stream</code> output is unsorted, skips the cache, and supports <code>plain</code>, <code>jsonl</code>
+and <code>csv</code> only. It rejects options that need the full result set:
+<code>--incremental</code>, <code>--check-status</code> / <code>--include-status</code> / <code>--exclude-status</code> /
+<code>--check-title</code>, the extractors, <code>--archive-body</code>, <code>--expand-specs</code>,
+<code>--merge-endpoint</code>, <code>--dedup-similar</code>, <code>--show-sources</code>, <code>--show-meta</code>,
+<code>--output-dir</code>, the parameter views, the <code>--meta-*</code> filters and <code>--files</code>.</p>
+<h3 id="provenance-and-run-statistics">Provenance and Run Statistics</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># providers that returned each URL</span>
+urx example.com --show-sources
+
+<span class="hljs-comment"># archive capture metadata in plain text</span>
+urx example.com --providers wayback --show-meta
+
+<span class="hljs-comment"># per-provider counts, errors and timings on stderr</span>
+urx example.com --stats
+</code></pre>
+<p>A repeat run served from the cache has no sources or archive metadata, and
+<code>--stats</code> prints nothing. If the target was scanned within <code>--cache-ttl</code>, add
+<code>--no-cache</code> here and to the <code>--meta-*</code> and <code>--archive-body</code> examples below.</p>
+<h3 id="wordlist">Wordlist</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># path segments and parameter names, deduplicated and sorted</span>
+<span class="hljs-comment"># (segments that look like ids, hashes or dates are left out)</span>
+urx example.com --subs -f wordlist -o words.txt
+ffuf -w words.txt -u https://example.com/FUZZ
+</code></pre>
+<h3 id="parameter-inventory">Parameter Inventory</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># every query parameter name, once each</span>
+urx example.com --params
+
+<span class="hljs-comment"># grouped by endpoint</span>
+urx example.com --params-by-endpoint
+
+<span class="hljs-comment"># one URL per parameter signature, values replaced</span>
+urx example.com --fuzz-placeholder FUZZ <span class="hljs-punctuation">|</span> ffuf -w - -u FUZZ
+</code></pre>
+<h2 id="filtering-examples">Filtering Examples</h2>
+<h3 id="extensions-and-patterns">Extensions and Patterns</h3>
+<pre><code class="language-bash hljs">urx example.com -e js,php,aspx
+urx example.com --exclude-extensions html,txt
+
+urx example.com --patterns api,v1,graphql
+urx example.com --exclude-patterns static,images
+urx example.com --patterns api --exclude-patterns test,dev
+
+<span class="hljs-comment"># URL length</span>
+urx example.com --min-length <span class="hljs-number">50</span> --max-length <span class="hljs-number">200</span>
+</code></pre>
+<h3 id="using-presets">Using Presets</h3>
+<pre><code class="language-bash hljs">urx example.com -p no-images
+urx example.com -p no-resources
+urx example.com -p only-js
+</code></pre>
+<h3 id="scope-files">Scope Files</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># scope.txt</span>
+<span class="hljs-comment">#   *.example.com</span>
+<span class="hljs-comment">#   !admin.example.com</span>
+urx example.com --subs --scope-file scope.txt
+
+<span class="hljs-comment"># several files are unioned; exclusions always win</span>
+urx --domain-list targets.txt --subs --scope-file scope-a.txt --scope-file scope-b.txt
+</code></pre>
+<h3 id="archive-metadata-filtering">Archive Metadata Filtering</h3>
+<p>Runs after collection, on the metadata the archives recorded:</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># still captured since 2024, no HTML or images</span>
+urx example.com --providers wayback --meta-last-seen-after <span class="hljs-number">2024</span> --meta-exclude-mime <span class="hljs-string">&#39;text/html,image/*&#39;</span>
+
+<span class="hljs-comment"># nothing captured since 2019</span>
+urx example.com --providers wayback --meta-last-seen-before <span class="hljs-number">2019</span>
+
+<span class="hljs-comment"># JSON the archive got with a 200</span>
+urx example.com --providers wayback --meta-mime application/json --meta-status <span class="hljs-number">200</span>
+
+<span class="hljs-comment"># first archived during 2020</span>
+urx example.com --providers wayback --meta-first-seen-after <span class="hljs-number">2020</span> --meta-first-seen-before <span class="hljs-number">2020</span>
+</code></pre>
+<h3 id="regular-expressions">Regular Expressions</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># keep versioned API paths (case-insensitive); repeat the flag to OR patterns</span>
+urx example.com --match-regex <span class="hljs-string">&#39;(?i)/api/v[0-9]+/&#39;</span>
+
+<span class="hljs-comment"># drop static asset directories</span>
+urx example.com --filter-regex <span class="hljs-string">&#39;/(assets|static)/&#39;</span>
+</code></pre>
+<h3 id="collapsing-near-duplicates">Collapsing Near-Duplicates</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># /post/1, /post/2 and /post/99999 become one line</span>
+urx example.com --dedup-similar
+</code></pre>
+<h3 id="archive-side-filters">Archive-Side Filters</h3>
+<p>Applied by the CDX index itself (wayback, cc, arquivo, <code>--cdx-endpoint</code>), so
+less is fetched:</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># captures from 2023 on, recorded as 200</span>
+urx example.com --from <span class="hljs-number">2023</span> --archive-status <span class="hljs-number">200</span>
+
+<span class="hljs-comment"># served as JSON, even without a .json extension</span>
+urx example.com --archive-mime application/json
+
+<span class="hljs-comment"># skip error pages and HTML</span>
+urx example.com --archive-exclude-status 404,500 --archive-exclude-mime text/html
+</code></pre>
+<h2 id="provider-selection">Provider Selection</h2>
+<pre><code class="language-bash hljs">urx example.com --providers wayback,otx
+
+<span class="hljs-comment"># all keyless sources (urlscan works without a key)</span>
+urx example.com --providers wayback,cc,otx,arquivo,urlscan
+
+<span class="hljs-comment"># every provider; vt, zoomeye, github and bevigil error without a key</span>
+urx example.com --providers wayback,cc,otx,arquivo,vt,urlscan,zoomeye,github,bevigil
+
+<span class="hljs-comment"># same, but keyed providers run only when a key is set</span>
+urx example.com --all-providers
+
+<span class="hljs-comment"># everything except OTX</span>
+urx example.com --all-providers --exclude-providers otx
+
+<span class="hljs-comment"># any other CDX server (here the Icelandic web archive), id cdx:vefsafn.is</span>
+urx example.is --cdx-endpoint https://vefsafn.is/cdx --rate-limit-by cdx:vefsafn.is<span class="hljs-operator">=</span><span class="hljs-number">1</span>
+
+<span class="hljs-comment"># two Common Crawl indexes in parallel</span>
+urx example.com --providers cc --cc-index CC-MAIN-2026-17,CC-MAIN-2025-51
+
+<span class="hljs-comment"># list providers and which need a key</span>
+urx --list-providers
+</code></pre>
+<p><code>--providers</code> also runs the live robots.txt / sitemap.xml probes, and any keyed
+provider whose <code>URX_*_API_KEY</code> is set. Drop them with <code>--exclude-robots</code>,
+<code>--exclude-sitemap</code> or <code>--exclude-providers</code>.</p>
+<h3 id="using-a-config-file">Using a Config File</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># profile plus a separate file holding only the API keys</span>
+urx -c ~/.config/urx/bugbounty.toml --provider-config ~/.config/urx/keys.toml example.com
+</code></pre>
+<p>See <a href="/guide/configuration/">Configuration</a> for every key.</p>
+<h3 id="with-api-keys">With API Keys</h3>
+<pre><code class="language-bash hljs">urx example.com --vt-api-key<span class="hljs-operator">=</span>YOUR_KEY --urlscan-api-key<span class="hljs-operator">=</span>YOUR_KEY
+urx example.com --zoomeye-api-key<span class="hljs-operator">=</span>YOUR_KEY --providers zoomeye
+
+<span class="hljs-comment"># or via environment; a set key also enables its provider</span>
+<span class="hljs-built_in">export</span> <span class="hljs-variable">URX_VT_API_KEY</span><span class="hljs-operator">=</span>YOUR_KEY
+<span class="hljs-built_in">export</span> <span class="hljs-variable">URX_URLSCAN_API_KEY</span><span class="hljs-operator">=</span>YOUR_KEY
+<span class="hljs-built_in">export</span> <span class="hljs-variable">URX_ZOOMEYE_API_KEY</span><span class="hljs-operator">=</span>YOUR_KEY
+<span class="hljs-built_in">export</span> <span class="hljs-variable">URX_GITHUB_API_KEY</span><span class="hljs-operator">=</span>YOUR_TOKEN
+<span class="hljs-built_in">export</span> <span class="hljs-variable">URX_BEVIGIL_API_KEY</span><span class="hljs-operator">=</span>YOUR_KEY
+urx example.com --providers<span class="hljs-operator">=</span>vt,urlscan,zoomeye,github,bevigil
+
+<span class="hljs-comment"># key rotation: repeat the flag, or comma-separate the env var</span>
+urx example.com --vt-api-key<span class="hljs-operator">=</span>key1 --vt-api-key<span class="hljs-operator">=</span>key2 --vt-api-key<span class="hljs-operator">=</span>key3
+<span class="hljs-variable">URX_VT_API_KEY</span><span class="hljs-operator">=</span>key1,key2,key3 urx example.com
+</code></pre>
+<h2 id="discovery-options">Discovery Options</h2>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># skip robots.txt and/or sitemap.xml</span>
+urx example.com --exclude-robots --exclude-sitemap
+
+<span class="hljs-comment"># also read every archived version of robots.txt and sitemap.xml</span>
+urx example.com --archived-discovery
+
+<span class="hljs-comment"># see which URLs came from an old version</span>
+urx example.com --archived-discovery --show-sources
+
+<span class="hljs-comment"># robots.txt only, versions captured 2014 to 2016</span>
+urx example.com --archived-discovery --from <span class="hljs-number">2014</span> --to <span class="hljs-number">2016</span> --exclude-sitemap
+
+<span class="hljs-comment"># at most 10 documents per domain, newest first (default 50)</span>
+urx example.com --archived-discovery --archived-discovery-limit <span class="hljs-number">10</span>
+</code></pre>
+<h2 id="testing-validation">Testing &amp; Validation</h2>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># include subdomains</span>
+urx example.com --subs
+
+<span class="hljs-comment"># check HTTP status</span>
+urx example.com --check-status
+</code></pre>
+<h3 id="extract-links">Extract Links</h3>
+<pre><code class="language-bash hljs">urx example.com --extract-links
+</code></pre>
+<p>Re-fetches each surviving URL and reads every URL-bearing tag: <code>&lt;a href&gt;</code>,
+<code>&lt;script src&gt;</code>, <code>&lt;link href&gt;</code>, <code>&lt;form action&gt;</code>, <code>&lt;iframe src&gt;</code>, <code>&lt;img src&gt;</code>,
+<code>&lt;source src&gt;</code>, <code>&lt;object data&gt;</code>, <code>&lt;embed src&gt;</code> and <code>&lt;meta http-equiv=&quot;refresh&quot;&gt;</code>.
+Relative URLs resolve against the page (and <code>&lt;base href&gt;</code>), and duplicates are
+collapsed.</p>
+<p>Filters and host validation run twice: on the collected URLs before any page is
+fetched, and on the discovered links. So <code>-e js</code> would drop the HTML pages before they are read.
+Filter the output instead:</p>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># JS URLs, collected or referenced by the pages</span>
+urx example.com --extract-links <span class="hljs-punctuation">|</span> grep -E <span class="hljs-string">&#39;\.js(\?|$)&#39;</span>
+</code></pre>
+<h3 id="extract-endpoints-from-javascript">Extract Endpoints from JavaScript</h3>
+<pre><code class="language-bash hljs">urx example.com --extract-js-endpoints
+
+<span class="hljs-comment"># cap the scripts fetched (default 500)</span>
+urx example.com --extract-js-endpoints --max-js-files <span class="hljs-number">100</span>
+
+<span class="hljs-comment"># scripts found by --extract-links are not mined in the same run; chain two runs</span>
+urx example.com --extract-links <span class="hljs-punctuation">|</span> grep -E <span class="hljs-string">&#39;\.js(\?|$)&#39;</span> &gt; bundles.txt
+urx --files bundles.txt --extract-js-endpoints --max-js-files <span class="hljs-number">100</span>
+
+<span class="hljs-comment"># API-looking paths (--patterns would drop the bundles before they are read)</span>
+urx example.com --extract-js-endpoints <span class="hljs-punctuation">|</span> grep -E <span class="hljs-string">&#39;api|graphql&#39;</span>
+</code></pre>
+<p>Fetches each collected URL that looks like a script and pulls paths and URLs
+from its string literals: <code>fetch(&quot;/api/v2/users&quot;)</code>, <code>axios.post(&quot;/graphql&quot;)</code>,
+the static prefix of <code>`/api/orders/${id}`</code>, chunk imports. Noise (MIME
+types, module specifiers, base64, CSS values, regex fragments) is dropped; see
+the <a href="/guide/cli-options/#javascript-endpoint-extraction">CLI options guide</a> for
+the full policy. Bodies are capped at 10 MiB.</p>
+<ul>
+<li>Discovered endpoints pass through your filters and host validation, so leave
+<code>-e js</code> off or only the <code>.js</code> files survive.</li>
+<li>Discovered endpoints are not status-checked; <code>--check-status</code> covers the
+collected URLs only.</li>
+</ul>
+<h3 id="mine-archived-bodies">Mine Archived Bodies</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># extract links from the bodies the Wayback Machine stored</span>
+urx example.com --archive-body
+
+<span class="hljs-comment"># fewer bodies (default 500), paced</span>
+urx example.com --archive-body --archive-body-limit <span class="hljs-number">200</span> --rate-limit <span class="hljs-number">5</span>
+
+<span class="hljs-comment"># JS URLs, collected or referenced by the archived pages</span>
+urx example.com --archive-body --no-cache <span class="hljs-punctuation">|</span> grep -E <span class="hljs-string">&#39;\.js(\?|$)&#39;</span>
+</code></pre>
+<p>Works for pages that no longer exist. URLs whose captures share a content
+digest are fetched once, and <code>--archive-body-limit</code> counts distinct bodies.</p>
+<h3 id="expand-api-specifications">Expand API Specifications</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># expand every route in the collected OpenAPI, Swagger and GraphQL documents</span>
+urx example.com --expand-specs
+
+<span class="hljs-comment"># fewer documents (default 50), paced</span>
+urx example.com --expand-specs --max-spec-files <span class="hljs-number">10</span> --rate-limit <span class="hljs-number">2</span>
+
+<span class="hljs-comment"># use the archived copy when the live host no longer serves it</span>
+urx example.com --archive-body --expand-specs
+</code></pre>
+<p>JSON and YAML are both read. Filters and presets also apply to the expanded
+routes, so <code>--preset only-api</code> would drop <code>/users</code> or <code>/orders/{id}</code>. No preset
+is needed to find the documents.</p>
+<h3 id="record-response-titles">Record Response Titles</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># --check-title implies --check-status; --show-meta prints the response-head fields</span>
+urx example.com --check-title --show-meta
+
+<span class="hljs-comment"># response-head fields as JSON Lines</span>
+urx example.com --check-status -f jsonl <span class="hljs-punctuation">|</span> jq -r <span class="hljs-string">&#39;[.url, .status, .content_type] | @tsv&#39;</span>
+</code></pre>
+<h3 id="status-filtering">Status Filtering</h3>
+<pre><code class="language-bash hljs">urx example.com --check-status --include-status <span class="hljs-number">200</span>
+urx example.com --check-status --include-status 200,30x
+urx example.com --check-status --exclude-status 404,50x
+</code></pre>
+<p>With both set, <code>--include-status</code> decides and <code>--exclude-status</code> is ignored. A
+URL whose check failed outright (refused, timed out) prints as
+<code>[Status check failed]</code> unless <code>--include-status</code> is set.</p>
+<h2 id="network-configuration">Network Configuration</h2>
+<pre><code class="language-bash hljs">urx example.com --proxy http://localhost:8080
+urx example.com --proxy http://localhost:8080 --proxy-auth username:password
+urx example.com --timeout <span class="hljs-number">60</span> --parallel <span class="hljs-number">10</span> --retries <span class="hljs-number">5</span>
+urx example.com --insecure
+urx example.com --random-agent
+</code></pre>
+<h3 id="authenticated-and-custom-requests">Authenticated and Custom Requests</h3>
+<p>Headers go only to the target (status checks, extractors, robots/sitemap), never
+to the archives:</p>
+<pre><code class="language-bash hljs">urx example.com --check-status <span class="hljs-string">\
+</span>  -H <span class="hljs-string">&quot;Authorization: Bearer </span><span class="hljs-variable">$TOKEN</span><span class="hljs-string">&quot;</span> <span class="hljs-string">\
+</span>  --cookie <span class="hljs-string">&quot;session=abc&quot;</span> <span class="hljs-string">\
+</span>  --user-agent <span class="hljs-string">&quot;acme-security-scan/1.0&quot;</span>
+</code></pre>
+<h3 id="rate-limits-and-time-budget">Rate Limits and Time Budget</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># 10 req/s per provider, 1 req/s for VirusTotal, stop collecting after 10 minutes</span>
+urx example.com --rate-limit <span class="hljs-number">10</span> --rate-limit-by <span class="hljs-variable">vt</span><span class="hljs-operator">=</span><span class="hljs-number">1</span> --max-time <span class="hljs-number">600</span>
+</code></pre>
+<h2 id="url-normalization">URL Normalization</h2>
+<pre><code class="language-bash hljs">urx example.com --normalize-url
+urx example.com --normalize-url --merge-endpoint
+
+<span class="hljs-comment"># only hosts, paths or query strings</span>
+urx example.com --subs --show-only-host
+urx example.com --show-only-path
+urx example.com --show-only-param
+
+<span class="hljs-comment"># keep URLs on any host a provider returned (a path-scoped target still applies)</span>
+urx example.com --no-strict
+</code></pre>
+<h2 id="caching-incremental-scanning">Caching &amp; Incremental Scanning</h2>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># SQLite (default)</span>
+urx example.com --cache-type sqlite --cache-path ~/.urx/cache.db
+
+<span class="hljs-comment"># Redis; needs a build with: cargo install urx --features redis-cache</span>
+urx example.com --cache-type redis --redis-url redis://localhost:6379
+
+<span class="hljs-comment"># TTL of 12 hours (default 24)</span>
+urx example.com --cache-ttl <span class="hljs-number">43200</span>
+
+<span class="hljs-comment"># no cache</span>
+urx example.com --no-cache
+</code></pre>
+<h3 id="incremental-mode">Incremental Mode</h3>
+<pre><code class="language-bash hljs"><span class="hljs-comment"># only URLs not seen before</span>
+urx example.com --incremental
+
+<span class="hljs-comment"># post to Slack only when something new turned up</span>
+urx example.com --incremental --silent --notify <span class="hljs-string">&quot;</span><span class="hljs-variable">$SLACK_HOOK</span><span class="hljs-string">&quot;</span> --notify-format slack
+</code></pre>
+<h3 id="inspect-and-prune-the-cache">Inspect and Prune the Cache</h3>
+<pre><code class="language-bash hljs">urx cache stats
+urx cache list --domain <span class="hljs-string">&#39;*.example.com&#39;</span>
+
+<span class="hljs-comment"># rescan one target from scratch</span>
+urx cache drop example.com
+
+urx cache prune
+urx cache clear --yes
+</code></pre>
+<h2 id="pipeline-integration">Pipeline Integration</h2>
+<pre><code class="language-bash hljs"><span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;example.com&quot;</span> <span class="hljs-punctuation">|</span> urx <span class="hljs-punctuation">|</span> grep <span class="hljs-string">&quot;login&quot;</span> &gt; targets.txt
+urx example.com <span class="hljs-punctuation">|</span> httpx -silent
+urx example.com <span class="hljs-punctuation">|</span> gf xss
+urx example.com -e js <span class="hljs-punctuation">|</span> nuclei -t xss
+</code></pre>
+<p>More in <a href="/guide/integration/">Integration</a>.</p>
+<h2 id="complex-scenarios">Complex Scenarios</h2>
+<h3 id="complete-bug-bounty-workflow">Complete Bug Bounty Workflow</h3>
+<pre><code class="language-bash hljs">urx target.com <span class="hljs-string">\
+</span>  --subs <span class="hljs-string">\
+</span>  -e js,json,xml <span class="hljs-string">\
+</span>  --patterns api,v1,v2,admin,panel <span class="hljs-string">\
+</span>  --exclude-patterns cdn,static <span class="hljs-string">\
+</span>  --check-status <span class="hljs-string">\
+</span>  --include-status 200,30x <span class="hljs-string">\
+</span>  --incremental <span class="hljs-string">\
+</span>  --parallel <span class="hljs-number">15</span> <span class="hljs-string">\
+</span>  -o results.txt
+</code></pre>
+<h3 id="api-endpoint-discovery">API Endpoint Discovery</h3>
+<pre><code class="language-bash hljs">urx example.com <span class="hljs-string">\
+</span>  --patterns api,graphql,rest,v1,v2,v3 <span class="hljs-string">\
+</span>  -e json,xml <span class="hljs-string">\
+</span>  --exclude-patterns test,staging <span class="hljs-string">\
+</span>  -f json <span class="hljs-string">\
+</span>  -o api-endpoints.json
+</code></pre>
+<h3 id="api-surface-from-specifications">API Surface from Specifications</h3>
+<pre><code class="language-bash hljs">urx target.com <span class="hljs-string">\
+</span>  --subs <span class="hljs-string">\
+</span>  --expand-specs <span class="hljs-string">\
+</span>  --max-spec-files <span class="hljs-number">25</span> <span class="hljs-string">\
+</span>  --check-status <span class="hljs-string">\
+</span>  --include-status <span class="hljs-number">200</span> <span class="hljs-string">\
+</span>  -f jsonl <span class="hljs-string">\
+</span>  -o api-surface.jsonl
+</code></pre>
+<p>Expanded routes are not status-checked. <code>--include-status 200</code> keeps only the
+collected URLs (including the spec documents) that returned 200; every expanded
+route is added unchecked, path templates like <code>/orders/{id}</code> included.</p>
+<h3 id="javascript-analysis-pipeline">JavaScript Analysis Pipeline</h3>
+<pre><code class="language-bash hljs">urx target.com <span class="hljs-string">\
+</span>  -p only-js <span class="hljs-string">\
+</span>  --check-status <span class="hljs-string">\
+</span>  --include-status <span class="hljs-number">200</span> <span class="hljs-string">\
+</span>  -f jsonl <span class="hljs-string">\
+</span>  <span class="hljs-punctuation">|</span> jq -r .url <span class="hljs-string">\
+</span>  <span class="hljs-punctuation">|</span> tee js-files.txt <span class="hljs-string">\
+</span>  <span class="hljs-punctuation">|</span> nuclei -t exposures/
+</code></pre>
+</article>
+
+    
+    
+
+    
+
+
+
+<nav class="page-navigation" aria-label="Page navigation">
+  
+  <a class="page-nav-link" href="/guide/configuration/" rel="prev">
+    <span>&#8592; Previous</span><strong class="page-nav-title">Configuration</strong>
+  </a>
+  
+  
+  <a class="page-nav-link page-nav-next" href="/guide/environment-variables/" rel="next">
+    <span>Next &#8594;</span><strong class="page-nav-title">Environment Variables</strong>
+  </a>
+  
+</nav>
+
+
+  </main>
+
+  
+  
+  <aside class="docs-toc-rail" id="tocRail" aria-label="On this page">
+    <p class="docs-toc-title">On this page</p>
+    <ul><li><a href="#usage-examples">Usage Examples</a><ul><li><a href="#basic-usage">Basic Usage</a><ul><li><a href="#file-input">File Input</a></li></ul></li></ul></li><li><a href="#output-formats">Output Formats</a><ul><li><a href="#one-file-per-host">One File per Host</a></li><li><a href="#streaming-output">Streaming Output</a></li><li><a href="#provenance-and-run-statistics">Provenance and Run Statistics</a></li><li><a href="#wordlist">Wordlist</a></li><li><a href="#parameter-inventory">Parameter Inventory</a></li></ul></li><li><a href="#filtering-examples">Filtering Examples</a><ul><li><a href="#extensions-and-patterns">Extensions and Patterns</a></li><li><a href="#using-presets">Using Presets</a></li><li><a href="#scope-files">Scope Files</a></li><li><a href="#archive-metadata-filtering">Archive Metadata Filtering</a></li><li><a href="#regular-expressions">Regular Expressions</a></li><li><a href="#collapsing-near-duplicates">Collapsing Near-Duplicates</a></li><li><a href="#archive-side-filters">Archive-Side Filters</a></li></ul></li><li><a href="#provider-selection">Provider Selection</a><ul><li><a href="#using-a-config-file">Using a Config File</a></li><li><a href="#with-api-keys">With API Keys</a></li></ul></li><li><a href="#discovery-options">Discovery Options</a></li><li><a href="#testing-validation">Testing &amp; Validation</a><ul><li><a href="#extract-links">Extract Links</a></li><li><a href="#extract-endpoints-from-javascript">Extract Endpoints from JavaScript</a></li><li><a href="#mine-archived-bodies">Mine Archived Bodies</a></li><li><a href="#expand-api-specifications">Expand API Specifications</a></li><li><a href="#record-response-titles">Record Response Titles</a></li><li><a href="#status-filtering">Status Filtering</a></li></ul></li><li><a href="#network-configuration">Network Configuration</a><ul><li><a href="#authenticated-and-custom-requests">Authenticated and Custom Requests</a></li><li><a href="#rate-limits-and-time-budget">Rate Limits and Time Budget</a></li></ul></li><li><a href="#url-normalization">URL Normalization</a></li><li><a href="#caching-incremental-scanning">Caching &amp; Incremental Scanning</a><ul><li><a href="#incremental-mode">Incremental Mode</a></li><li><a href="#inspect-and-prune-the-cache">Inspect and Prune the Cache</a></li></ul></li><li><a href="#pipeline-integration">Pipeline Integration</a></li><li><a href="#complex-scenarios">Complex Scenarios</a><ul><li><a href="#complete-bug-bounty-workflow">Complete Bug Bounty Workflow</a></li><li><a href="#api-endpoint-discovery">API Endpoint Discovery</a></li><li><a href="#api-surface-from-specifications">API Surface from Specifications</a></li><li><a href="#javascript-analysis-pipeline">JavaScript Analysis Pipeline</a></li></ul></li></ul>
+  </aside>
+  
+</div>
+<footer class="docs-footer">
+  <p class="footer-meta">
+    <a class="footer-sig" href="https://www.hahwul.com" target="_blank" rel="noopener" aria-label="hahwul, built with love">
+      <span class="hahwul-img" aria-hidden="true"></span>
+      <span class="footer-love">Built with Love</span>
+    </a>
+    <span aria-hidden="true">&#183;</span>
+    <span>MIT &#183; &#169; HAHWUL</span>
+  </p>
+</footer>
+
+<div class="search-overlay" id="searchOverlay" role="dialog" aria-modal="true" aria-label="Search documentation">
+  <div class="search-panel">
+    <input class="search-input" id="searchInput" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+    <ul class="search-results" id="searchResults"></ul>
+    <div class="search-hints">
+      <span><kbd>&#8593;</kbd><kbd>&#8595;</kbd> navigate</span>
+      <span><kbd>&#8629;</kbd> open</span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+
+<script src="/js/theme.js" defer></script>
+<script src="/js/search.js" defer></script>
+
+
+<script src="/js/toc.js" defer></script>
+<script src="/js/docs.js" defer></script>
+<script src="/js/codecopy.js" defer></script>
+
+
+</body>
+</html>
