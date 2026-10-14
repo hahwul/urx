@@ -139,7 +139,23 @@ fn parse_line(line: &str) -> Result<(bool, HostPattern)> {
             .with_context(|| format!("{host:?} is not a valid bracketed IPv6 host"))?;
     }
 
+    // `normalize_domain` passes through what the URL parser cannot make a host
+    // of, the parser accepts `,` and `;` in a name, and it deletes tabs. Either
+    // way the pattern could never match: on a `!` line that silently widens
+    // the scope (`!a.example.com, b.example.com` excluding nothing).
+    if host.contains(char::is_whitespace) {
+        bail!("{host:?} is not a host; list one host per line");
+    }
     let host = normalize_domain(host).with_context(|| format!("{host:?} is not a host"))?;
+    let valid_name = host.split('.').all(|label| {
+        !label.is_empty()
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    });
+    if !bracketed_ipv6 && !valid_name {
+        bail!("{host:?} is not a host; list one host per line");
+    }
 
     Ok((
         negated,
@@ -394,6 +410,25 @@ mod tests {
         assert!(scope_error("2001:db8::1\n").contains("IPv6 literals must be bracketed"));
         assert!(scope_error("[not:ipv6]\n").contains("valid bracketed IPv6"));
         assert!(scope_error("*.[2001:db8::1]\n").contains("wildcards are not supported"));
+    }
+
+    #[test]
+    fn a_line_that_is_not_one_host_is_an_error() {
+        // On a `!` line each of these silently excluded nothing.
+        for line in [
+            "!admin.example.com, staging.example.com",
+            "!admin.example.com api.example.com",
+            "!admin.example.com\tstaging.example.com",
+            "!.internal.example.com",
+            "!admin.example.com;",
+        ] {
+            let error = scope_error(&format!("*.example.com\n{line}\n"));
+            assert!(error.contains("scope.txt:2"), "{line:?}: {error}");
+        }
+        // Underscores and IPv4 literals are real hosts.
+        let m = matcher("_dmarc.example.com\n10.0.0.1\n");
+        assert!(m.is_in_scope("https://_dmarc.example.com/"));
+        assert!(m.is_in_scope("http://10.0.0.1/"));
     }
 
     #[test]

@@ -139,8 +139,14 @@ impl DomainCompletionCtx {
     }
 }
 
-/// Helper function to apply network settings to a provider
-pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings: &NetworkSettings) {
+/// Helper function to apply network settings to a provider. `rate_limit` is
+/// passed in rather than built from `settings`, so instances that share a
+/// provider id can share one limiter.
+pub fn apply_network_settings_to_provider(
+    provider: &mut dyn Provider,
+    settings: &NetworkSettings,
+    rate_limit: Option<RateLimiter>,
+) {
     // `--subs` is a *search scope* option, not a network setting: it decides
     // which hosts the archive query asks for. `--network-scope testers` narrows
     // where proxy/timeout/TLS/rate-limit apply, and used to take subdomain
@@ -164,18 +170,21 @@ pub fn apply_network_settings_to_provider(provider: &mut dyn Provider, settings:
             headers: Default::default(),
         },
         retries: settings.retries,
-        rate_limit: settings.rate_limit.and_then(RateLimiter::new),
+        rate_limit,
     });
     // A no-op for every provider that queries an archive; see
     // `Provider::with_headers`. After `with_network`, which resets them.
     provider.with_headers(settings.headers.clone());
 }
 
+// The registry's accumulators, passed as-is from one call site's macro.
+#[allow(clippy::too_many_arguments)]
 pub fn add_provider<T: Provider + 'static>(
     args: &Args,
     network_settings: &NetworkSettings,
     providers: &mut Vec<Box<dyn Provider>>,
     provider_names: &mut Vec<String>,
+    limiters: &mut HashMap<String, Option<RateLimiter>>,
     provider_id: &str,
     provider_name: String,
     provider_builder: impl FnOnce() -> T,
@@ -223,8 +232,16 @@ pub fn add_provider<T: Provider + 'static>(
         eprintln!("{}", config_info.join("\n"));
     }
 
+    // One limiter per provider id, not per instance: every --cc-index, and
+    // robots/sitemap with their archived twins, register under one id, and
+    // `--rate-limit-by cc=1` must hold for all of them together.
+    let rate_limit = limiters
+        .entry(provider_id.to_string())
+        .or_insert_with(|| effective_settings.rate_limit.and_then(RateLimiter::new))
+        .clone();
+
     let mut provider = provider_builder();
-    apply_network_settings_to_provider(&mut provider, &effective_settings);
+    apply_network_settings_to_provider(&mut provider, &effective_settings, rate_limit);
     providers.push(Box::new(provider));
     provider_names.push(provider_name);
 }
@@ -280,6 +297,10 @@ impl UrlEntry {
 pub struct ProviderRunResult {
     pub urls: HashMap<String, UrlEntry>,
     pub stats: Vec<ProviderStats>,
+    /// Domains some provider failed on, returned partial results for, or never
+    /// finished before `--max-time` / Ctrl-C: what the run has for them is not
+    /// the whole answer, so it must not be cached as one.
+    pub incomplete_domains: HashSet<String>,
 }
 
 /// Process domains using a provider-based concurrency pattern.
@@ -313,6 +334,8 @@ pub async fn process_domains(
             })
             .collect(),
     ));
+
+    let incomplete_domains: Arc<Mutex<HashSet<String>>> = Arc::default();
 
     // Create a progress bar for overall progress
     let overall_bar = progress_manager.create_domain_bar(total_domains);
@@ -370,13 +393,15 @@ pub async fn process_domains(
     let run_start = std::time::Instant::now();
     let notifier = progress_manager.notifier();
     // Raised when --max-time or Ctrl-C ends the run, so a provider mid-cursor
-    // can return what it has instead of losing it to a cancelled future.
+    // can return what it has instead of losing it to a cancelled future. A
+    // closed --stream destination raises it from inside a provider task.
     let stop_signal = StopSignal::default();
 
     for (provider_clone, provider_name, original_idx) in provider_data.into_iter() {
         let all_urls = Arc::clone(&all_urls);
         let stream = stream.clone();
         let stats = Arc::clone(&stats);
+        let incomplete_domains = Arc::clone(&incomplete_domains);
         let provider_bar = provider_bars[original_idx].clone();
         let domains = domains.clone();
         let notifier = notifier.clone();
@@ -442,6 +467,7 @@ pub async fn process_domains(
                     let provider_name = provider_name.clone();
                     let all_urls = Arc::clone(&all_urls);
                     let stats = Arc::clone(&stats);
+                    let incomplete_domains = Arc::clone(&incomplete_domains);
                     let completion_ctx = Arc::clone(&completion_ctx);
                     let url_total = Arc::clone(&url_total);
                     let err_total = Arc::clone(&err_total);
@@ -514,6 +540,7 @@ pub async fn process_domains(
                                     .is_some_and(|r| r.is_partial() || r.stop_requested());
                                 if partial {
                                     partial_total.fetch_add(1, Ordering::Relaxed);
+                                    lock_ignore_poison(&incomplete_domains).insert(domain.clone());
                                 }
 
                                 // Hand this batch to the streaming sink, or —
@@ -524,21 +551,22 @@ pub async fn process_domains(
                                         // The write blocks on the pipe, so it
                                         // runs on the blocking pool: a stalled
                                         // reader must not park a runtime worker.
-                                        let sink = Arc::clone(sink);
+                                        let emitter = Arc::clone(sink);
                                         let written = task::spawn_blocking(move || {
-                                            sink.emit(&records)
+                                            emitter.emit(&records)
                                         })
                                         .await;
-                                        match written {
-                                            Ok(Err(e)) if !silent => {
-                                                notifier.note(format!(
-                                                    "Error writing streamed output: {e}"
-                                                ));
-                                            }
-                                            Err(join) if join.is_panic() => {
+                                        if let Err(join) = written {
+                                            if join.is_panic() {
                                                 std::panic::resume_unwind(join.into_panic())
                                             }
-                                            _ => {}
+                                        }
+                                        // `| head -1` closed the pipe, or the
+                                        // write failed (kept for the exit
+                                        // code): nothing fetched from here on
+                                        // can be delivered, so end the run.
+                                        if sink.is_closed() {
+                                            stop_signal.request_stop();
                                         }
                                     }
                                     None => {
@@ -608,6 +636,7 @@ pub async fn process_domains(
                             }
                             Err(e) => {
                                 err_total.fetch_add(1, Ordering::Relaxed);
+                                lock_ignore_poison(&incomplete_domains).insert(domain.clone());
 
                                 {
                                     let mut s = lock_ignore_poison(&stats);
@@ -710,6 +739,8 @@ pub async fn process_domains(
         Completed,
         TimedOut,
         Interrupted,
+        /// The --stream destination closed: no point fetching further.
+        OutputClosed,
     }
 
     // Pinned in the enclosing scope, not inside the `select!` block: after the
@@ -734,6 +765,8 @@ pub async fn process_domains(
             _ = &mut timeout => RunEnd::TimedOut,
             // First Ctrl-C becomes a graceful stop.
             _ = &mut ctrl_c => RunEnd::Interrupted,
+            // Only the stream sink raises it before this point.
+            _ = stop_signal.stopped() => RunEnd::OutputClosed,
         }
     };
 
@@ -762,9 +795,11 @@ pub async fn process_domains(
                     "[urx] --max-time {}s elapsed; stopping in-flight provider fetches and returning partial results",
                     deadline.map(|d| d.as_secs()).unwrap_or(0)
                 )),
-                _ => progress_manager.note(
+                RunEnd::Interrupted => progress_manager.note(
                     "[urx] interrupted (Ctrl-C); returning URLs collected so far — press Ctrl-C again to force quit",
                 ),
+                // `| head -1` getting what it wanted is not news.
+                RunEnd::OutputClosed | RunEnd::Completed => {}
             }
         }
 
@@ -801,10 +836,10 @@ pub async fn process_domains(
 
         // A timeout/interrupt leaves the provider(s) that were mid-fetch on a
         // spinning "fetching…" line; freeze them so the final display is honest.
-        let label = if matches!(run_end, RunEnd::TimedOut) {
-            "timed out"
-        } else {
-            "interrupted"
+        let label = match run_end {
+            RunEnd::TimedOut => "timed out",
+            RunEnd::OutputClosed => "output closed",
+            _ => "interrupted",
         };
         for (i, bar) in provider_bars.iter().enumerate() {
             if !bar.is_finished() {
@@ -821,6 +856,7 @@ pub async fn process_domains(
         RunEnd::Completed => overall_bar.finish_with_message("All domains processed"),
         RunEnd::TimedOut => overall_bar.finish_with_message("Stopped by --max-time deadline"),
         RunEnd::Interrupted => overall_bar.finish_with_message("Interrupted by Ctrl-C"),
+        RunEnd::OutputClosed => overall_bar.finish_with_message("Stopped: output closed"),
     }
 
     // Reclaim the shared state. If tasks were aborted the inner Arc may still
@@ -838,7 +874,20 @@ pub async fn process_domains(
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         Err(arc) => lock_ignore_poison(&arc).clone(),
     };
-    ProviderRunResult { urls, stats }
+    // A domain some provider never got to the end of (cancelled by --max-time
+    // or Ctrl-C) is as incomplete as one it failed on.
+    let mut incomplete_domains = lock_ignore_poison(&incomplete_domains).clone();
+    incomplete_domains.extend(
+        lock_ignore_poison(&domain_completion)
+            .iter()
+            .filter(|(_, &done)| done < total_providers)
+            .map(|(domain, _)| domain.clone()),
+    );
+    ProviderRunResult {
+        urls,
+        stats,
+        incomplete_domains,
+    }
 }
 
 #[cfg(test)]
@@ -918,10 +967,12 @@ mod tests {
         fn with_network(&mut self, _net: crate::network::NetConfig) {}
     }
 
-    /// A provider that records what `with_subdomains` was told.
+    /// A provider that records what `with_subdomains` was told, and every
+    /// rate limiter `with_network` hands it.
     #[derive(Clone, Default)]
     struct SubdomainRecordingProvider {
         include_subdomains: bool,
+        limiters: Arc<Mutex<Vec<Option<RateLimiter>>>>,
     }
 
     impl Provider for SubdomainRecordingProvider {
@@ -939,7 +990,9 @@ mod tests {
         fn with_subdomains(&mut self, include: bool) {
             self.include_subdomains = include;
         }
-        fn with_network(&mut self, _net: crate::network::NetConfig) {}
+        fn with_network(&mut self, net: crate::network::NetConfig) {
+            self.limiters.lock().unwrap().push(net.rate_limit);
+        }
     }
 
     /// A provider returning canned records, so a test can hand two providers
@@ -1332,6 +1385,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_closed_stream_stops_the_remaining_providers() {
+        // `urx t.com --stream | head -1`: once the pipe is closed nothing more
+        // can be delivered, so a still-paginating provider must be told to stop
+        // rather than walk its whole cursor for nobody.
+        use std::io::Write;
+
+        struct ClosedPipe;
+        impl Write for ClosedPipe {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let fast = MockProvider::new(vec!["https://example.com/fast".to_string()], false);
+        // 1000 pages × 50ms: far longer than the test allows.
+        let slow = PaginatingProvider {
+            step: std::time::Duration::from_millis(50),
+            pages: 1_000,
+        };
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(fast), Box::new(slow)];
+        let provider_names = vec!["Fast".to_string(), "Slow".to_string()];
+
+        let sink = Arc::new(
+            output::StreamSink::new(
+                UrlFilter::new(),
+                UrlTransformer::default(),
+                None,
+                output::Format::Plain,
+                Box::new(ClosedPipe),
+            )
+            .unwrap(),
+        );
+
+        let started = std::time::Instant::now();
+        let result = process_domains(
+            vec!["example.com".to_string()],
+            &build_test_args(),
+            &ProgressManager::new(true),
+            &providers,
+            &provider_names,
+            Some(Arc::clone(&sink)),
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "closed output should stop the run, took {:?}",
+            started.elapsed()
+        );
+        assert!(sink.is_closed());
+        assert!(sink.finish().is_ok(), "a closed pipe is not a failure");
+        assert_eq!(result.stats[1].partial_count, 1, "{:?}", result.stats[1]);
+    }
+
+    #[tokio::test]
     async fn test_max_time_aborts_slow_provider() {
         // A provider that sleeps for 5s should be cut off when max_time=1.
         let slow = MockProvider::new(vec!["https://example.com/never".to_string()], false)
@@ -1403,6 +1514,7 @@ mod tests {
         // The one domain it never finished is reported as an incomplete result
         // rather than a silent zero.
         assert_eq!(stats.partial_count, 1, "{stats:?}");
+        assert!(result.incomplete_domains.contains("example.com"));
     }
 
     #[tokio::test]
@@ -1450,6 +1562,36 @@ mod tests {
     }
 
     #[test]
+    fn test_instances_sharing_a_provider_id_share_one_rate_limiter() {
+        // Regression: each --cc-index instance built its own limiter, so
+        // `--rate-limit-by cc=1` with two indexes went out at 2 req/s.
+        let mut args = build_test_args();
+        args.rate_limit_by = vec!["cc=1".to_string()];
+        let settings = NetworkSettings::default();
+        let provider = SubdomainRecordingProvider::default();
+        let seen = Arc::clone(&provider.limiters);
+        let (mut providers, mut names, mut limiters) = (Vec::new(), Vec::new(), HashMap::new());
+        for id in ["cc", "cc", "wayback"] {
+            let provider = provider.clone();
+            add_provider(
+                &args,
+                &settings,
+                &mut providers,
+                &mut names,
+                &mut limiters,
+                id,
+                id.to_string(),
+                move || provider,
+            );
+        }
+
+        let seen = seen.lock().unwrap();
+        let (a, b) = (seen[0].as_ref().unwrap(), seen[1].as_ref().unwrap());
+        assert!(a.shares_with(b), "both cc instances must share one limiter");
+        assert!(seen[2].is_none(), "wayback has no limit configured");
+    }
+
+    #[test]
     fn test_subdomain_inclusion_is_not_a_network_setting() {
         // Regression: --network-scope testers made
         // apply_network_settings_to_provider bail before it applied --subs, so
@@ -1469,7 +1611,7 @@ mod tests {
             let mut settings = settings.clone();
             settings.scope = scope;
             let mut provider = SubdomainRecordingProvider::default();
-            apply_network_settings_to_provider(&mut provider, &settings);
+            apply_network_settings_to_provider(&mut provider, &settings, None);
             assert!(
                 provider.include_subdomains,
                 "--subs must survive --network-scope {scope:?}"

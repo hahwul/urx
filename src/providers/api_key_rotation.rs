@@ -31,6 +31,11 @@ impl ApiKeyRotator {
     pub fn has_keys(&self) -> bool {
         !self.keys.is_empty()
     }
+
+    /// Whether a rejected key can be retried with a different one.
+    pub fn has_alternatives(&self) -> bool {
+        self.keys.len() > 1
+    }
 }
 
 #[cfg(test)]

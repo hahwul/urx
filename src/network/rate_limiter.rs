@@ -56,6 +56,12 @@ impl RateLimiter {
         }
         *guard = Some(Instant::now());
     }
+
+    /// Whether `other` is a clone of this limiter, pacing the same requests.
+    #[cfg(test)]
+    pub fn shares_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.last, &other.last)
+    }
 }
 
 #[cfg(test)]

@@ -125,6 +125,22 @@ pub fn collect_domain_urls(
         .collect()
 }
 
+/// URLs on none of `domains`' hosts. `--no-strict` outputs them, so the
+/// cache has to keep them too, or a hit returns less than the miss did.
+// ponytail: which target's fetch returned one isn't tracked, so a multi-domain
+// run cannot attribute them; tag records with their target to cache that case.
+fn off_host_urls(
+    urls: &HashMap<String, UrlEntry>,
+    domains: &[String],
+    include_subdomains: bool,
+) -> HashSet<String> {
+    let validator = HostValidator::new(domains, include_subdomains);
+    urls.keys()
+        .filter(|url| !validator.is_valid_host(url))
+        .cloned()
+        .collect()
+}
+
 /// Merge one URL's providers and capture metadata into `target`, creating the
 /// entry when the URL is new.
 ///
@@ -210,13 +226,34 @@ pub async fn process_domains_with_cache(
     // Carry the provider stats from the fresh run through to the caller.
     final_result.stats = fresh_run.stats;
 
+    let off_host = if args.strict_enabled() {
+        HashSet::new()
+    } else {
+        off_host_urls(&fresh_run.urls, &domains_to_process, args.subs)
+    };
+    // Off-host URLs from several fetched targets cannot be filed under the one
+    // that returned them; filing them under every target would leak one
+    // target's URLs into another's hit or baseline.
+    let unattributable = !off_host.is_empty() && domains_to_process.len() > 1;
+    let off_host = if unattributable {
+        HashSet::new()
+    } else {
+        off_host
+    };
+    let domain_urls = |domain: &str| {
+        let mut urls = collect_domain_urls(&fresh_run.urls, domain, args.subs);
+        urls.extend(off_host.iter().cloned());
+        urls
+    };
+
     if args.incremental {
         for domain in &domains_to_process {
             let cache_key = create_cache_key(domain, args);
-            let domain_fresh_urls = collect_domain_urls(&fresh_run.urls, domain, args.subs);
 
-            // Emit only what the previous run hadn't seen...
-            let new_urls = cache.get_new_urls(&cache_key, &domain_fresh_urls).await?;
+            // Emit only what the baseline hadn't seen; it absorbs the rest.
+            let new_urls = cache
+                .update_baseline(&cache_key, domain_urls(domain))
+                .await?;
             if !new_urls.is_empty() {
                 verbose_print(
                     args,
@@ -230,20 +267,31 @@ pub async fn process_domains_with_cache(
                     merge_entry(&mut final_result.urls, url, &entry);
                 }
             }
-
-            // ...but store the full set, so it is the baseline next time.
-            let entry = CacheEntry::new(domain_fresh_urls.into_iter().collect());
-            cache.store_urls(&cache_key, &entry).await?;
         }
     } else {
         for (url, entry) in &fresh_run.urls {
             merge_entry(&mut final_result.urls, url.clone(), entry);
         }
 
-        for domain in &domains_to_process {
-            let domain_urls: Vec<String> = collect_domain_urls(&fresh_run.urls, domain, args.subs)
-                .into_iter()
-                .collect();
+        // Storing without the off-host URLs would make the hit return less
+        // than this run did. Skip the store.
+        if unattributable {
+            verbose_print(
+                args,
+                "Not caching: --no-strict URLs from several targets cannot be attributed",
+            );
+        }
+        for domain in domains_to_process.iter().filter(|_| !unattributable) {
+            // A partial answer stored here would be served as the whole one
+            // for the entire TTL.
+            if fresh_run.incomplete_domains.contains(domain) {
+                verbose_print(
+                    args,
+                    format!("Not caching incomplete results for domain: {domain}"),
+                );
+                continue;
+            }
+            let domain_urls: Vec<String> = domain_urls(domain).into_iter().collect();
 
             if !domain_urls.is_empty() {
                 let cache_key = create_cache_key(domain, args);
@@ -522,6 +570,82 @@ mod tests {
             result.urls.keys().collect::<Vec<_>>(),
             vec!["https://example.com/new"]
         );
+    }
+
+    /// Run `providers` over example.com through the cache.
+    async fn run_cached(
+        cache: &CacheManager,
+        args: &Args,
+        providers: &[Box<dyn Provider>],
+    ) -> ProviderRunResult {
+        let names: Vec<String> = (0..providers.len()).map(|i| format!("p{i}")).collect();
+        process_domains_with_cache(
+            vec!["example.com".to_string()],
+            args,
+            &ProgressManager::new(true),
+            providers,
+            &names,
+            Some(cache),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Args whose cache key ignores a developer's ambient API keys; see
+    /// `test_incremental_fetches_each_domain_exactly_once_on_a_cache_hit`.
+    fn pinned_args() -> Args {
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".to_string()];
+        args.exclude_providers = KEYED_PROVIDER_IDS.iter().map(|s| s.to_string()).collect();
+        args
+    }
+
+    #[tokio::test]
+    async fn test_a_domain_a_provider_failed_on_is_not_cached() {
+        // Regression: a run with provider errors (or cut short by --max-time)
+        // was cached like any other, and its subset served as the whole answer
+        // for the entire TTL.
+        let cache = CacheManager::new_for_test(Box::<MemoryCacheBackend>::default());
+        let args = pinned_args();
+        let providers: Vec<Box<dyn Provider>> = vec![
+            Box::new(MockProvider::new(
+                vec!["https://example.com/a".to_string()],
+                false,
+            )),
+            Box::new(MockProvider::new(vec![], true)),
+        ];
+
+        let result = run_cached(&cache, &args, &providers).await;
+
+        assert!(result.urls.contains_key("https://example.com/a"));
+        let key = create_cache_key("example.com", &args);
+        assert!(cache.get_fresh(&key, 3600).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_no_strict_cache_hit_returns_what_the_miss_did() {
+        // Regression: the cache stored only host-validated URLs even under
+        // --no-strict, so a hit dropped the off-host URLs the miss had output.
+        let cache = CacheManager::new_for_test(Box::<MemoryCacheBackend>::default());
+        let mut args = pinned_args();
+        args.no_strict = true;
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(MockProvider::new(
+            vec![
+                "https://example.com/a".to_string(),
+                "https://cdn.other.test/x".to_string(),
+            ],
+            false,
+        ))];
+
+        let sorted = |r: &ProviderRunResult| {
+            let mut urls: Vec<String> = r.urls.keys().cloned().collect();
+            urls.sort();
+            urls
+        };
+        let miss = sorted(&run_cached(&cache, &args, &providers).await);
+        let hit = sorted(&run_cached(&cache, &args, &providers).await);
+        assert_eq!(miss.len(), 2);
+        assert_eq!(hit, miss);
     }
 
     #[test]

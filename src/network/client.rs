@@ -135,10 +135,25 @@ impl HttpClientConfig {
 /// delta-seconds form (the common API case, e.g. `Retry-After: 30`) is honored;
 /// the HTTP-date form returns `None` and the caller falls back to its normal
 /// back-off. The value is capped so a hostile or absurd header can't stall a run.
+///
+/// Without `Retry-After`, an exhausted `x-ratelimit-remaining: 0` with an
+/// `x-ratelimit-reset` epoch (GitHub's code search: 10 requests a minute) waits
+/// until the reset, under the same cap; the default back-off would give up
+/// seconds into the window.
 pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     const MAX_RETRY_AFTER_SECS: u64 = 60;
-    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    let secs: u64 = raw.trim().parse().ok()?;
+    let header = |name: &str| headers.get(name)?.to_str().ok()?.trim().parse::<u64>().ok();
+    let secs = match header(reqwest::header::RETRY_AFTER.as_str()) {
+        Some(secs) => secs,
+        None if header("x-ratelimit-remaining") == Some(0) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            header("x-ratelimit-reset")?.saturating_sub(now) + 1
+        }
+        None => return None,
+    };
     Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)))
 }
 
@@ -159,8 +174,21 @@ pub const MAX_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 /// endpoint that streams gigabytes — by accident or on purpose — can't exhaust
 /// memory before any parsing happens. Every caller that fetches a document from
 /// a host urx does not control should go through this.
+///
+/// A gzip body served *without* `Content-Encoding` (a `.xml.gz` sitemap sent as
+/// `application/x-gzip`) is inflated here, since as text it is only noise. The
+/// inflated size is capped at `max` too, so a decompression bomb stops there.
 pub async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<String> {
-    let buf = read_bytes_capped(resp, max).await?;
+    let mut buf = read_bytes_capped(resp, max).await?;
+    if buf.starts_with(&[0x1f, 0x8b]) {
+        use std::io::Read;
+        let mut inflated = Vec::new();
+        // A truncated or corrupt stream keeps whatever inflated before the error.
+        let _ = flate2::read::MultiGzDecoder::new(buf.as_slice())
+            .take(max as u64)
+            .read_to_end(&mut inflated);
+        buf = inflated;
+    }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
@@ -279,9 +307,19 @@ pub async fn send_with_retry<T>(
 ///
 /// Returns the last encountered error if all attempts are exhausted.
 pub async fn get_with_retry(client: &Client, url: &str, max_retries: u32) -> Result<String> {
+    get_with_retry_paced(client, url, max_retries, None).await
+}
+
+/// [`get_with_retry`] with `limiter` acquired before every attempt.
+pub async fn get_with_retry_paced(
+    client: &Client,
+    url: &str,
+    max_retries: u32,
+    limiter: Option<&RateLimiter>,
+) -> Result<String> {
     send_with_retry(
         max_retries,
-        None,
+        limiter,
         is_retryable_status,
         || client.get(url),
         |status, body| {
@@ -336,6 +374,23 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
         assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_retry_after_delay_waits_for_an_exhausted_rate_limit_window() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-reset", (now + 20).to_string().parse().unwrap());
+        let delay = retry_after_delay(&headers).unwrap();
+        assert!((19..=21).contains(&delay.as_secs()), "{delay:?}");
+
+        // Budget left: the normal back-off applies.
+        headers.insert("x-ratelimit-remaining", "3".parse().unwrap());
+        assert_eq!(retry_after_delay(&headers), None);
     }
 
     #[test]

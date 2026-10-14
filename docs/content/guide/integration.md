@@ -41,7 +41,7 @@ urx example.com --stream | httpx -silent
 
 | Code | Meaning |
 |------|---------|
-| `0` | Run completed, even if some providers failed, results were partial, or the webhook was not delivered (an unwritable `-o` under `--stream` is caught at startup and exits 1) |
+| `0` | Run completed, even if some providers failed, results were partial, or the webhook was not delivered (an unwritable `-o` under `--stream` is caught at startup, and a write that fails mid-stream also exits 1) |
 | `1` | Runtime error: no domains, a rejected option combination (e.g. `--stream` with `--incremental`), a cache backend that cannot be opened, `urx cache clear` without a terminal or `--yes`, or a failed `-o` / `--output-dir` write |
 | `2` | Invalid usage, such as an unknown flag or `--parallel 0` |
 | `130` | Ctrl-C after collection exits at once. During collection, the first Ctrl-C stops fetching and keeps the URLs collected so far; a second Ctrl-C force-quits |

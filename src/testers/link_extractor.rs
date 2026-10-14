@@ -216,14 +216,7 @@ impl LinkExtractor {
     /// as a separate discovery is noise.
     pub(crate) fn extract_links(base_url: &Url, html_content: &str) -> Vec<String> {
         let document = Html::parse_document(html_content);
-
-        // Only the first <base href> in the document has effect.
-        let resolved_base = document
-            .select(&SELECTORS.base)
-            .next()
-            .and_then(|el| el.value().attr("href"))
-            .and_then(|href| base_url.join(href).ok())
-            .unwrap_or_else(|| base_url.clone());
+        let resolved_base = document_base(base_url, &document);
 
         let mut links = Vec::new();
         let mut seen = HashSet::new();
@@ -296,6 +289,22 @@ impl Tester for LinkExtractor {
     fn with_network(&mut self, net: NetConfig) {
         self.net = net;
     }
+}
+
+/// What relative URLs in `document` resolve against: its first `<base href>`
+/// (itself resolved against the page, as browsers do), else the page URL.
+fn document_base(page: &Url, document: &Html) -> Url {
+    document
+        .select(&SELECTORS.base)
+        .next()
+        .and_then(|el| el.value().attr("href"))
+        .and_then(|href| page.join(href).ok())
+        .unwrap_or_else(|| page.clone())
+}
+
+/// [`document_base`] for an unparsed page.
+pub(crate) fn html_document_base(page: &Url, html: &str) -> Url {
+    document_base(page, &Html::parse_document(html))
 }
 
 #[cfg(test)]

@@ -49,8 +49,9 @@ impl RedisCache {
     }
 
     /// Every entry paired with the metadata key it was read from, which the
-    /// deletions need in order to address it again.
-    async fn entries_with_keys(&self) -> Result<Vec<(String, EntryMeta)>> {
+    /// deletions need in order to address it again, and whether it is an
+    /// `--incremental` baseline.
+    async fn entries_with_keys(&self) -> Result<Vec<(String, EntryMeta, bool)>> {
         let mut conn = self.connect().await?;
         let meta_keys = Self::scan_keys(&mut conn, "urx:meta:*").await?;
 
@@ -99,6 +100,7 @@ impl RedisCache {
                     url_count,
                     timestamp,
                 },
+                meta["baseline"].as_bool().unwrap_or(false),
             ));
         }
         Ok(entries)
@@ -226,7 +228,8 @@ impl CacheBackend for RedisCache {
         let meta_data = serde_json::json!({
             "domain": key.domain,
             "providers": key.providers,
-            "timestamp": entry.timestamp.to_rfc3339()
+            "timestamp": entry.timestamp.to_rfc3339(),
+            "baseline": entry.baseline
         });
 
         redis::cmd("SET")
@@ -282,7 +285,7 @@ impl CacheAdmin for RedisCache {
             .entries_with_keys()
             .await?
             .into_iter()
-            .map(|(_, entry)| entry)
+            .map(|(_, entry, _)| entry)
             .collect())
     }
 
@@ -305,13 +308,15 @@ impl CacheAdmin for RedisCache {
         Ok(Some(total))
     }
 
-    async fn delete_expired(&self, ttl_seconds: u64) -> Result<usize> {
+    async fn delete_expired(&self, ttl_seconds: u64, keep_baselines: bool) -> Result<usize> {
         let expired: Vec<String> = self
             .entries_with_keys()
             .await?
             .into_iter()
-            .filter(|(_, entry)| is_expired(entry.timestamp, ttl_seconds))
-            .map(|(meta_key, _)| meta_key)
+            .filter(|(_, entry, baseline)| {
+                !(keep_baselines && *baseline) && is_expired(entry.timestamp, ttl_seconds)
+            })
+            .map(|(meta_key, _, _)| meta_key)
             .collect();
 
         let mut conn = self.connect().await?;
@@ -323,8 +328,8 @@ impl CacheAdmin for RedisCache {
             .entries_with_keys()
             .await?
             .into_iter()
-            .filter(|(_, entry)| patterns.iter().any(|p| domain_matches(p, &entry.domain)))
-            .map(|(meta_key, _)| meta_key)
+            .filter(|(_, entry, _)| patterns.iter().any(|p| domain_matches(p, &entry.domain)))
+            .map(|(meta_key, _, _)| meta_key)
             .collect();
 
         let mut conn = self.connect().await?;
@@ -433,7 +438,7 @@ mod tests {
         assert!(cache.get(&key).await?.is_some());
 
         // Clean up expired entries (1 hour TTL)
-        cache.delete_expired(3600).await?;
+        cache.delete_expired(3600, false).await?;
 
         // Entry should be gone
         assert!(cache.get(&key).await?.is_none());

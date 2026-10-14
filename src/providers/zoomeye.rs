@@ -51,8 +51,8 @@ struct ZoomEyeEntry {
     domain: String,
     #[serde(default)]
     port: u16,
-    #[serde(default)]
-    title: String,
+    // No `title`: unused, and the v2 API sends it as an array, which failed
+    // the whole page when it was typed `String`.
 }
 
 #[derive(Debug, Serialize)]
@@ -733,5 +733,12 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0], "https://example.com/page1");
         assert_eq!(urls[1], "https://example.com/page3");
+    }
+
+    #[test]
+    fn test_an_array_title_does_not_fail_the_page() {
+        let body = r#"{"code":60000,"total":1,"data":[{"url":"https://example.com/a","ip":"1.2.3.4","domain":"example.com","port":443,"title":["Example"]}]}"#;
+        let parsed: ZoomEyeResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.data[0].url, "https://example.com/a");
     }
 }

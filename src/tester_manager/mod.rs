@@ -1,4 +1,5 @@
 use futures::stream::{self, StreamExt};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -129,7 +130,7 @@ pub async fn process_urls_with_testers(
     // the URL list a caller pipes onward.
     let notifier = progress_manager.notifier();
 
-    let chunk_results: Vec<Vec<output::UrlData>> =
+    let chunk_results: Vec<(Vec<output::UrlData>, Vec<String>)> =
         stream::iter(url_chunks.into_iter().map(|url_vec| {
             let testers_clone: Vec<_> = testers.iter().map(|t| t.clone_box()).collect();
             let test_bar = test_bar.clone();
@@ -139,6 +140,9 @@ pub async fn process_urls_with_testers(
 
             async move {
                 let mut result_urls = Vec::new();
+                // Primary URLs the status filter turned away. A page linking
+                // to one must not bring it back unchecked.
+                let mut rejected = Vec::new();
 
                 for url in url_vec {
                     let mut status_result = None;
@@ -169,11 +173,16 @@ pub async fn process_urls_with_testers(
 
                     // Create UrlData for this URL
                     if let Some(status_urls) = status_result {
+                        if status_urls.is_empty() {
+                            rejected.push(url.clone());
+                        }
                         result_urls.extend(status_urls);
                     } else {
                         // If no status but URL should be included anyway
                         if check_status {
-                            if !drop_unresolved {
+                            if drop_unresolved {
+                                rejected.push(url.clone());
+                            } else {
                                 let url_data = output::UrlData::with_status(
                                     url.clone(),
                                     "Status check failed".to_string(),
@@ -206,7 +215,7 @@ pub async fn process_urls_with_testers(
                     test_bar.set_position(done.min(total));
                 }
 
-                result_urls
+                (result_urls, rejected)
             }
         }))
         .buffer_unordered(parallel)
@@ -214,9 +223,12 @@ pub async fn process_urls_with_testers(
         .await;
 
     let mut new_urls = Vec::new();
-    for urls in chunk_results {
+    let mut rejected = HashSet::new();
+    for (urls, turned_away) in chunk_results {
         new_urls.extend(urls);
+        rejected.extend(turned_away);
     }
+    new_urls.retain(|u| !rejected.contains(&u.url));
 
     // Sort URLs by their URL field, then collapse repeats.
     //
@@ -683,6 +695,65 @@ mod tests {
             // The whole checked record survives, not just its status.
             assert_eq!(entry.title.as_deref(), Some("Title"), "{entry:?}");
         }
+    }
+
+    /// A status checker that filters out `/old`, as `--exclude-status 404`
+    /// would, and passes everything else with 200.
+    #[derive(Clone)]
+    struct RejectOldTester;
+
+    impl Tester for RejectOldTester {
+        fn clone_box(&self) -> Box<dyn Tester> {
+            Box::new(self.clone())
+        }
+        fn test_url<'a>(
+            &'a self,
+            url: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
+            let url = url.to_string();
+            Box::pin(async move {
+                Ok(if url.ends_with("/old") {
+                    Vec::new()
+                } else {
+                    vec![UrlData::with_status(url, "200 OK".to_string())]
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_status_filtered_url_is_not_brought_back_by_a_link() {
+        // Regression: /old was checked and excluded, but every page links to
+        // it, so the extractor re-added it without a status.
+        use clap::Parser;
+        let args = Args::parse_from([
+            "urx",
+            "--exclude-status",
+            "404",
+            "--extract-links",
+            "--silent",
+            "example.com",
+        ]);
+        let progress = ProgressManager::new(true);
+
+        let out = process_urls_with_testers(
+            vec![
+                "https://example.com/".to_string(),
+                "https://example.com/old".to_string(),
+            ],
+            &args,
+            &progress,
+            vec![
+                Box::new(RejectOldTester),
+                Box::new(FixedLinkTester(vec!["https://example.com/old".to_string()])),
+            ],
+            true,
+            None,
+        )
+        .await;
+
+        let urls: Vec<&str> = out.iter().map(|d| d.url.as_str()).collect();
+        assert_eq!(urls, vec!["https://example.com/"], "{out:?}");
     }
 
     #[tokio::test]

@@ -486,19 +486,37 @@ impl SitemapProvider {
             visited: HashSet::new(),
             urls: Vec::new(),
         };
+        // A listing that fails costs that one name, not the URLs the others
+        // already produced; only a run where no listing succeeded is an error.
+        let mut listed_any = false;
+        let mut last_error = None;
 
         'names: for name in ARCHIVED_SITEMAP_NAMES {
             if let Some(r) = &reporter {
                 r.detail(format!("listing {name} versions…"));
             }
-            let listing = list_versions(
+            let listing = match list_versions(
                 &client,
                 settings,
                 &format!("{domain}/{name}"),
                 self.net.retries,
                 walk.limiter,
             )
-            .await?;
+            .await
+            {
+                Ok(listing) => listing,
+                Err(e) => {
+                    walk.note(format!(
+                        "{domain}: failed to list archived {name} versions: {e}"
+                    ));
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+            listed_any = true;
             if !listing.skipped.is_empty() {
                 walk.note(format!(
                     "{domain}: archived {name} captures not worth replaying: {}",
@@ -522,6 +540,12 @@ impl SitemapProvider {
                     r.detail(format!("{name} version {}/{total}…", i + 1));
                 }
                 walk.walk(&capture.timestamp, &capture.original, 0).await;
+            }
+        }
+
+        if !listed_any {
+            if let Some(e) = last_error {
+                return Err(e);
             }
         }
 
@@ -970,6 +994,36 @@ mod tests {
         let urls = urls_of(result.unwrap());
         assert_eq!(urls.len(), 1);
         assert!(urls.contains(&"https://example.com/nested-page".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_gzipped_child_sitemap_is_inflated() {
+        // `.xml.gz` children are served as application/x-gzip with no
+        // Content-Encoding, so the client hands over the raw gzip bytes.
+        use std::io::Write;
+        let mut server = Server::new_async().await;
+        let host = server.host_with_port();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(URLSET_B.as_bytes()).unwrap();
+        let _index = server
+            .mock("GET", "/sitemap_index.xml")
+            .with_body(format!(
+                "<sitemapindex><sitemap><loc>http://{host}/posts.xml.gz</loc></sitemap></sitemapindex>"
+            ))
+            .create_async()
+            .await;
+        let _child = server
+            .mock("GET", "/posts.xml.gz")
+            .with_header("content-type", "application/x-gzip")
+            .with_body(gz.finish().unwrap())
+            .create_async()
+            .await;
+
+        let urls = urls_of(SitemapProvider::new().fetch_urls(&host).await.unwrap());
+        assert_eq!(
+            urls,
+            vec!["https://example.com/2024/now", "https://example.com/shared"]
+        );
     }
 
     #[tokio::test]
@@ -1457,5 +1511,56 @@ mod tests {
         let urls = urls_of(provider.fetch_urls("example.com").await.unwrap());
         assert_eq!(urls.len(), 2);
         assert!(quiet.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_listing_keeps_the_urls_other_names_produced() {
+        let mut server = Server::new_async().await;
+        // The last name's listing fails after the first one produced URLs.
+        let mut listings = Vec::new();
+        for (name, status, rows) in [
+            (
+                "sitemap.xml",
+                200,
+                "https://example.com/sitemap.xml 20240101000000 200 OK\n",
+            ),
+            ("sitemap_index.xml", 200, ""),
+            ("sitemap.txt", 500, ""),
+        ] {
+            listings.push(
+                server
+                    .mock("GET", "/cdx/search/cdx")
+                    .match_query(mockito::Matcher::UrlEncoded(
+                        "url".into(),
+                        format!("example.com/{name}"),
+                    ))
+                    .with_status(status)
+                    .with_body(rows)
+                    .create_async()
+                    .await,
+            );
+        }
+        let _ok = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/sitemap.xml",
+            )
+            .with_body(URLSET_B)
+            .create_async()
+            .await;
+
+        let mut provider =
+            SitemapProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
+        provider.with_network(NetConfig {
+            retries: 0,
+            ..NetConfig::default()
+        });
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(reporter.is_partial());
     }
 }

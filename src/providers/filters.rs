@@ -17,7 +17,7 @@
 //! | | status field | mime field | value semantics |
 //! |---|---|---|---|
 //! | [`CdxDialect::Classic`] — `web.archive.org` | `statuscode` | `mimetype` | regular expression |
-//! | [`CdxDialect::Pywb`] — Common Crawl, Arquivo.pt | `status` | `mime` | exact string |
+//! | [`CdxDialect::Pywb`] — Common Crawl, Arquivo.pt | `status` | `mime` | substring |
 //!
 //! Both negate with a `!` prefix, and both AND repeated `filter=` parameters
 //! together. That AND is the right semantics for exclusions ("not 404 *and*
@@ -35,8 +35,10 @@ pub enum CdxDialect {
     // The classic Internet Archive CDX server: `statuscode`/`mimetype`, and
     // values are treated as regular expressions.
     Classic,
-    // pywb-derived index servers: `status`/`mime`, and values must match the
-    // captured field exactly.
+    // pywb-derived index servers: `status`/`mime`, and a value matches when
+    // the captured field contains it (verified live on CC and Arquivo: `30`
+    // keeps 301; `30.` keeps nothing). Their `=` exact modifier is not used:
+    // Arquivo answers a non-matching `=` filter with unfiltered rows.
     Pywb,
 }
 
@@ -125,7 +127,7 @@ impl ArchiveFilters {
     /// Names of the positive predicates this dialect cannot express, so the
     /// caller can warn instead of silently returning nothing.
     ///
-    /// An exact-match server ANDs repeated `filter=` parameters, so a
+    /// A substring-match server ANDs repeated `filter=` parameters, so a
     /// multi-value positive list ("200 or 301") is unsatisfiable there and is
     /// dropped rather than sent. Single values and every exclusion list are
     /// always expressible.

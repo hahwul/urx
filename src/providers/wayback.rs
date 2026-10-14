@@ -128,10 +128,15 @@ impl WaybackMachineProvider {
     /// Build the CDX query *without* pagination params. Plain-text streaming
     /// (an explicit `fl=` field list) is far more reliable than `output=json`
     /// for large domains, and `collapse=urlkey` trims server-side duplicates.
+    ///
+    /// `collapse` keeps the first row of each URL's run, which in the default
+    /// order is its *oldest* capture; `sort=reverse` makes it the newest, the
+    /// one `last_seen`, `mime`, `archive_status` and `--archive-body` describe.
+    /// Verified live: resumeKey paging works unchanged in reverse order.
     fn query_base(&self, domain: &str) -> String {
         let pattern = super::cdx_url_pattern(domain, self.include_subdomains);
         let mut url = format!(
-            "{}/cdx/search/cdx?url={pattern}&fl={FIELDS}&collapse=urlkey",
+            "{}/cdx/search/cdx?url={pattern}&fl={FIELDS}&collapse=urlkey&sort=reverse",
             self.base_url
         );
         url.push_str(&self.filters.query_params(CdxDialect::Classic));
@@ -868,7 +873,7 @@ mod tests {
 
         let q = provider.query_base("example.com");
         assert!(q.contains("fl=original"), "{q}");
-        assert!(q.contains("collapse=urlkey"), "{q}");
+        assert!(q.contains("collapse=urlkey&sort=reverse"), "{q}");
         assert!(q.contains("&from=20200101000000"), "{q}");
         // Multiple exclusions fold into one negated alternation on this dialect.
         assert!(q.contains("&filter=!statuscode:%28404%7C500%29"), "{q}");

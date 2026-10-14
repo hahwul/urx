@@ -101,7 +101,8 @@ pub struct RunSummary {
     /// The targets that were scanned, as resolved from the CLI, `--domain-list`
     /// and stdin. Empty for a `--files` run.
     pub domains: Vec<String>,
-    /// Whether the run diffed against the cache (`--incremental`).
+    /// Whether the run diffed against the cache: `--incremental` with a
+    /// baseline to diff against (not `--no-cache`, not `--files` input).
     pub incremental: bool,
     /// URLs the run emitted.
     pub url_count: usize,
@@ -148,7 +149,10 @@ impl RunSummary {
             tool: "urx",
             version: env!("CARGO_PKG_VERSION"),
             domains,
-            incremental: args.incremental,
+            // Mirrors where the diff actually runs: `--no-cache` has no
+            // baseline and `--files` never reaches the cache, so "new URLs"
+            // there would mislabel the full result set.
+            incremental: args.incremental && !args.no_cache && args.files.is_empty(),
             url_count,
             new_url_count: url_count,
             elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
@@ -174,13 +178,27 @@ pub fn build_payload(format: NotifyFormat, summary: &RunSummary) -> String {
         NotifyFormat::Json => {
             serde_json::to_string(summary).expect("RunSummary serializes infallibly")
         }
-        NotifyFormat::Slack => {
-            serde_json::json!({ "text": render_text(summary, SLACK_MAX_CHARS) }).to_string()
-        }
-        NotifyFormat::Discord => {
-            serde_json::json!({ "content": render_text(summary, DISCORD_MAX_CHARS) }).to_string()
-        }
+        // Archived URLs are attacker-chosen text: unescaped, Slack reads
+        // `http://t.com/<!channel>` as an @channel ping, and Discord pings on a
+        // bare `@everyone`. Escaping after the fit never cuts an entity in half;
+        // it can only lengthen a message that is far under Slack's hard ceiling.
+        NotifyFormat::Slack => serde_json::json!({
+            "text": slack_escape(&render_text(summary, SLACK_MAX_CHARS))
+        })
+        .to_string(),
+        NotifyFormat::Discord => serde_json::json!({
+            "content": render_text(summary, DISCORD_MAX_CHARS),
+            "allowed_mentions": { "parse": [] },
+        })
+        .to_string(),
     }
+}
+
+/// Escape Slack's three control characters, as its message format requires.
+fn slack_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// The human-readable message for the chat formats, at most `max_chars`
@@ -594,6 +612,48 @@ mod tests {
             serde_json::from_str(&build_payload(NotifyFormat::Discord, &s)).unwrap();
         assert_eq!(discord["content"].as_str().unwrap(), text);
         assert!(discord.get("text").is_none());
+    }
+
+    #[test]
+    fn chat_payloads_cannot_ping_from_an_archived_url() {
+        let s = RunSummary::new(
+            &build_test_args(),
+            vec!["t.com".to_string()],
+            &["http://t.com/<!channel>?a=1&b=@everyone".to_string()],
+            &[],
+            Duration::from_millis(1),
+        );
+
+        let slack: serde_json::Value =
+            serde_json::from_str(&build_payload(NotifyFormat::Slack, &s)).unwrap();
+        let text = slack["text"].as_str().unwrap();
+        assert!(
+            text.contains("http://t.com/&lt;!channel&gt;?a=1&amp;b=@everyone"),
+            "{text}"
+        );
+
+        let discord: serde_json::Value =
+            serde_json::from_str(&build_payload(NotifyFormat::Discord, &s)).unwrap();
+        assert_eq!(
+            discord["allowed_mentions"],
+            serde_json::json!({ "parse": [] })
+        );
+    }
+
+    #[test]
+    fn incremental_is_reported_only_when_a_diff_was_taken() {
+        let incremental =
+            |args: &Args| RunSummary::new(args, Vec::new(), &[], &[], Duration::ZERO).incremental;
+        let mut args = build_test_args();
+        args.incremental = true;
+        assert!(incremental(&args));
+
+        args.no_cache = true;
+        assert!(!incremental(&args), "--no-cache has no baseline");
+
+        args.no_cache = false;
+        args.files = vec!["urls.txt".into()];
+        assert!(!incremental(&args), "--files never reaches the cache");
     }
 
     #[test]

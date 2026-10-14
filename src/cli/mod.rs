@@ -178,8 +178,9 @@ pub struct Args {
     /// --include-status it costs no extra requests. CDX-backed providers only
     /// (wayback, cc, arquivo, --cdx-endpoint). Wayback and classic-dialect
     /// endpoints treat the value as a regex ("30." = any 3xx); cc, arquivo and
-    /// pywb endpoints match exactly and cannot take a multi-value list here —
-    /// urx warns and skips it for them.
+    /// pywb endpoints match a substring (give the full code: "20" also keeps
+    /// 201) and cannot take a multi-value list here — urx warns and skips it
+    /// for them.
     #[clap(help_heading = "Provider Options")]
     #[clap(long, value_delimiter = ',')]
     pub archive_status: Vec<String>,
@@ -931,10 +932,17 @@ pub fn normalize_domain(raw: &str) -> Option<String> {
     // A pasted full URL: let the URL parser pull out the host. This branch is
     // authoritative — a `://` means the input is meant as a URL, so if it has
     // no parseable host we return None rather than mis-reading the scheme.
+    // A non-default port is kept, as the bare `host:port` form keeps it.
     if trimmed.contains("://") {
-        return url::Url::parse(trimmed)
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+        let url = url::Url::parse(trimmed).ok()?;
+        let host = url.host_str()?.trim_end_matches('.').to_lowercase();
+        if host.is_empty() {
+            return None;
+        }
+        return Some(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host,
+        });
     }
     // Otherwise drop a scheme-relative prefix and anything from the first
     // path/query/fragment separator onward.
@@ -1232,6 +1240,15 @@ mod tests {
         assert_eq!(normalize_domain(""), None);
         assert_eq!(normalize_domain("   "), None);
         assert_eq!(normalize_domain("https://"), None);
+        // A non-default port is part of the target, as in the bare form.
+        assert_eq!(
+            normalize_domain("http://127.0.0.1:8765/").as_deref(),
+            Some("127.0.0.1:8765")
+        );
+        assert_eq!(
+            normalize_domain("https://Example.com.:443/").as_deref(),
+            Some("example.com")
+        );
     }
 
     #[test]

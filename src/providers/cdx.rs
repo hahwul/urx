@@ -36,7 +36,7 @@ use tokio::sync::OnceCell;
 use super::filters::{ArchiveFilters, CdxDialect};
 use super::wayback::split_page;
 use super::{CaptureMeta, Provider, RecordSet, UrlRecord};
-use crate::network::client::get_with_retry;
+use crate::network::client::{get_with_retry, get_with_retry_paced};
 use crate::network::{NetConfig, RateLimiter};
 use crate::progress::ProgressReporter;
 
@@ -163,16 +163,15 @@ impl CdxSession<'_> {
     /// cancel had thrown the buffer away. `None` means the run asked us to
     /// stop while the request was in flight.
     pub(crate) async fn get(&self, url: &str) -> Option<Result<String>> {
-        if let Some(rl) = self.limiter {
-            rl.acquire().await;
-        }
+        // The limiter paces every attempt, retries included.
+        let fetch = get_with_retry_paced(self.client, url, self.retries, self.limiter);
         let fetched = match self.reporter {
             Some(r) => tokio::select! {
                 biased;
                 _ = r.stopped() => None,
-                res = get_with_retry(self.client, url, self.retries) => Some(res),
+                res = fetch => Some(res),
             },
-            None => Some(get_with_retry(self.client, url, self.retries).await),
+            None => Some(fetch.await),
         };
         fetched.map(|res| res.and_then(|body| reject_html(&body, self.endpoint).map(|()| body)))
     }
@@ -336,7 +335,14 @@ pub(crate) async fn walk_block_pages(
         // The index returns 404 for a domain with no captures. Don't hard-fail
         // the probe; fall through to a single page=0 fetch so genuine "no data"
         // stays an empty/`Err` result exactly as a single request produces.
-        Some(Err(_)) => 1,
+        // Any other failure (5xx, network) leaves the real page count unknown,
+        // so page 0 alone may be a fraction of the result: say so.
+        Some(Err(e)) => {
+            if !e.to_string().contains("HTTP error: 404") {
+                session.mark_partial();
+            }
+            1
+        }
         // Stopped before the first row arrived: nothing to keep.
         None => {
             session.mark_partial();
@@ -356,6 +362,7 @@ pub(crate) async fn walk_block_pages(
     // capture, so rows are folded per URL as they arrive.
     let mut records = RecordSet::new();
     let mut consecutive_failures = 0usize;
+    let mut last_error = None;
     for page in 0..pages {
         let page_url = format!("{query_base}&page={page}");
         let Some(result) = session.get(&page_url).await else {
@@ -379,19 +386,14 @@ pub(crate) async fn walk_block_pages(
                 }
             }
             Err(e) => {
-                // A failure on the very first page (e.g. the 404 the index
-                // returns for a domain it has no captures for) is a hard
-                // failure, matching single-request behaviour.
-                if page == 0 {
-                    return Err(e);
-                }
-                // Later pages are *independently addressable* — `page=N` is a
-                // direct block address, not a cursor — so one bad page says
-                // nothing about the rest. Skipping it costs a slice; abandoning
-                // the walk here used to throw away every remaining page (on a
-                // 266-page domain, a single hiccup on page 5 discarded 98% of
-                // the result).
+                // Pages are *independently addressable* — `page=N` is a direct
+                // block address, not a cursor — so one bad page says nothing
+                // about the rest, page 0 included. Skipping it costs a slice;
+                // abandoning the walk here used to throw away every remaining
+                // page (on a 266-page domain, a single hiccup on page 5
+                // discarded 98% of the result).
                 session.mark_partial();
+                last_error = Some(e);
                 consecutive_failures += 1;
                 if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES {
                     // The index itself is unhealthy rather than one page being
@@ -399,6 +401,15 @@ pub(crate) async fn walk_block_pages(
                     break;
                 }
             }
+        }
+    }
+
+    // Nothing collected and something failed (e.g. the 404 the index returns
+    // for a domain it has no captures for): a hard failure, matching
+    // single-request behaviour.
+    if records.is_empty() {
+        if let Some(e) = last_error {
+            return Err(e);
         }
     }
 
@@ -843,6 +854,83 @@ mod tests {
         page0.assert();
         page1.assert();
         page2.assert();
+    }
+
+    /// Mock a block-page index: the probe answers `probe_status`/`probe_body`,
+    /// and each `(page, status, body)` is one page. Walks it and returns the
+    /// result plus whether the walk was marked partial.
+    async fn walk_mocked(
+        probe_status: usize,
+        probe_body: &str,
+        pages: &[(&str, usize, &str)],
+    ) -> (Result<Vec<UrlRecord>>, bool) {
+        let mut server = mockito::Server::new_async().await;
+        let mut mocks = vec![
+            server
+                .mock("GET", "/cdx")
+                .match_query(Matcher::UrlEncoded("showNumPages".into(), "true".into()))
+                .with_status(probe_status)
+                .with_body(probe_body)
+                .create_async()
+                .await,
+        ];
+        for (page, status, body) in pages {
+            mocks.push(
+                server
+                    .mock("GET", "/cdx")
+                    .match_query(Matcher::UrlEncoded("page".into(), page.to_string()))
+                    .with_status(*status)
+                    .with_body(*body)
+                    .create_async()
+                    .await,
+            );
+        }
+        let origin = server.url();
+        let query_base = format!("{origin}/cdx?url=example.com/*&output=json");
+        let client = Client::new();
+        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let session = CdxSession {
+            client: &client,
+            retries: 0,
+            limiter: None,
+            reporter: Some(&reporter),
+            endpoint: &origin,
+        };
+        let result = walk_block_pages(&session, &query_base, MAX_PAGES).await;
+        (result, reporter.is_partial())
+    }
+
+    #[tokio::test]
+    async fn a_failed_page_count_probe_marks_the_single_page_partial() {
+        let row = "{\"url\":\"https://example.com/a\"}\n";
+        // A 5xx probe leaves the page count unknown: page 0 may be a fraction.
+        let (records, partial) = walk_mocked(503, "", &[("0", 200, row)]).await;
+        assert_eq!(records.unwrap().len(), 1);
+        assert!(partial, "an unknown page count is not a complete crawl");
+
+        // A 404 probe is the index saying "no captures": nothing is missing.
+        let (records, partial) = walk_mocked(404, "", &[("0", 200, row)]).await;
+        assert_eq!(records.unwrap().len(), 1);
+        assert!(!partial);
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_page_is_skipped_when_the_probe_counted_pages() {
+        let (records, partial) = walk_mocked(
+            200,
+            "{\"pages\":2}",
+            &[
+                ("0", 500, ""),
+                ("1", 200, "{\"url\":\"https://example.com/b\"}\n"),
+            ],
+        )
+        .await;
+        assert_eq!(urls_of(records.unwrap()), vec!["https://example.com/b"]);
+        assert!(partial);
+
+        // Without a count, page 0 is the whole result and its failure is fatal.
+        let (records, _) = walk_mocked(200, "not a count", &[("0", 500, "")]).await;
+        assert!(records.is_err());
     }
 
     #[tokio::test]

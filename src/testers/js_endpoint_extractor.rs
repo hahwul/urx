@@ -334,7 +334,8 @@ fn is_noise(candidate: &str, origin: Origin) -> bool {
     // CSS shorthand and numeric ratios: `"12px/1.5"` (font), `"16/9"`
     // (aspect-ratio), `"1/2"`, `"100%/auto"`. Every segment is numeric with an
     // optional unit or keyword and nothing looks like a word — no letters
-    // beyond a unit suffix.
+    // beyond a unit suffix. Request-call arguments are exempt, as are the
+    // format strings below: `fetch("/2024/05")`, `fetch("/sms")` are requests.
     let all_numeric_ish = segments.iter().all(|s| {
         let digits = s
             .bytes()
@@ -342,7 +343,7 @@ fn is_noise(candidate: &str, origin: Origin) -> bool {
             .count();
         digits > 0 && s.len() - digits <= 4
     });
-    if !segments.is_empty() && all_numeric_ish {
+    if origin == Origin::Literal && !segments.is_empty() && all_numeric_ish {
         return true;
     }
 
@@ -353,7 +354,7 @@ fn is_noise(candidate: &str, origin: Origin) -> bool {
             && s.bytes()
                 .all(|b| matches!(b.to_ascii_lowercase(), b'd' | b'm' | b'y' | b'h' | b's'))
     });
-    if !segments.is_empty() && all_format_letters {
+    if origin == Origin::Literal && !segments.is_empty() && all_format_letters {
         return true;
     }
 
@@ -464,8 +465,13 @@ fn is_concat_suffix(script: &str, start: usize) -> bool {
 ///   actively wrong: no app serves its API from under its asset path. The
 ///   origin root is the least-wrong guess (most SPAs are served from `/`),
 ///   and is what LinkFinder does as well.
-fn resolve(base: &Url, candidate: &str) -> Option<String> {
-    let resolved = if candidate.starts_with("http://")
+///
+/// With `in_document` set, the script is inline in a page whose URL (`base`,
+/// already adjusted for `<base href>`) *is* the document URL, so every
+/// candidate resolves against it exactly as the browser would.
+fn resolve(base: &Url, candidate: &str, in_document: bool) -> Option<String> {
+    let resolved = if in_document
+        || candidate.starts_with("http://")
         || candidate.starts_with("https://")
         || candidate.starts_with("//")
         || candidate.starts_with('/')
@@ -526,6 +532,10 @@ impl JsEndpointExtractor {
     /// Mine `script` for endpoints, resolved against `base` and deduplicated
     /// in first-seen order.
     pub fn extract_endpoints(base: &Url, script: &str) -> Vec<String> {
+        Self::extract_from(base, script, false)
+    }
+
+    fn extract_from(base: &Url, script: &str, in_document: bool) -> Vec<String> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
 
@@ -534,7 +544,7 @@ impl JsEndpointExtractor {
             if raw.is_empty() || is_noise(raw, origin) {
                 return;
             }
-            if let Some(url) = resolve(base, raw) {
+            if let Some(url) = resolve(base, raw, in_document) {
                 if seen.insert(url.clone()) {
                     out.push(url);
                 }
@@ -578,13 +588,18 @@ impl JsEndpointExtractor {
         out
     }
 
-    /// Mine only the inline `<script>` blocks of an HTML document.
+    /// Mine only the inline `<script>` blocks of an HTML document. Relative
+    /// candidates resolve against the page (or its first `<base href>`), not
+    /// the origin root: here the document URL is known.
     pub fn extract_inline_endpoints(base: &Url, html: &str) -> Vec<String> {
+        // Parsed as HTML, not pattern-matched: a `data-href` or a `<base`
+        // inside a script string must not rebase the page.
+        let doc_base = super::link_extractor::html_document_base(base, html);
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         for cap in PATTERNS.inline_script.captures_iter(html) {
             if let Some(block) = cap.get(1) {
-                for url in Self::extract_endpoints(base, block.as_str()) {
+                for url in Self::extract_from(&doc_base, block.as_str(), true) {
                     if seen.insert(url.clone()) {
                         out.push(url);
                     }
@@ -807,6 +822,41 @@ mod tests {
             vec![
                 "https://app.example.com/api/flags",
                 "https://app.example.com/api/bootstrap",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_inline_scripts_resolve_against_the_page_and_base_href() {
+        let page = Url::parse("https://ex.com/app/index.html").unwrap();
+        let script = r#"<script>fetch("api/users");fetch("./api/orders")</script>"#;
+        assert_eq!(
+            JsEndpointExtractor::extract_inline_endpoints(&page, script),
+            vec![
+                "https://ex.com/app/api/users",
+                "https://ex.com/app/api/orders"
+            ]
+        );
+        let decoy = r#"<script>var t = '<base href="' + x + '">';</script>"#;
+        let html = format!(
+            r#"<head><base target="_blank" data-href="/cdn/"><base href="/v2/"></head>{decoy}{script}"#
+        );
+        assert_eq!(
+            JsEndpointExtractor::extract_inline_endpoints(&page, &html),
+            vec![
+                "https://ex.com/v2/api/users",
+                "https://ex.com/v2/api/orders"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_request_call_args_survive_numeric_and_date_noise_rules() {
+        assert_eq!(
+            extract(r#"fetch("/sms"); fetch("/2024/05"); x = "/2024/05"; y = "dd/mm";"#),
+            vec![
+                "https://app.example.com/sms",
+                "https://app.example.com/2024/05"
             ]
         );
     }

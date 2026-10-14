@@ -206,7 +206,9 @@ keep the results.
 }
 ```
 
-`providers` has the same numbers `--stats` prints. `sample` holds up to 20
+`incremental` is `true` only when the run diffed against the cache, so it is
+`false` under `--no-cache` or `--files`. `providers` has the same numbers
+`--stats` prints. `sample` holds up to 20
 emitted URLs in output order, and `sample_truncated` is `true` when there were
 more. Under `--stream` the payload has the count and an empty sample
 (`sample_truncated` is `true` if any URL was emitted).
@@ -217,6 +219,8 @@ totals, the URL sample, and `… N more not shown` when the sample is short of
 the total. The text is cut on a line boundary at 2000 characters for Discord
 and 4000 for Slack, and ends with
 `[truncated: N lines cut to fit the message limit]`. A URL is never split.
+Archived URLs cannot ping anyone: Slack text escapes `&`, `<` and `>`, and the
+Discord payload sets `"allowed_mentions": {"parse": []}`.
 
 ### Failure handling
 
@@ -265,6 +269,8 @@ return captures, so each URL comes with these fields:
 When the same URL comes from several captures or archives, the fields merge:
 `first_seen` is the oldest timestamp, `last_seen` the newest, and
 `mime`/`archive_status` come from the most recent capture that had them.
+Wayback returns one capture per URL, its newest, so from Wayback alone
+`first_seen` equals `last_seen`.
 Providers with no capture index (`otx`, `vt`, `urlscan`, `zoomeye`, `github`,
 `bevigil`, `robots`, `sitemap`) and `--files` input report the URL only. A
 domain served from cache has no metadata either (the cache stores URLs only);
@@ -547,7 +553,7 @@ Singular spellings (e.g. `no-image`, `only-font`) work too.
 ### Security Presets
 
 These match a listed extension **or** a listed shape. Substring shape rules are
-checked against the whole lower-cased URL, query included. So `only-secrets`
+checked against the lower-cased path, query and fragment (never the host). So `only-secrets`
 catches `/.env` (no extension) and `only-backup` catches `/index.php~`.
 
 | Preset | Description |
@@ -724,7 +730,7 @@ urx example.com --providers wayback --archive-mime application/json
 
 | | `wayback`, `--cdx-dialect classic` endpoints | `cc`, `arquivo`, pywb endpoints |
 |---|---|---|
-| Value matching | regex (`--archive-status "30."` matches any 3xx) | exact |
+| Value matching | regex (`--archive-status "30."` matches any 3xx) | substring (give the full value: `20` also matches `201`) |
 | Positive list (`--archive-status 200,301`, `--archive-mime a,b`) | works | skipped with a warning (repeated filters are ANDed, so it could never match) |
 | Exclusion list (`--archive-exclude-*`) | works | works |
 
@@ -948,6 +954,7 @@ urx big-target.com --stream -f jsonl | jq -r 'select(.url | test("/api/")) | .ur
   until every URL is in).
 - The cache is bypassed.
 - `--silent` does not hide streamed URLs.
+- When the reader goes away (`| head -1`), fetching stops and the run exits 0.
 - Memory use is lower: only the set of URLs already written is kept.
 - `--normalize-url`, the `--show-only-*` views, `--scope-file` and
   `--archived-discovery` work with it.

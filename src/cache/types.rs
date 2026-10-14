@@ -194,6 +194,10 @@ impl CacheFilters {
 pub struct CacheEntry {
     pub urls: Vec<String>,
     pub timestamp: DateTime<Utc>,
+    /// An `--incremental` baseline. Those are diffed against with no TTL, so
+    /// the expiry sweep must leave them alone.
+    #[serde(default)]
+    pub baseline: bool,
 }
 
 impl CacheEntry {
@@ -202,6 +206,7 @@ impl CacheEntry {
         Self {
             urls,
             timestamp: Utc::now(),
+            baseline: false,
         }
     }
 

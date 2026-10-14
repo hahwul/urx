@@ -37,9 +37,9 @@ urx -c example/config.toml example.com
 Caching is on by default; `--no-cache` turns it off. After a scan, urx stores the URLs collected for each domain in SQLite (local) or Redis (remote).
 
 - Normal run: if the domain has an entry younger than `--cache-ttl`, urx returns the cached URLs and skips the providers for that domain. Otherwise it fetches fresh results and replaces the entry.
-- `--incremental` run: urx always fetches fresh results, prints only URLs the previous run had not seen, then stores the full fresh set as the next baseline.
+- `--incremental` run: urx always fetches fresh results, prints only URLs no earlier run had seen, then adds the fresh set to the baseline. The baseline only grows, so a run cut short never makes the next one re-report URLs.
 
-A cache entry belongs to one domain and one configuration. The key covers the domain (or path-scoped target), the effective provider list, and the options that change what is collected: `--subs`, `-e` / `--exclude-extensions`, `--patterns` / `--exclude-patterns`, `--match-regex` / `--filter-regex`, `-p`, `--min-length` / `--max-length`, `--strict`, `--normalize-url`, `--merge-endpoint`, `--dedup-similar`, `--cc-index`, `--from` / `--to`, the `--archive-*` filters, `--archived-discovery` (and a non-default `--archived-discovery-limit`), and `--cdx-endpoint` / `--cdx-dialect`. Change any of these and the run starts a new baseline, so an incremental scan re-reports everything once. Setting a `URX_*_API_KEY` variable adds that provider to the list, which also changes the key. `--incremental` is not part of the key: a normal run refreshes the same baseline an incremental run compares against.
+A cache entry belongs to one domain and one configuration. The key covers the domain (or path-scoped target), the effective provider list, and the options that change what is collected: `--subs`, `-e` / `--exclude-extensions`, `--patterns` / `--exclude-patterns`, `--match-regex` / `--filter-regex`, `-p`, `--min-length` / `--max-length`, `--strict`, `--normalize-url`, `--merge-endpoint`, `--dedup-similar`, `--cc-index`, `--from` / `--to`, the `--archive-*` filters, `--archived-discovery` (and a non-default `--archived-discovery-limit`), and `--cdx-endpoint` / `--cdx-dialect`. Change any of these and the run starts a new baseline, so an incremental scan re-reports everything once. Setting a `URX_*_API_KEY` variable adds that provider to the list, which also changes the key. `--incremental` is not part of the key: a normal run adds its URLs to the baseline an incremental run compares against (it never shrinks it), and its cache hits return that baseline.
 
 ### Incremental Scanning
 
@@ -81,9 +81,9 @@ urx example.com --cache-type redis --redis-url redis://localhost:6379
 
 The TTL sets how long an entry is served instead of a fresh fetch. Default: 86400 seconds (24 hours).
 
-It also drives cleanup. At the end of every scan, urx deletes every entry older than twice the TTL, for any domain. `urx cache prune` deletes entries older than the TTL. An incremental baseline that ages out is gone, and the next incremental run reports everything again, so set the TTL well above your scan interval.
+It also drives cleanup. At the end of every scan, urx deletes every entry older than twice the TTL, for any domain, except entries an `--incremental` run wrote: those baselines are compared against with no TTL, so the sweep keeps them. `urx cache prune` deletes every entry older than the TTL, baselines included, and `urx cache drop` removes one domain's.
 
-The sweep uses the TTL of the run doing it. One run with `--cache-ttl 300` deletes every entry older than 10 minutes in that database, including other targets' baselines. Give short-TTL experiments their own `--cache-path`.
+The sweep uses the TTL of the run doing it. One run with `--cache-ttl 300` deletes every non-baseline entry older than 10 minutes in that database. Give short-TTL experiments their own `--cache-path`.
 
 ```bash
 # 5 minutes, in its own cache
@@ -106,10 +106,10 @@ With `--no-cache`, `--incremental` has no baseline and is ignored: every URL is 
 
 ### What the Cache Does and Does Not Hold
 
-- It stores the host-validated URLs the providers returned, before filters run. Filters and output views apply afterwards, on hits and misses alike. The host check applies even under `--no-strict`, so a cache hit or an `--incremental` run never returns the off-host URLs `--no-strict` would otherwise keep.
+- It stores the host-validated URLs the providers returned, before filters run. Filters and output views apply afterwards, on hits and misses alike. Under `--no-strict` it also keeps the off-host URLs, so a hit returns what the miss did; a multi-domain `--no-strict` run that found off-host URLs is not cached, because they cannot be attributed to one domain, and under `--incremental` such a run leaves them out of the baselines and the output.
 - It stores URLs only: no provider attribution and no archive capture metadata. On a hit, `--show-sources` has nothing to show, JSON/CSV lack `first_seen` / `last_seen` / `mime` / `archive_status` / `digest`, positive `--meta-*` filters drop everything (`--meta-exclude-*` drop nothing), `--archive-body` has nothing to replay, and `--stats` stays empty. Add `--no-cache` when you need those.
 - `--stream` and `--files` bypass the cache.
-- A normal run cut short by `--max-time`, Ctrl-C or provider errors is cached like any other, so the next run within the TTL gets its partial result. A domain that returned no URLs is not cached. An `--incremental` run always stores what it got as the new baseline, even a partial or empty set, so the next run reports the missing URLs as new again.
+- A normal run does not cache a domain that `--max-time`, Ctrl-C or a provider error left incomplete, nor one that returned no URLs; the next run fetches it again. An `--incremental` run adds whatever it got to the baseline, even a partial set, which is safe because the baseline never shrinks.
 - A cache backend that can't be opened (an unreachable Redis server, say) is a fatal error. There is no silent fallback.
 
 ### Inspecting and Maintaining the Cache

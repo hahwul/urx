@@ -74,6 +74,20 @@ impl SqliteCache {
             )
             .context("Failed to create timestamp index")?;
 
+            // Added after the table shipped, so older databases gain it here.
+            let has_baseline: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM pragma_table_info('url_cache') WHERE name = 'baseline'",
+                [],
+                |row| row.get(0),
+            )?;
+            if !has_baseline {
+                conn.execute(
+                    "ALTER TABLE url_cache ADD COLUMN baseline INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context("Failed to add baseline column")?;
+            }
+
             Ok::<(), anyhow::Error>(())
         })
         .await??;
@@ -131,8 +145,8 @@ impl CacheBackend for SqliteCache {
         let cache_key = format!("{}", key);
 
         self.with_connection(move |conn| {
-            let mut stmt =
-                conn.prepare("SELECT urls, timestamp FROM url_cache WHERE cache_key = ?1")?;
+            let mut stmt = conn
+                .prepare("SELECT urls, timestamp, baseline FROM url_cache WHERE cache_key = ?1")?;
 
             let result = stmt
                 .query_row(params![cache_key], |row| {
@@ -155,7 +169,11 @@ impl CacheBackend for SqliteCache {
                         )
                     })?;
 
-                    Ok(CacheEntry { urls, timestamp })
+                    Ok(CacheEntry {
+                        urls,
+                        timestamp,
+                        baseline: row.get(2)?,
+                    })
                 })
                 .optional()?;
 
@@ -171,15 +189,24 @@ impl CacheBackend for SqliteCache {
         let filters_hash = key.filters_hash.clone();
         let urls = serde_json::to_string(&entry.urls)?;
         let timestamp = entry.timestamp.to_rfc3339();
+        let baseline = entry.baseline;
 
         self.with_connection(move |conn| {
             conn.execute(
                 r#"
                 INSERT OR REPLACE INTO url_cache
-                (cache_key, domain, providers, filters_hash, urls, timestamp)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (cache_key, domain, providers, filters_hash, urls, timestamp, baseline)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 "#,
-                params![cache_key, domain, providers, filters_hash, urls, timestamp],
+                params![
+                    cache_key,
+                    domain,
+                    providers,
+                    filters_hash,
+                    urls,
+                    timestamp,
+                    baseline
+                ],
             )?;
             Ok(())
         })
@@ -270,16 +297,17 @@ impl CacheAdmin for SqliteCache {
         .await?)
     }
 
-    async fn delete_expired(&self, ttl_seconds: u64) -> Result<usize> {
+    async fn delete_expired(&self, ttl_seconds: u64, keep_baselines: bool) -> Result<usize> {
         // Selected and tested in Rust rather than compared as SQL strings, so
         // the sweep uses exactly the expiry rule `CacheEntry::is_expired` uses
         // — including its clock-skew guard — and a row stored in some other
         // timestamp format can't be deleted by a lexicographic accident.
         let doomed: Vec<i64> = self
             .with_connection(move |conn| {
-                let mut stmt = conn.prepare("SELECT id, timestamp FROM url_cache")?;
+                let mut stmt = conn
+                    .prepare("SELECT id, timestamp FROM url_cache WHERE ?1 = 0 OR baseline = 0")?;
                 let rows = stmt
-                    .query_map([], |row| {
+                    .query_map(params![keep_baselines], |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                     })?
                     .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -429,7 +457,7 @@ mod tests {
         let cache = admin_cache(&dir).await?;
 
         assert!(cache.entries().await?.is_empty());
-        assert_eq!(cache.delete_expired(3600).await?, 0);
+        assert_eq!(cache.delete_expired(3600, false).await?, 0);
         assert_eq!(cache.delete_domains(&["example.com".to_string()]).await?, 0);
         assert_eq!(cache.clear().await?, 0);
         Ok(())
@@ -444,13 +472,13 @@ mod tests {
         seed(&cache, "stale.test", "a", 1, 7200).await?;
         seed(&cache, "stale.test", "b", 1, 90_000).await?;
 
-        assert_eq!(cache.delete_expired(3600).await?, 2);
+        assert_eq!(cache.delete_expired(3600, false).await?, 2);
         let left = cache.entries().await?;
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].domain, "fresh.test");
 
         // Idempotent: a second sweep has nothing left to take.
-        assert_eq!(cache.delete_expired(3600).await?, 0);
+        assert_eq!(cache.delete_expired(3600, false).await?, 0);
         Ok(())
     }
 
@@ -462,7 +490,7 @@ mod tests {
         let cache = admin_cache(&dir).await?;
         seed(&cache, "example.com", "a", 1, 90_000).await?;
 
-        assert_eq!(cache.delete_expired(u64::MAX).await?, 0);
+        assert_eq!(cache.delete_expired(u64::MAX, false).await?, 0);
         assert_eq!(cache.entries().await?.len(), 1);
         Ok(())
     }

@@ -4,7 +4,7 @@
 //! is pure and cheap, so the cache key can ask "which providers would this run
 //! use?" without instantiating a single HTTP client.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
@@ -104,7 +104,16 @@ pub fn effective_provider_ids(args: &Args) -> Vec<String> {
     }
 
     let excluded_ids = trimmed_ids(&args.exclude_providers);
-    let excluded: HashSet<&str> = excluded_ids.iter().map(String::as_str).collect();
+    let mut excluded: HashSet<&str> = excluded_ids.iter().map(String::as_str).collect();
+    // The documented equivalents of `--exclude-providers robots,sitemap`: they
+    // must also remove an id that `--providers` named, not only skip the
+    // automatic add.
+    if args.exclude_robots {
+        excluded.insert("robots");
+    }
+    if args.exclude_sitemap {
+        excluded.insert("sitemap");
+    }
     providers_list.retain(|p| !excluded.contains(p.as_str()));
 
     for (id, requested) in [
@@ -244,6 +253,7 @@ pub fn initialize_providers(
 
     let mut providers: Vec<Box<dyn Provider>> = Vec::new();
     let mut names: Vec<String> = Vec::new();
+    let mut limiters = HashMap::new();
 
     // Every provider is registered the same way; the macro keeps the shared
     // `args`/`network_settings`/accumulator arguments out of ten call sites.
@@ -257,6 +267,7 @@ pub fn initialize_providers(
                 network_settings,
                 &mut providers,
                 &mut names,
+                &mut limiters,
                 $id,
                 $label,
                 $builder,
@@ -668,6 +679,22 @@ mod tests {
         assert!(
             !ids.iter().any(|p| p == "vt"),
             "--exclude-providers must beat key-driven auto-enable; got {ids:?}"
+        );
+    }
+
+    #[test]
+    fn test_exclude_robots_and_sitemap_beat_an_explicit_providers_list() {
+        // Under ENV: other tests set provider keys, which auto-add providers.
+        let _env_lock = ENV.lock().unwrap();
+        let mut args = build_test_args();
+        args.providers = vec!["wayback".into(), "robots".into(), "sitemap".into()];
+        args.exclude_robots = true;
+        args.exclude_sitemap = true;
+        let ids = effective_provider_ids(&args);
+        assert!(ids.iter().any(|p| p == "wayback"), "{ids:?}");
+        assert!(
+            !ids.iter().any(|p| p == "robots" || p == "sitemap"),
+            "{ids:?}"
         );
     }
 

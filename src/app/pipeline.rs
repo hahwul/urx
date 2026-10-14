@@ -86,7 +86,28 @@ fn collect_domains_with_stdin(
         domains.extend(read_stdin()?);
     }
 
-    let mut normalized = normalize_domains(&domains);
+    let normalized = normalize_domains(&domains);
+    // Scope-file spelling is taken literally by every provider and by host
+    // validation, so such a target would come back empty without saying why.
+    // One stray line in a long list is skipped with a warning; a run with
+    // nothing else to scan is an error.
+    let (wild, mut normalized): (Vec<String>, Vec<String>) =
+        normalized.into_iter().partition(|d| {
+            let host = cli::split_target(d).0;
+            host.starts_with('.') || host.contains('*')
+        });
+    for target in &wild {
+        let advice = format!(
+            "{target:?} is not a target; pass `{} --subs` to include subdomains",
+            cli::split_target(target).0.trim_start_matches(['*', '.'])
+        );
+        if normalized.is_empty() {
+            anyhow::bail!(advice);
+        }
+        if !args.silent {
+            crate::utils::stderr_line(&format!("Skipping {advice}"));
+        }
+    }
     let mut seen = HashSet::new();
     normalized.retain(|d| seen.insert(d.clone()));
     Ok(normalized)
@@ -276,6 +297,20 @@ pub fn validate_result_filters(args: &Args) -> Result<()> {
     if let (Some(view), Some(tester)) = (view, tester) {
         anyhow::bail!(
             "{view} cannot be combined with {tester}: the view rewrites URLs before they would be requested"
+        );
+    }
+    // A wordlist is cut from URLs; a view has already turned them into hosts,
+    // paths or parameter names, which yield no terms — an empty run, exit 0.
+    if let (Some(view), crate::output::Format::Wordlist) = (view, args.format) {
+        anyhow::bail!(
+            "{view} cannot be combined with --format wordlist: the wordlist is built from whole URLs"
+        );
+    }
+    // A merged endpoint carries the union of several URLs' queries — a URL no
+    // archive ever captured, so `--archive-body` would have nothing to replay.
+    if args.merge_endpoint && args.archive_body {
+        anyhow::bail!(
+            "--merge-endpoint cannot be combined with --archive-body: merged URLs were never captured, so there is nothing to replay"
         );
     }
     // clap's `requires` covers the command line, but a config file can set
@@ -915,8 +950,19 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
 /// Built from the run result rather than the output list on purpose: the
 /// output may have been reshaped by `--show-only-*`, and a URL that no longer
 /// matches what the providers reported has no capture to look up.
-pub fn archive_captures(run_result: &ProviderRunResult) -> HashMap<String, ArchiveCapture> {
-    run_result
+///
+/// With `normalize` (`--normalize-url`) each capture is also keyed by the
+/// normalised form the tester will be handed; when several URLs collapse into
+/// one, the newest capture wins.
+pub fn archive_captures(
+    run_result: &ProviderRunResult,
+    normalize: bool,
+) -> HashMap<String, ArchiveCapture> {
+    let normalizer = UrlTransformer {
+        normalize_url: true,
+        ..Default::default()
+    };
+    let mut captures: HashMap<String, ArchiveCapture> = run_result
         .urls
         .iter()
         .filter_map(|(url, entry)| {
@@ -934,7 +980,26 @@ pub fn archive_captures(run_result: &ProviderRunResult) -> HashMap<String, Archi
                 },
             ))
         })
-        .collect()
+        .collect();
+    if normalize {
+        let aliases: Vec<(String, ArchiveCapture)> = captures
+            .iter()
+            .filter_map(|(url, capture)| {
+                let key = normalizer.transform_one(url)?;
+                (&key != url).then(|| (key, capture.clone()))
+            })
+            .collect();
+        for (key, capture) in aliases {
+            match captures.get(&key) {
+                // 14-digit timestamps order lexicographically.
+                Some(existing) if existing.timestamp >= capture.timestamp => {}
+                _ => {
+                    captures.insert(key, capture);
+                }
+            }
+        }
+    }
+    captures
 }
 
 /// Build the `--archive-body` tester over the run result, or `None` when the
@@ -950,8 +1015,10 @@ pub fn build_archive_body_extractor(
     }
     verbose_print(args, "Extracting links from archived response bodies");
 
-    let mut extractor =
-        ArchiveBodyExtractor::new(archive_captures(run_result), args.archive_body_limit);
+    let mut extractor = ArchiveBodyExtractor::new(
+        archive_captures(run_result, args.normalize_url),
+        args.archive_body_limit,
+    );
     apply_network_settings_to_tester(&mut extractor, network_settings);
     // Every replay request goes to the Wayback Machine, so the rate that
     // applies is the one the user set for it — `--rate-limit-by wayback=N`
@@ -1324,7 +1391,7 @@ mod tests {
             .urls
             .insert("https://example.com/c".to_string(), UrlEntry::default());
 
-        let captures = archive_captures(&run_result);
+        let captures = archive_captures(&run_result, false);
         assert_eq!(
             captures["https://example.com/a"],
             ArchiveCapture {
@@ -1340,6 +1407,51 @@ mod tests {
             }
         );
         assert!(!captures.contains_key("https://example.com/c"));
+    }
+
+    #[test]
+    fn test_archive_captures_are_found_under_the_normalized_url() {
+        use crate::providers::CaptureMeta;
+        use crate::runner::UrlEntry;
+
+        let mut run_result = ProviderRunResult::default();
+        for (url, ts) in [
+            ("https://example.com/about/", "20100101000000"),
+            ("https://example.com/about", "20200101000000"),
+            ("http://example.com:80/a?z=1&a=2", "20150101000000"),
+        ] {
+            let mut entry = UrlEntry::default();
+            entry.absorb("wayback", &CaptureMeta::capture(Some(ts), None, None, None));
+            run_result.urls.insert(url.to_string(), entry);
+        }
+
+        let captures = archive_captures(&run_result, true);
+        // The newer capture wins when two URLs normalise to one.
+        assert_eq!(
+            captures["https://example.com/about"].timestamp,
+            "20200101000000"
+        );
+        assert_eq!(
+            captures["http://example.com/a?a=2&z=1"].timestamp,
+            "20150101000000"
+        );
+        assert!(!archive_captures(&run_result, false).contains_key("http://example.com/a?a=2&z=1"));
+    }
+
+    #[test]
+    fn test_views_are_rejected_with_the_wordlist_format() {
+        let args = Args::parse_from(["urx", "-f", "wordlist", "--show-only-path", "example.com"]);
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("wordlist"), "{err}");
+    }
+
+    #[test]
+    fn test_merge_endpoint_is_rejected_with_archive_body() {
+        let mut args = build_test_args();
+        args.merge_endpoint = true;
+        args.archive_body = true;
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("--merge-endpoint"), "{err}");
     }
 
     #[test]
@@ -1373,6 +1485,23 @@ mod tests {
         assert_eq!(
             filter.accept("https://anywhere.test/x").as_deref(),
             Some("https://anywhere.test/x")
+        );
+    }
+
+    #[test]
+    fn test_wildcard_targets_are_rejected_with_the_subs_spelling() {
+        for raw in ["*.example.com", ".example.com"] {
+            let args = Args::parse_from(["urx", raw]);
+            let err = collect_domains_with_stdin(&args, || Ok(Vec::new()))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("example.com --subs"), "{raw}: {err}");
+        }
+        // Alongside real targets, a wildcard line is skipped, not fatal.
+        let args = Args::parse_from(["urx", "--silent", "*.example.com", "example.org"]);
+        assert_eq!(
+            collect_domains_with_stdin(&args, || Ok(Vec::new())).unwrap(),
+            vec!["example.org"]
         );
     }
 
