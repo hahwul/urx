@@ -19,8 +19,10 @@ use serde::Serialize;
 use super::admin::{
     domain_matches, is_expired, summarize_domains, summarize_stats, CacheStats, DomainSummary,
 };
+use crate::app::shell::write_stdout;
 use crate::cli::Args;
 use crate::output::Format;
+use crate::utils::stdout_line;
 
 // Top-level subcommands.
 //
@@ -103,9 +105,9 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                 admin.size_bytes().await?,
             );
             if json {
-                println!("{}", serde_json::to_string_pretty(&stats)?);
+                write_stdout(format!("{}\n", serde_json::to_string_pretty(&stats)?).as_bytes())?;
             } else {
-                print!("{}", render_stats(&stats));
+                write_stdout(render_stats(&stats).as_bytes())?;
             }
         }
 
@@ -113,9 +115,9 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
             let entries = admin.entries().await?;
             let rows = summarize_domains(&entries, ttl, domain.as_deref());
             if json {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
+                write_stdout(format!("{}\n", serde_json::to_string_pretty(&rows)?).as_bytes())?;
             } else {
-                print!("{}", render_list(&rows, domain.as_deref()));
+                write_stdout(render_list(&rows, domain.as_deref()).as_bytes())?;
             }
         }
 
@@ -132,9 +134,9 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                 ttl_seconds: ttl,
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                write_stdout(format!("{}\n", serde_json::to_string_pretty(&report)?).as_bytes())?;
             } else {
-                print!("{}", render_prune(&report, expected));
+                write_stdout(render_prune(&report, expected).as_bytes())?;
             }
         }
 
@@ -169,9 +171,9 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                 unmatched,
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                write_stdout(format!("{}\n", serde_json::to_string_pretty(&report)?).as_bytes())?;
             } else {
-                print!("{}", render_drop(&report));
+                write_stdout(render_drop(&report).as_bytes())?;
             }
         }
 
@@ -179,15 +181,15 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
             let entries = admin.entries().await?;
             if !yes && !confirm_clear(entries.len(), &admin.location())? {
                 // Not an error: the user was asked and said no.
-                println!("Aborted; nothing was deleted.");
+                stdout_line("Aborted; nothing was deleted.");
                 return Ok(());
             }
             let cleared = admin.clear().await?;
             let report = ClearReport { cleared };
             if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                write_stdout(format!("{}\n", serde_json::to_string_pretty(&report)?).as_bytes())?;
             } else {
-                print!("{}", render_clear(&report));
+                write_stdout(render_clear(&report).as_bytes())?;
             }
         }
     }
@@ -210,7 +212,8 @@ fn confirm_clear(entries: usize, location: &str) -> Result<bool> {
         );
     }
 
-    eprint!(
+    let _ = write!(
+        std::io::stderr(),
         "Delete all {entries} cached {} from {location}? [y/N] ",
         entries_noun(entries)
     );

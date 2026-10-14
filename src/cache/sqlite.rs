@@ -36,6 +36,7 @@ impl SqliteCache {
 
         task::spawn_blocking(move || {
             let conn = Connection::open(&db_path).context("Failed to open SQLite database")?;
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
             conn.execute(
                 r#"
@@ -89,6 +90,7 @@ impl SqliteCache {
         let db_path = self.db_path.clone();
         task::spawn_blocking(move || {
             let conn = Connection::open(&db_path).context("Failed to open SQLite database")?;
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
             f(&conn)
         })
         .await?

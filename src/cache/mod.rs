@@ -96,7 +96,8 @@ impl CacheManager {
     /// The entry for `key` if it is younger than `ttl_seconds`. An expired
     /// entry is deleted on the way out and reads as a miss.
     pub async fn get_fresh(&self, key: &CacheKey, ttl_seconds: u64) -> Result<Option<CacheEntry>> {
-        match self.backend.get(key).await? {
+        // A failed read (corrupt or foreign row) is a miss, not a dead run.
+        match self.backend.get(key).await.ok().flatten() {
             Some(entry) if entry.is_expired(ttl_seconds) => {
                 let _ = self.backend.delete(key).await;
                 Ok(None)
@@ -116,6 +117,7 @@ impl CacheManager {
         key: &CacheKey,
         new_urls: &HashSet<String>,
     ) -> Result<HashSet<String>> {
+        // Not a miss: an unreadable baseline would report every URL as new.
         match self.backend.get(key).await? {
             Some(cached_entry) => {
                 let cached_urls: HashSet<String> = cached_entry.urls.into_iter().collect();

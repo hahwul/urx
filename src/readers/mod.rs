@@ -1,3 +1,4 @@
+use crate::utils::stderr_line;
 use anyhow::Result;
 use std::fs::File;
 use std::io::{BufRead, Read, Seek};
@@ -213,25 +214,25 @@ pub(crate) fn warn_if_truncated(
     max_bytes: u64,
 ) {
     if url_capped {
-        eprintln!(
+        stderr_line(&format!(
             "[urx] {}: stopped at the {}-URL cap; results truncated",
             file_path.display(),
             max_urls
-        );
+        ));
     }
     if byte_capped {
-        eprintln!(
+        stderr_line(&format!(
             "[urx] {}: stopped after {} bytes read (possible decompression bomb); results truncated",
             file_path.display(),
             max_bytes
-        );
+        ));
     }
     if line_capped {
-        eprintln!(
+        stderr_line(&format!(
             "[urx] {}: skipped one or more lines longer than {} bytes; results may be incomplete",
             file_path.display(),
             MAX_LINE_BYTES
-        );
+        ));
     }
 }
 

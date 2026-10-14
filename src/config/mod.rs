@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::keys::{api_keys_mut, KEYED_PROVIDER_IDS};
 use crate::cli::{Args, CliProvided};
-use crate::utils::split_csv;
+use crate::utils::{split_csv, stderr_line};
 
 /// Keys a config section did not recognise.
 ///
@@ -129,11 +129,11 @@ fn warn_about_unknown_keys(unknown: &[String], source: &str, silent: bool) {
     if unknown.is_empty() || silent {
         return;
     }
-    eprintln!(
+    stderr_line(&format!(
         "Warning: ignoring unrecognised {} in {source}: {}. Check for a typo — settings under an unknown key have no effect.",
         if unknown.len() == 1 { "key" } else { "keys" },
         unknown.join(", ")
-    );
+    ));
 }
 
 impl ProviderKeysConfig {
@@ -648,8 +648,8 @@ impl Config {
                 if timeout > 0 {
                     args.timeout = timeout;
                 } else if !args.silent {
-                    eprintln!(
-                        "Ignoring [network].timeout=0 in config: value must be at least 1 second"
+                    stderr_line(
+                        "Ignoring [network].timeout=0 in config: value must be at least 1 second",
                     );
                 }
             }
@@ -662,7 +662,9 @@ impl Config {
                 if parallel > 0 {
                     args.parallel = parallel;
                 } else if !args.silent {
-                    eprintln!("Ignoring [network].parallel=0 in config: value must be at least 1");
+                    stderr_line(
+                        "Ignoring [network].parallel=0 in config: value must be at least 1",
+                    );
                 }
             }
         }
@@ -764,7 +766,9 @@ fn parse_enum<T: ValueEnum>(
     let raw = raw.as_ref()?;
     let parsed = T::from_str(raw.trim(), true).ok();
     if parsed.is_none() && !silent {
-        eprintln!("Ignoring {key}={raw:?} in config: expected {expected}");
+        stderr_line(&format!(
+            "Ignoring {key}={raw:?} in config: expected {expected}"
+        ));
     }
     parsed
 }

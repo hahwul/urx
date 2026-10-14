@@ -521,12 +521,24 @@ pub async fn process_domains(
                                 // providers that reported it).
                                 match &stream {
                                     Some(sink) => {
-                                        if let Err(e) = sink.emit(&records) {
-                                            if !silent {
+                                        // The write blocks on the pipe, so it
+                                        // runs on the blocking pool: a stalled
+                                        // reader must not park a runtime worker.
+                                        let sink = Arc::clone(sink);
+                                        let written = task::spawn_blocking(move || {
+                                            sink.emit(&records)
+                                        })
+                                        .await;
+                                        match written {
+                                            Ok(Err(e)) if !silent => {
                                                 notifier.note(format!(
                                                     "Error writing streamed output: {e}"
                                                 ));
                                             }
+                                            Err(join) if join.is_panic() => {
+                                                std::panic::resume_unwind(join.into_panic())
+                                            }
+                                            _ => {}
                                         }
                                     }
                                     None => {

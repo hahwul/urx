@@ -26,6 +26,15 @@ const MAX_SITEMAP_URLS: usize = 1_000_000;
 /// any URL parsing happens (the per-URL cap only bounds the *parsed* output).
 const MAX_SITEMAP_BYTES: usize = 50 * 1024 * 1024;
 
+/// Most sitemap documents one domain's live walk fetches, nested ones included,
+/// so a wide index tree can't drive an unbounded number of requests.
+const MAX_SITEMAP_DOCUMENTS: usize = 1_000;
+
+/// Deepest element nesting accepted in a sitemap body. roxmltree recurses once
+/// per level and overflows the stack at a few thousand, which aborts the whole
+/// process rather than returning an error, so deeper bodies are refused first.
+const MAX_XML_DEPTH: usize = 512;
+
 /// Whether a `<loc>` in a sitemap index may be followed from `parent`.
 ///
 /// sitemaps.org requires every entry in a sitemap to reside on the same host as
@@ -70,11 +79,71 @@ enum SitemapDocument {
     Urls(Vec<String>),
 }
 
+/// Whether `content` nests elements deeper than [`MAX_XML_DEPTH`], or holds
+/// markup too odd to measure. A cheap prescan that runs before parsing. It
+/// counts raw tags, so it can only over-estimate depth. Comments, CDATA and PIs
+/// are skipped whole, and quoted attribute values may hold a `>`.
+fn xml_nests_too_deep(content: &str) -> bool {
+    let mut depth = 0usize;
+    let mut rest = content;
+    while let Some(lt) = rest.find('<') {
+        rest = &rest[lt..];
+        // Comments, CDATA and PIs hold no elements, so skip them whole.
+        if let Some((open, close)) = [("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>")]
+            .into_iter()
+            .find(|(open, _)| rest.starts_with(open))
+        {
+            match rest[open.len()..].find(close) {
+                Some(i) => rest = &rest[open.len() + i + close.len()..],
+                None => return true,
+            }
+            continue;
+        }
+        // A tag ends at the first `>` outside a quoted attribute value, and
+        // never reaches the next `<`, which is not allowed inside a tag.
+        let limit = rest[1..].find('<').map_or(rest.len(), |i| i + 1);
+        let mut quote = None;
+        let end = rest[..limit]
+            .char_indices()
+            .skip(1)
+            .find_map(|(i, c)| match (quote, c) {
+                (None, '"' | '\'') => {
+                    quote = Some(c);
+                    None
+                }
+                (Some(q), _) if c == q => {
+                    quote = None;
+                    None
+                }
+                (None, '>') => Some(i),
+                _ => None,
+            });
+        let Some(end) = end else { return true };
+        let tag = &rest[1..end];
+        if tag.starts_with('/') {
+            depth = depth.saturating_sub(1);
+        } else if !tag.starts_with('!') && !tag.ends_with('/') {
+            depth += 1;
+            if depth > MAX_XML_DEPTH {
+                return true;
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    false
+}
+
 /// Parse one sitemap body, whether it came from the live site or from the
 /// archive — the one parser both paths use.
 fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
-    match Document::parse(content) {
-        Ok(doc) => {
+    // A body nested too deep is treated exactly like one that fails to parse.
+    let parsed = if xml_nests_too_deep(content) {
+        None
+    } else {
+        Document::parse(content).ok()
+    };
+    match parsed {
+        Some(doc) => {
             // Check if this is a sitemap index file
             if doc.root_element().has_tag_name("sitemapindex") {
                 let children = doc
@@ -114,7 +183,7 @@ fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
                 SitemapDocument::Urls(urls)
             }
         }
-        Err(_) => {
+        None => {
             // XML parse failed. Only treat it as a plain-text URL list when
             // the source actually is text (a .txt sitemap or text/plain);
             // otherwise this was an HTML/error page and yields no URLs.
@@ -147,6 +216,9 @@ struct Walk {
     answered: bool,
     /// The last transport-level failure, surfaced when nothing ever answered.
     failure: Option<anyhow::Error>,
+    /// URLs collected so far across the whole walk, so [`MAX_SITEMAP_URLS`]
+    /// caps the total rather than each level of the index tree.
+    url_count: usize,
 }
 
 #[derive(Clone)]
@@ -193,9 +265,10 @@ impl SitemapProvider {
     /// Recursively fetch and parse a sitemap (or sitemap index).
     ///
     /// `walk.visited` records already-fetched sitemap URLs to break cycles
-    /// (`A → A`, `A → B → A`); `depth` bounds straight-line nesting; and the
-    /// caller stops feeding work once [`MAX_SITEMAP_URLS`] is reached. Together
-    /// these stop a malicious sitemap from hanging the run or exhausting memory.
+    /// (`A → A`, `A → B → A`); `depth` bounds straight-line nesting; and
+    /// [`MAX_SITEMAP_DOCUMENTS`] bounds how many documents one walk fetches.
+    /// Together these stop a malicious sitemap from hanging the run or exhausting
+    /// memory.
     async fn parse_sitemap(
         client: &Client,
         sitemap_url: &str,
@@ -204,6 +277,12 @@ impl SitemapProvider {
         limiter: Option<&RateLimiter>,
     ) -> Result<Vec<String>> {
         if depth > MAX_SITEMAP_DEPTH {
+            return Ok(Vec::new());
+        }
+        // ponytail: silent cap. The live walk has no reporter (fetch_urls takes
+        // none), so a truncated tree reads as complete. Surface it through the
+        // reporter once fetch_urls gets one, as the archived walk already does.
+        if walk.visited.len() >= MAX_SITEMAP_DOCUMENTS {
             return Ok(Vec::new());
         }
         // A sitemap URL we've already fetched in this walk is a cycle — skip it.
@@ -261,11 +340,15 @@ impl SitemapProvider {
         walk.answered = true;
 
         match parse_sitemap_document(&content, is_text) {
-            SitemapDocument::Urls(urls) => Ok(urls),
+            SitemapDocument::Urls(mut urls) => {
+                urls.truncate(MAX_SITEMAP_URLS - walk.url_count);
+                walk.url_count += urls.len();
+                Ok(urls)
+            }
             SitemapDocument::Index(children) => {
                 let mut urls = Vec::new();
                 for nested_sitemap_url in children {
-                    if urls.len() >= MAX_SITEMAP_URLS {
+                    if walk.url_count >= MAX_SITEMAP_URLS {
                         break;
                     }
                     // A child sitemap must live on the same host as the index
@@ -1100,6 +1183,24 @@ mod tests {
             );
         }
         mocks
+    }
+
+    #[test]
+    fn parse_sitemap_document_refuses_bodies_nested_past_the_stack() {
+        // Regression: roxmltree recurses once per nesting level, so a body a few
+        // thousand levels deep aborted the whole process instead of erroring.
+        let deep = format!(
+            "<urlset>{}{}</urlset>",
+            "<a>".repeat(5_000),
+            "</a>".repeat(5_000)
+        );
+        assert_eq!(
+            parse_sitemap_document(&deep, false),
+            SitemapDocument::Urls(vec![])
+        );
+        // Self-closing siblings, with a `>` inside an attribute, are not nesting.
+        let flat = format!("<urlset>{}</urlset>", "<x a=\"/>\"/>".repeat(2_000));
+        assert!(!xml_nests_too_deep(&flat));
     }
 
     #[test]

@@ -274,7 +274,7 @@ impl Notifier {
     pub fn note(&self, msg: impl AsRef<str>) {
         match &self.sink {
             NoteSink::Region(multi) if note_bypasses_region(multi) => {
-                eprintln!("{}", msg.as_ref())
+                crate::utils::stderr_line(msg.as_ref())
             }
             NoteSink::Region(multi) => {
                 let _ = multi.println(msg.as_ref());
