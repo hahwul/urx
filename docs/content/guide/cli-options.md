@@ -580,7 +580,7 @@ the site under `/shop`.
 ```bash
 urx example.com/shop
 urx https://example.com/api/v2      # a pasted URL works too
-urx 'example.com/shop/*'          # a trailing * is dropped: same scope
+urx 'example.com/shop/*'            # a trailing * is dropped: same scope
 ```
 
 CDX providers get the path in the query (`url=example.com/shop*`), so the
