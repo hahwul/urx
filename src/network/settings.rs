@@ -71,6 +71,19 @@ impl Default for NetworkSettings {
 }
 
 impl NetworkSettings {
+    /// The HTTP client settings, sending `headers` (empty for anything that
+    /// talks to an archive rather than the target).
+    pub fn http_config(&self, headers: super::CustomHeaders) -> super::client::HttpClientConfig {
+        super::client::HttpClientConfig {
+            timeout: self.timeout,
+            insecure: self.insecure,
+            random_agent: self.random_agent,
+            proxy: self.proxy.clone(),
+            proxy_auth: self.proxy_auth.clone(),
+            headers,
+        }
+    }
+
     /// Apply settings from command line arguments.
     ///
     /// # Errors

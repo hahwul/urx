@@ -13,7 +13,6 @@ pub struct UrlTransformer {
     pub show_only_param: bool,
     pub normalize_url: bool,
     pub dedup_similar: bool,
-    // --- output-views ---
     /// The parameter inventory view that replaces the URL list, if any.
     pub param_view: ParamView,
 }
@@ -83,7 +82,6 @@ impl UrlTransformer {
             transformed_urls = self.extract_url_parts(transformed_urls);
         }
 
-        // --- output-views ---
         // An inventory view replaces the list outright. It runs last so it sees
         // whatever --normalize-url / --merge-endpoint / --dedup-similar left,
         // and it is mutually exclusive with the show_only_* views (enforced by
@@ -442,8 +440,6 @@ fn is_opaque_token(segment: &str) -> bool {
         && segment.bytes().any(|b| b.is_ascii_lowercase())
         && segment.bytes().any(|b| b.is_ascii_uppercase())
 }
-
-// --- output-views ---
 
 /// Separates an endpoint from its parameter list in `--params-by-endpoint`
 /// output. A single space, so `cut -d' ' -f1` gets the endpoint back: a URL
@@ -1420,8 +1416,6 @@ mod tests {
         assert!(transformed.contains(&"://start-with-colon".to_string()));
         assert!(transformed.contains(&"".to_string()));
     }
-
-    // --- output-views ---
 
     fn view(urls: &[&str], view: ParamView) -> Vec<String> {
         let transformer = UrlTransformer {

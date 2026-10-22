@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use crate::cli::Args;
 use crate::filters::{HostValidator, UrlFilter};
-use crate::network::client::HttpClientConfig;
 use crate::network::{NetConfig, NetworkScope, NetworkSettings, RateLimiter};
 use crate::output;
 use crate::progress::ProgressManager;
@@ -62,16 +61,9 @@ pub fn apply_network_settings_to_tester(tester: &mut dyn Tester, settings: &Netw
     }
 
     tester.with_network(NetConfig {
-        http: HttpClientConfig {
-            timeout: settings.timeout,
-            insecure: settings.insecure,
-            random_agent: settings.random_agent,
-            proxy: settings.proxy.clone(),
-            proxy_auth: settings.proxy_auth.clone(),
-            // Testers request the target, so the user's headers go along;
-            // the archive replayer strips them again.
-            headers: settings.headers.clone(),
-        },
+        // Testers request the target, so the user's headers go along; the
+        // archive replayer strips them again.
+        http: settings.http_config(settings.headers.clone()),
         retries: settings.retries,
         rate_limit: settings.rate_limit.and_then(RateLimiter::new),
     });
@@ -109,7 +101,6 @@ pub async fn process_urls_with_testers(
     let check_status = should_check_status;
     // All of these discover URLs inside fetched bodies; any subset may be in
     // the tester list after the status checker.
-    // --- spec-expansion --- (`|| args.expand_specs`)
     let extract_links =
         args.extract_links || args.extract_js_endpoints || args.archive_body || args.expand_specs;
     let silent = args.silent;

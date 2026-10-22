@@ -2,9 +2,7 @@
 //!
 //! Everything here is `#[cfg(test)]`-only. It lives at the crate root rather
 //! than inside one test module so `app`, `runner`, and `tester_manager` tests
-//! can share a single `Args` fixture and one set of mocks — previously each
-//! test module carried its own copy of a 70-field `Args` literal, and they
-//! drifted apart every time a flag was added.
+//! can share a single `Args` fixture and one set of mocks.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -82,121 +80,25 @@ impl Drop for EnvGuard {
 /// console output, and robots/sitemap are excluded so provider selection is
 /// driven purely by what the test sets.
 pub fn build_test_args() -> Args {
-    Args {
-        domains: vec![],
-        config: None,
-        files: vec![],
-        output: None,
-        format: crate::output::Format::Plain,
-        merge_endpoint: false,
-        normalize_url: false,
-        dedup_similar: false,
-        stream: false,
-        providers: vec!["mock".to_string()],
-        subs: false,
-        cc_index: vec!["CC-MAIN-2026-17".to_string()],
-        vt_api_key: vec![],
-        urlscan_api_key: vec![],
-        zoomeye_api_key: vec![],
-        verbose: false,
-        silent: true,
-        no_progress: true,
-        no_color: false,
-        preset: vec![],
-        extensions: vec![],
-        exclude_extensions: vec![],
-        patterns: vec![],
-        exclude_patterns: vec![],
-        match_regex: vec![],
-        filter_regex: vec![],
-        show_only_host: false,
-        show_only_path: false,
-        show_only_param: false,
-        min_length: None,
-        max_length: None,
-        strict: false,
-        no_strict: false,
-        network_scope: crate::network::NetworkScope::All,
-        proxy: None,
-        proxy_auth: None,
-        insecure: false,
-        random_agent: false,
-        header: Vec::new(),
-        cookie: None,
-        user_agent: None,
-        timeout: 30,
-        retries: 3,
-        parallel: 5,
-        rate_limit: None,
-        check_status: false,
-        include_status: vec![],
-        exclude_status: vec![],
-        extract_links: false,
-        extract_js_endpoints: false,
-        max_js_files: 500,
-        archive_body: false,
-        archive_body_limit: 500,
-        archive_body_dir: None,
-        include_robots: false,
-        include_sitemap: false,
-        exclude_robots: true,
-        exclude_sitemap: true,
-        archived_discovery: false,
-        archived_discovery_limit: 50,
-        incremental: false,
-        cache_type: crate::cache::CacheType::Sqlite,
-        cache_path: None,
-        redis_url: None,
-        cache_ttl: 86400,
-        no_cache: false,
-        exclude_providers: vec![],
-        all_providers: false,
-        list_providers: false,
-        show_sources: false,
-        show_meta: false,
-        stats: false,
-        domain_list: vec![],
-        max_time: 0,
-        rate_limit_by: vec![],
-        provider_config: None,
-        output_dir: None,
-        cdx_endpoint: vec![],
-        cdx_dialect: None,
-        from: None,
-        to: None,
-        archive_status: vec![],
-        archive_exclude_status: vec![],
-        archive_mime: vec![],
-        archive_exclude_mime: vec![],
-        github_api_key: vec![],
-        bevigil_api_key: vec![],
-        completions: None,
-        manpage: false,
-        notify: vec![],
-        notify_on: crate::notify::NotifyOn::New,
-        notify_format: crate::notify::NotifyFormat::Json,
-        // --- spec-expansion ---
-        expand_specs: false,
-        max_spec_files: 50,
-        // --- output-views ---
-        params: false,
-        params_by_endpoint: false,
-        fuzz_placeholder: None,
-        check_title: false,
-        // --- cache-cli ---
-        command: None,
-        // --- result-filters ---
-        scope_file: vec![],
-        meta_first_seen_after: None,
-        meta_first_seen_before: None,
-        meta_last_seen_after: None,
-        meta_last_seen_before: None,
-        meta_mime: vec![],
-        meta_exclude_mime: vec![],
-        meta_status: vec![],
-        meta_exclude_status: vec![],
-        // --- end result-filters ---
-    }
+    use clap::Parser;
+    let mut args = Args::parse_from([
+        "urx",
+        "--silent",
+        "--no-progress",
+        "--exclude-robots",
+        "--exclude-sitemap",
+    ]);
+    args.providers = vec!["mock".to_string()];
+    args.cc_index = vec!["CC-MAIN-2026-17".to_string()];
+    // Pinned rather than taken from clap, so a CLI default change can't
+    // silently move every test built on this fixture.
+    args.timeout = 30;
+    args.retries = 3;
+    // clap defaults these to true; the fixture keeps them off.
+    args.strict = false;
+    args.include_robots = false;
+    args.include_sitemap = false;
+    args
 }
 
 /// A [`Provider`] that returns a canned URL list, optionally after a delay or

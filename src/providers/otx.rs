@@ -322,13 +322,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_box() {
-        let provider = OTXProvider::new();
-        let _cloned = provider.clone_box();
-        // Just testing that cloning works without error
-    }
-
-    #[test]
     fn test_format_url_second_level_domain() {
         let provider = OTXProvider::new();
         let url = provider.format_url("example.com", 0);

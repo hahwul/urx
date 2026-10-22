@@ -21,7 +21,6 @@ const VT_MAX_PAGES: usize = 10_000;
 #[derive(Clone)]
 pub struct VirusTotalProvider {
     api_key_rotator: ApiKeyRotator,
-    include_subdomains: bool,
     net: NetConfig,
     base_url: String,
     page_limit: usize,
@@ -63,7 +62,6 @@ impl VirusTotalProvider {
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
         VirusTotalProvider {
             api_key_rotator: ApiKeyRotator::new(api_keys),
-            include_subdomains: false,
             net: NetConfig::default(),
             base_url: "https://www.virustotal.com".to_string(),
             page_limit: VT_MAX_PAGES,
@@ -229,10 +227,7 @@ impl Provider for VirusTotalProvider {
         })
     }
 
-    fn with_subdomains(&mut self, include: bool) {
-        self.include_subdomains = include;
-    }
-
+    fn with_subdomains(&mut self, _include: bool) {}
     fn with_network(&mut self, net: NetConfig) {
         self.net = net;
     }
@@ -316,20 +311,6 @@ mod tests {
             !msg.contains("SUPERSECRETKEY"),
             "API key leaked in error message: {msg}"
         );
-    }
-
-    #[test]
-    fn test_with_subdomains() {
-        let provider = &mut VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
-        provider.with_subdomains(true);
-        assert!(provider.include_subdomains);
-    }
-
-    #[test]
-    fn test_clone_box() {
-        let provider = VirusTotalProvider::new_with_keys(vec!["test_api_key".to_string()]);
-        let _cloned = provider.clone_box();
-        // Just testing that cloning works without error
     }
 
     #[test]

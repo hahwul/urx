@@ -256,7 +256,6 @@ pub struct FilterConfig {
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
 
-    // --- result-filters ---
     pub scope_file: Option<Vec<std::path::PathBuf>>,
     pub meta_first_seen_after: Option<String>,
     pub meta_first_seen_before: Option<String>,
@@ -266,7 +265,6 @@ pub struct FilterConfig {
     pub meta_exclude_mime: Option<Vec<String>>,
     pub meta_status: Option<Vec<String>>,
     pub meta_exclude_status: Option<Vec<String>>,
-    // --- end result-filters ---
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
@@ -304,7 +302,6 @@ pub struct TestingConfig {
     pub archive_body: Option<bool>,
     pub archive_body_limit: Option<usize>,
     pub archive_body_dir: Option<PathBuf>,
-    // --- spec-expansion ---
     pub expand_specs: Option<bool>,
     pub max_spec_files: Option<usize>,
 
@@ -608,7 +605,6 @@ impl Config {
         args.min_length.fill(&f.min_length);
         args.max_length.fill(&f.max_length);
 
-        // --- result-filters ---
         args.scope_file.fill(&f.scope_file);
         args.meta_first_seen_after.fill(&f.meta_first_seen_after);
         args.meta_first_seen_before.fill(&f.meta_first_seen_before);
@@ -618,7 +614,6 @@ impl Config {
         args.meta_exclude_mime.fill(&f.meta_exclude_mime);
         args.meta_status.fill(&f.meta_status);
         args.meta_exclude_status.fill(&f.meta_exclude_status);
-        // --- end result-filters ---
 
         // [network]
         if !provided.has("network_scope") {
@@ -704,7 +699,6 @@ impl Config {
             &t.archive_body_limit,
         );
         args.archive_body_dir.fill(&t.archive_body_dir);
-        // --- spec-expansion ---
         args.expand_specs.fill(&t.expand_specs);
         fill_untyped(
             provided,
@@ -1854,7 +1848,6 @@ mod tests {
         );
         assert_eq!(args.notify, vec!["https://hooks.example/cli"]);
     }
-    // --- spec-expansion ---
 
     #[test]
     fn test_spec_expansion_settings_load_from_config_and_yield_to_the_cli() {
@@ -1881,7 +1874,6 @@ mod tests {
             .apply_to_args(&mut args, &provided);
         assert_eq!(args.max_spec_files, 50);
     }
-    // --- result-filters ---
     #[test]
     fn test_filter_config_supplies_the_scope_and_meta_filters() {
         let content = r#"
@@ -1952,7 +1944,6 @@ mod tests {
         assert_eq!(args.meta_status, vec!["200"]);
         assert_eq!(args.meta_last_seen_before.as_deref(), Some("2024"));
     }
-    // --- end result-filters ---
 
     #[test]
     fn test_header_settings_load_from_config_and_yield_to_the_cli() {

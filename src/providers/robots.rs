@@ -404,13 +404,6 @@ mod tests {
     use super::*;
     use crate::providers::urls_of;
 
-    #[test]
-    fn test_clone_box() {
-        let provider = RobotsProvider::new();
-        let _cloned = provider.clone_box();
-        // Testing the existence of cloned object
-    }
-
     #[tokio::test]
     async fn test_robots_txt_parsing() {
         let _provider = RobotsProvider::new();

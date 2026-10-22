@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::io::IsTerminal;
 
 use anyhow::{Context, Result};
+use indicatif::HumanCount;
 use serde::Serialize;
 
 use super::admin::{
@@ -272,12 +273,12 @@ fn render_stats(s: &CacheStats) -> String {
     }
 
     out.push('\n');
-    out.push_str(&format!("Entries:  {}\n", thousands(s.entries)));
-    out.push_str(&format!("Domains:  {}\n", thousands(s.domains)));
-    out.push_str(&format!("URLs:     {}\n", thousands(s.urls)));
+    out.push_str(&format!("Entries:  {}\n", HumanCount(s.entries as u64)));
+    out.push_str(&format!("Domains:  {}\n", HumanCount(s.domains as u64)));
+    out.push_str(&format!("URLs:     {}\n", HumanCount(s.urls as u64)));
     out.push_str(&format!(
         "Expired:  {}  (--cache-ttl {}s = {})\n",
-        thousands(s.expired_entries),
+        HumanCount(s.expired_entries as u64),
         s.ttl_seconds,
         format_secs(s.ttl_seconds.min(i64::MAX as u64) as i64),
     ));
@@ -335,7 +336,7 @@ fn render_list(rows: &[DomainSummary], pattern: Option<&str>) -> String {
             r.domain,
             r.entries,
             r.expired_entries,
-            thousands(r.urls),
+            HumanCount(r.urls as u64),
             stamp(r.last_scan),
             r.ttl_remaining.map_or("expired".to_string(), format_secs),
         ));
@@ -353,10 +354,10 @@ fn render_prune(report: &PruneReport, expected: usize) -> String {
 
     let mut out = format!(
         "Pruned {} expired {} (--cache-ttl {}s); {} remain.\n",
-        thousands(report.pruned),
+        HumanCount(report.pruned as u64),
         entries_noun(report.pruned),
         report.ttl_seconds,
-        thousands(report.remaining),
+        HumanCount(report.remaining as u64),
     );
     // The two counts are taken either side of the delete, so a disagreement
     // means something else wrote to the cache in between. Worth saying rather
@@ -364,7 +365,7 @@ fn render_prune(report: &PruneReport, expected: usize) -> String {
     if expected != report.pruned {
         out.push_str(&format!(
             "Note: {} entries looked expired before the sweep; the cache changed while it ran.\n",
-            thousands(expected)
+            HumanCount(expected as u64)
         ));
     }
     out
@@ -383,7 +384,7 @@ fn render_drop(report: &DropReport) -> String {
         };
         out.push_str(&format!(
             "Dropped {} {} across {} {dword}:\n",
-            thousands(report.dropped),
+            HumanCount(report.dropped as u64),
             entries_noun(report.dropped),
             report.domains.len()
         ));
@@ -418,7 +419,7 @@ fn render_clear(report: &ClearReport) -> String {
     }
     format!(
         "Cleared {} cached {}.\n",
-        thousands(report.cleared),
+        HumanCount(report.cleared as u64),
         entries_noun(report.cleared)
     )
 }
@@ -480,19 +481,6 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }
-}
-
-/// Group digits so a six-figure URL count is readable at a glance.
-fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -797,13 +785,5 @@ mod tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(1024), "1.0 KiB");
         assert_eq!(format_bytes(2_500_000), "2.4 MiB");
-    }
-
-    #[test]
-    fn digit_grouping() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(1_234_567), "1,234,567");
     }
 }

@@ -204,13 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_box() {
-        let provider = CommonCrawlProvider::with_index("CC-MAIN-2026-17".to_string());
-        let _cloned = provider.clone_box();
-        // Just testing that cloning works without error
-    }
-
-    #[test]
     fn test_cc_record_deserialize() {
         let json = r#"{"url":"https://example.com/test"}"#;
         let record: CCRecord = serde_json::from_str(json).unwrap();

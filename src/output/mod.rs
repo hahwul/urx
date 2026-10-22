@@ -7,37 +7,51 @@ mod writer;
 pub use formatter::*;
 pub use stream::{format_supports_streaming, streaming_format_error, StreamSink};
 
-/// A structure to hold URL data with optional status information
-#[derive(Debug, Clone, Default)]
+/// A structure to hold URL data with optional status information.
+///
+/// Serializes as one JSON/JSONL row: field order is the output order, and
+/// every optional field is omitted when absent rather than emitted as `null`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct UrlData {
     /// The URL string
     pub url: String,
     /// Optional status information (e.g., HTTP status code)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// Providers that reported this URL (sorted, deduped). Empty when unknown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
     /// Timestamp of the oldest archived capture, 14-digit CDX form. `None`
     /// unless a provider with a capture index reported this URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub first_seen: Option<String>,
     /// Timestamp of the newest archived capture, 14-digit CDX form.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
     /// MIME type the archive recorded for the newest capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mime: Option<String>,
     /// HTTP status the *archive* recorded at capture time. Distinct from
     /// [`UrlData::status`], which `--check-status` produces by re-requesting
     /// the URL live.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_status: Option<String>,
     /// One representative content digest across the captures of this URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     /// The `Location` header of a live response. `--check-status` deliberately
     /// does not follow redirects, so this is where a 3xx actually pointed —
     /// recorded, never chased.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     /// The `Content-Length` header of a live response, verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content_length: Option<String>,
     /// The `Content-Type` header of a live response, verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     /// The HTML `<title>` of a live response, when `--check-title` asked for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
 

@@ -331,12 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_box() {
-        let provider = ZoomEyeProvider::new_with_keys(vec!["test_api_key".to_string()]);
-        let _cloned = provider.clone_box();
-    }
-
-    #[test]
     fn test_zoomeye_response_deserialize() {
         let json = r#"{
             "code": 60000,

@@ -2,59 +2,7 @@
 use super::UrlData;
 use crate::utils::url::wordlist_terms;
 use console::style;
-use serde::Serialize;
 use std::borrow::Cow;
-
-/// Helper struct for JSON serialization with guaranteed field order
-/// (url, status, sources, the archive metadata, then what a live `--check-status`
-/// response reported). Every optional field is omitted when absent rather than
-/// emitted as `null`, so a run that collected no metadata produces
-/// byte-identical output to before it existed.
-#[derive(Serialize)]
-struct JsonUrlEntry<'a> {
-    url: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<&'a str>,
-    #[serde(skip_serializing_if = "<[String]>::is_empty")]
-    sources: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    first_seen: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_seen: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mime: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    archive_status: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    digest: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    location: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_length: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_type: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<&'a str>,
-}
-
-impl<'a> JsonUrlEntry<'a> {
-    fn from_data(url_data: &'a UrlData) -> Self {
-        JsonUrlEntry {
-            url: &url_data.url,
-            status: url_data.status.as_deref(),
-            sources: &url_data.sources,
-            first_seen: url_data.first_seen.as_deref(),
-            last_seen: url_data.last_seen.as_deref(),
-            mime: url_data.mime.as_deref(),
-            archive_status: url_data.archive_status.as_deref(),
-            digest: url_data.digest.as_deref(),
-            location: url_data.location.as_deref(),
-            content_length: url_data.content_length.as_deref(),
-            content_type: url_data.content_type.as_deref(),
-            title: url_data.title.as_deref(),
-        }
-    }
-}
 
 /// An output format, chosen by `--format`.
 ///
@@ -109,7 +57,7 @@ impl Format {
 }
 
 fn json_entry(url_data: &UrlData) -> String {
-    serde_json::to_string(&JsonUrlEntry::from_data(url_data)).unwrap_or_default()
+    serde_json::to_string(url_data).unwrap_or_default()
 }
 
 fn plain_line(url_data: &UrlData) -> String {

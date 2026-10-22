@@ -218,13 +218,6 @@ mod tests {
         assert!(provider.include_subdomains);
     }
 
-    #[test]
-    fn test_clone_box() {
-        let provider = WaybackMachineProvider::new();
-        let _cloned = provider.clone_box();
-        // Testing the existence of cloned object
-    }
-
     #[tokio::test]
     async fn test_fetch_urls_builds_correct_url_without_subdomains() {
         // 이 테스트는 실제 API 호출 없이 URL 구성을 확인합니다
