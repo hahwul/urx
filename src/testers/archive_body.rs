@@ -49,7 +49,6 @@ use url::Url;
 use super::body_archive::BodyArchive;
 use super::js_endpoint_extractor::{classify, BodyKind};
 use super::link_extractor::{is_html_like, LinkExtractor, MAX_BODY_BYTES};
-// --- spec-expansion ---
 use super::shared::{content_type, found, send};
 use super::spec_expander::{expand_spec_body, spec_body_kind};
 use super::{JsEndpointExtractor, Tester};
@@ -121,7 +120,6 @@ pub struct ArchiveBodyExtractor {
     client: Arc<OnceCell<Client>>,
     /// Archive origin, overridable so tests can point at a mock server.
     origin: String,
-    // --- spec-expansion ---
     /// Whether `--expand-specs` is also on, in which case an archived
     /// specification is read as one instead of being handed to the HTML link
     /// extractor. See [`Tester::test_url`] for why the combination matters.
@@ -147,7 +145,6 @@ impl ArchiveBodyExtractor {
             net: NetConfig::default(),
             client: Arc::new(OnceCell::new()),
             origin: WAYBACK_ORIGIN.to_string(),
-            // --- spec-expansion ---
             expand_specs: false,
             extract_js_endpoints: false,
             body_archive: None,
@@ -177,7 +174,6 @@ impl ArchiveBodyExtractor {
         self
     }
 
-    // --- spec-expansion ---
     /// Read archived API specifications as specifications, as `--expand-specs`
     /// does for live ones.
     pub fn with_expand_specs(&mut self, enabled: bool) -> &mut Self {
@@ -446,7 +442,6 @@ impl Tester for ArchiveBodyExtractor {
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
-            // --- spec-expansion ---
             // The combination that recovers an API which no longer
             // exists: the archive still holds the specification
             // that described it. The replay is `id_`, so the body
@@ -1393,7 +1388,6 @@ mod tests {
             start.elapsed()
         );
     }
-    // --- spec-expansion ---
 
     #[tokio::test]
     async fn an_archived_specification_is_expanded_when_expand_specs_is_on() {

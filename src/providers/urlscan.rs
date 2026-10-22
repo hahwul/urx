@@ -13,7 +13,6 @@ use crate::progress::ProgressReporter;
 #[derive(Clone)]
 pub struct UrlscanProvider {
     api_key_rotator: ApiKeyRotator,
-    include_subdomains: bool,
     net: NetConfig,
     base_url: String,
     page_limit: usize,
@@ -76,7 +75,6 @@ impl UrlscanProvider {
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
         UrlscanProvider {
             api_key_rotator: ApiKeyRotator::new(api_keys),
-            include_subdomains: false,
             net: NetConfig::default(),
             base_url: "https://urlscan.io".to_string(),
             page_limit: URLSCAN_MAX_PAGES,
@@ -261,10 +259,7 @@ impl Provider for UrlscanProvider {
         })
     }
 
-    fn with_subdomains(&mut self, include: bool) {
-        self.include_subdomains = include;
-    }
-
+    fn with_subdomains(&mut self, _include: bool) {}
     fn with_network(&mut self, net: NetConfig) {
         self.net = net;
     }
@@ -346,20 +341,6 @@ mod tests {
     fn test_new_provider_with_empty_key() {
         let provider = UrlscanProvider::new_with_keys(vec!["".to_string()]);
         assert!(!provider.api_key_rotator.has_keys());
-    }
-
-    #[test]
-    fn test_with_subdomains() {
-        let provider = &mut UrlscanProvider::new_with_keys(vec!["test_api_key".to_string()]);
-        provider.with_subdomains(true);
-        assert!(provider.include_subdomains);
-    }
-
-    #[test]
-    fn test_clone_box() {
-        let provider = UrlscanProvider::new_with_keys(vec!["test_api_key".to_string()]);
-        let _cloned = provider.clone_box();
-        // Just testing that cloning works without error
     }
 
     #[test]

@@ -262,12 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clone_box() {
-        let provider = ArquivoProvider::new();
-        let _cloned = provider.clone_box();
-    }
-
-    #[test]
     fn test_query_base_without_subdomains() {
         let provider = ArquivoProvider::new();
         assert_eq!(

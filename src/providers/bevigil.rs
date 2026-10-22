@@ -39,7 +39,6 @@ use crate::progress::ProgressReporter;
 #[derive(Clone)]
 pub struct BeVigilProvider {
     api_key_rotator: ApiKeyRotator,
-    include_subdomains: bool,
     net: NetConfig,
     base_url: String,
 }
@@ -118,7 +117,6 @@ impl BeVigilProvider {
     pub fn new_with_keys(api_keys: Vec<String>) -> Self {
         BeVigilProvider {
             api_key_rotator: ApiKeyRotator::new(api_keys),
-            include_subdomains: false,
             net: NetConfig::default(),
             base_url: "https://osint.bevigil.com".to_string(),
         }
@@ -206,10 +204,9 @@ impl Provider for BeVigilProvider {
         })
     }
 
-    fn with_subdomains(&mut self, include: bool) {
+    fn with_subdomains(&mut self, _include: bool) {
         // BeVigil's index is keyed by the domain and already returns every URL
         // found under it; host validation downstream applies the scope.
-        self.include_subdomains = include;
     }
 
     fn with_network(&mut self, net: NetConfig) {

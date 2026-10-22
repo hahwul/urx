@@ -413,12 +413,8 @@ pub async fn deliver(client: &reqwest::Client, url: &str, body: &str) -> Deliver
 /// given.
 fn build_client(settings: &NetworkSettings) -> anyhow::Result<reqwest::Client> {
     HttpClientConfig {
-        headers: CustomHeaders::default(),
-        timeout: settings.timeout,
-        insecure: settings.insecure,
         random_agent: false,
-        proxy: settings.proxy.clone(),
-        proxy_auth: settings.proxy_auth.clone(),
+        ..settings.http_config(CustomHeaders::default())
     }
     .build_client()
 }

@@ -1,13 +1,12 @@
 use futures::future::join_all;
 use futures::stream::{self, StreamExt};
-use indicatif::ProgressBar;
+use indicatif::{HumanCount, ProgressBar};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::task;
 
 use crate::cli::Args;
-use crate::network::client::HttpClientConfig;
 use crate::network::{NetConfig, NetworkScope, NetworkSettings, RateLimiter};
 use crate::output::StreamSink;
 use crate::progress::{
@@ -37,21 +36,6 @@ async fn next_ctrl_c() {
     }
 }
 
-/// Format an integer with thousands separators (e.g. `12345` → `12,345`) so
-/// large URL counts stay legible in the progress summary.
-fn fmt_count(n: usize) -> String {
-    let digits = n.to_string();
-    let bytes = digits.as_bytes();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(*b as char);
-    }
-    out
-}
-
 /// Update a provider line that is fetching several domains concurrently with an
 /// aggregate "done/total · URLs" counter — one line can't show every in-flight
 /// domain, so we summarise. Ticks so the spinner keeps moving between
@@ -64,7 +48,10 @@ fn tick_aggregate(
     no_progress: bool,
     silent: bool,
 ) {
-    bar.set_message(format!("{done}/{total} domains · {} URLs", fmt_count(urls)));
+    bar.set_message(format!(
+        "{done}/{total} domains · {} URLs",
+        HumanCount(urls as u64)
+    ));
     if !no_progress && !silent {
         bar.tick();
     }
@@ -160,15 +147,8 @@ pub fn apply_network_settings_to_provider(
     }
 
     provider.with_network(NetConfig {
-        http: HttpClientConfig {
-            timeout: settings.timeout,
-            insecure: settings.insecure,
-            random_agent: settings.random_agent,
-            proxy: settings.proxy.clone(),
-            proxy_auth: settings.proxy_auth.clone(),
-            // Archives never see the target's headers; see below.
-            headers: Default::default(),
-        },
+        // Archives never see the target's headers; see below.
+        http: settings.http_config(Default::default()),
         retries: settings.retries,
         rate_limit,
     });
@@ -616,7 +596,7 @@ pub async fn process_domains(
                                             .set_prefix(format!("◐ {provider_name:<16}"));
                                         provider_bar.set_message(format!(
                                             "{domain} · {} URLs (partial)",
-                                            fmt_count(url_count)
+                                            HumanCount(url_count as u64)
                                         ));
                                     } else {
                                         provider_bar.set_style(provider_success_style());
@@ -624,7 +604,7 @@ pub async fn process_domains(
                                             .set_prefix(format!("✓ {provider_name:<16}"));
                                         provider_bar.set_message(format!(
                                             "{domain} · {} URLs",
-                                            fmt_count(url_count)
+                                            HumanCount(url_count as u64)
                                         ));
                                     }
                                     provider_bar.tick();
@@ -721,7 +701,7 @@ pub async fn process_domains(
                     provider_success_style()
                 });
                 provider_bar.set_prefix(format!("{glyph} {provider_name:<16}"));
-                let mut summary = format!("{} URLs", fmt_count(provider_url_total));
+                let mut summary = format!("{} URLs", HumanCount(provider_url_total as u64));
                 if provider_partial_total > 0 {
                     summary.push_str(&format!(" · {provider_partial_total} partial"));
                 }
@@ -924,23 +904,6 @@ mod tests {
     use crate::utils::UrlTransformer;
     use std::future::Future;
     use std::pin::Pin;
-
-    #[test]
-    fn test_fmt_count_inserts_thousands_separators() {
-        let cases = [
-            (0, "0"),
-            (7, "7"),
-            (999, "999"),
-            (1_000, "1,000"),
-            (12_345, "12,345"),
-            (999_999, "999,999"),
-            (1_000_000, "1,000,000"),
-            (1_234_567_890, "1,234,567,890"),
-        ];
-        for (n, expected) in cases {
-            assert_eq!(fmt_count(n), expected, "fmt_count({n})");
-        }
-    }
 
     /// A provider that paginates: it collects one URL every `step`, and honours
     /// the run-wide stop signal the way a real cursor-walking provider is meant

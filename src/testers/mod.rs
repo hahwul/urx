@@ -8,18 +8,16 @@ mod archive_body;
 mod body_archive;
 mod js_endpoint_extractor;
 mod link_extractor;
-mod status_checker;
-// --- spec-expansion ---
 mod shared;
 mod spec_expander;
+mod status_checker;
 
 pub use archive_body::{ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture};
 pub use body_archive::BodyArchive;
 pub use js_endpoint_extractor::JsEndpointExtractor;
 pub use link_extractor::LinkExtractor;
-pub use status_checker::StatusChecker;
-// --- spec-expansion ---
 pub use spec_expander::SpecExpander;
+pub use status_checker::StatusChecker;
 
 /// Tester trait for URL testing operations
 ///

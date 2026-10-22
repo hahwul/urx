@@ -844,13 +844,6 @@ mod tests {
         sitemap.assert();
     }
 
-    #[test]
-    fn test_clone_box() {
-        let provider = SitemapProvider::new();
-        let _cloned = provider.clone_box();
-        // Testing the existence of cloned object
-    }
-
     #[tokio::test]
     async fn test_sitemap_xml_parsing() {
         // Sample sitemap XML content for testing

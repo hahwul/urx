@@ -255,15 +255,12 @@ pub fn build_url_filter(args: &Args) -> Result<UrlFilter> {
         .with_filter_regex(compile_url_regexes(&args.filter_regex, "--filter-regex")?)
         .with_min_length(args.min_length)
         .with_max_length(args.max_length)
-        // --- result-filters ---
         // Attached to the shared filter so the batch list, the --stream sink
         // and the extracted-link filter all enforce the same scope.
         .with_scope(ScopeMatcher::from_files(&args.scope_file)?);
-    // --- end result-filters ---
     Ok(url_filter)
 }
 
-// --- result-filters ---
 /// Build the post-collection metadata filter from the `--meta-*` flags.
 ///
 /// Fails on a date or status pattern urx cannot honour: unlike `--from`/`--to`,
@@ -442,7 +439,6 @@ fn report_meta_filter_stats(
         ));
     }
 }
-// --- end result-filters ---
 
 /// Build the per-URL transformer used everywhere a URL must be decided on its
 /// own: streaming output and links discovered by `--extract-links`.
@@ -470,12 +466,9 @@ fn has_url_filters(args: &Args) -> bool {
         || !args.filter_regex.is_empty()
         || args.min_length.is_some()
         || args.max_length.is_some()
-        // --- result-filters ---
         || !args.scope_file.is_empty()
-    // --- end result-filters ---
 }
 
-// --- result-filters ---
 /// True when any `--meta-*` flag is set. A cheap flag-shape test, unlike
 /// [`build_meta_filter`] which also validates the values.
 fn has_meta_filters(args: &Args) -> bool {
@@ -488,7 +481,6 @@ fn has_meta_filters(args: &Args) -> bool {
         || !args.meta_status.is_empty()
         || !args.meta_exclude_status.is_empty()
 }
-// --- end result-filters ---
 
 /// What to suggest when host validation discarded most of the result.
 ///
@@ -616,7 +608,6 @@ pub fn apply_url_transformations(
         || args.show_only_host
         || args.show_only_path
         || args.show_only_param
-        // --- output-views ---
         || args.params
         || args.params_by_endpoint
         || args.fuzz_placeholder.is_some();
@@ -631,7 +622,6 @@ pub fn apply_url_transformations(
     let url_transformer = UrlTransformer {
         merge_endpoint: args.merge_endpoint,
         dedup_similar: args.dedup_similar,
-        // --- output-views ---
         // Set here and not in build_url_transformer(): an inventory view needs
         // the whole list, so only the batch path can honour it. The streaming
         // sink and the extracted-link filter both work one URL at a time and
@@ -705,7 +695,6 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it replays collected URLs from the archive after collection finishes",
         ));
     }
-    // --- spec-expansion ---
     if args.expand_specs {
         out.push((
             "--expand-specs",
@@ -742,7 +731,6 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "file input is read up front, so there is nothing to stream",
         ));
     }
-    // --- output-views ---
     if args.params {
         out.push((
             "--params",
@@ -767,7 +755,6 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "it re-requests each URL after collection finishes",
         ));
     }
-    // --- result-filters ---
     // The sink deliberately drops capture metadata: it prints a URL on first
     // sighting, before the providers that would widen its first/last seen range
     // have answered. There is nothing for these to read, so accepting them
@@ -779,7 +766,6 @@ pub fn streaming_conflicts(args: &Args) -> Vec<(&'static str, &'static str)> {
             "they read capture metadata, which is only complete once every provider has answered",
         ));
     }
-    // --- end result-filters ---
     out
 }
 
@@ -858,7 +844,6 @@ pub fn build_extracted_link_filter(
     args: &Args,
     domains: &[String],
 ) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
-    // --- spec-expansion --- (`|| args.expand_specs`)
     if !args.extract_links && !args.extract_js_endpoints && !args.archive_body && !args.expand_specs
     {
         return Ok(None);
@@ -883,13 +868,11 @@ pub fn should_check_status(args: &Args) -> bool {
     args.check_status
         || !args.include_status.is_empty()
         || !args.exclude_status.is_empty()
-        // --- output-views ---
         // --check-title has nothing to attach a title to without the request
         // the status checker already makes, so it turns that pass on.
         || args.check_title
 }
 
-// --- output-views ---
 /// The inventory view the flags select, or [`ParamView::None`]. The three flags
 /// are mutually exclusive (clap enforces it), so the order here is arbitrary.
 fn param_view(args: &Args) -> ParamView {
@@ -954,7 +937,6 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
             );
         }
 
-        // --- output-views ---
         status_checker.with_response_meta(wants_meta(args));
         status_checker.with_response_title(args.check_title);
         if args.check_title {
@@ -983,7 +965,6 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
         testers.push(Box::new(js_extractor));
     }
 
-    // --- spec-expansion ---
     if args.expand_specs {
         verbose_print(args, "Expanding endpoints from API specification documents");
 
@@ -1084,7 +1065,6 @@ pub fn build_archive_body_extractor(
             .or(network_settings.rate_limit);
         extractor.with_rate_limit(rate);
     }
-    // --- spec-expansion ---
     // With --expand-specs also on, an archived specification is read as one
     // rather than run through the HTML link extractor.
     extractor.with_expand_specs(args.expand_specs);
@@ -1133,9 +1113,7 @@ mod tests {
             (vec!["--incremental"], "--incremental"),
             (vec!["--show-sources"], "--show-sources"),
             (vec!["--show-meta"], "--show-meta"),
-            // --- spec-expansion ---
             (vec!["--expand-specs"], "--expand-specs"),
-            // --- output-views ---
             (vec!["--params"], "--params"),
             (vec!["--params-by-endpoint"], "--params-by-endpoint"),
             (vec!["--fuzz-placeholder", "FUZZ"], "--fuzz-placeholder"),
@@ -1930,8 +1908,6 @@ mod tests {
             .is_none());
     }
 
-    // --- spec-expansion ---
-
     #[test]
     fn test_expand_specs_is_its_own_tester_and_honours_max_spec_files() {
         let settings = NetworkSettings::default();
@@ -1999,7 +1975,6 @@ mod tests {
         let args = Args::parse_from(["urx", "example.com"]);
         assert_eq!(args.max_spec_files, SpecExpander::DEFAULT_MAX_FILES);
     }
-    // --- result-filters ---
     /// Write `text` to a temp file and return the handle, which must outlive the
     /// use — dropping it deletes the file.
     fn scope_file(text: &str) -> tempfile::NamedTempFile {
@@ -2398,7 +2373,6 @@ mod tests {
         args.meta_first_seen_before = Some("nope".to_string());
         assert!(validate_result_filters(&args).is_err());
     }
-    // --- end result-filters ---
 
     #[test]
     fn a_body_directory_without_archive_body_is_refused() {

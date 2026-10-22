@@ -398,7 +398,6 @@ pub struct Args {
     #[clap(long)]
     pub no_strict: bool,
 
-    // --- result-filters ---
     /// Bug-bounty scope file: one host pattern per line, `!` to exclude,
     /// `*.example.com` for a wildcard (which covers the apex too), bracketed
     /// IPv6 literals such as `[2001:db8::1]`, and `#` for a comment. Exclusions
@@ -470,7 +469,6 @@ pub struct Args {
         value_delimiter = ','
     )]
     pub meta_exclude_status: Vec<String>,
-    // --- end result-filters ---
     /// Control which components network settings apply to (all, providers, testers, or providers,testers)
     #[clap(help_heading = "Network Options")]
     #[clap(
@@ -629,7 +627,6 @@ pub struct Args {
     #[clap(long = "archive-body-dir", value_name = "DIR")]
     pub archive_body_dir: Option<PathBuf>,
 
-    // --- spec-expansion ---
     /// Fetch the API specification documents among the collected URLs
     /// (swagger.json, openapi.json, /v3/api-docs, GraphQL introspection
     /// responses) and expand every route they document into a URL. One
@@ -717,7 +714,6 @@ pub struct Args {
     #[clap(long)]
     pub manpage: bool,
 
-    // --- output-views ---
     /// Replace the URL list with every query parameter name the run saw, once
     /// each, sorted — the parameter inventory of the whole target rather than
     /// of one URL at a time. Needs the complete result set, so it cannot be
@@ -752,7 +748,6 @@ pub struct Args {
     #[clap(long = "check-title")]
     pub check_title: bool,
 
-    // --- cache-cli ---
     /// Subcommand, when one was named. `None` is the historical
     /// `urx [OPTIONS] [DOMAINS]...` invocation, which is unchanged: only the
     /// literal first token `cache` selects a subcommand, and `urx -- cache`
@@ -1576,7 +1571,6 @@ mod tests {
         assert!(Args::try_parse_from(["urx", "--notify-on", "sometimes", "x.com"]).is_err());
         assert!(Args::try_parse_from(["urx", "--notify-format", "teams", "x.com"]).is_err());
     }
-    // --- result-filters ---
     #[test]
     fn test_scope_file_is_repeatable_and_meta_lists_split_on_commas() {
         let args = Args::parse_from([
@@ -1635,7 +1629,6 @@ mod tests {
         assert!(provided.has("scope_file"));
         assert!(!provided.has("meta_mime"));
     }
-    // --- end result-filters ---
 
     #[test]
     fn test_normalize_target_keeps_a_path_as_scope() {
