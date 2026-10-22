@@ -64,8 +64,10 @@ pub(crate) const MAX_CONSECUTIVE_PAGE_FAILURES: usize = 3;
 /// capture metadata the archive already holds.
 pub(crate) const CLASSIC_FIELDS: &str = "original,timestamp,mimetype,statuscode,digest";
 
-/// The pywb-dialect `fl=` list — same columns, pywb's names.
-pub(crate) const PYWB_FIELDS: &str = "url,timestamp,mime,status,digest";
+/// The pywb-dialect `fl=` list — same columns, pywb's names, plus `is_fuzzy`,
+/// which `fl=` would otherwise strip (see [`PywbRow::is_fuzzy`]). pywb leaves
+/// a field out of a row that lacks it, so a real match carries nothing extra.
+pub(crate) const PYWB_FIELDS: &str = "url,timestamp,mime,status,digest,is_fuzzy";
 
 /// One CDXJ / NDJSON row of a pywb-dialect index. Every value arrives as a JSON
 /// string, the status code included, and the metadata is named `status`/`mime`
@@ -702,7 +704,7 @@ mod tests {
         let pywb = p.query_base(CdxDialect::Pywb, "example.com");
         assert!(
             pywb.starts_with(
-                "https://vefsafn.is/cdx?url=example.com/*&output=json&fl=url,timestamp,mime,status,digest&collapse=urlkey"
+                "https://vefsafn.is/cdx?url=example.com/*&output=json&fl=url,timestamp,mime,status,digest,is_fuzzy&collapse=urlkey"
             ),
             "{pywb}"
         );
