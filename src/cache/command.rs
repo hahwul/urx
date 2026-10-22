@@ -64,6 +64,7 @@ pub enum CacheAction {
     },
 
     /// Delete entries older than --cache-ttl, leaving everything still fresh
+    /// (--incremental baselines older than that go too)
     Prune,
 
     /// Delete every entry for the given domains

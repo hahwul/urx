@@ -99,7 +99,13 @@ impl CacheManager {
         // A failed read (corrupt or foreign row) is a miss, not a dead run.
         match self.backend.get(key).await.ok().flatten() {
             Some(entry) if entry.is_expired(ttl_seconds) => {
-                let _ = self.backend.delete(key).await;
+                // A baseline shares its key with normal runs but is read with
+                // no TTL; deleting it here would make the next `--incremental`
+                // run report everything it ever saw as new. `store_urls`
+                // merges this run into it instead.
+                if !entry.baseline {
+                    let _ = self.backend.delete(key).await;
+                }
                 Ok(None)
             }
             fresh => Ok(fresh),
@@ -262,6 +268,16 @@ mod tests {
         let baseline = cache.get_fresh(&key, 3600).await?.unwrap();
         assert_eq!(baseline.urls.len(), 5);
         assert!(baseline.baseline);
+
+        // A normal run's lookup sees an expired baseline as a miss, but must
+        // not delete it.
+        let mut aged = baseline;
+        aged.timestamp = chrono::Utc::now() - chrono::Duration::days(7);
+        cache.backend.set(&key, &aged).await?;
+        assert!(cache.get_fresh(&key, 3600).await?.is_none());
+        let kept = cache.backend.get(&key).await?.unwrap();
+        assert_eq!(kept.urls.len(), 5);
+        assert!(kept.baseline);
 
         Ok(())
     }
