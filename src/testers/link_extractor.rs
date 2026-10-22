@@ -136,12 +136,15 @@ fn meta_refresh_target(element: &Element) -> Option<&str> {
             rest.trim()
         }
     });
-    let (key, value) = target.split_once('=')?;
-    if !key.trim().eq_ignore_ascii_case("url") {
-        return None;
-    }
+    // `url=` is optional (WHATWG): `content="5; /next"` names the target
+    // directly. A bare delay (`content="5"`) has no target at all.
+    let value = match target.split_once('=') {
+        Some((key, value)) if key.trim().eq_ignore_ascii_case("url") => value,
+        _ if content.contains(';') => target,
+        _ => return None,
+    };
 
-    Some(value.trim().trim_matches(['"', '\'']))
+    Some(value.trim().trim_matches(['"', '\''])).filter(|v| !v.is_empty())
 }
 
 /// HTML link extractor that finds URLs in web pages
@@ -481,6 +484,9 @@ mod tests {
             r#"<meta http-equiv="refresh" content="0; url='/next'">"#,
             // No delay at all.
             r#"<meta http-equiv="refresh" content="url=/next">"#,
+            // `url=` is optional after the delay.
+            r#"<meta http-equiv="refresh" content="0; /next">"#,
+            r#"<meta http-equiv="refresh" content="0; 'https://example.com/next'">"#,
         ] {
             assert_eq!(
                 LinkExtractor::extract_links(&base_url, html),
@@ -514,6 +520,7 @@ mod tests {
         for html in [
             // A refresh that only reloads the current page names no target.
             r#"<meta http-equiv="refresh" content="30">"#,
+            r#"<meta http-equiv="refresh" content="30; ">"#,
             // A different http-equiv entirely: its content is not a URL.
             r#"<meta http-equiv="content-type" content="text/html; charset=utf-8">"#,
             r#"<meta name="description" content="url=not-a-redirect">"#,

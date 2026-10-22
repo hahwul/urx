@@ -268,6 +268,18 @@ pub fn build_meta_filter(args: &Args) -> Result<MetaFilter> {
 pub fn validate_result_filters(args: &Args) -> Result<()> {
     ScopeMatcher::from_files(&args.scope_file)?;
     build_meta_filter(args)?;
+    // The status checker matches the same pattern language as `--meta-status`;
+    // an unmatchable `--is 3x` would silently drop every redirect.
+    for pattern in args
+        .include_status
+        .iter()
+        .chain(&args.exclude_status)
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        crate::filters::validate_status_pattern(pattern)?;
+    }
     // These output views reshape URLs into hosts, paths or parameter names,
     // and they run before the testers — which then request those: `--params
     // --check-status` checked `id`, `page` and `q`, and with `--is 200`
@@ -1443,6 +1455,15 @@ mod tests {
         let args = Args::parse_from(["urx", "-f", "wordlist", "--show-only-path", "example.com"]);
         let err = validate_result_filters(&args).unwrap_err().to_string();
         assert!(err.contains("wordlist"), "{err}");
+    }
+
+    #[test]
+    fn test_unmatchable_status_patterns_are_rejected() {
+        let args = Args::parse_from(["urx", "--is", "2xx,3x", "example.com"]);
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("\"3x\""), "{err}");
+        let args = Args::parse_from(["urx", "--es", "404, 5XX", "example.com"]);
+        assert!(validate_result_filters(&args).is_ok());
     }
 
     #[test]

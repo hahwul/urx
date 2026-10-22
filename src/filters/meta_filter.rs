@@ -70,7 +70,7 @@ pub(crate) fn status_matches_pattern(recorded: &str, pattern: &str) -> bool {
 /// HTTP status codes are three digits, so a three-character pattern is the only
 /// shape `status_matches_pattern` can ever match — `--meta-status 2` would be
 /// accepted and then quietly match nothing at all.
-fn validate_status_pattern(pattern: &str) -> Result<()> {
+pub(crate) fn validate_status_pattern(pattern: &str) -> Result<()> {
     let ok = pattern.len() == 3
         && pattern
             .chars()
