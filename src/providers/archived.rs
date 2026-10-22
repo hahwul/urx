@@ -136,7 +136,7 @@ pub fn capture_index_url(
     to: Option<&str>,
 ) -> String {
     let mut url = format!(
-        "{origin}/cdx/search/cdx?url={document}&fl={INDEX_FIELDS}&collapse=digest&filter=statuscode:2..&limit={INDEX_ROW_LIMIT}"
+        "{origin}/cdx/search/cdx?url={document}&fl={INDEX_FIELDS}&collapse=digest&filter=statuscode:2..&sort=reverse&limit={INDEX_ROW_LIMIT}"
     );
     if let Some(from) = from {
         url.push_str("&from=");
@@ -201,7 +201,9 @@ pub fn distinct_versions(text: &str) -> VersionListing {
     let mut listing = VersionListing::default();
     let mut seen_digests = std::collections::HashSet::new();
 
-    for capture in text.lines().rev().filter_map(parse_index_row) {
+    // The listing arrives newest first (`sort=reverse`), so a document with
+    // more rows than the limit loses its oldest versions, not its newest.
+    for capture in text.lines().filter_map(parse_index_row) {
         if let Some(digest) = &capture.digest {
             if !seen_digests.insert(digest.clone()) {
                 continue;
@@ -250,6 +252,14 @@ pub enum Replay {
     /// The archive answered with a non-success for this capture (a 404 when it
     /// has no such capture after all, or the capture's own error status).
     Unavailable(reqwest::StatusCode),
+}
+
+impl Replay {
+    /// A throttled or failing archive (429, 5xx): the version exists but was
+    /// not read, so the result is incomplete — and must not be cached whole.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Replay::Unavailable(s) if *s == 429 || s.is_server_error())
+    }
 }
 
 /// Replay `capture` in raw form, reading at most `max_bytes` of body.
@@ -358,15 +368,15 @@ mod tests {
     }
 
     /// The layout the index answers with, as observed live for
-    /// github.com/robots.txt: chronological, one row per change.
+    /// github.com/robots.txt: newest first (`sort=reverse`), one row per change.
     const GITHUB_LIKE: &str = "\
-http://github.com/robots.txt 20070917000000 401 AAA401\n\
-http://github.com/robots.txt 20080301000000 200 BBB200\n\
-https://github.com/robots.txt 20120301000000 200 CCC200\n\
-https://github.com/robots.txt 20130301000000 - -\n\
-https://github.com/robots.txt 20150301000000 200 BBB200\n\
+https://github.com/robots.txt 20240301000000 200 EEE200\n\
 https://github.com/robots.txt 20200301000000 404 DDD404\n\
-https://github.com/robots.txt 20240301000000 200 EEE200\n";
+https://github.com/robots.txt 20150301000000 200 BBB200\n\
+https://github.com/robots.txt 20130301000000 - -\n\
+https://github.com/robots.txt 20120301000000 200 CCC200\n\
+http://github.com/robots.txt 20080301000000 200 BBB200\n\
+http://github.com/robots.txt 20070917000000 401 AAA401\n";
 
     #[test]
     fn distinct_versions_keeps_one_row_per_digest_newest_first() {

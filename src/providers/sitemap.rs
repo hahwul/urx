@@ -404,6 +404,12 @@ impl ArchivedWalk<'_> {
         }
     }
 
+    fn mark_partial(&self) {
+        if let Some(r) = self.reporter {
+            r.mark_partial();
+        }
+    }
+
     /// Replay `sitemap_url` as it was at `timestamp` and collect what it
     /// names, following a `<sitemapindex>` into its children *at the same
     /// timestamp* — the archive replays the nearest capture, which is the
@@ -431,7 +437,10 @@ impl ArchivedWalk<'_> {
         .await;
         let (content, content_type) = match replay {
             Ok(Replay::Body { text, content_type }) => (text, content_type),
-            Ok(Replay::Unavailable(status)) => {
+            Ok(replay @ Replay::Unavailable(status)) => {
+                if replay.is_transient() {
+                    self.mark_partial();
+                }
                 self.note(format!(
                     "{}: skipping archived {sitemap_url} from {timestamp} (archive answered {status})",
                     self.domain
@@ -439,6 +448,7 @@ impl ArchivedWalk<'_> {
                 return;
             }
             Err(e) => {
+                self.mark_partial();
                 self.note(format!(
                     "{}: failed to replay archived {sitemap_url} from {timestamp}: {e}",
                     self.domain
@@ -1309,8 +1319,8 @@ mod tests {
         let indexes = archived_index_mocks(
             &mut server,
             "sitemap.xml",
-            "https://example.com/sitemap.xml 20190101000000 200 V2019\n\
-             https://example.com/sitemap.xml 20240101000000 200 V2024\n",
+            "https://example.com/sitemap.xml 20240101000000 200 V2024\n\
+             https://example.com/sitemap.xml 20190101000000 200 V2019\n",
         )
         .await;
         let v2019 = server
@@ -1464,8 +1474,8 @@ mod tests {
         let _indexes = archived_index_mocks(
             &mut server,
             "sitemap.xml",
-            "https://example.com/sitemap.xml 20180101000000 - -\n\
-             https://example.com/sitemap.xml 20240101000000 200 OK\n",
+            "https://example.com/sitemap.xml 20240101000000 200 OK\n\
+             https://example.com/sitemap.xml 20180101000000 - -\n",
         )
         .await;
         let dead = server

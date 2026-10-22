@@ -82,6 +82,11 @@ pub(crate) struct PywbRow {
     pub status: Option<String>,
     #[serde(default)]
     pub digest: Option<String>,
+    /// pywb's fuzzy-match fallback: when a query (often a `filter=`) matches
+    /// nothing, the server answers with rows that ignore it, marked
+    /// `"is_fuzzy": "1"`. Seen on Arquivo and vefsafn.
+    #[serde(default)]
+    pub is_fuzzy: Option<serde_json::Value>,
 }
 
 impl PywbRow {
@@ -109,6 +114,15 @@ pub(crate) fn parse_pywb_rows(text: &str) -> Vec<UrlRecord> {
             }
             let row: PywbRow = serde_json::from_str(line).ok()?;
             if !row.url.starts_with("http://") && !row.url.starts_with("https://") {
+                return None;
+            }
+            // `--archive-status 404` must not print the 200s the server
+            // substituted when it had no 404s.
+            if row
+                .is_fuzzy
+                .as_ref()
+                .is_some_and(|v| *v == "1" || *v == "true" || *v == true || *v == 1)
+            {
                 return None;
             }
             Some(row.into_record())
@@ -362,6 +376,7 @@ pub(crate) async fn walk_block_pages(
     // capture, so rows are folded per URL as they arrive.
     let mut records = RecordSet::new();
     let mut consecutive_failures = 0usize;
+    let mut empty_page = None;
     let mut last_error = None;
     for page in 0..pages {
         let page_url = format!("{query_base}&page={page}");
@@ -384,6 +399,13 @@ pub(crate) async fn walk_block_pages(
                     }
                     break;
                 }
+            }
+            // A filtered query answers a page with no matching rows with
+            // `404 No Captures found` (Common Crawl, checked live): an empty
+            // page, not an unhealthy index, so the walk goes on.
+            Err(e) if e.to_string().contains("HTTP error: 404") => {
+                consecutive_failures = 0;
+                empty_page = Some(e);
             }
             Err(e) => {
                 // Pages are *independently addressable* — `page=N` is a direct
@@ -408,7 +430,7 @@ pub(crate) async fn walk_block_pages(
     // for a domain it has no captures for): a hard failure, matching
     // single-request behaviour.
     if records.is_empty() {
-        if let Some(e) = last_error {
+        if let Some(e) = last_error.or(empty_page) {
             return Err(e);
         }
     }
@@ -501,8 +523,10 @@ impl CdxProvider {
     fn query_base(&self, dialect: CdxDialect, domain: &str) -> String {
         let pattern = self.url_pattern(domain);
         let mut url = match dialect {
+            // `collapse=urlkey` keeps each URL's first row; `sort=reverse`
+            // makes that the newest capture, as the Wayback provider does.
             CdxDialect::Classic => format!(
-                "{}?url={pattern}&fl={CLASSIC_FIELDS}&collapse=urlkey",
+                "{}?url={pattern}&fl={CLASSIC_FIELDS}&collapse=urlkey&sort=reverse",
                 self.endpoint
             ),
             CdxDialect::Pywb => format!(
@@ -728,6 +752,18 @@ mod tests {
     }
 
     #[test]
+    fn pywb_fuzzy_fallback_rows_are_dropped() {
+        // Arquivo answering `filter=status:404` on a domain with no 404s.
+        let body = "{\"url\":\"https://www.example.com/\",\"status\":\"200\",\"is_fuzzy\":\"1\"}\n\
+                    {\"url\":\"https://www.example.com/x\",\"status\":\"404\",\"is_fuzzy\":\"0\"}\n";
+        let records = parse_pywb_rows(body);
+        assert_eq!(
+            records.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://www.example.com/x"]
+        );
+    }
+
+    #[test]
     fn pywb_rows_parse_with_metadata_and_skip_junk() {
         let body = "{\"urlkey\":\"com,example)/\",\"url\":\"http://example.com/a\",\"timestamp\":\"20240101000000\",\"mime\":\"text/html\",\"status\":\"200\",\"digest\":\"ABC\"}\n\
                     \n\
@@ -910,6 +946,26 @@ mod tests {
 
         // A 404 probe is the index saying "no captures": nothing is missing.
         let (records, partial) = walk_mocked(404, "", &[("0", 200, row)]).await;
+        assert_eq!(records.unwrap().len(), 1);
+        assert!(!partial);
+    }
+
+    #[tokio::test]
+    async fn filtered_empty_pages_do_not_end_the_walk() {
+        // Common Crawl answers a page the filter emptied with a 404. Three in a
+        // row used to read as an unhealthy index and stop before page 3.
+        let (records, partial) = walk_mocked(
+            200,
+            "{\"pages\":5}",
+            &[
+                ("0", 404, ""),
+                ("1", 404, ""),
+                ("2", 404, ""),
+                ("3", 200, "{\"url\":\"https://example.com/late\"}\n"),
+                ("4", 404, ""),
+            ],
+        )
+        .await;
         assert_eq!(records.unwrap().len(), 1);
         assert!(!partial);
     }
