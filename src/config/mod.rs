@@ -539,8 +539,12 @@ impl Config {
 
         // Explicit CLI choices take precedence over config, while exclusion
         // wins when both include and exclude are enabled at the same layer.
+        // `--providers robots` on the command line is such a choice too.
+        let cli_names =
+            |id: &str| provided.has("providers") && args.providers.iter().any(|p| p.trim() == id);
         if !provided.has("include_robots")
             && !provided.has("exclude_robots")
+            && !cli_names("robots")
             && !args.exclude_robots
             && p.exclude_robots.unwrap_or(false)
         {
@@ -549,6 +553,7 @@ impl Config {
 
         if !provided.has("include_sitemap")
             && !provided.has("exclude_sitemap")
+            && !cli_names("sitemap")
             && !args.exclude_sitemap
             && p.exclude_sitemap.unwrap_or(false)
         {
@@ -1400,6 +1405,13 @@ mod tests {
         assert!(args.exclude_sitemap);
         assert!(!args.should_use_robots());
         assert!(!args.should_use_sitemap());
+
+        // ...but not over a CLI `--providers` that names the id.
+        let config = Config::from_file(exclude_file.path()).unwrap();
+        let (mut args, provided) = parse_args_from(["urx", "--providers", "robots", "example.com"]);
+        config.apply_to_args(&mut args, &provided);
+        assert!(!args.exclude_robots);
+        assert!(args.exclude_sitemap);
     }
 
     #[test]

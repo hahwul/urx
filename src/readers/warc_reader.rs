@@ -30,9 +30,7 @@ fn extract_url_from_line(line: &str) -> Option<String> {
         None => trimmed,
     };
 
-    if (candidate.starts_with("http://") || candidate.starts_with("https://"))
-        && !candidate.contains(' ')
-    {
+    if super::is_http_url(candidate) && !candidate.contains(' ') {
         return Some(candidate.to_string());
     }
     None

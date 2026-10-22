@@ -75,12 +75,12 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "psd", "ai", "eps", "avif", "jfif", "jp2", "jpx", "apng", "cr2", "nef", "orf", "arw", "dng",
     "pgm", "pbm", "ppm", "pnm", "exr", "xcf", "pcx", "tga", "emf", "wmf", "jxr", "hdp", "wdp",
     "cur", "dcm", "wbmp", "j2k", "art", "jng", "3fr", "ari", "srf", "sr2", "bay", "crw", "kdc",
-    "erf", "mrw", "rw2", "pef", "dicom", "djvu", "fpx", "hdr", "mng", "ora", "pic", "rgb", "rgba",
-    "xbm", "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
+    "erf", "mrw", "rw2", "pef", "dicom", "fpx", "hdr", "mng", "ora", "pic", "rgb", "rgba", "xbm",
+    "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
 ];
 
 const FONT_EXTENSIONS: &[&str] = &[
-    "ttf", "otf", "woff", "woff2", "eot", "fon", "fnt", "svg", "ttc", "dfont", "pfa", "pfb",
+    "ttf", "otf", "woff", "woff2", "eot", "fon", "fnt", "ttc", "dfont", "pfa", "pfb",
 ];
 
 const DOCUMENT_EXTENSIONS: &[&str] = &[
@@ -95,7 +95,7 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 
 const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpeg", "mpg", "3gp", "3g2", "m4v", "f4v",
-    "f4p", "f4a", "f4b", "asf", "rmvb", "rm", "dat", "ts", "vob",
+    "f4p", "f4a", "f4b", "asf", "rmvb", "rm", "dat", "vob",
 ];
 
 const JS_EXTENSIONS: &[&str] = &[
@@ -480,6 +480,26 @@ mod tests {
         assert!(exclude_extensions.contains(&"pdf".to_string()));
         assert!(exclude_extensions.contains(&"woff".to_string()));
         assert!(exclude_extensions.contains(&"mp4".to_string()));
+    }
+
+    #[test]
+    fn test_media_families_do_not_overlap() {
+        // Regression: `svg` was a font too, `ts` a video too and `djvu` an
+        // image too, so `no-fonts` dropped logos and `only-videos` returned
+        // TypeScript. Each `no-X`/`only-X` must act on its own family only.
+        let families = [
+            IMAGE_EXTENSIONS,
+            FONT_EXTENSIONS,
+            DOCUMENT_EXTENSIONS,
+            AUDIO_EXTENSIONS,
+            VIDEO_EXTENSIONS,
+            JS_EXTENSIONS,
+            STYLE_EXTENSIONS,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for ext in families.iter().flat_map(|f| f.iter()) {
+            assert!(seen.insert(ext), "{ext} is in two families");
+        }
     }
 
     #[test]
