@@ -72,9 +72,6 @@ pub(crate) fn extract_matching_urls(
     for token in
         fragment.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '<' | '>'))
     {
-        let token = token.trim_end_matches(|c: char| {
-            matches!(c, '.' | ')' | ']' | '}' | '>' | ';' | ':' | '!' | '?' | '`')
-        });
         // A URL can start mid-token: `[docs](https://…)`, `` fetch(`https://…`) ``,
         // `<https://…>`, `src=https://…`. Lower-casing ASCII keeps byte offsets.
         let lower = token.to_ascii_lowercase();
@@ -86,14 +83,18 @@ pub(crate) fn extract_matching_urls(
             continue;
         };
         let mut token = &token[start..];
-        // Escaped markup: `&quot;https://…&quot;`, `&lt;https://…&gt;`.
-        if let Some(end) = ["&quot", "&lt", "&gt", "&#"]
+        // Escaped markup: `&quot;https://…&quot;`, `&lt;https://…&gt;`. The
+        // `;` is required: `&gte=2020` is a query parameter, not `&gt;`.
+        if let Some(end) = ["&quot;", "&lt;", "&gt;", "&#39;", "&#34;", "&#x27;"]
             .iter()
             .filter_map(|entity| token.find(entity))
             .min()
         {
             token = &token[..end];
         }
+        let token = token.trim_end_matches(|c: char| {
+            matches!(c, '.' | ')' | ']' | '}' | '>' | ';' | ':' | '!' | '?' | '`')
+        });
         if validator.is_valid_host(token) {
             sink.insert(token.to_string());
         }
@@ -248,7 +249,8 @@ mod tests {
         let mut sink = HashSet::new();
         extract_matching_urls(
             "<loc>https://example.com/a</loc> <a href=https://example.com/b>x</a> \
-             &quot;https://example.com/c&quot; &lt;https://example.com/d&gt;",
+             &quot;https://example.com/c&quot; &lt;https://example.com/d&gt; \
+             https://example.com/e?sort=date&gte=2020&lt=5.",
             "example.com",
             false,
             &mut sink,
@@ -261,7 +263,8 @@ mod tests {
                 "https://example.com/a",
                 "https://example.com/b",
                 "https://example.com/c",
-                "https://example.com/d"
+                "https://example.com/d",
+                "https://example.com/e?sort=date&gte=2020&lt=5",
             ]
         );
     }

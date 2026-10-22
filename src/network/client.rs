@@ -143,12 +143,12 @@ impl HttpClientConfig {
 pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     const MAX_RETRY_AFTER_SECS: u64 = 60;
     let header = |name: &str| headers.get(name)?.to_str().ok()?.trim().parse::<u64>().ok();
-    // `x-rate-limit-reset-after` is urlscan's spelling: the seconds left in
-    // the window, as a delta, and it sends no `Retry-After`.
-    let secs = match header(reqwest::header::RETRY_AFTER.as_str())
-        .or_else(|| header("x-rate-limit-reset-after"))
-    {
+    let secs = match header(reqwest::header::RETRY_AFTER.as_str()) {
         Some(secs) => secs,
+        // urlscan's spelling: no `Retry-After`, and the seconds left in the
+        // window as a delta. Sent on every response, so only an exhausted
+        // window is a reason to wait for it.
+        None if header("x-rate-limit-remaining") == Some(0) => header("x-rate-limit-reset-after")?,
         None if header("x-ratelimit-remaining") == Some(0) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -379,9 +379,12 @@ mod tests {
         headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
         assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(30)));
 
-        // urlscan sends its window as `x-rate-limit-reset-after` instead.
+        // urlscan sends its window as `x-rate-limit-reset-after` instead, on
+        // every response; only an exhausted one is waited for.
         let mut headers = HeaderMap::new();
         headers.insert("x-rate-limit-reset-after", HeaderValue::from_static("42"));
+        assert_eq!(retry_after_delay(&headers), None);
+        headers.insert("x-rate-limit-remaining", HeaderValue::from_static("0"));
         assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(42)));
     }
 

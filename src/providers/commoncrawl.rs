@@ -720,9 +720,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_first_page_failure_is_still_fatal() {
-        // A domain the index has no captures for answers page 0 with a 404;
-        // that must stay an error rather than an empty success.
+    async fn test_a_domain_without_captures_is_empty_not_failed() {
+        // A domain the index has no captures for answers every page with
+        // `404 No Captures found`: no data, not a failed provider (which
+        // would fail a `--providers cc` run outright).
         let mut server = mockito::Server::new_async().await;
 
         let _probe = server
@@ -747,6 +748,6 @@ mod tests {
         provider.base_url = server.url();
         provider.net.retries = 0;
 
-        assert!(provider.fetch_urls("example.com").await.is_err());
+        assert!(provider.fetch_urls("example.com").await.unwrap().is_empty());
     }
 }

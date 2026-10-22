@@ -349,8 +349,8 @@ pub(crate) async fn walk_block_pages(
             // see above for why that page is fetched afresh.
             .unwrap_or(1),
         // The index returns 404 for a domain with no captures. Don't hard-fail
-        // the probe; fall through to a single page=0 fetch so genuine "no data"
-        // stays an empty/`Err` result exactly as a single request produces.
+        // the probe; fall through to a single page=0 fetch, whose own 404
+        // reads as an empty page.
         // Any other failure (5xx, network) leaves the real page count unknown,
         // so page 0 alone may be a fraction of the result: say so.
         Some(Err(e)) => {
@@ -378,7 +378,6 @@ pub(crate) async fn walk_block_pages(
     // capture, so rows are folded per URL as they arrive.
     let mut records = RecordSet::new();
     let mut consecutive_failures = 0usize;
-    let mut empty_page = None;
     let mut last_error = None;
     for page in 0..pages {
         let page_url = format!("{query_base}&page={page}");
@@ -402,13 +401,10 @@ pub(crate) async fn walk_block_pages(
                     break;
                 }
             }
-            // A filtered query answers a page with no matching rows with
-            // `404 No Captures found` (Common Crawl, checked live): an empty
-            // page, not an unhealthy index, so the walk goes on.
-            Err(e) if e.to_string().contains("HTTP error: 404") => {
-                consecutive_failures = 0;
-                empty_page = Some(e);
-            }
+            // The index answers a page with no rows — no captures at all, or
+            // none a filter kept — with `404 No Captures found` (Common Crawl,
+            // checked live): an empty page, not an unhealthy index.
+            Err(e) if e.to_string().contains("HTTP error: 404") => consecutive_failures = 0,
             Err(e) => {
                 // Pages are *independently addressable* — `page=N` is a direct
                 // block address, not a cursor — so one bad page says nothing
@@ -428,11 +424,11 @@ pub(crate) async fn walk_block_pages(
         }
     }
 
-    // Nothing collected and something failed (e.g. the 404 the index returns
-    // for a domain it has no captures for): a hard failure, matching
-    // single-request behaviour.
+    // Nothing collected and something failed: a hard failure, matching
+    // single-request behaviour. A domain with no captures is not that; its
+    // 404s are empty pages above.
     if records.is_empty() {
-        if let Some(e) = last_error.or(empty_page) {
+        if let Some(e) = last_error {
             return Err(e);
         }
     }

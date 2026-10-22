@@ -502,12 +502,14 @@ async fn run() -> Result<()> {
     )
     .await?;
 
-    let entries = entries_by_output_url(&run_result, args.normalize_url);
-    if args.show_sources {
-        attach_sources(&mut final_urls, &entries);
-    }
-    if wants_meta(&args) {
-        attach_capture_meta(&mut final_urls, &entries);
+    if args.show_sources || wants_meta(&args) {
+        let entries = entries_by_output_url(&run_result, args.normalize_url);
+        if args.show_sources {
+            attach_sources(&mut final_urls, &entries);
+        }
+        if wants_meta(&args) {
+            attach_capture_meta(&mut final_urls, &entries);
+        }
     }
 
     // Progress is transient: tear down the live region (header + all bars) now

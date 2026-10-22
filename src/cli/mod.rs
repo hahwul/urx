@@ -884,9 +884,14 @@ fn target_path(raw: &str) -> Option<String> {
     // isn't read as the start of a path.
     let after_authority = after_authority.split(['?', '#']).next().unwrap_or("");
     let (_, path) = after_authority.split_once('/')?;
-    // `example.com/*` is how CDX tools spell "everything under": a trailing
-    // `*` is the prefix match a path scope already is, not a literal byte.
-    let path = path.trim_end_matches('*');
+    // `example.com/*` and `example.com/shop/*` are how CDX tools spell
+    // "everything under", which a path scope already is. (`shop*` is a
+    // character prefix, which it is not; that is rejected later.)
+    let path = if path == "*" {
+        ""
+    } else {
+        path.strip_suffix("/*").unwrap_or(path)
+    };
     // Run it through the URL parser rather than keeping the user's bytes.
     // Host validation compares against `Url::path()`, which reports a path
     // percent-encoded — a candidate `https://example.com/über` reports
@@ -1679,7 +1684,6 @@ mod tests {
             Some("example.com/shop")
         );
         for raw in [
-            "example.com/shop*",
             "example.com/shop/*",
             "example.com/shop?next=https://example.com/x",
         ] {

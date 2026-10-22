@@ -248,12 +248,14 @@ pub async fn process_domains_with_cache(
     };
     // Off-host URLs from several fetched targets cannot be filed under the one
     // that returned them; filing them under every target would leak one
-    // target's URLs into another's hit or baseline.
-    let unattributable = !off_host.is_empty() && domains_to_process.len() > 1;
-    let (off_host, unattributed) = if unattributable {
-        (HashSet::new(), off_host)
+    // target's URLs into another's hit. An `--incremental` run files them
+    // under every target anyway: dropping them from the baselines would
+    // either drop them from the output or report them as new on every run.
+    let unattributable = !args.incremental && !off_host.is_empty() && domains_to_process.len() > 1;
+    let off_host = if unattributable {
+        HashSet::new()
     } else {
-        (off_host, HashSet::new())
+        off_host
     };
     let domain_urls = |domain: &str| {
         let mut urls = collect_domain_urls(&fresh_run.urls, domain, args.subs);
@@ -262,12 +264,6 @@ pub async fn process_domains_with_cache(
     };
 
     if args.incremental {
-        // No baseline can hold these, so there is nothing to diff them
-        // against: emit them all rather than drop them from the output.
-        for url in unattributed {
-            let entry = fresh_run.urls.get(&url).cloned().unwrap_or_default();
-            merge_entry(&mut final_result.urls, url, &entry);
-        }
         for domain in &domains_to_process {
             let cache_key = create_cache_key(domain, args);
 
@@ -693,18 +689,23 @@ mod tests {
             false,
         ))];
 
-        let result = process_domains_with_cache(
-            vec!["example.com".to_string(), "example.org".to_string()],
-            &args,
-            &ProgressManager::new(true),
-            &providers,
-            &["p0".to_string()],
-            Some(&cache),
-        )
-        .await
-        .unwrap();
-        assert!(result.urls.contains_key("https://example.com/a"));
-        assert!(result.urls.contains_key("https://cdn.other.test/x"));
+        let progress = ProgressManager::new(true);
+        let names = ["p0".to_string()];
+        let run = || {
+            process_domains_with_cache(
+                vec!["example.com".to_string(), "example.org".to_string()],
+                &args,
+                &progress,
+                &providers,
+                &names,
+                Some(&cache),
+            )
+        };
+        let first = run().await.unwrap();
+        assert!(first.urls.contains_key("https://example.com/a"));
+        assert!(first.urls.contains_key("https://cdn.other.test/x"));
+        // ...and, once seen, they are not new again.
+        assert!(run().await.unwrap().urls.is_empty());
     }
 
     #[test]

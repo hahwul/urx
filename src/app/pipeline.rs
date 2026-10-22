@@ -91,11 +91,18 @@ fn collect_domains_with_stdin(
     // validation, so such a target would come back empty without saying why.
     // One stray line in a long list is skipped with a warning; a run with
     // nothing else to scan is an error.
-    let (bad, mut normalized): (Vec<String>, Vec<String>) = normalized
+    let mut problems = Vec::new();
+    let mut normalized: Vec<String> = normalized
         .into_iter()
-        .partition(|d| target_problem(d).is_some());
-    for target in &bad {
-        let advice = target_problem(target).unwrap_or_default();
+        .filter(|d| match target_problem(d) {
+            Some(advice) => {
+                problems.push(advice);
+                false
+            }
+            None => true,
+        })
+        .collect();
+    for advice in problems {
         if normalized.is_empty() {
             anyhow::bail!(advice);
         }
@@ -121,6 +128,14 @@ fn target_problem(target: &str) -> Option<String> {
     if host.contains(|c: char| c.is_whitespace() || c == ',') {
         return Some(format!(
             "{target:?} is not a target; give each host on its own line or as its own argument"
+        ));
+    }
+    // `x.com/shop*` reads as CDX's character prefix (`/shopping` too), which a
+    // path scope cannot express; a literal `*` would match nothing at all.
+    if let Some(path) = cli::split_target(target).1.filter(|p| p.contains('*')) {
+        return Some(format!(
+            "{target:?} is not a target; a path scope covers whole segments, so use `{host}{}` (it includes everything under that path)",
+            path.split('*').next().unwrap_or("").trim_end_matches('/')
         ));
     }
     None
@@ -1564,8 +1579,14 @@ mod tests {
             collect_domains_with_stdin(&args, || Ok(Vec::new())).unwrap(),
             vec!["example.org"]
         );
-        // Two hosts on one line would be queried as one literal host.
-        for raw in ["a.test, b.test", "a.test\tb.test", "a.test b.test"] {
+        // Two hosts on one line would be queried as one literal host, and a
+        // character-prefix `*` is not a path scope.
+        for raw in [
+            "a.test, b.test",
+            "a.test\tb.test",
+            "a.test b.test",
+            "a.test/shop*",
+        ] {
             let args = Args::parse_from(["urx", "--silent", raw, "example.org"]);
             assert_eq!(
                 collect_domains_with_stdin(&args, || Ok(Vec::new())).unwrap(),

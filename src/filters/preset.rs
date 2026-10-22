@@ -95,12 +95,12 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 
 const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpeg", "mpg", "3gp", "3g2", "m4v", "f4v",
-    "f4p", "f4a", "f4b", "asf", "rmvb", "rm", "dat", "vob",
+    "f4p", "f4a", "f4b", "asf", "rmvb", "rm", "dat", "ts", "vob",
 ];
 
 const JS_EXTENSIONS: &[&str] = &[
-    "js", "ts", "jsx", "tsx", "mjs", "cjs", "vue", "json", "coffee", "es6", "es", "svelte",
-    "astro", "njk", "map",
+    "js", "jsx", "tsx", "mjs", "cjs", "vue", "json", "coffee", "es6", "es", "svelte", "astro",
+    "njk", "map",
 ];
 
 const STYLE_EXTENSIONS: &[&str] = &[
@@ -484,9 +484,11 @@ mod tests {
 
     #[test]
     fn test_media_families_do_not_overlap() {
-        // Regression: `svg` was a font too, `ts` a video too and `djvu` an
-        // image too, so `no-fonts` dropped logos and `only-videos` returned
-        // TypeScript. Each `no-X`/`only-X` must act on its own family only.
+        // Regression: `svg` was a font too, `ts` JS too and `djvu` an image
+        // too, so `no-fonts` dropped logos and `only-js` returned HLS
+        // segments. Each `no-X`/`only-X` must act on its own family only.
+        // `ts` stays a video: in archives it is an MPEG-TS segment far more
+        // often than a served TypeScript source.
         let families = [
             IMAGE_EXTENSIONS,
             FONT_EXTENSIONS,
@@ -557,7 +559,8 @@ mod tests {
         // Should include JS extensions
         assert!(extensions.contains(&"js".to_string()));
         assert!(extensions.contains(&"jsx".to_string()));
-        assert!(extensions.contains(&"ts".to_string()));
+        // `ts` is an MPEG-TS segment, a video; `tsx` is unambiguous.
+        assert!(!extensions.contains(&"ts".to_string()));
         assert!(extensions.contains(&"tsx".to_string()));
 
         // Should not exclude any extensions
