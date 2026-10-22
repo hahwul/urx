@@ -238,6 +238,15 @@ pub(crate) fn warn_if_truncated(
 
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 
+/// An `http://` or `https://` URL, the scheme matched case-insensitively
+/// (RFC 3986): `HTTPS://Example.com/` is as much a URL as its lower-case form.
+fn is_http_url(s: &str) -> bool {
+    ["http://", "https://"].iter().any(|scheme| {
+        s.get(..scheme.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(scheme))
+    })
+}
+
 /// The file's first three bytes, with the file rewound for the real read. A
 /// short read leaves the tail zeroed, which matches no signature.
 fn magic(file: &mut File) -> std::io::Result<[u8; 3]> {
@@ -299,6 +308,25 @@ pub fn detect_file_format(file_path: &Path) -> FileFormat {
 
 /// Read URLs from a file using auto-detected format
 pub fn read_urls_from_file(file_path: &Path) -> Result<Vec<String>> {
+    // Read as text, these yield binary noise and no URLs: an empty result
+    // that reads as "the file had nothing". URLTeam releases ship as zip
+    // files of `.xz` dumps, so both are likely to be handed over as-is.
+    let mut head = [0u8; 6];
+    if let Ok(mut file) = File::open(file_path) {
+        let _ = file.read(&mut head);
+    }
+    for (signature, name) in [
+        (&b"\xfd7zXZ\x00"[..], "xz"),
+        (&b"PK\x03\x04"[..], "zip"),
+        (&b"\x28\xb5\x2f\xfd"[..], "zstd"),
+    ] {
+        if head.starts_with(signature) {
+            anyhow::bail!(
+                "{}: {name} input is not supported. Decompress it first and pass the result to --files.",
+                file_path.display()
+            );
+        }
+    }
     match detect_file_format(file_path) {
         FileFormat::Warc => warc_reader::read_urls(file_path),
         FileFormat::UrlTeam => urlteam_reader::read_urls(file_path),
@@ -310,6 +338,37 @@ pub fn read_urls_from_file(file_path: &Path) -> Result<Vec<String>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_xz_and_zip_input_is_an_error_not_an_empty_result() -> Result<()> {
+        for (head, name) in [
+            (&b"\xfd7zXZ\x00\x00"[..], "xz"),
+            (b"PK\x03\x04\x14\x00", "zip"),
+        ] {
+            let file = tempfile::Builder::new().suffix(".txt").tempfile()?;
+            std::fs::write(file.path(), head)?;
+            let err = read_urls_from_file(file.path()).unwrap_err().to_string();
+            assert!(err.contains(&format!("{name} input")), "{err}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_upper_case_schemes_are_read() -> Result<()> {
+        let file = tempfile::Builder::new().suffix(".txt").tempfile()?;
+        std::fs::write(
+            file.path(),
+            "HTTPS://Example.com/a\nHttp://example.com/b\nftp://x/\n",
+        )?;
+        assert_eq!(read_urls_from_file(file.path())?.len(), 2);
+        let urlteam = tempfile::Builder::new().suffix(".gz").tempfile()?;
+        std::fs::write(urlteam.path(), "abc|HTTP://example.com/u\n")?;
+        assert_eq!(
+            read_urls_from_file(urlteam.path())?,
+            vec!["HTTP://example.com/u"]
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_detect_warc_format() {

@@ -98,8 +98,10 @@ fn parse_robots_txt(protocol: &str, domain: &str, text: &str) -> Vec<String> {
         if urls.len() >= MAX_ROBOTS_ENTRIES {
             break;
         }
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        // RFC 9309: `#` starts a comment anywhere, even glued to a value
+        // (`Disallow: /tmp/#temporary files`).
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
             continue;
         }
         // RFC 9309: field names are case-insensitive and may carry
@@ -109,8 +111,7 @@ fn parse_robots_txt(protocol: &str, domain: &str, text: &str) -> Vec<String> {
             continue;
         };
         // Take the first whitespace-delimited token of the value: paths
-        // and URLs never contain spaces, so this drops any trailing
-        // inline `# comment` and stray whitespace in one step.
+        // and URLs never contain spaces.
         let value = value.split_whitespace().next().unwrap_or("");
         match field.trim().to_ascii_lowercase().as_str() {
             "disallow" if !value.is_empty() && value != "/" => {
@@ -235,14 +236,26 @@ impl RobotsProvider {
                         .unwrap_or_else(|| ("https".to_string(), domain.to_string()));
                     urls.extend(parse_robots_txt(&protocol, &host, &text));
                 }
-                Ok(Replay::Unavailable(status)) => note(format!(
-                    "{domain}: skipping archived robots.txt from {} (archive answered {status})",
-                    capture.timestamp
-                )),
-                Err(e) => note(format!(
-                    "{domain}: failed to replay archived robots.txt from {}: {e}",
-                    capture.timestamp
-                )),
+                Ok(replay @ Replay::Unavailable(status)) => {
+                    if replay.is_transient() {
+                        if let Some(r) = &reporter {
+                            r.mark_partial();
+                        }
+                    }
+                    note(format!(
+                        "{domain}: skipping archived robots.txt from {} (archive answered {status})",
+                        capture.timestamp
+                    ))
+                }
+                Err(e) => {
+                    if let Some(r) = &reporter {
+                        r.mark_partial();
+                    }
+                    note(format!(
+                        "{domain}: failed to replay archived robots.txt from {}: {e}",
+                        capture.timestamp
+                    ))
+                }
             }
         }
 
@@ -845,9 +858,9 @@ Sitemap: http://example.com/sitemap.xml
     /// through and the client must set aside.
     fn archived_index(server_host: &str) -> String {
         format!(
-            "http://www.{server_host}/robots.txt 20070917000000 - -\n\
+            "https://{server_host}/robots.txt 20240101000000 200 V2024\n\
              http://www.{server_host}/robots.txt 20150101000000 200 V2015\n\
-             https://{server_host}/robots.txt 20240101000000 200 V2024\n"
+             http://www.{server_host}/robots.txt 20070917000000 - -\n"
         )
     }
 
@@ -1021,6 +1034,45 @@ Sitemap: /sitemap-2015.xml
         assert_eq!(urls, vec!["https://example.com/admin/".to_string()]);
         index.assert();
         replay.assert();
+    }
+
+    #[tokio::test]
+    async fn a_throttled_archived_replay_marks_the_result_partial() {
+        // Regression: a 429 on the replay was only noted, and the empty
+        // result cached as "no archived robots URLs".
+        let mut server = mockito::Server::new_async().await;
+        let _index = server
+            .mock("GET", "/cdx/search/cdx")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body("https://example.com/robots.txt 20240101000000 200 V2024\n")
+            .create_async()
+            .await;
+        let _replay = server
+            .mock(
+                "GET",
+                "/web/20240101000000id_/https://example.com/robots.txt",
+            )
+            .with_status(429)
+            .create_async()
+            .await;
+
+        let mut provider =
+            RobotsProvider::archived(ArchivedDiscovery::new(5).with_origin(server.url()));
+        provider.net.retries = 0;
+        let (reporter, _notes) = capturing_reporter();
+        let urls = provider
+            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .await
+            .unwrap();
+        assert!(urls.is_empty());
+        assert!(reporter.is_partial());
+    }
+
+    #[test]
+    fn test_inline_comment_glued_to_a_value_is_dropped() {
+        let urls = parse_robots_txt("https", "example.com", "Disallow: /tmp/#temporary files\n");
+        assert_eq!(urls, vec!["https://example.com/tmp/".to_string()]);
     }
 
     #[tokio::test]

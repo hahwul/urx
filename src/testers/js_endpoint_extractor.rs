@@ -150,7 +150,8 @@ struct Patterns {
     /// 1. absolute or protocol-relative URL
     /// 2. origin-relative path `/…`
     /// 3. dot-relative path `./…` / `../…`
-    /// 4. bare relative `seg/seg…` (must contain a `/`), optionally with a query
+    /// 4. bare relative `seg/seg…` (must contain a `/`), optionally with a
+    ///    trailing `/` and a query
     literal: Regex,
     /// The URL argument of a request call. `fetch("…")`, `axios.get("…")`,
     /// `axios({url:"…"})`, `$.ajax("…")`, `xhr.open("GET", "…")`.
@@ -166,13 +167,13 @@ static PATTERNS: LazyLock<Patterns> = LazyLock::new(|| {
     // Everything allowed inside a candidate. Shared by both patterns.
     const BODY: &str = r#"[^"'`\s<>{}()|^$*\\]"#;
     let url_shape = format!(
-        r"(?:(?:https?:)?//{b}+|/{b}*|\.\.?/{b}*|[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+(?:\?{b}*)?)",
+        r"(?:(?:https?:)?//{b}+|/{b}*|\.\.?/{b}*|[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+/?(?:\?{b}*)?)",
         b = BODY
     );
     // A request call's argument is a URL by construction, so a single bare
     // word (`fetch("users")`) is accepted there and nowhere else.
     let call_shape = format!(
-        r"(?:{url_shape}|[A-Za-z0-9_\-][A-Za-z0-9_.\-]*(?:\?{b}*)?)",
+        r"(?:{url_shape}|[A-Za-z0-9_\-][A-Za-z0-9_.\-]*/?(?:\?{b}*)?)",
         b = BODY
     );
     // A string must close with the quote it opened with. `regex` has no
@@ -321,7 +322,9 @@ fn is_noise(candidate: &str, origin: Origin) -> bool {
         if seg.contains('+') || seg.contains('=') {
             return true;
         }
-        if seg.len() >= 24 && !seg.contains(['.', '-', '_']) {
+        // A request-call argument is a URL by construction, so a long
+        // camel-case route (`/api/getNotificationPreferencesV2`) is kept.
+        if origin == Origin::Literal && seg.len() >= 24 && !seg.contains(['.', '-', '_']) {
             let upper = seg.bytes().any(|b| b.is_ascii_uppercase());
             let lower = seg.bytes().any(|b| b.is_ascii_lowercase());
             let digit = seg.bytes().any(|b| b.is_ascii_digit());
@@ -728,6 +731,25 @@ mod tests {
             // relative" rules: the call proves it is a URL.
             "https://app.example.com/",
             "https://app.example.com/users",
+        ] {
+            assert!(got.contains(&expected.to_string()), "{expected} in {got:?}");
+        }
+    }
+
+    #[test]
+    fn test_trailing_slash_and_long_call_arguments_are_found() {
+        let script = r#"
+            fetch("api/v1/users/");
+            x = "api/v2/items/";
+            axios.get("v1/orders/" + id);
+            fetch("/api/getNotificationPreferencesV2");
+        "#;
+        let got = extract(script);
+        for expected in [
+            "https://app.example.com/api/v1/users/",
+            "https://app.example.com/api/v2/items/",
+            "https://app.example.com/v1/orders/",
+            "https://app.example.com/api/getNotificationPreferencesV2",
         ] {
             assert!(got.contains(&expected.to_string()), "{expected} in {got:?}");
         }

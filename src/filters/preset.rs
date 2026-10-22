@@ -75,12 +75,12 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "psd", "ai", "eps", "avif", "jfif", "jp2", "jpx", "apng", "cr2", "nef", "orf", "arw", "dng",
     "pgm", "pbm", "ppm", "pnm", "exr", "xcf", "pcx", "tga", "emf", "wmf", "jxr", "hdp", "wdp",
     "cur", "dcm", "wbmp", "j2k", "art", "jng", "3fr", "ari", "srf", "sr2", "bay", "crw", "kdc",
-    "erf", "mrw", "rw2", "pef", "dicom", "djvu", "fpx", "hdr", "mng", "ora", "pic", "rgb", "rgba",
-    "xbm", "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
+    "erf", "mrw", "rw2", "pef", "dicom", "fpx", "hdr", "mng", "ora", "pic", "rgb", "rgba", "xbm",
+    "xpm", "dpx", "fits", "flif", "img", "mpo", "psb",
 ];
 
 const FONT_EXTENSIONS: &[&str] = &[
-    "ttf", "otf", "woff", "woff2", "eot", "fon", "fnt", "svg", "ttc", "dfont", "pfa", "pfb",
+    "ttf", "otf", "woff", "woff2", "eot", "fon", "fnt", "ttc", "dfont", "pfa", "pfb",
 ];
 
 const DOCUMENT_EXTENSIONS: &[&str] = &[
@@ -99,8 +99,8 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 const JS_EXTENSIONS: &[&str] = &[
-    "js", "ts", "jsx", "tsx", "mjs", "cjs", "vue", "json", "coffee", "es6", "es", "svelte",
-    "astro", "njk", "map",
+    "js", "jsx", "tsx", "mjs", "cjs", "vue", "json", "coffee", "es6", "es", "svelte", "astro",
+    "njk", "map",
 ];
 
 const STYLE_EXTENSIONS: &[&str] = &[
@@ -483,6 +483,28 @@ mod tests {
     }
 
     #[test]
+    fn test_media_families_do_not_overlap() {
+        // Regression: `svg` was a font too, `ts` JS too and `djvu` an image
+        // too, so `no-fonts` dropped logos and `only-js` returned HLS
+        // segments. Each `no-X`/`only-X` must act on its own family only.
+        // `ts` stays a video: in archives it is an MPEG-TS segment far more
+        // often than a served TypeScript source.
+        let families = [
+            IMAGE_EXTENSIONS,
+            FONT_EXTENSIONS,
+            DOCUMENT_EXTENSIONS,
+            AUDIO_EXTENSIONS,
+            VIDEO_EXTENSIONS,
+            JS_EXTENSIONS,
+            STYLE_EXTENSIONS,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for ext in families.iter().flat_map(|f| f.iter()) {
+            assert!(seen.insert(ext), "{ext} is in two families");
+        }
+    }
+
+    #[test]
     fn test_webm_is_a_video_not_an_image() {
         // Regression: `webm` sat in IMAGE_EXTENSIONS next to `webp`, so
         // `--preset no-images` silently deleted WebM *video* URLs and
@@ -537,7 +559,8 @@ mod tests {
         // Should include JS extensions
         assert!(extensions.contains(&"js".to_string()));
         assert!(extensions.contains(&"jsx".to_string()));
-        assert!(extensions.contains(&"ts".to_string()));
+        // `ts` is an MPEG-TS segment, a video; `tsx` is unambiguous.
+        assert!(!extensions.contains(&"ts".to_string()));
         assert!(extensions.contains(&"tsx".to_string()));
 
         // Should not exclude any extensions

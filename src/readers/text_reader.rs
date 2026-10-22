@@ -17,7 +17,7 @@ pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
                 return None;
             }
             // Basic URL validation - must start with http or https
-            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            if super::is_http_url(trimmed) {
                 Some(trimmed.to_string())
             } else {
                 None

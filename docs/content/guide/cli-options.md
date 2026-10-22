@@ -438,7 +438,7 @@ their CDX APIs, and urx reports the same HTML-answer error.
 |----------|---------------------------------|
 | `otx` | `/api/v1/indicators/{domain\|hostname}/…/url_list`, 200 URLs per page, at most 1,000 pages. The `hostname` endpoint is used for a target with three or more labels (`sub.example.com`, but also `example.co.uk`) without `--subs`; it excludes `www.` and other subdomains |
 | `vt` | v3 `domains/{domain}/urls`, 40 per page with cursor pagination. A 404 means no data; a 429 waits for the server's `Retry-After` (at most 60 s) before retrying |
-| `urlscan` | `search/?q=domain:<domain>` with 100 results per page and `search_after` paging. Works without a key |
+| `urlscan` | `search/?q=page.domain:<domain>` with 100 results per page and `search_after` paging. Works without a key |
 | `github` | Code Search for `"<domain>"`; URLs come from the matched text fragments, not whole files. GitHub caps code search at 1,000 results (10 pages × 100). Any personal access token works |
 | `zoomeye` | `api.zoomeye.ai/v2/search` with the dork `site:<domain>` (`site:*.<domain>` under `--subs`), 100 per page |
 | `bevigil` | One request per domain to `osint.bevigil.com/api/<domain>/urls/`, no pagination |
@@ -580,6 +580,7 @@ the site under `/shop`.
 ```bash
 urx example.com/shop
 urx https://example.com/api/v2      # a pasted URL works too
+urx 'example.com/shop/*'            # a trailing * is dropped: same scope
 ```
 
 CDX providers get the path in the query (`url=example.com/shop*`), so the

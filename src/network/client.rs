@@ -145,6 +145,10 @@ pub fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duratio
     let header = |name: &str| headers.get(name)?.to_str().ok()?.trim().parse::<u64>().ok();
     let secs = match header(reqwest::header::RETRY_AFTER.as_str()) {
         Some(secs) => secs,
+        // urlscan's spelling: no `Retry-After`, and the seconds left in the
+        // window as a delta. Sent on every response, so only an exhausted
+        // window is a reason to wait for it.
+        None if header("x-rate-limit-remaining") == Some(0) => header("x-rate-limit-reset-after")?,
         None if header("x-ratelimit-remaining") == Some(0) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -217,7 +221,7 @@ pub async fn read_bytes_capped(mut resp: reqwest::Response, max: usize) -> Resul
 /// wall-clock: a 404 from a CDX index is how those APIs say "this domain has no
 /// captures", so re-asking three times with back-off turns an instant miss into
 /// a multi-second one — per domain, per provider.
-fn is_retryable_status(status: StatusCode) -> bool {
+pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
     status.is_server_error()
         || status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::REQUEST_TIMEOUT
@@ -374,6 +378,14 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("30"));
         assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(30)));
+
+        // urlscan sends its window as `x-rate-limit-reset-after` instead, on
+        // every response; only an exhausted one is waited for.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-rate-limit-reset-after", HeaderValue::from_static("42"));
+        assert_eq!(retry_after_delay(&headers), None);
+        headers.insert("x-rate-limit-remaining", HeaderValue::from_static("0"));
+        assert_eq!(retry_after_delay(&headers), Some(Duration::from_secs(42)));
     }
 
     #[test]

@@ -578,6 +578,8 @@ pub(super) fn spec_body_kind(headers: &reqwest::header::HeaderMap, url: &Url) ->
 /// all, expands to nothing rather than failing: neither is a failure of the
 /// run.
 pub(super) fn expand_spec_body(url: &Url, kind: BodyKind, body: &str) -> Vec<String> {
+    // serde_json rejects a leading BOM, and `sniff` does not strip it.
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let kind = if kind == BodyKind::Sniff {
         sniff(body)
     } else {
@@ -716,6 +718,17 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn a_json_spec_with_a_bom_still_expands() {
+        let body = "\u{feff}{\"openapi\":\"3.0.0\",\"paths\":{\"/users\":{}}}";
+        for kind in [BodyKind::Json, BodyKind::Sniff] {
+            assert_eq!(
+                expand_spec_body(&url("https://h/openapi.json"), kind, body),
+                vec!["https://h/users".to_string()]
+            );
+        }
     }
 
     fn expand(spec_url: &str, doc: Value) -> Vec<String> {

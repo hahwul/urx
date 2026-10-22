@@ -91,16 +91,18 @@ fn collect_domains_with_stdin(
     // validation, so such a target would come back empty without saying why.
     // One stray line in a long list is skipped with a warning; a run with
     // nothing else to scan is an error.
-    let (wild, mut normalized): (Vec<String>, Vec<String>) =
-        normalized.into_iter().partition(|d| {
-            let host = cli::split_target(d).0;
-            host.starts_with('.') || host.contains('*')
-        });
-    for target in &wild {
-        let advice = format!(
-            "{target:?} is not a target; pass `{} --subs` to include subdomains",
-            cli::split_target(target).0.trim_start_matches(['*', '.'])
-        );
+    let mut problems = Vec::new();
+    let mut normalized: Vec<String> = normalized
+        .into_iter()
+        .filter(|d| match target_problem(d) {
+            Some(advice) => {
+                problems.push(advice);
+                false
+            }
+            None => true,
+        })
+        .collect();
+    for advice in problems {
         if normalized.is_empty() {
             anyhow::bail!(advice);
         }
@@ -111,6 +113,32 @@ fn collect_domains_with_stdin(
     let mut seen = HashSet::new();
     normalized.retain(|d| seen.insert(d.clone()));
     Ok(normalized)
+}
+
+/// Why a normalized target cannot be scanned as spelled, or `None` when it can.
+fn target_problem(target: &str) -> Option<String> {
+    let host = cli::split_target(target).0;
+    if host.starts_with('.') || host.contains('*') {
+        return Some(format!(
+            "{target:?} is not a target; pass `{} --subs` to include subdomains",
+            host.trim_start_matches(['*', '.'])
+        ));
+    }
+    // `a.com, b.com` would be queried as one literal host and return nothing.
+    if host.contains(|c: char| c.is_whitespace() || c == ',') {
+        return Some(format!(
+            "{target:?} is not a target; give each host on its own line or as its own argument"
+        ));
+    }
+    // `x.com/shop*` reads as CDX's character prefix (`/shopping` too), which a
+    // path scope cannot express; a literal `*` would match nothing at all.
+    if let Some(path) = cli::split_target(target).1.filter(|p| p.contains('*')) {
+        return Some(format!(
+            "{target:?} is not a target; a path scope covers whole segments, so use `{host}{}` (it includes everything under that path)",
+            path.split('*').next().unwrap_or("").trim_end_matches('/')
+        ));
+    }
+    None
 }
 
 /// The one-line advisory for a run whose targets carry a path scope, or `None`
@@ -268,6 +296,23 @@ pub fn build_meta_filter(args: &Args) -> Result<MetaFilter> {
 pub fn validate_result_filters(args: &Args) -> Result<()> {
     ScopeMatcher::from_files(&args.scope_file)?;
     build_meta_filter(args)?;
+    if let (Some(min), Some(max)) = (args.min_length, args.max_length) {
+        if min > max {
+            anyhow::bail!("--min-length {min} is greater than --max-length {max}: no URL can pass");
+        }
+    }
+    // The status checker matches the same pattern language as `--meta-status`;
+    // an unmatchable `--is 3x` would silently drop every redirect.
+    for pattern in args
+        .include_status
+        .iter()
+        .chain(&args.exclude_status)
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        crate::filters::validate_status_pattern(pattern)?;
+    }
     // These output views reshape URLs into hosts, paths or parameter names,
     // and they run before the testers — which then request those: `--params
     // --check-status` checked `id`, `page` and `q`, and with `--is 200`
@@ -304,6 +349,13 @@ pub fn validate_result_filters(args: &Args) -> Result<()> {
     if let (Some(view), crate::output::Format::Wordlist) = (view, args.format) {
         anyhow::bail!(
             "{view} cannot be combined with --format wordlist: the wordlist is built from whole URLs"
+        );
+    }
+    // `--output-dir` files each URL under its host; a view has already
+    // stripped the host, so every line landed in `_unknown`.
+    if let (Some(view), Some(_)) = (view, &args.output_dir) {
+        anyhow::bail!(
+            "{view} cannot be combined with --output-dir: results are grouped by the host of each URL"
         );
     }
     // A merged endpoint carries the union of several URLs' queries — a URL no
@@ -1446,6 +1498,30 @@ mod tests {
     }
 
     #[test]
+    fn test_inverted_length_bounds_are_rejected() {
+        let args = Args::parse_from(["urx", "--min-length", "200", "--max-length", "50", "x.com"]);
+        assert!(validate_result_filters(&args).is_err());
+        let args = Args::parse_from(["urx", "--min-length", "50", "--max-length", "50", "x.com"]);
+        assert!(validate_result_filters(&args).is_ok());
+    }
+
+    #[test]
+    fn test_view_is_rejected_with_output_dir() {
+        let args = Args::parse_from(["urx", "--params", "--output-dir", "od", "example.com"]);
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("--output-dir"), "{err}");
+    }
+
+    #[test]
+    fn test_unmatchable_status_patterns_are_rejected() {
+        let args = Args::parse_from(["urx", "--is", "2xx,3x", "example.com"]);
+        let err = validate_result_filters(&args).unwrap_err().to_string();
+        assert!(err.contains("\"3x\""), "{err}");
+        let args = Args::parse_from(["urx", "--es", "404, 5XX", "example.com"]);
+        assert!(validate_result_filters(&args).is_ok());
+    }
+
+    #[test]
     fn test_merge_endpoint_is_rejected_with_archive_body() {
         let mut args = build_test_args();
         args.merge_endpoint = true;
@@ -1503,6 +1579,21 @@ mod tests {
             collect_domains_with_stdin(&args, || Ok(Vec::new())).unwrap(),
             vec!["example.org"]
         );
+        // Two hosts on one line would be queried as one literal host, and a
+        // character-prefix `*` is not a path scope.
+        for raw in [
+            "a.test, b.test",
+            "a.test\tb.test",
+            "a.test b.test",
+            "a.test/shop*",
+        ] {
+            let args = Args::parse_from(["urx", "--silent", raw, "example.org"]);
+            assert_eq!(
+                collect_domains_with_stdin(&args, || Ok(Vec::new())).unwrap(),
+                vec!["example.org"],
+                "{raw:?}"
+            );
+        }
     }
 
     #[test]

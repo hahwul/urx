@@ -429,6 +429,16 @@ impl Tester for ArchiveBodyExtractor {
                     });
                 }
             };
+            // A replay often redirects to a capture of another URL
+            // (`http`→`https`, `/docs`→`/docs/`). The body's relative links
+            // belong to the URL it was captured at, not the one asked for.
+            let base_url = response
+                .url()
+                .as_str()
+                .strip_prefix(&format!("{}/web/", self.origin))
+                .and_then(|rest| rest.split_once("id_/"))
+                .and_then(|(_, captured)| Url::parse(captured).ok())
+                .unwrap_or(base_url);
             // Read before `read_bytes_capped` consumes the
             // response; the index records it verbatim.
             let content_type = response
@@ -711,6 +721,48 @@ mod tests {
             ]
         );
         replay.assert();
+    }
+
+    #[tokio::test]
+    async fn a_redirected_replay_resolves_links_against_the_captured_url() {
+        // The newest capture of /docs is a redirect to /docs/; `intro` there
+        // is /docs/intro, not /intro.
+        let mut server = mockito::Server::new_async().await;
+        let _redirect = server
+            .mock("GET", "/web/20200101000000id_/https://example.com/docs")
+            .with_status(302)
+            .with_header(
+                "location",
+                &format!(
+                    "{}/web/20200101000001id_/https://example.com/docs/",
+                    server.url()
+                ),
+            )
+            .create_async()
+            .await;
+        let _page = server
+            .mock("GET", "/web/20200101000001id_/https://example.com/docs/")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(r#"<a href="intro">x</a>"#)
+            .create_async()
+            .await;
+
+        let mut ex = extractor(
+            &[(
+                "https://example.com/docs",
+                capture("20200101000000", Some("D1")),
+            )],
+            10,
+        );
+        ex.with_origin(server.url());
+
+        let links = ex
+            .test_url("https://example.com/docs")
+            .await
+            .map(urls)
+            .unwrap();
+        assert_eq!(links, vec!["https://example.com/docs/intro".to_string()]);
     }
 
     #[tokio::test]

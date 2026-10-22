@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 mod app;
@@ -268,12 +269,34 @@ async fn run_testers(
     Ok(tested)
 }
 
+/// The run's entries keyed as the output spells each URL. `--normalize-url`
+/// rewrites URLs after collection and can fold several into one, so their
+/// sources and metadata are folded too, or the rewritten URL would match none.
+fn entries_by_output_url(
+    run_result: &ProviderRunResult,
+    normalize: bool,
+) -> std::borrow::Cow<'_, HashMap<String, runner::UrlEntry>> {
+    if !normalize {
+        return std::borrow::Cow::Borrowed(&run_result.urls);
+    }
+    let normalizer = utils::UrlTransformer {
+        normalize_url: true,
+        ..Default::default()
+    };
+    let mut merged = HashMap::new();
+    for (url, entry) in &run_result.urls {
+        let key = normalizer.transform_one(url).unwrap_or_else(|| url.clone());
+        app::caching::merge_entry(&mut merged, key, entry);
+    }
+    std::borrow::Cow::Owned(merged)
+}
+
 /// Attach provider attribution to each surviving record when `--show-sources`
 /// was set. URLs introduced by the link extractor aren't in the run result and
 /// keep an empty `sources` list.
-fn attach_sources(final_urls: &mut [output::UrlData], run_result: &ProviderRunResult) {
+fn attach_sources(final_urls: &mut [output::UrlData], entries: &HashMap<String, runner::UrlEntry>) {
     for entry in final_urls.iter_mut() {
-        if let Some(found) = run_result.urls.get(&entry.url) {
+        if let Some(found) = entries.get(&entry.url) {
             *entry = std::mem::take(entry).with_sources(found.sources.iter().cloned().collect());
         }
     }
@@ -285,9 +308,12 @@ fn attach_sources(final_urls: &mut [output::UrlData], run_result: &ProviderRunRe
 /// A URL the run never saw — one the link extractor discovered, or one
 /// `--merge-endpoint` rewrote — simply has no metadata, exactly as it has no
 /// sources.
-fn attach_capture_meta(final_urls: &mut [output::UrlData], run_result: &ProviderRunResult) {
+fn attach_capture_meta(
+    final_urls: &mut [output::UrlData],
+    entries: &HashMap<String, runner::UrlEntry>,
+) {
     for entry in final_urls.iter_mut() {
-        if let Some(found) = run_result.urls.get(&entry.url) {
+        if let Some(found) = entries.get(&entry.url) {
             if !found.meta.is_empty() {
                 entry.set_capture_meta(&found.meta);
             }
@@ -307,16 +333,10 @@ fn write_output(args: &Args, final_urls: &[output::UrlData]) -> Result<()> {
                 verbose_print(args, format!("Results written to: {}", path.display()));
             }
         }
-        Err(e) => {
-            if args.output.is_some() {
-                errors.push(format!("Error writing output: {e:#}"));
-            } else if !args.silent {
-                // Preserve the existing best-effort behavior for stdout-only
-                // output. Output already treats a broken pipe as success,
-                // so `urx ... | head` remains successful.
-                eprintln!("Error writing output: {e}");
-            }
-        }
+        // Output already treats a broken pipe as success, so `urx ... | head`
+        // still exits 0; anything that reaches here (a full disk, EIO) left
+        // the result truncated, on stdout as much as in a file.
+        Err(e) => errors.push(format!("Error writing output: {e:#}")),
     }
 
     if let Some(dir) = &args.output_dir {
@@ -398,7 +418,13 @@ async fn run() -> Result<()> {
             ),
         );
     }
-    let progress_manager = ProgressManager::new(args.no_progress || args.silent);
+    // Streamed URLs go straight to stdout while the bars redraw on stderr; on
+    // one terminal every redraw would erase the lines just printed.
+    let streams_to_terminal = args.stream
+        && args.output.is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let progress_manager =
+        ProgressManager::new(args.no_progress || args.silent || streams_to_terminal);
 
     // Validate stream combinations before reading stdin, since rejecting an
     // invalid option must not wait for piped input to close.
@@ -452,9 +478,9 @@ async fn run() -> Result<()> {
         notify::send_notifications(&args, &network_settings, &summary).await;
         // Like the batch path: a failed write fails the run, after the stats
         // and notifications, and even under --silent.
-        return sink
-            .finish()
-            .map_err(|e| anyhow::anyhow!("Error writing output: {e:#}"));
+        sink.finish()
+            .map_err(|e| anyhow::anyhow!("Error writing output: {e:#}"))?;
+        return every_provider_failed(&run_result.stats);
     }
 
     // URL-only view for filters (they don't care about sources).
@@ -476,11 +502,14 @@ async fn run() -> Result<()> {
     )
     .await?;
 
-    if args.show_sources {
-        attach_sources(&mut final_urls, &run_result);
-    }
-    if wants_meta(&args) {
-        attach_capture_meta(&mut final_urls, &run_result);
+    if args.show_sources || wants_meta(&args) {
+        let entries = entries_by_output_url(&run_result, args.normalize_url);
+        if args.show_sources {
+            attach_sources(&mut final_urls, &entries);
+        }
+        if wants_meta(&args) {
+            attach_capture_meta(&mut final_urls, &entries);
+        }
     }
 
     // Progress is transient: tear down the live region (header + all bars) now
@@ -510,6 +539,16 @@ async fn run() -> Result<()> {
     notify::send_notifications(&args, &network_settings, &summary).await;
 
     output_result?;
+    every_provider_failed(&run_result.stats)
+}
+
+/// Fail a run in which every provider errored and none returned a URL: the
+/// empty output is a dead network or a bad key, not "nothing archived", and a
+/// script reading it should be able to tell.
+fn every_provider_failed(stats: &[ProviderStats]) -> Result<()> {
+    if !stats.is_empty() && stats.iter().all(|s| s.error_count > 0 && s.url_count == 0) {
+        anyhow::bail!("Every provider failed; no URLs were collected (rerun with -v for details)");
+    }
     Ok(())
 }
 
@@ -612,13 +651,57 @@ mod tests {
             // Discovered by the link extractor, so it is not in the run result.
             output::UrlData::new("https://example.com/extracted".to_string()),
         ];
-        attach_capture_meta(&mut final_urls, &run_result);
+        attach_capture_meta(&mut final_urls, &run_result.urls);
 
         assert_eq!(final_urls[0].first_seen.as_deref(), Some("20240101000000"));
         assert_eq!(final_urls[0].mime.as_deref(), Some("text/html"));
         assert_eq!(final_urls[0].archive_status.as_deref(), Some("200"));
         assert_eq!(final_urls[0].digest.as_deref(), Some("ABC"));
         assert!(!final_urls[1].has_capture_meta());
+    }
+
+    #[test]
+    fn a_run_where_every_provider_failed_is_an_error() {
+        let row = |url_count, error_count| ProviderStats {
+            name: "p".to_string(),
+            url_count,
+            error_count,
+            partial_count: 0,
+            elapsed: std::time::Duration::ZERO,
+            aborted: false,
+        };
+        assert!(every_provider_failed(&[row(0, 1), row(0, 2)]).is_err());
+        // One provider answering — even with nothing — makes the result real.
+        assert!(every_provider_failed(&[row(0, 1), row(0, 0)]).is_ok());
+        assert!(every_provider_failed(&[row(3, 1)]).is_ok());
+        assert!(every_provider_failed(&[]).is_ok());
+    }
+
+    #[test]
+    fn normalized_urls_keep_their_sources_and_metadata() {
+        let mut run_result = ProviderRunResult::default();
+        for (url, source, ts) in [
+            ("https://example.com/a?b=2&a=1", "wayback", "20200101000000"),
+            ("https://example.com/a?a=1&b=2", "cc", "20240101000000"),
+        ] {
+            run_result.urls.entry(url.to_string()).or_default().absorb(
+                source,
+                &providers::CaptureMeta::capture(Some(ts), None, None, None),
+            );
+        }
+        let normalized = utils::UrlTransformer {
+            normalize_url: true,
+            ..Default::default()
+        }
+        .transform_one("https://example.com/a?b=2&a=1")
+        .unwrap();
+
+        let entries = entries_by_output_url(&run_result, true);
+        let mut final_urls = vec![output::UrlData::new(normalized)];
+        attach_sources(&mut final_urls, &entries);
+        attach_capture_meta(&mut final_urls, &entries);
+        assert_eq!(final_urls[0].sources, ["cc", "wayback"]);
+        assert_eq!(final_urls[0].first_seen.as_deref(), Some("20200101000000"));
     }
 
     /// Build an `Args` for a `--files` run over a temp file of `urls`.

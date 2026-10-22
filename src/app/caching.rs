@@ -15,7 +15,7 @@ use crate::cli::Args;
 use crate::filters::HostValidator;
 use crate::progress::ProgressManager;
 use crate::providers::Provider;
-use crate::runner::{process_domains, ProviderRunResult, UrlEntry};
+use crate::runner::{process_domains, ProviderRunResult, ProviderStats, UrlEntry};
 use crate::utils::verbose_print;
 
 /// Create the cache manager `--cache-type` asks for, or `None` under
@@ -146,7 +146,7 @@ fn off_host_urls(
 ///
 /// Cached URLs carry neither attribution nor metadata (the cache stores URLs
 /// only), so they land with an empty entry rather than a wrong one.
-fn merge_entry(target: &mut HashMap<String, UrlEntry>, url: String, entry: &UrlEntry) {
+pub(crate) fn merge_entry(target: &mut HashMap<String, UrlEntry>, url: String, entry: &UrlEntry) {
     let slot = target.entry(url).or_default();
     slot.sources.extend(entry.sources.iter().cloned());
     slot.meta.merge(&entry.meta);
@@ -175,6 +175,10 @@ pub async fn process_domains_with_cache(
 
     let mut final_result = ProviderRunResult::default();
     let mut domains_to_process = Vec::new();
+    // `--stats` gets a row for what the cache served, or a full hit prints
+    // no table at all.
+    let lookup_started = std::time::Instant::now();
+    let mut cached_urls = 0;
 
     for domain in &domains {
         let cache_key = create_cache_key(domain, args);
@@ -185,6 +189,7 @@ pub async fn process_domains_with_cache(
             if let Some(cached_entry) = cache.get_fresh(&cache_key, args.cache_ttl).await? {
                 verbose_print(args, format!("Using cached results for domain: {domain}"));
                 // Cached URLs carry no provider or metadata: an empty entry.
+                cached_urls += cached_entry.urls.len();
                 for url in cached_entry.urls {
                     final_result.urls.entry(url).or_default();
                 }
@@ -194,8 +199,17 @@ pub async fn process_domains_with_cache(
 
         domains_to_process.push(domain.clone());
     }
+    let cache_stats = (cached_urls > 0).then(|| ProviderStats {
+        name: "cache".to_string(),
+        url_count: cached_urls,
+        error_count: 0,
+        partial_count: 0,
+        elapsed: lookup_started.elapsed(),
+        aborted: false,
+    });
 
     if domains_to_process.is_empty() {
+        final_result.stats.extend(cache_stats);
         // Housekeeping: a failed sweep must not discard results already in hand.
         if let Err(e) = cache.delete_expired(args.cache_ttl.saturating_mul(2)).await {
             if !args.silent {
@@ -225,6 +239,7 @@ pub async fn process_domains_with_cache(
 
     // Carry the provider stats from the fresh run through to the caller.
     final_result.stats = fresh_run.stats;
+    final_result.stats.extend(cache_stats);
 
     let off_host = if args.strict_enabled() {
         HashSet::new()
@@ -233,8 +248,10 @@ pub async fn process_domains_with_cache(
     };
     // Off-host URLs from several fetched targets cannot be filed under the one
     // that returned them; filing them under every target would leak one
-    // target's URLs into another's hit or baseline.
-    let unattributable = !off_host.is_empty() && domains_to_process.len() > 1;
+    // target's URLs into another's hit. An `--incremental` run files them
+    // under every target anyway: dropping them from the baselines would
+    // either drop them from the output or report them as new on every run.
+    let unattributable = !args.incremental && !off_host.is_empty() && domains_to_process.len() > 1;
     let off_host = if unattributable {
         HashSet::new()
     } else {
@@ -643,9 +660,52 @@ mod tests {
             urls
         };
         let miss = sorted(&run_cached(&cache, &args, &providers).await);
-        let hit = sorted(&run_cached(&cache, &args, &providers).await);
+        let hit_run = run_cached(&cache, &args, &providers).await;
+        let hit = sorted(&hit_run);
         assert_eq!(miss.len(), 2);
         assert_eq!(hit, miss);
+        // `--stats` on a full hit reports what the cache served.
+        let rows: Vec<_> = hit_run
+            .stats
+            .iter()
+            .map(|r| (r.name.as_str(), r.url_count))
+            .collect();
+        assert_eq!(rows, [("cache", 2)]);
+    }
+
+    #[tokio::test]
+    async fn test_incremental_no_strict_multi_target_keeps_off_host_urls() {
+        // Regression: off-host URLs from several targets were withheld from
+        // the cache, and with it from the incremental output.
+        let cache = CacheManager::new_for_test(Box::<MemoryCacheBackend>::default());
+        let mut args = pinned_args();
+        args.no_strict = true;
+        args.incremental = true;
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(MockProvider::new(
+            vec![
+                "https://example.com/a".to_string(),
+                "https://cdn.other.test/x".to_string(),
+            ],
+            false,
+        ))];
+
+        let progress = ProgressManager::new(true);
+        let names = ["p0".to_string()];
+        let run = || {
+            process_domains_with_cache(
+                vec!["example.com".to_string(), "example.org".to_string()],
+                &args,
+                &progress,
+                &providers,
+                &names,
+                Some(&cache),
+            )
+        };
+        let first = run().await.unwrap();
+        assert!(first.urls.contains_key("https://example.com/a"));
+        assert!(first.urls.contains_key("https://cdn.other.test/x"));
+        // ...and, once seen, they are not new again.
+        assert!(run().await.unwrap().urls.is_empty());
     }
 
     #[test]

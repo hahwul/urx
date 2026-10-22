@@ -146,8 +146,9 @@ urx example.com --providers wayback --meta-last-seen-before 2019
 # JSON the archive got with a 200
 urx example.com --providers wayback --meta-mime application/json --meta-status 200
 
-# first archived during 2020
-urx example.com --providers wayback --meta-first-seen-after 2020 --meta-first-seen-before 2020
+# last captured during 2020 (Wayback reports only its newest capture, so
+# first_seen there is the same date)
+urx example.com --providers wayback --meta-last-seen-after 2020 --meta-last-seen-before 2020
 ```
 
 ### Regular Expressions

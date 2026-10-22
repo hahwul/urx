@@ -67,10 +67,11 @@ pub(crate) fn extract_matching_urls(
     sink: &mut HashSet<String>,
 ) {
     let validator = HostValidator::new(&[domain.to_string()], include_subdomains);
-    for token in fragment.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',') {
-        let token = token.trim_end_matches(|c: char| {
-            matches!(c, '.' | ')' | ']' | '}' | '>' | ';' | ':' | '!' | '?' | '`')
-        });
+    // `<` and `>` never appear raw in a URL, and code-search fragments are
+    // full of markup: `<loc>https://…</loc>`, `<a href=https://…>`.
+    for token in
+        fragment.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '<' | '>'))
+    {
         // A URL can start mid-token: `[docs](https://…)`, `` fetch(`https://…`) ``,
         // `<https://…>`, `src=https://…`. Lower-casing ASCII keeps byte offsets.
         let lower = token.to_ascii_lowercase();
@@ -81,7 +82,19 @@ pub(crate) fn extract_matching_urls(
         else {
             continue;
         };
-        let token = &token[start..];
+        let mut token = &token[start..];
+        // Escaped markup: `&quot;https://…&quot;`, `&lt;https://…&gt;`. The
+        // `;` is required: `&gte=2020` is a query parameter, not `&gt;`.
+        if let Some(end) = ["&quot;", "&lt;", "&gt;", "&#39;", "&#34;", "&#x27;"]
+            .iter()
+            .filter_map(|entity| token.find(entity))
+            .min()
+        {
+            token = &token[..end];
+        }
+        let token = token.trim_end_matches(|c: char| {
+            matches!(c, '.' | ')' | ']' | '}' | '>' | ';' | ':' | '!' | '?' | '`')
+        });
         if validator.is_valid_host(token) {
             sink.insert(token.to_string());
         }
@@ -229,6 +242,31 @@ mod tests {
         );
         assert_eq!(sink.len(), 1);
         assert!(sink.contains("https://example.com/login"));
+    }
+
+    #[test]
+    fn test_extract_urls_stops_at_markup() {
+        let mut sink = HashSet::new();
+        extract_matching_urls(
+            "<loc>https://example.com/a</loc> <a href=https://example.com/b>x</a> \
+             &quot;https://example.com/c&quot; &lt;https://example.com/d&gt; \
+             https://example.com/e?sort=date&gte=2020&lt=5.",
+            "example.com",
+            false,
+            &mut sink,
+        );
+        let mut got: Vec<_> = sink.into_iter().collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.com/c",
+                "https://example.com/d",
+                "https://example.com/e?sort=date&gte=2020&lt=5",
+            ]
+        );
     }
 
     #[test]

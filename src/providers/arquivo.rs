@@ -272,7 +272,7 @@ mod tests {
         let provider = ArquivoProvider::new();
         assert_eq!(
             provider.query_base("example.com"),
-            "https://arquivo.pt/wayback/cdx?url=example.com/*&output=json&fl=url,timestamp,mime,status,digest&collapse=urlkey"
+            "https://arquivo.pt/wayback/cdx?url=example.com/*&output=json&fl=url,timestamp,mime,status,digest,is_fuzzy&collapse=urlkey"
         );
     }
 
@@ -282,7 +282,7 @@ mod tests {
         provider.with_subdomains(true);
         assert_eq!(
             provider.query_base("example.com"),
-            "https://arquivo.pt/wayback/cdx?url=*.example.com/*&output=json&fl=url,timestamp,mime,status,digest&collapse=urlkey"
+            "https://arquivo.pt/wayback/cdx?url=*.example.com/*&output=json&fl=url,timestamp,mime,status,digest,is_fuzzy&collapse=urlkey"
         );
     }
 

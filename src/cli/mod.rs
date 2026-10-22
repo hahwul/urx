@@ -875,16 +875,23 @@ fn target_path(raw: &str) -> Option<String> {
     // Everything from the first path separator on, with the scheme and
     // authority removed first so `https://example.com/shop` and
     // `example.com/shop` are read alike.
-    let after_authority = if let Some((_, rest)) = trimmed.split_once("://") {
-        rest
-    } else {
-        trimmed.trim_start_matches("//")
+    let after_authority = match scheme_end(trimmed) {
+        Some(i) => &trimmed[i + 3..],
+        None => trimmed.trim_start_matches("//"),
     };
     // A query or fragment narrows a request, not a scope — and is cut first,
     // so the `/` in `example.com?next=/admin` or `example.com#/dashboard`
     // isn't read as the start of a path.
     let after_authority = after_authority.split(['?', '#']).next().unwrap_or("");
     let (_, path) = after_authority.split_once('/')?;
+    // `example.com/*` and `example.com/shop/*` are how CDX tools spell
+    // "everything under", which a path scope already is. (`shop*` is a
+    // character prefix, which it is not; that is rejected later.)
+    let path = if path == "*" {
+        ""
+    } else {
+        path.strip_suffix("/*").unwrap_or(path)
+    };
     // Run it through the URL parser rather than keeping the user's bytes.
     // Host validation compares against `Url::path()`, which reports a path
     // percent-encoded — a candidate `https://example.com/über` reports
@@ -898,6 +905,15 @@ fn target_path(raw: &str) -> Option<String> {
         return None;
     }
     Some(path.to_string())
+}
+
+/// Where the `://` of a leading scheme starts, or `None` when the target has
+/// none. A `://` after a path, query or fragment separator belongs to a URL
+/// inside the target (`example.com/login?next=https://x/`), not to its scheme.
+fn scheme_end(target: &str) -> Option<usize> {
+    target
+        .find("://")
+        .filter(|&i| !target[..i].contains(['/', '?', '#']))
 }
 
 /// Split a target produced by [`normalize_target`] into its host and its
@@ -933,7 +949,7 @@ pub fn normalize_domain(raw: &str) -> Option<String> {
     // authoritative — a `://` means the input is meant as a URL, so if it has
     // no parseable host we return None rather than mis-reading the scheme.
     // A non-default port is kept, as the bare `host:port` form keeps it.
-    if trimmed.contains("://") {
+    if scheme_end(trimmed).is_some() {
         let url = url::Url::parse(trimmed).ok()?;
         let host = url.host_str()?.trim_end_matches('.').to_lowercase();
         if host.is_empty() {
@@ -1649,6 +1665,11 @@ mod tests {
             // A `/` inside a query or fragment is not a path.
             "https://example.com?next=/admin",
             "example.com#/dashboard",
+            // CDX-style "everything under".
+            "example.com/*",
+            "https://example.com/*",
+            // A URL in the query is not the target's scheme.
+            "example.com?next=https://example.com/",
         ] {
             assert_eq!(
                 normalize_target(raw).as_deref(),
@@ -1662,6 +1683,16 @@ mod tests {
             normalize_target("example.com/shop/?sort=price#top").as_deref(),
             Some("example.com/shop")
         );
+        for raw in [
+            "example.com/shop/*",
+            "example.com/shop?next=https://example.com/x",
+        ] {
+            assert_eq!(
+                normalize_target(raw).as_deref(),
+                Some("example.com/shop"),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

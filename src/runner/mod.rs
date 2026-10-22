@@ -303,6 +303,14 @@ pub struct ProviderRunResult {
     pub incomplete_domains: HashSet<String>,
 }
 
+/// `host[:port]` without the port, IPv6 brackets kept.
+fn bare_host(host: &str) -> String {
+    url::Url::parse(&format!("http://{host}/"))
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| host.to_string())
+}
+
 /// Process domains using a provider-based concurrency pattern.
 ///
 /// Returns each discovered URL along with the set of providers that reported
@@ -512,19 +520,29 @@ pub async fn process_domains(
                         // query can express the scope; the rest are handed the
                         // bare host and their results are narrowed afterwards by
                         // host validation. See `Provider::accepts_path_scope`.
+                        // Those providers take a hostname, so a kept
+                        // `:port` goes too (OTX answers 400, VT 404);
+                        // host validation ignores the port either way.
                         let query = if provider.accepts_path_scope() {
-                            domain.as_str()
+                            domain.clone()
                         } else {
-                            crate::cli::split_target(&domain).0
+                            bare_host(crate::cli::split_target(&domain).0)
                         };
                         let fetch_start = std::time::Instant::now();
                         let fetch_result = provider
-                            .fetch_urls_with_progress(query, reporter.clone())
+                            .fetch_urls_with_progress(&query, reporter.clone())
                             .await;
                         let fetch_elapsed = fetch_start.elapsed();
                         match fetch_result {
                             Ok(records) => {
-                                let url_count = records.len();
+                                // Distinct URLs: OTX, urlscan and ZoomEye
+                                // hand back one row per sighting, and the
+                                // stats would count each one.
+                                let url_count = records
+                                    .iter()
+                                    .map(|r| r.url.as_str())
+                                    .collect::<HashSet<_>>()
+                                    .len();
                                 url_total.fetch_add(url_count, Ordering::Relaxed);
 
                                 // A *partial* result (e.g. a page failed
@@ -893,6 +911,13 @@ pub async fn process_domains(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_bare_host_drops_only_the_port() {
+        assert_eq!(bare_host("example.com:8443"), "example.com");
+        assert_eq!(bare_host("example.com"), "example.com");
+        assert_eq!(bare_host("[::1]:8080"), "[::1]");
+    }
     use crate::filters::UrlFilter;
     use crate::output;
     use crate::test_support::{build_test_args, MockProvider};

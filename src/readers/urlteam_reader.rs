@@ -101,7 +101,7 @@ fn extract_url_from_line(line: &str) -> Option<String> {
             Some((code, target)) if !code.contains("://") => target,
             _ => part,
         })
-        .find(|part| part.starts_with("http://") || part.starts_with("https://"))
+        .find(|part| super::is_http_url(part))
         .map(str::to_string)
 }
 
