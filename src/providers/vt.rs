@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::send_with_retry;
+use crate::network::client::{is_retryable_status, send_with_retry};
 use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
@@ -96,10 +96,16 @@ impl VirusTotalProvider {
     /// A 404 (the domain has no VT object) resolves to an empty page rather
     /// than an error, matching the "no data" semantics of the other providers.
     async fn fetch_page(&self, client: &reqwest::Client, url: &str) -> Result<VtUrlsResponse> {
+        // A rejected key is worth retrying only when there is another key to
+        // rotate to; any other 4xx is the same answer on every attempt.
+        let rotate_on_reject = self.api_key_rotator.has_alternatives();
         send_with_retry(
             self.net.retries,
             self.net.rate_limit.as_ref(),
-            |status| status != 404,
+            |status| {
+                is_retryable_status(status)
+                    || (rotate_on_reject && matches!(status.as_u16(), 401 | 403))
+            },
             || {
                 // Rotate the key per attempt so a throttled/invalid key is
                 // retried with a different one when several are configured.
@@ -115,6 +121,9 @@ impl VirusTotalProvider {
             |status, body| {
                 if status == 404 {
                     return Ok(VtUrlsResponse::default());
+                }
+                if !status.is_success() {
+                    anyhow::bail!("HTTP error: {status}");
                 }
                 serde_json::from_str(&body)
                     .map_err(|e| anyhow::anyhow!("Failed to parse VirusTotal response: {e}"))

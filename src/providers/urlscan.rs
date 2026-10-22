@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
-use crate::network::client::send_with_retry;
+use crate::network::client::{is_retryable_status, send_with_retry};
 use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
@@ -86,10 +86,16 @@ impl UrlscanProvider {
     /// Fetch and parse a single search page with retry/back-off. Returns the
     /// parsed response or the last error after exhausting retries.
     async fn fetch_page(&self, client: &reqwest::Client, url: &str) -> Result<UrlscanResponse> {
+        // A rejected key is worth retrying only when there is another key to
+        // rotate to; any other 4xx is the same answer on every attempt.
+        let rotate_on_reject = self.api_key_rotator.has_alternatives();
         send_with_retry(
             self.net.retries,
             self.net.rate_limit.as_ref(),
-            |_| true,
+            |status| {
+                is_retryable_status(status)
+                    || (rotate_on_reject && matches!(status.as_u16(), 401 | 403))
+            },
             || {
                 // Rotate the key per attempt so a rate-limited key is retried
                 // with a different one when several are configured.
@@ -101,7 +107,10 @@ impl UrlscanProvider {
                     req.header("API-Key", api_key)
                 }
             },
-            |_, body| {
+            |status, body| {
+                if !status.is_success() {
+                    anyhow::bail!("HTTP error: {status}");
+                }
                 serde_json::from_str(&body)
                     .map_err(|e| anyhow::anyhow!("Failed to parse Urlscan response: {e}"))
             },
@@ -139,7 +148,7 @@ impl Provider for UrlscanProvider {
                 url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
 
             let base_query = format!(
-                "{}/api/v1/search/?q=domain:{encoded_domain}&size=100",
+                "{}/api/v1/search/?q=page.domain:{encoded_domain}&size=100",
                 self.base_url
             );
 
@@ -735,7 +744,7 @@ mod tests {
         let _m = mock_server
             .mock("GET", "/api/v1/search/")
             .match_query(mockito::Matcher::Regex(
-                "q=domain:example.com&size=100".into(),
+                "q=page.domain:example.com&size=100".into(),
             ))
             .with_status(200)
             .with_header("content-type", "application/json")

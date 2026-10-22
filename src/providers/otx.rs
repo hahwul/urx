@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use super::{Provider, UrlRecord};
-use crate::network::client::send_with_retry;
+use crate::network::client::{is_retryable_status, send_with_retry};
 use crate::network::NetConfig;
 use crate::progress::ProgressReporter;
 
@@ -189,9 +189,16 @@ impl Provider for OTXProvider {
                 let result = send_with_retry(
                     self.net.retries,
                     self.net.rate_limit.as_ref(),
-                    |_| true,
+                    is_retryable_status,
                     || client.get(&url),
-                    |_, text| parse_otx(&text),
+                    // A 400 (not a valid indicator) is the same answer on
+                    // every attempt.
+                    |status, text| {
+                        if !status.is_success() {
+                            anyhow::bail!("HTTP error: {status}");
+                        }
+                        parse_otx(&text)
+                    },
                 )
                 .await;
 

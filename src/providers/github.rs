@@ -67,7 +67,11 @@ pub(crate) fn extract_matching_urls(
     sink: &mut HashSet<String>,
 ) {
     let validator = HostValidator::new(&[domain.to_string()], include_subdomains);
-    for token in fragment.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',') {
+    // `<` and `>` never appear raw in a URL, and code-search fragments are
+    // full of markup: `<loc>https://…</loc>`, `<a href=https://…>`.
+    for token in
+        fragment.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '<' | '>'))
+    {
         let token = token.trim_end_matches(|c: char| {
             matches!(c, '.' | ')' | ']' | '}' | '>' | ';' | ':' | '!' | '?' | '`')
         });
@@ -81,7 +85,15 @@ pub(crate) fn extract_matching_urls(
         else {
             continue;
         };
-        let token = &token[start..];
+        let mut token = &token[start..];
+        // Escaped markup: `&quot;https://…&quot;`, `&lt;https://…&gt;`.
+        if let Some(end) = ["&quot", "&lt", "&gt", "&#"]
+            .iter()
+            .filter_map(|entity| token.find(entity))
+            .min()
+        {
+            token = &token[..end];
+        }
         if validator.is_valid_host(token) {
             sink.insert(token.to_string());
         }
@@ -229,6 +241,29 @@ mod tests {
         );
         assert_eq!(sink.len(), 1);
         assert!(sink.contains("https://example.com/login"));
+    }
+
+    #[test]
+    fn test_extract_urls_stops_at_markup() {
+        let mut sink = HashSet::new();
+        extract_matching_urls(
+            "<loc>https://example.com/a</loc> <a href=https://example.com/b>x</a> \
+             &quot;https://example.com/c&quot; &lt;https://example.com/d&gt;",
+            "example.com",
+            false,
+            &mut sink,
+        );
+        let mut got: Vec<_> = sink.into_iter().collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.com/c",
+                "https://example.com/d"
+            ]
+        );
     }
 
     #[test]
