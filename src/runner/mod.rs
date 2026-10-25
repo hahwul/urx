@@ -75,7 +75,7 @@ struct DomainCompletionCtx {
     total_providers: usize,
     total_domains: usize,
     domain_completion: Arc<Mutex<HashMap<String, usize>>>,
-    processed_domains: Arc<AtomicUsize>,
+    processed_domains: Arc<Mutex<usize>>,
     overall_bar: ProgressBar,
     notifier: Notifier,
     verbose: bool,
@@ -97,17 +97,19 @@ impl DomainCompletionCtx {
         }
 
         if is_domain_complete {
-            let count = self.processed_domains.fetch_add(1, Ordering::Relaxed) + 1;
-            self.overall_bar.set_position(count as u64);
+            // Held across the bar update and the note so they land in order.
+            let mut count = lock_ignore_poison(&self.processed_domains);
+            *count += 1;
+            self.overall_bar.set_position(*count as u64);
             self.overall_bar.set_message(format!(
                 "Completed {}/{} domains",
-                count, self.total_domains
+                *count, self.total_domains
             ));
 
             if self.verbose && !self.silent {
                 self.notifier.note(format!(
                     "Domain completed: {} ({}/{})",
-                    domain, count, self.total_domains
+                    domain, *count, self.total_domains
                 ));
             }
         }
@@ -320,7 +322,7 @@ pub async fn process_domains(
     overall_bar.set_message("Processing domains");
 
     // Create a shared counter for processed domains
-    let processed_domains = Arc::new(AtomicUsize::new(0));
+    let processed_domains = Arc::new(Mutex::new(0usize));
 
     // Create provider bars - one bar per provider
     let provider_bars = progress_manager.create_provider_bars(provider_names);
@@ -816,10 +818,22 @@ pub async fn process_domains(
         RunEnd::OutputClosed => overall_bar.finish_with_message("Stopped: output closed"),
     }
 
-    // Reclaim the shared state. Aborted tasks may still hold their clones of
-    // the Arcs for a brief moment, so take the contents rather than unwrap.
-    let urls = std::mem::take(&mut *lock_ignore_poison(&all_urls));
-    let stats = std::mem::take(&mut *lock_ignore_poison(&stats));
+    // Reclaim the shared state. If tasks were aborted the inner Arc may still
+    // have outstanding strong counts for a brief moment; drain via clone in
+    // that case rather than panicking — an aborted task can still be mid-way
+    // through a stats update, so the shared copy must stay intact.
+    let urls = match Arc::try_unwrap(all_urls) {
+        Ok(m) => m
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        Err(arc) => lock_ignore_poison(&arc).clone(),
+    };
+    let stats = match Arc::try_unwrap(stats) {
+        Ok(s) => s
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        Err(arc) => lock_ignore_poison(&arc).clone(),
+    };
     // A domain some provider never got to the end of (cancelled by --max-time
     // or Ctrl-C) is as incomplete as one it failed on.
     let mut incomplete_domains = lock_ignore_poison(&incomplete_domains).clone();

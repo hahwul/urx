@@ -12,14 +12,15 @@ use anyhow::{Context, Result};
 
 use crate::cli::{self, Args};
 use crate::filters::{
-    compile_url_regexes, HostValidator, MetaFilter, MetaFilterStats, ScopeMatcher, UrlFilter,
+    compile_url_regexes, ExtractedLinkFilter, HostValidator, MetaFilter, MetaFilterStats,
+    ScopeMatcher, UrlFilter,
 };
 use crate::network::{NetworkScope, NetworkSettings};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::readers::read_urls_from_file;
 use crate::runner::ProviderRunResult;
-use crate::tester_manager::{self, apply_network_settings_to_tester};
+use crate::tester_manager::apply_network_settings_to_tester;
 use crate::testers::{
     ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, BodyArchive, JsEndpointExtractor,
     LinkExtractor, SpecExpander, StatusChecker, Tester,
@@ -843,7 +844,7 @@ pub fn build_stream_sink(
 pub fn build_extracted_link_filter(
     args: &Args,
     domains: &[String],
-) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
+) -> Result<Option<Arc<ExtractedLinkFilter>>> {
     if !args.extract_links && !args.extract_js_endpoints && !args.archive_body && !args.expand_specs
     {
         return Ok(None);
@@ -855,7 +856,7 @@ pub fn build_extracted_link_filter(
     } else {
         None
     };
-    Ok(Some(Arc::new(tester_manager::ExtractedLinkFilter::new(
+    Ok(Some(Arc::new(ExtractedLinkFilter::new(
         build_url_filter(args)?,
         build_url_transformer(args),
         host_validator,

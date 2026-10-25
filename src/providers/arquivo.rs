@@ -324,7 +324,7 @@ mod tests {
         let mut provider = ArquivoProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let records = provider
             .fetch_urls_with_progress("example.com", reporter.clone())
             .await
@@ -420,7 +420,7 @@ mod tests {
         // and the walk keeps going until a short one.
         provider.row_limit = 2;
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -464,7 +464,7 @@ mod tests {
         provider.base_url = server.url();
         provider.row_limit = 2; // both pages come back full ⇒ truncated
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -521,8 +521,7 @@ mod tests {
         provider.base_url = server.url();
         provider.row_limit = 2; // 2 rows == limit ⇒ the page was capped
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop.clone());
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop.clone());
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -561,8 +560,7 @@ mod tests {
 
         let stop = StopSignal::default();
         stop.request_stop();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop);
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop);
 
         let urls = urls_of(
             provider
@@ -595,7 +593,7 @@ mod tests {
         provider.base_url = server.url();
         provider.row_limit = 10; // 2 rows < 10 ⇒ that was everything
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -718,7 +716,7 @@ mod tests {
         provider.net.retries = 0; // fail fast, don't sleep through back-off
         provider.row_limit = 2; // page 0 comes back full ⇒ page 1 is fetched
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())

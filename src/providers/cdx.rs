@@ -838,7 +838,7 @@ mod tests {
         let origin = server.url();
         let query_base = format!("{origin}/cdx?url=example.com/*&output=json");
         let client = Client::new();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let session = CdxSession {
             client: &client,
             retries: 0,
@@ -892,7 +892,7 @@ mod tests {
         let origin = server.url();
         let query_base = format!("{origin}/cdx?url=example.com/*&output=json");
         let client = Client::new();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let session = CdxSession {
             client: &client,
             retries: 0,
@@ -1090,7 +1090,7 @@ mod tests {
             .await;
 
         let p = provider(&server, Some(CdxDialect::Pywb));
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             p.fetch_urls_with_progress("example.com", reporter.clone())
                 .await

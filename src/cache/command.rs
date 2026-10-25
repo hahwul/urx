@@ -83,9 +83,6 @@ pub enum CacheAction {
     },
 }
 
-/// `-f json` / `-f jsonl` switch every subcommand to machine-readable output.
-/// `csv` has no sensible shape for a stats blob, so it — like `plain` and
-/// anything unrecognised — gets the text report.
 /// Print `value` as pretty JSON under `-f json`, or as the text `render` makes.
 fn emit<T: Serialize>(json: bool, value: &T, render: impl FnOnce(&T) -> String) -> Result<()> {
     let text = if json {
@@ -96,6 +93,9 @@ fn emit<T: Serialize>(json: bool, value: &T, render: impl FnOnce(&T) -> String) 
     write_stdout(text.as_bytes())
 }
 
+/// `-f json` / `-f jsonl` switch every subcommand to machine-readable output.
+/// `csv` has no sensible shape for a stats blob, so it — like `plain` and
+/// anything unrecognised — gets the text report.
 fn wants_json(format: Format) -> bool {
     matches!(format, Format::Json | Format::Jsonl)
 }

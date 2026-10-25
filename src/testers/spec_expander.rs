@@ -1204,7 +1204,7 @@ glob: /assets/*
             .with_body(r#"{"swagger":"2.0","basePath":"/v1","paths":{"/a":{},"/b/{id}":{}}}"#)
             .create_async()
             .await;
-        let expander = SpecExpander::new(50);
+        let expander = SpecExpander::new(0);
         let mut got = expander
             .test_url(&format!("{}/swagger.json", server.url()))
             .await
@@ -1252,7 +1252,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let expander = SpecExpander::new(50);
+        let expander = SpecExpander::new(0);
         for path in [
             "/app.json",
             "/v3/api-docs",
@@ -1289,7 +1289,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let expander = SpecExpander::new(50);
+        let expander = SpecExpander::new(0);
         for (path, expected) in [
             ("/v3/api-docs", "/sniffed-json"),
             ("/openapi", "/sniffed-yaml"),

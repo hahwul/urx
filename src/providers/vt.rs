@@ -483,7 +483,7 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 1;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
@@ -529,7 +529,7 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 3;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider

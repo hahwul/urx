@@ -1083,7 +1083,7 @@ mod tests {
             .create_async()
             .await;
 
-        let extractor = JsEndpointExtractor::new(500);
+        let extractor = JsEndpointExtractor::new(0);
         let got = extractor
             .test_url(&format!("{}/app.js", server.url()))
             .await
@@ -1102,7 +1102,7 @@ mod tests {
             .expect(0)
             .create_async()
             .await;
-        let extractor = JsEndpointExtractor::new(500);
+        let extractor = JsEndpointExtractor::new(0);
         let got = extractor
             .test_url(&format!("{}/logo.png", server.url()))
             .await
@@ -1130,7 +1130,7 @@ mod tests {
             .with_body(r#"{"url":"/api/from-json"}"#)
             .create_async()
             .await;
-        let extractor = JsEndpointExtractor::new(500);
+        let extractor = JsEndpointExtractor::new(0);
         for path in ["/gone.js", "/data"] {
             let got = extractor
                 .test_url(&format!("{}{path}", server.url()))
@@ -1151,7 +1151,7 @@ mod tests {
             .with_body(r#"<a href="/about">x</a><script>window.api="/api/inline";</script>"#)
             .create_async()
             .await;
-        let extractor = JsEndpointExtractor::new(500);
+        let extractor = JsEndpointExtractor::new(0);
         let got = extractor
             .test_url(&format!("{}/index.html", server.url()))
             .await

@@ -1447,8 +1447,7 @@ mod tests {
         let provider =
             SitemapProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
         let (manager, notes) = crate::progress::ProgressManager::capturing();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_notifier(manager.notifier());
+        let reporter = ProgressReporter::hidden().with_notifier(manager.notifier());
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter)
@@ -1513,7 +1512,7 @@ mod tests {
             retries: 0,
             ..NetConfig::default()
         });
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = provider
             .fetch_urls_with_progress("example.com", reporter.clone())
             .await

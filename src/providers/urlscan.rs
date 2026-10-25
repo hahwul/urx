@@ -502,7 +502,7 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 1;
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -537,7 +537,7 @@ mod tests {
         let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
         provider.base_url = server.url();
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
@@ -565,7 +565,7 @@ mod tests {
         let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
         provider.base_url = server.url();
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
@@ -610,7 +610,7 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 3;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
@@ -655,7 +655,7 @@ mod tests {
         provider.base_url = server.url();
         provider.net.retries = 0; // fail fast, don't sleep through back-off
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())

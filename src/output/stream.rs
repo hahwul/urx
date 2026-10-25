@@ -22,9 +22,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use super::{Format, UrlData};
-use crate::filters::{HostValidator, UrlFilter};
+use crate::filters::{ExtractedLinkFilter, HostValidator, UrlFilter};
 use crate::providers::UrlRecord;
-use crate::tester_manager::ExtractedLinkFilter;
 use crate::utils::UrlTransformer;
 
 /// A sink that filters, deduplicates, and writes URLs as they arrive.

@@ -130,7 +130,6 @@ impl MockProvider {
 }
 
 #[async_trait::async_trait]
-#[async_trait::async_trait]
 impl Provider for MockProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())

@@ -837,8 +837,7 @@ Sitemap: http://example.com/sitemap.xml
         std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     ) {
         let (manager, notes) = crate::progress::ProgressManager::capturing();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_notifier(manager.notifier());
+        let reporter = ProgressReporter::hidden().with_notifier(manager.notifier());
         (reporter, notes)
     }
 

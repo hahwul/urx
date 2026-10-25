@@ -529,7 +529,7 @@ mod tests {
         provider.page_limit = 1;
         provider.net.retries = 0;
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -648,8 +648,7 @@ mod tests {
         provider.base_url = url;
         provider.net.retries = 0;
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop.clone());
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop.clone());
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -702,7 +701,7 @@ mod tests {
         provider.base_url = url;
         provider.net.retries = 0; // fail fast, don't sleep through back-off
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())

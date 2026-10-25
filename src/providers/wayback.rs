@@ -344,8 +344,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop.clone());
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop.clone());
 
         let urls = urls_of(
             provider
@@ -386,8 +385,7 @@ mod tests {
 
         let stop = StopSignal::default();
         stop.request_stop();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop);
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop);
 
         let urls = urls_of(
             provider
@@ -526,7 +524,7 @@ mod tests {
         provider.net.retries = 0; // fail fast, don't sleep through back-off
 
         // Drive it through a reporter so we can assert the partial flag is set.
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -894,7 +892,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -949,7 +947,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -982,7 +980,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
@@ -1024,7 +1022,7 @@ mod tests {
         let mut provider = WaybackMachineProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
                 .fetch_urls_with_progress("example.com", reporter.clone())
