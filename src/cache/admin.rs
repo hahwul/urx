@@ -133,8 +133,10 @@ pub struct CacheStats {
 
 /// Whether an entry written at `timestamp` is past `ttl_seconds`.
 ///
-/// Shares [`super::types::CacheEntry::is_expired`]'s clock-skew rule: an entry
-/// dated in the future is not expired, it is early.
+/// A negative age — the entry was written by a machine whose clock is ahead,
+/// or this one's went backwards — is not expiry: an entry dated in the future
+/// is early. Casting the age straight to `u64` once wrapped it to ~1.8e19
+/// seconds, so any such entry looked ancient and was deleted on sight.
 pub fn is_expired(timestamp: DateTime<Utc>, ttl_seconds: u64) -> bool {
     ttl_remaining(timestamp, ttl_seconds).is_none()
 }

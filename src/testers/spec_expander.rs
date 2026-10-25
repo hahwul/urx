@@ -607,24 +607,13 @@ pub struct SpecExpander {
 }
 
 impl SpecExpander {
-    /// Default cap on specification documents fetched per run.
-    ///
-    /// An order of magnitude below the JS extractor's 500 because the
-    /// candidate set is smaller by construction: [`looks_like_spec`] admits a
-    /// handful of named files per host, not every bundle in the list.
-    pub const DEFAULT_MAX_FILES: usize = 50;
-
-    pub fn new() -> Self {
+    /// Fetch at most `max_files` documents per run; `0` means no cap.
+    pub fn new(max_files: usize) -> Self {
         SpecExpander {
             net: NetConfig::default(),
-            budget: FetchBudget::new(Self::DEFAULT_MAX_FILES),
+            budget: FetchBudget::new(max_files),
             client: Arc::new(OnceCell::new()),
         }
-    }
-
-    /// Cap the number of documents fetched; `0` means no cap.
-    pub fn with_max_files(&mut self, max: usize) {
-        self.budget.max = max;
     }
 
     async fn client(&self) -> Result<&Client> {
@@ -650,12 +639,6 @@ impl SpecExpander {
             return dedup(graphql_operations(spec_url, schema));
         }
         dedup(openapi_urls(spec_url, doc))
-    }
-}
-
-impl Default for SpecExpander {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1221,7 +1204,7 @@ glob: /assets/*
             .with_body(r#"{"swagger":"2.0","basePath":"/v1","paths":{"/a":{},"/b/{id}":{}}}"#)
             .create_async()
             .await;
-        let expander = SpecExpander::new();
+        let expander = SpecExpander::new(50);
         let mut got = expander
             .test_url(&format!("{}/swagger.json", server.url()))
             .await
@@ -1269,7 +1252,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let expander = SpecExpander::new();
+        let expander = SpecExpander::new(50);
         for path in [
             "/app.json",
             "/v3/api-docs",
@@ -1306,7 +1289,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let expander = SpecExpander::new();
+        let expander = SpecExpander::new(50);
         for (path, expected) in [
             ("/v3/api-docs", "/sniffed-json"),
             ("/openapi", "/sniffed-yaml"),
@@ -1338,8 +1321,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let mut expander = SpecExpander::new();
-        expander.with_max_files(2);
+        let expander = SpecExpander::new(2);
         let clone = expander.clone_box();
 
         for (n, tester) in [(1, &expander as &dyn Tester), (2, clone.as_ref())] {

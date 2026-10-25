@@ -7,7 +7,6 @@ use super::types::{CacheBackend, CacheEntry, CacheKey};
 
 /// Redis-based cache implementation
 /// This is only available when the "redis-cache" feature is enabled
-#[cfg(feature = "redis-cache")]
 pub struct RedisCache {
     client: redis::Client,
     /// Kept for `urx cache stats`, which reports where the cache lives. Printed
@@ -15,7 +14,6 @@ pub struct RedisCache {
     url: String,
 }
 
-#[cfg(feature = "redis-cache")]
 impl RedisCache {
     /// Create a new Redis cache
     pub async fn new(redis_url: &str) -> Result<Self> {
@@ -179,15 +177,10 @@ impl RedisCache {
     }
 }
 
-#[cfg(feature = "redis-cache")]
 #[async_trait]
 impl CacheBackend for RedisCache {
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {
-        let mut conn = self
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to connect to Redis")?;
+        let mut conn = self.connect().await?;
 
         let redis_key = self.redis_key(key);
         let value: Option<String> = redis::cmd("GET")
@@ -207,11 +200,7 @@ impl CacheBackend for RedisCache {
     }
 
     async fn set(&self, key: &CacheKey, entry: &CacheEntry) -> Result<()> {
-        let mut conn = self
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to connect to Redis")?;
+        let mut conn = self.connect().await?;
 
         let redis_key = self.redis_key(key);
         let json_str = serde_json::to_string(entry).context("Failed to serialize cache entry")?;
@@ -243,11 +232,7 @@ impl CacheBackend for RedisCache {
     }
 
     async fn delete(&self, key: &CacheKey) -> Result<()> {
-        let mut conn = self
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to connect to Redis")?;
+        let mut conn = self.connect().await?;
 
         let redis_key = self.redis_key(key);
         let meta_key = self.redis_meta_key(key);
@@ -267,7 +252,6 @@ impl CacheBackend for RedisCache {
     }
 }
 
-#[cfg(feature = "redis-cache")]
 #[async_trait]
 impl CacheAdmin for RedisCache {
     fn backend_name(&self) -> &'static str {
@@ -359,7 +343,6 @@ impl CacheAdmin for RedisCache {
 }
 
 #[cfg(test)]
-#[cfg(feature = "redis-cache")]
 mod tests {
     use super::*;
     use crate::cache::types::CacheFilters;
