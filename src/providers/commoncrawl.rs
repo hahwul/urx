@@ -1,7 +1,6 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::Deserialize;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -127,6 +126,7 @@ impl CommonCrawlProvider {
     }
 }
 
+#[async_trait]
 impl Provider for CommonCrawlProvider {
     /// A CDX query carries the path scope itself; see
     /// [`super::cdx_url_pattern`].
@@ -138,38 +138,27 @@ impl Provider for CommonCrawlProvider {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        let index = self.effective_index().await?;
+        let query_base = self.query_base(&index, domain);
+        let client = self.net.http.build_client()?;
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            let index = self.effective_index().await?;
-            let query_base = self.query_base(&index, domain);
-            let client = self.net.http.build_client()?;
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
-
-            // The Common Crawl index server block-paginates; the shared pywb
-            // walk in `cdx` probes `showNumPages` and walks every page.
-            let session = CdxSession {
-                client: &client,
-                retries: self.net.retries,
-                limiter: self.net.rate_limit.as_ref(),
-                reporter: reporter.as_ref(),
-                endpoint: &self.base_url,
-            };
-            walk_block_pages(&session, &query_base, MAX_PAGES).await
-        })
+        // The Common Crawl index server block-paginates; the shared pywb
+        // walk in `cdx` probes `showNumPages` and walks every page.
+        let session = CdxSession {
+            client: &client,
+            retries: self.net.retries,
+            limiter: self.net.rate_limit.as_ref(),
+            reporter: &reporter,
+            endpoint: &self.base_url,
+        };
+        walk_block_pages(&session, &query_base, MAX_PAGES).await
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -578,7 +567,7 @@ mod tests {
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -640,7 +629,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -702,7 +691,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );

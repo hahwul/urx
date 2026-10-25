@@ -1,7 +1,6 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::network::client::read_body_capped;
 use crate::network::{CustomHeaders, NetConfig, RateLimiter};
@@ -177,19 +176,12 @@ impl RobotsProvider {
         &self,
         domain: &str,
         settings: &ArchivedDiscovery,
-        reporter: Option<ProgressReporter>,
+        reporter: ProgressReporter,
     ) -> Result<Vec<UrlRecord>> {
         let client = self.build_archive_client()?;
         let limiter = self.net.rate_limit.as_ref();
-        let note = |msg: String| {
-            if let Some(r) = &reporter {
-                r.note(msg);
-            }
-        };
 
-        if let Some(r) = &reporter {
-            r.detail("listing robots.txt versions…");
-        }
+        reporter.detail("listing robots.txt versions…");
         let listing = list_versions(
             &client,
             settings,
@@ -199,13 +191,13 @@ impl RobotsProvider {
         )
         .await?;
         if !listing.skipped.is_empty() {
-            note(format!(
+            reporter.note(format!(
                 "{domain}: archived robots.txt captures not worth replaying: {}",
                 describe_skipped(&listing.skipped)
             ));
         }
         if listing.fetchable.len() > settings.limit {
-            note(format!(
+            reporter.note(format!(
                 "{domain}: {} distinct archived robots.txt versions; replaying the newest {} (raise --archived-discovery-limit for the rest)",
                 listing.fetchable.len(),
                 settings.limit
@@ -215,13 +207,11 @@ impl RobotsProvider {
         let mut urls = Vec::new();
         let total = listing.fetchable.len().min(settings.limit);
         for (i, capture) in listing.fetchable.iter().take(settings.limit).enumerate() {
-            if let Some(r) = &reporter {
-                if r.stop_requested() {
-                    r.mark_partial();
-                    break;
-                }
-                r.detail(format!("robots.txt version {}/{total}…", i + 1));
+            if reporter.stop_requested() {
+                reporter.mark_partial();
+                break;
             }
+            reporter.detail(format!("robots.txt version {}/{total}…", i + 1));
             match replay_capture(
                 &client,
                 settings.origin(),
@@ -238,20 +228,16 @@ impl RobotsProvider {
                 }
                 Ok(replay @ Replay::Unavailable(status)) => {
                     if replay.is_transient() {
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
+                        reporter.mark_partial();
                     }
-                    note(format!(
+                    reporter.note(format!(
                         "{domain}: skipping archived robots.txt from {} (archive answered {status})",
                         capture.timestamp
                     ))
                 }
                 Err(e) => {
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
-                    note(format!(
+                    reporter.mark_partial();
+                    reporter.note(format!(
                         "{domain}: failed to replay archived robots.txt from {}: {e}",
                         capture.timestamp
                     ))
@@ -301,106 +287,93 @@ fn resolve_sitemap_value(protocol: &str, domain: &str, value: &str) -> Option<St
     }
 }
 
+#[async_trait]
 impl Provider for RobotsProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            if let Some(settings) = &self.archived {
-                return self.fetch_archived(domain, settings, None).await;
-            }
-
-            let client = self.net.http.build_client()?;
-            let limiter = self.net.rate_limit.as_ref();
-
-            let https_url = match self.base_url.as_str() {
-                "" => format!("https://{domain}/robots.txt"),
-                base => format!("{base}/robots.txt"),
-            };
-
-            let mut urls: Vec<String> = Vec::new();
-
-            // Whether *either* scheme managed to get an answer out of the host.
-            // A 404 counts: it means "this host has no robots.txt", which is a
-            // successful scan with zero URLs. Nothing at all means we never
-            // reached the host, and the run must report that as an error rather
-            // than as a clean, empty success.
-            let mut host_answered = false;
-            let mut https_error: Option<anyhow::Error> = None;
-            let mut http_error: Option<anyhow::Error> = None;
-            let mut body: Option<(&str, String)> = None;
-
-            // Try HTTPS first.
-            match fetch_robots(&client, &https_url, limiter).await {
-                RobotsFetch::Body(text) => body = Some(("https", text)),
-                RobotsFetch::Absent => host_answered = true,
-                RobotsFetch::Failed(e) => https_error = Some(e),
-            }
-
-            if body.is_none() {
-                // If HTTPS didn't produce a robots.txt, try HTTP.
-                let http_url = match (self.base_url_http.as_str(), self.base_url.as_str()) {
-                    ("", "") => format!("http://{domain}/robots.txt"),
-                    ("", base) | (base, _) => format!("{base}/robots.txt"),
-                };
-
-                match fetch_robots(&client, &http_url, limiter).await {
-                    RobotsFetch::Body(text) => body = Some(("http", text)),
-                    RobotsFetch::Absent => host_answered = true,
-                    RobotsFetch::Failed(e) => http_error = Some(e),
-                }
-            }
-
-            // Use the protocol that worked.
-            let (protocol, text) = match body {
-                Some(found) => found,
-                // The host answered over at least one scheme and said there is
-                // no robots.txt — an empty result, not a failure.
-                None if host_answered => {
-                    return Ok(urls.into_iter().map(UrlRecord::bare).collect())
-                }
-                // Neither scheme ever got an answer: DNS failure, refused
-                // connection, TLS failure, timeout. Surface it so `--stats`
-                // counts an error instead of showing "0 urls, 0 errors".
-                None => {
-                    let detail = match (https_error, http_error) {
-                        (Some(https), Some(http)) => format!("https: {https}; http: {http}"),
-                        (Some(https), None) => format!("https: {https}"),
-                        (None, Some(http)) => format!("http: {http}"),
-                        (None, None) => "no response".to_string(),
-                    };
-                    return Err(anyhow::anyhow!(
-                        "could not fetch robots.txt for {domain} ({detail})"
-                    ));
-                }
-            };
-
-            urls.extend(parse_robots_txt(protocol, domain, &text));
-
-            // A robots.txt routinely repeats the same Disallow under several
-            // User-agent groups; every other provider returns a deduplicated
-            // list, so this one should too.
-            urls.sort();
-            urls.dedup();
-
-            Ok(urls.into_iter().map(UrlRecord::bare).collect())
-        })
-    }
-
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        match &self.archived {
-            Some(settings) => Box::pin(self.fetch_archived(domain, settings, reporter)),
-            None => self.fetch_urls(domain),
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        if let Some(settings) = &self.archived {
+            return self.fetch_archived(domain, settings, reporter).await;
         }
+
+        let client = self.net.http.build_client()?;
+        let limiter = self.net.rate_limit.as_ref();
+
+        let https_url = match self.base_url.as_str() {
+            "" => format!("https://{domain}/robots.txt"),
+            base => format!("{base}/robots.txt"),
+        };
+
+        let mut urls: Vec<String> = Vec::new();
+
+        // Whether *either* scheme managed to get an answer out of the host.
+        // A 404 counts: it means "this host has no robots.txt", which is a
+        // successful scan with zero URLs. Nothing at all means we never
+        // reached the host, and the run must report that as an error rather
+        // than as a clean, empty success.
+        let mut host_answered = false;
+        let mut https_error: Option<anyhow::Error> = None;
+        let mut http_error: Option<anyhow::Error> = None;
+        let mut body: Option<(&str, String)> = None;
+
+        // Try HTTPS first.
+        match fetch_robots(&client, &https_url, limiter).await {
+            RobotsFetch::Body(text) => body = Some(("https", text)),
+            RobotsFetch::Absent => host_answered = true,
+            RobotsFetch::Failed(e) => https_error = Some(e),
+        }
+
+        if body.is_none() {
+            // If HTTPS didn't produce a robots.txt, try HTTP.
+            let http_url = match (self.base_url_http.as_str(), self.base_url.as_str()) {
+                ("", "") => format!("http://{domain}/robots.txt"),
+                ("", base) | (base, _) => format!("{base}/robots.txt"),
+            };
+
+            match fetch_robots(&client, &http_url, limiter).await {
+                RobotsFetch::Body(text) => body = Some(("http", text)),
+                RobotsFetch::Absent => host_answered = true,
+                RobotsFetch::Failed(e) => http_error = Some(e),
+            }
+        }
+
+        // Use the protocol that worked.
+        let (protocol, text) = match body {
+            Some(found) => found,
+            // The host answered over at least one scheme and said there is
+            // no robots.txt — an empty result, not a failure.
+            None if host_answered => return Ok(urls.into_iter().map(UrlRecord::bare).collect()),
+            // Neither scheme ever got an answer: DNS failure, refused
+            // connection, TLS failure, timeout. Surface it so `--stats`
+            // counts an error instead of showing "0 urls, 0 errors".
+            None => {
+                let detail = match (https_error, http_error) {
+                    (Some(https), Some(http)) => format!("https: {https}; http: {http}"),
+                    (Some(https), None) => format!("https: {https}"),
+                    (None, Some(http)) => format!("http: {http}"),
+                    (None, None) => "no response".to_string(),
+                };
+                return Err(anyhow::anyhow!(
+                    "could not fetch robots.txt for {domain} ({detail})"
+                ));
+            }
+        };
+
+        urls.extend(parse_robots_txt(protocol, domain, &text));
+
+        // A robots.txt routinely repeats the same Disallow under several
+        // User-agent groups; every other provider returns a deduplicated
+        // list, so this one should too.
+        urls.sort();
+        urls.dedup();
+
+        Ok(urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -958,7 +931,7 @@ Sitemap: /sitemap-2015.xml
         let (reporter, notes) = capturing_reporter();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter))
+                .fetch_urls_with_progress("example.com", reporter)
                 .await
                 .unwrap(),
         );
@@ -1055,7 +1028,7 @@ Sitemap: /sitemap-2015.xml
         provider.net.retries = 0;
         let (reporter, _notes) = capturing_reporter();
         let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .fetch_urls_with_progress("example.com", reporter.clone())
             .await
             .unwrap();
         assert!(urls.is_empty());
@@ -1105,7 +1078,7 @@ Sitemap: /sitemap-2015.xml
         let (reporter, notes) = capturing_reporter();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter))
+                .fetch_urls_with_progress("example.com", reporter)
                 .await
                 .unwrap(),
         );
@@ -1146,7 +1119,7 @@ Sitemap: /sitemap-2015.xml
             RobotsProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
         let (reporter, notes) = capturing_reporter();
         let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter))
+            .fetch_urls_with_progress("example.com", reporter)
             .await
             .expect("a refused replay is an empty result, not an error");
         assert!(urls.is_empty());

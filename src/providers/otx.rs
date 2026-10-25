@@ -1,9 +1,8 @@
 use anyhow::Result;
+use async_trait::async_trait;
 
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 
 use super::{Provider, UrlRecord};
 use crate::network::client::{is_retryable_status, send_with_retry};
@@ -157,123 +156,105 @@ fn parse_otx(text: &str) -> Result<OTXResult> {
     })
 }
 
+#[async_trait]
 impl Provider for OTXProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        let mut all_urls = Vec::new();
+        let mut page = 0;
+        let client = self.net.http.build_client()?;
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            let mut all_urls = Vec::new();
-            let mut page = 0;
-            let client = self.net.http.build_client()?;
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
+        loop {
+            let url = self.format_url(domain, page);
 
-            loop {
-                let url = self.format_url(domain, page);
-
-                let result = send_with_retry(
-                    self.net.retries,
-                    self.net.rate_limit.as_ref(),
-                    is_retryable_status,
-                    || client.get(&url),
-                    // A 400 (not a valid indicator) is the same answer on
-                    // every attempt.
-                    |status, text| {
-                        if !status.is_success() {
-                            anyhow::bail!("HTTP error: {status}");
-                        }
-                        parse_otx(&text)
-                    },
-                )
-                .await;
-
-                match result {
-                    Ok(otx_result) => {
-                        let has_next = otx_result.has_next;
-                        let page_len = otx_result.url_list.len();
-
-                        // Keep only entries with a usable URL — OTX occasionally
-                        // returns rows with an empty `url`, which would otherwise be
-                        // emitted as blank lines.
-                        all_urls.extend(
-                            otx_result
-                                .url_list
-                                .into_iter()
-                                .map(|entry| entry.url)
-                                .filter(|url| !url.is_empty()),
-                        );
-
-                        if let Some(r) = &reporter {
-                            r.detail(format!("{} URLs…", all_urls.len()));
-                        }
-
-                        // Stop when this page returned nothing (there is no more
-                        // data, even if the server still claims `has_next`), or when
-                        // the API reports no further pages. A full page with
-                        // `has_next` absent (some responses omit it) is treated as
-                        // "maybe more", so a single trailing empty fetch confirms the
-                        // end rather than truncating at page one.
-                        let page_full = page_len as u32 >= OTX_RESULTS_LIMIT;
-                        if page_len == 0 || (!has_next && !page_full) {
-                            break;
-                        }
+            let result = send_with_retry(
+                self.net.retries,
+                self.net.rate_limit.as_ref(),
+                is_retryable_status,
+                || client.get(&url),
+                // A 400 (not a valid indicator) is the same answer on
+                // every attempt.
+                |status, text| {
+                    if !status.is_success() {
+                        anyhow::bail!("HTTP error: {status}");
                     }
-                    Err(e) => {
-                        // Best effort: a page that failed after all its retries must
-                        // not discard the pages already collected. Only a failure on
-                        // the very first request — where there is nothing to keep —
-                        // is fatal, matching every other paginating provider.
-                        if all_urls.is_empty() {
-                            return Err(e);
-                        }
-                        // We're returning a truncated result. Flag it so the runner
-                        // marks the line partial and warns, rather than presenting an
-                        // incomplete crawl as a clean success.
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
+                    parse_otx(&text)
+                },
+            )
+            .await;
+
+            match result {
+                Ok(otx_result) => {
+                    let has_next = otx_result.has_next;
+                    let page_len = otx_result.url_list.len();
+
+                    // Keep only entries with a usable URL — OTX occasionally
+                    // returns rows with an empty `url`, which would otherwise be
+                    // emitted as blank lines.
+                    all_urls.extend(
+                        otx_result
+                            .url_list
+                            .into_iter()
+                            .map(|entry| entry.url)
+                            .filter(|url| !url.is_empty()),
+                    );
+
+                    reporter.detail(format!("{} URLs…", all_urls.len()));
+
+                    // Stop when this page returned nothing (there is no more
+                    // data, even if the server still claims `has_next`), or when
+                    // the API reports no further pages. A full page with
+                    // `has_next` absent (some responses omit it) is treated as
+                    // "maybe more", so a single trailing empty fetch confirms the
+                    // end rather than truncating at page one.
+                    let page_full = page_len as u32 >= OTX_RESULTS_LIMIT;
+                    if page_len == 0 || (!has_next && !page_full) {
                         break;
                     }
                 }
-
-                // The run asked us to stop (--max-time elapsed, or Ctrl-C).
-                // Hand back the pages already walked instead of losing them to
-                // the hard cancel after the runner's grace window.
-                if let Some(r) = &reporter {
-                    if r.stop_requested() {
-                        r.mark_partial();
-                        break;
+                Err(e) => {
+                    // Best effort: a page that failed after all its retries must
+                    // not discard the pages already collected. Only a failure on
+                    // the very first request — where there is nothing to keep —
+                    // is fatal, matching every other paginating provider.
+                    if all_urls.is_empty() {
+                        return Err(e);
                     }
-                }
-
-                page += 1;
-                if page >= self.page_limit {
-                    // Reaching the safety ceiling means another page may
-                    // remain; do not present the capped result as complete.
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
+                    // We're returning a truncated result. Flag it so the runner
+                    // marks the line partial and warns, rather than presenting an
+                    // incomplete crawl as a clean success.
+                    reporter.mark_partial();
                     break;
                 }
             }
 
-            Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
-        })
+            // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+            // Hand back the pages already walked instead of losing them to
+            // the hard cancel after the runner's grace window.
+            if reporter.stop_requested() {
+                reporter.mark_partial();
+                break;
+            }
+
+            page += 1;
+            if page >= self.page_limit {
+                // Reaching the safety ceiling means another page may
+                // remain; do not present the capped result as complete.
+                reporter.mark_partial();
+                break;
+            }
+        }
+
+        Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -554,7 +535,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -674,7 +655,7 @@ mod tests {
             .with_stop_signal(stop.clone());
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .expect("page one must survive the deadline"),
         );
@@ -727,7 +708,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .expect("page one must survive a later page's failure"),
         );

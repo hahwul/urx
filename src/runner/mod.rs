@@ -493,7 +493,6 @@ pub async fn process_domains(
                         if verbose && !silent {
                             reporter = reporter.with_notifier(notifier.clone());
                         }
-                        let reporter = Some(reporter);
 
                         // Fetch URLs for this domain using this provider.
                         // A `host/path` target reaches only the providers whose
@@ -533,9 +532,8 @@ pub async fn process_domains(
                                 // counts too: the provider may have cut its
                                 // cursor walk short to hand back what it had,
                                 // so it cannot be reported as complete.
-                                let partial = reporter
-                                    .as_ref()
-                                    .is_some_and(|r| r.is_partial() || r.stop_requested());
+                                let partial =
+                                    reporter.is_partial() || reporter.stop_requested();
                                 if partial {
                                     partial_total.fetch_add(1, Ordering::Relaxed);
                                     lock_ignore_poison(&incomplete_domains).insert(domain.clone());
@@ -902,9 +900,6 @@ mod tests {
     use crate::output;
     use crate::test_support::{build_test_args, MockProvider};
     use crate::utils::UrlTransformer;
-    use std::future::Future;
-    use std::pin::Pin;
-
     /// A provider that paginates: it collects one URL every `step`, and honours
     /// the run-wide stop signal the way a real cursor-walking provider is meant
     /// to — flag the result partial and return what it already has, rather than
@@ -915,40 +910,27 @@ mod tests {
         pages: usize,
     }
 
+    #[async_trait::async_trait]
     impl Provider for PaginatingProvider {
         fn clone_box(&self) -> Box<dyn Provider> {
             Box::new(self.clone())
         }
 
-        fn fetch_urls<'a>(
-            &'a self,
-            domain: &'a str,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
-            self.fetch_urls_with_progress(domain, None)
-        }
-
-        fn fetch_urls_with_progress<'a>(
-            &'a self,
-            domain: &'a str,
-            reporter: Option<ProgressReporter>,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
-            let step = self.step;
-            let pages = self.pages;
-            let domain = domain.to_string();
-            Box::pin(async move {
-                let mut urls = Vec::new();
-                for page in 0..pages {
-                    tokio::time::sleep(step).await;
-                    urls.push(UrlRecord::bare(format!("https://{domain}/page{page}")));
-                    if let Some(r) = &reporter {
-                        if r.stop_requested() {
-                            r.mark_partial();
-                            break;
-                        }
-                    }
+        async fn fetch_urls_with_progress(
+            &self,
+            domain: &str,
+            reporter: ProgressReporter,
+        ) -> anyhow::Result<Vec<UrlRecord>> {
+            let mut urls = Vec::new();
+            for page in 0..self.pages {
+                tokio::time::sleep(self.step).await;
+                urls.push(UrlRecord::bare(format!("https://{domain}/page{page}")));
+                if reporter.stop_requested() {
+                    reporter.mark_partial();
+                    break;
                 }
-                Ok(urls)
-            })
+            }
+            Ok(urls)
         }
 
         fn with_subdomains(&mut self, _include: bool) {}
@@ -963,16 +945,18 @@ mod tests {
         limiters: Arc<Mutex<Vec<Option<RateLimiter>>>>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for SubdomainRecordingProvider {
         fn clone_box(&self) -> Box<dyn Provider> {
             Box::new(self.clone())
         }
 
-        fn fetch_urls<'a>(
-            &'a self,
-            _domain: &'a str,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
-            Box::pin(async move { Ok(vec![]) })
+        async fn fetch_urls_with_progress(
+            &self,
+            _domain: &str,
+            _reporter: ProgressReporter,
+        ) -> anyhow::Result<Vec<UrlRecord>> {
+            Ok(vec![])
         }
 
         fn with_subdomains(&mut self, include: bool) {
@@ -990,17 +974,18 @@ mod tests {
         records: Vec<UrlRecord>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for RecordingProvider {
         fn clone_box(&self) -> Box<dyn Provider> {
             Box::new(self.clone())
         }
 
-        fn fetch_urls<'a>(
-            &'a self,
-            _domain: &'a str,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
+        async fn fetch_urls_with_progress(
+            &self,
+            _domain: &str,
+            _reporter: ProgressReporter,
+        ) -> anyhow::Result<Vec<UrlRecord>> {
+            Ok(self.records.clone())
         }
 
         fn with_subdomains(&mut self, _include: bool) {}
@@ -1677,6 +1662,7 @@ mod tests {
         seen: Arc<Mutex<Vec<String>>>,
     }
 
+    #[async_trait::async_trait]
     impl Provider for QueryRecordingProvider {
         fn clone_box(&self) -> Box<dyn Provider> {
             Box::new(self.clone())
@@ -1684,14 +1670,13 @@ mod tests {
         fn accepts_path_scope(&self) -> bool {
             self.accepts_path_scope
         }
-        fn fetch_urls<'a>(
-            &'a self,
-            domain: &'a str,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<UrlRecord>>> + Send + 'a>> {
-            Box::pin(async move {
-                self.seen.lock().unwrap().push(domain.to_string());
-                Ok(vec![])
-            })
+        async fn fetch_urls_with_progress(
+            &self,
+            domain: &str,
+            _reporter: ProgressReporter,
+        ) -> anyhow::Result<Vec<UrlRecord>> {
+            self.seen.lock().unwrap().push(domain.to_string());
+            Ok(vec![])
         }
         fn with_subdomains(&mut self, _include: bool) {}
         fn with_network(&mut self, _net: crate::network::NetConfig) {}

@@ -152,6 +152,12 @@ pub struct ProgressReporter {
 }
 
 impl ProgressReporter {
+    /// A reporter on a hidden bar, for fetches nobody is watching.
+    #[cfg(test)]
+    pub fn hidden() -> Self {
+        Self::new(ProgressBar::hidden(), "")
+    }
+
     /// Build a reporter that writes to `bar`, prefixing each detail with
     /// `prefix` (which should already include any trailing separator).
     pub fn new(bar: ProgressBar, prefix: impl Into<String>) -> Self {

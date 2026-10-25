@@ -1,6 +1,5 @@
 use anyhow::Result;
-use std::future::Future;
-use std::pin::Pin;
+use async_trait::async_trait;
 
 use super::cdx::{walk_resume_key, CdxSession, CLASSIC_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
@@ -144,6 +143,7 @@ impl WaybackMachineProvider {
     }
 }
 
+#[async_trait]
 impl Provider for WaybackMachineProvider {
     /// A CDX query carries the path scope itself; see
     /// [`super::cdx_url_pattern`].
@@ -155,38 +155,27 @@ impl Provider for WaybackMachineProvider {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        let client = self.net.http.build_client()?;
+        let query_base = self.query_base(domain);
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            let client = self.net.http.build_client()?;
-            let query_base = self.query_base(domain);
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
-
-            // web.archive.org is the reference classic CDX server: the shared
-            // resume-key walk in `cdx` was written against it and is reused
-            // verbatim for any other classic endpoint the user plugs in.
-            let session = CdxSession {
-                client: &client,
-                retries: self.net.retries,
-                limiter: self.net.rate_limit.as_ref(),
-                reporter: reporter.as_ref(),
-                endpoint: &self.base_url,
-            };
-            walk_resume_key(&session, &query_base).await
-        })
+        // web.archive.org is the reference classic CDX server: the shared
+        // resume-key walk in `cdx` was written against it and is reused
+        // verbatim for any other classic endpoint the user plugs in.
+        let session = CdxSession {
+            client: &client,
+            retries: self.net.retries,
+            limiter: self.net.rate_limit.as_ref(),
+            reporter: &reporter,
+            endpoint: &self.base_url,
+        };
+        walk_resume_key(&session, &query_base).await
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -360,7 +349,7 @@ mod tests {
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -402,7 +391,7 @@ mod tests {
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter))
+                .fetch_urls_with_progress("example.com", reporter)
                 .await
                 .unwrap(),
         );
@@ -540,7 +529,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -908,7 +897,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -963,7 +952,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -996,7 +985,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -1038,7 +1027,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );

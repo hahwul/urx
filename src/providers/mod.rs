@@ -1,6 +1,7 @@
 use anyhow::Result;
-use std::future::Future;
-use std::pin::Pin;
+use async_trait::async_trait;
+
+use crate::progress::ProgressReporter;
 
 mod api_key_rotation;
 pub mod archived;
@@ -38,32 +39,29 @@ pub use zoomeye::ZoomEyeProvider;
 ///
 /// This trait defines common operations for classes that fetch URLs
 /// from various external sources like archives and crawlers.
+#[async_trait]
 pub trait Provider: Send + Sync {
     /// Create a boxed clone of this provider
     fn clone_box(&self) -> Box<dyn Provider>;
 
-    /// Fetch URLs for a given domain from the provider.
+    /// Fetch URLs for a given domain from the provider, reporting
+    /// fine-grained progress (e.g. a paginating provider can surface
+    /// "page 3/12") through `reporter`.
     ///
     /// One [`UrlRecord`] per distinct URL, carrying whatever archive metadata
     /// the provider had. Providers without a capture index return
     /// [`UrlRecord::bare`] records rather than inventing values.
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>>;
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>>;
 
-    /// Fetch URLs while optionally reporting fine-grained progress (e.g. a
-    /// paginating provider can surface "page 3/12") through `reporter`.
-    ///
-    /// The default implementation ignores the reporter and delegates to
-    /// [`Provider::fetch_urls`], so providers that have nothing interesting to
-    /// report need not implement it.
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        _reporter: Option<crate::progress::ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls(domain)
+    /// Test shorthand: fetch with a reporter nobody watches.
+    #[cfg(test)]
+    async fn fetch_urls(&self, domain: &str) -> Result<Vec<UrlRecord>> {
+        self.fetch_urls_with_progress(domain, ProgressReporter::hidden())
+            .await
     }
 
     // Configuration options
