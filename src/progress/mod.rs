@@ -29,12 +29,9 @@ const BAR_FILL: &str = "━━╸─";
 //   #8b949e  dim         — elapsed timers, secondary message text
 //   #a7b6c2  label       — the `◇ <phase>` section labels
 
-/// Steady-tick interval for spinners (ms). Fast enough to feel alive, slow
-/// enough not to flicker or burn CPU.
-const SPINNER_TICK_MS: u64 = 80;
-
-/// Steady-tick interval for determinate bars (ms).
-const BAR_TICK_MS: u64 = 80;
+/// Steady-tick interval for spinners and bars (ms). Fast enough to feel alive,
+/// slow enough not to flicker or burn CPU.
+const TICK_MS: u64 = 80;
 
 /// Style for a provider line while a fetch is in flight: the spinner is the
 /// gutter glyph (col 3), the bold provider name follows, a dimmed elapsed timer
@@ -338,10 +335,10 @@ impl ProgressManager {
     }
 
     /// Add `bar` to the live region, ticking it while the region is visible.
-    fn add(&self, bar: ProgressBar, tick_ms: u64) -> ProgressBar {
+    fn add(&self, bar: ProgressBar) -> ProgressBar {
         let bar = self.multi_progress.add(bar);
         if !bar.is_hidden() {
-            bar.enable_steady_tick(std::time::Duration::from_millis(tick_ms));
+            bar.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
         }
         bar
     }
@@ -358,7 +355,7 @@ impl ProgressManager {
         // "◇ <label>" — the ◇ sits in the same gutter column as the provider
         // status glyphs; the 12-wide label keeps every rail starting at one column.
         bar.set_prefix(format!("◇ {label:<12}"));
-        self.add(bar, BAR_TICK_MS)
+        self.add(bar)
     }
 
     pub fn create_domain_bar(&self, total: usize) -> ProgressBar {
@@ -381,7 +378,7 @@ impl ProgressManager {
                 // states. The runner resets this prefix each domain.
                 bar.set_prefix(format!("{name:<16}"));
                 bar.set_message("queued…");
-                self.add(bar, SPINNER_TICK_MS)
+                self.add(bar)
             })
             .collect();
 
