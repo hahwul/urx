@@ -40,21 +40,12 @@ async fn next_ctrl_c() {
 /// aggregate "done/total · URLs" counter — one line can't show every in-flight
 /// domain, so we summarise. Ticks so the spinner keeps moving between
 /// completions.
-fn tick_aggregate(
-    bar: &ProgressBar,
-    done: usize,
-    total: usize,
-    urls: usize,
-    no_progress: bool,
-    silent: bool,
-) {
+fn tick_aggregate(bar: &ProgressBar, done: usize, total: usize, urls: usize) {
     bar.set_message(format!(
         "{done}/{total} domains · {} URLs",
         HumanCount(urls as u64)
     ));
-    if !no_progress && !silent {
-        bar.tick();
-    }
+    bar.tick();
 }
 
 /// Render an error as a single short line for a progress label, truncating on
@@ -84,7 +75,7 @@ struct DomainCompletionCtx {
     total_providers: usize,
     total_domains: usize,
     domain_completion: Arc<Mutex<HashMap<String, usize>>>,
-    processed_domains: Arc<Mutex<usize>>,
+    processed_domains: Arc<AtomicUsize>,
     overall_bar: ProgressBar,
     notifier: Notifier,
     verbose: bool,
@@ -106,18 +97,17 @@ impl DomainCompletionCtx {
         }
 
         if is_domain_complete {
-            let mut count = lock_ignore_poison(&self.processed_domains);
-            *count += 1;
-            self.overall_bar.set_position(*count as u64);
+            let count = self.processed_domains.fetch_add(1, Ordering::Relaxed) + 1;
+            self.overall_bar.set_position(count as u64);
             self.overall_bar.set_message(format!(
                 "Completed {}/{} domains",
-                *count, self.total_domains
+                count, self.total_domains
             ));
 
             if self.verbose && !self.silent {
                 self.notifier.note(format!(
                     "Domain completed: {} ({}/{})",
-                    domain, *count, self.total_domains
+                    domain, count, self.total_domains
                 ));
             }
         }
@@ -330,7 +320,7 @@ pub async fn process_domains(
     overall_bar.set_message("Processing domains");
 
     // Create a shared counter for processed domains
-    let processed_domains = Arc::new(Mutex::new(0usize));
+    let processed_domains = Arc::new(AtomicUsize::new(0));
 
     // Create provider bars - one bar per provider
     let provider_bars = progress_manager.create_provider_bars(provider_names);
@@ -361,7 +351,6 @@ pub async fn process_domains(
     // Extract the values we need from Args to avoid lifetime issues
     let verbose = args.verbose;
     let silent = args.silent;
-    let no_progress = args.no_progress;
 
     // --parallel bounds how many of a provider's domains are fetched at once.
     // The shared per-provider rate limiter (stored in the provider and cloned
@@ -419,11 +408,6 @@ pub async fn process_domains(
         // Spawn a task for this provider
         let provider_future = task::spawn(async move {
             let provider = Arc::new(provider_clone);
-            // Running totals are atomics so the concurrent domain futures below
-            // can update them; read back for an honest end-of-run summary.
-            let url_total = Arc::new(AtomicUsize::new(0));
-            let err_total = Arc::new(AtomicUsize::new(0));
-            let partial_total = Arc::new(AtomicUsize::new(0));
             let total = domains.len();
 
             // Handles retained for the summary after the stream consumes the
@@ -431,9 +415,7 @@ pub async fn process_domains(
             let summary_bar = provider_bar.clone();
             let summary_name = provider_name.clone();
             let summary_notifier = notifier.clone();
-            let summary_urls = Arc::clone(&url_total);
-            let summary_errs = Arc::clone(&err_total);
-            let summary_partials = Arc::clone(&partial_total);
+            let summary_stats = Arc::clone(&stats);
 
             // Prime the line. In aggregate mode the elapsed timer measures the
             // whole provider run; rich mode resets it per domain below.
@@ -443,9 +425,7 @@ pub async fn process_domains(
             if !rich {
                 provider_bar.set_message(format!("0/{total} domains"));
             }
-            if !no_progress && !silent {
-                provider_bar.tick();
-            }
+            provider_bar.tick();
 
             stream::iter(domains)
                 .map(move |domain| {
@@ -457,9 +437,6 @@ pub async fn process_domains(
                     let stats = Arc::clone(&stats);
                     let incomplete_domains = Arc::clone(&incomplete_domains);
                     let completion_ctx = Arc::clone(&completion_ctx);
-                    let url_total = Arc::clone(&url_total);
-                    let err_total = Arc::clone(&err_total);
-                    let partial_total = Arc::clone(&partial_total);
                     let done = Arc::clone(&done);
                     let notifier = notifier.clone();
                     let stop_signal = stop_signal.clone();
@@ -482,9 +459,7 @@ pub async fn process_domains(
                             provider_bar.set_prefix(format!("{provider_name:<16}"));
                             provider_bar.reset_elapsed();
                             provider_bar.set_message(format!("{prefix}fetching…"));
-                            if !no_progress {
-                                provider_bar.tick();
-                            }
+                            provider_bar.tick();
                             ProgressReporter::new(provider_bar.clone(), prefix.clone())
                         } else {
                             ProgressReporter::new(ProgressBar::hidden(), prefix.clone())
@@ -522,7 +497,6 @@ pub async fn process_domains(
                                     .map(|r| r.url.as_str())
                                     .collect::<HashSet<_>>()
                                     .len();
-                                url_total.fetch_add(url_count, Ordering::Relaxed);
 
                                 // A *partial* result (e.g. a page failed
                                 // mid-pagination) is surfaced as a distinct,
@@ -535,7 +509,6 @@ pub async fn process_domains(
                                 let partial =
                                     reporter.is_partial() || reporter.stop_requested();
                                 if partial {
-                                    partial_total.fetch_add(1, Ordering::Relaxed);
                                     lock_ignore_poison(&incomplete_domains).insert(domain.clone());
                                 }
 
@@ -577,14 +550,15 @@ pub async fn process_domains(
                                 }
 
                                 // Update per-provider stats.
-                                {
+                                let url_total = {
                                     let mut s = lock_ignore_poison(&stats);
                                     s[original_idx].url_count += url_count;
                                     if partial {
                                         s[original_idx].partial_count += 1;
                                     }
                                     s[original_idx].elapsed += fetch_elapsed;
-                                }
+                                    s[original_idx].url_count
+                                };
 
                                 let done_n = done.fetch_add(1, Ordering::Relaxed) + 1;
                                 if rich {
@@ -612,14 +586,7 @@ pub async fn process_domains(
                                         ));
                                     }
                                 } else {
-                                    tick_aggregate(
-                                        &provider_bar,
-                                        done_n,
-                                        total,
-                                        url_total.load(Ordering::Relaxed),
-                                        no_progress,
-                                        silent,
-                                    );
+                                    tick_aggregate(&provider_bar, done_n, total, url_total);
                                 }
 
                                 completion_ctx.track(&domain);
@@ -631,14 +598,14 @@ pub async fn process_domains(
                                 }
                             }
                             Err(e) => {
-                                err_total.fetch_add(1, Ordering::Relaxed);
                                 lock_ignore_poison(&incomplete_domains).insert(domain.clone());
 
-                                {
+                                let url_total = {
                                     let mut s = lock_ignore_poison(&stats);
                                     s[original_idx].error_count += 1;
                                     s[original_idx].elapsed += fetch_elapsed;
-                                }
+                                    s[original_idx].url_count
+                                };
 
                                 let done_n = done.fetch_add(1, Ordering::Relaxed) + 1;
                                 if rich {
@@ -648,14 +615,7 @@ pub async fn process_domains(
                                         .set_message(format!("{domain} · {}", short_error(&e)));
                                     provider_bar.tick();
                                 } else {
-                                    tick_aggregate(
-                                        &provider_bar,
-                                        done_n,
-                                        total,
-                                        url_total.load(Ordering::Relaxed),
-                                        no_progress,
-                                        silent,
-                                    );
+                                    tick_aggregate(&provider_bar, done_n, total, url_total);
                                 }
 
                                 completion_ctx.track(&domain);
@@ -677,9 +637,10 @@ pub async fn process_domains(
             // what actually happened across all of its domains.
             let provider_bar = summary_bar;
             let provider_name = summary_name;
-            let provider_url_total = summary_urls.load(Ordering::Relaxed);
-            let provider_err_total = summary_errs.load(Ordering::Relaxed);
-            let provider_partial_total = summary_partials.load(Ordering::Relaxed);
+            let (provider_url_total, provider_err_total, provider_partial_total) = {
+                let s = &lock_ignore_poison(&summary_stats)[original_idx];
+                (s.url_count, s.error_count, s.partial_count)
+            };
             if provider_url_total == 0 && provider_err_total > 0 {
                 provider_bar.set_style(provider_error_style());
                 provider_bar.set_prefix(format!("✗ {provider_name:<16}"));
@@ -855,21 +816,10 @@ pub async fn process_domains(
         RunEnd::OutputClosed => overall_bar.finish_with_message("Stopped: output closed"),
     }
 
-    // Reclaim the shared state. If tasks were aborted the inner Arc may still
-    // have outstanding strong counts for a brief moment; drain via clone in
-    // that case rather than panicking.
-    let urls = match Arc::try_unwrap(all_urls) {
-        Ok(m) => m
-            .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        Err(arc) => lock_ignore_poison(&arc).clone(),
-    };
-    let stats = match Arc::try_unwrap(stats) {
-        Ok(s) => s
-            .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        Err(arc) => lock_ignore_poison(&arc).clone(),
-    };
+    // Reclaim the shared state. Aborted tasks may still hold their clones of
+    // the Arcs for a brief moment, so take the contents rather than unwrap.
+    let urls = std::mem::take(&mut *lock_ignore_poison(&all_urls));
+    let stats = std::mem::take(&mut *lock_ignore_poison(&stats));
     // A domain some provider never got to the end of (cancelled by --max-time
     // or Ctrl-C) is as incomplete as one it failed on.
     let mut incomplete_domains = lock_ignore_poison(&incomplete_domains).clone();
