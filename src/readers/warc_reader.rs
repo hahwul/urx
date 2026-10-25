@@ -1,6 +1,4 @@
-use crate::utils::stderr_line;
 use anyhow::{Context, Result};
-use flate2::read::MultiGzDecoder;
 use std::fs::File;
 use std::path::Path;
 
@@ -55,42 +53,17 @@ pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
     // readers, which have capped their input from the start. Lines are read
     // lossily because a WARC embeds raw response bodies: binary content must
     // not abort the read.
-    let (urls, url_capped, byte_capped, _, line_capped) =
-            if magic.starts_with(super::GZIP_MAGIC) {
-            // WARC files are often distributed as gzip streams. MultiGzDecoder
-            // also handles record-oriented archives with one member per WARC
-            // record; the decompressed byte cap still applies to the whole file.
-            let mut src = super::StopOnDecodeError::new(MultiGzDecoder::new(file));
-            let collected = super::collect_capped(
-                &mut src,
-                super::MAX_FILE_URLS,
-                super::MAX_FILE_BYTES,
-                extract_url_from_line,
-            );
-            let decode_error = src.error;
-            collected.map(
-                |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
-                if let Some(error) = decode_error {
-                    stderr_line(&format!(
-                        "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
-                        file_path.display()
-                    ));
-                    if final_fragment_url {
-                        urls.pop();
-                    }
-                }
-                    (urls, url_capped, byte_capped, false, line_capped)
-                },
-            )
-        } else {
-            super::collect_capped(
-                file,
-                super::MAX_FILE_URLS,
-                super::MAX_FILE_BYTES,
-                extract_url_from_line,
-            )
-        }
-        .with_context(|| format!("Failed to read WARC file: {}", file_path.display()))?;
+    // WARC files are often distributed as gzip streams, one member per record;
+    // the decompressed byte cap still applies to the whole file.
+    let (urls, url_capped, byte_capped, _, line_capped) = super::collect_maybe_gzip(
+        file,
+        &magic,
+        file_path,
+        super::MAX_FILE_URLS,
+        super::MAX_FILE_BYTES,
+        extract_url_from_line,
+    )
+    .with_context(|| format!("Failed to read WARC file: {}", file_path.display()))?;
 
     super::warn_if_truncated(
         file_path,

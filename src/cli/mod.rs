@@ -590,6 +590,8 @@ pub struct Args {
     pub extract_js_endpoints: bool,
 
     /// Maximum number of files --extract-js-endpoints will fetch (0 = unlimited)
+    // Each script is a full request and up to 10 MiB of body; an `-e js` list
+    // for a large site runs to the thousands, so the default caps it.
     #[clap(help_heading = "Testing Options")]
     #[clap(long, default_value = "500", value_name = "N")]
     pub max_js_files: usize,
@@ -640,6 +642,8 @@ pub struct Args {
 
     /// Maximum number of specification documents --expand-specs will fetch
     /// (0 = unlimited)
+    // A tenth of --max-js-files: `looks_like_spec` admits a handful of named
+    // files per host, not every bundle in the list.
     #[clap(help_heading = "Testing Options")]
     #[clap(long, value_name = "N", default_value = "50")]
     pub max_spec_files: usize,

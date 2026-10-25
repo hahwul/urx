@@ -1,8 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::header::{HeaderName, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 use reqwest::{Client, Response};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -122,6 +121,7 @@ impl StatusChecker {
     }
 }
 
+#[async_trait]
 impl Tester for StatusChecker {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
@@ -129,45 +129,40 @@ impl Tester for StatusChecker {
 
     /// Tests a URL by sending an HTTP request and returning the status code
     /// If status filtering is enabled, only returns URLs that match the filter criteria
-    fn test_url<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        Box::pin(async move {
-            let client = self.client().await?;
+    async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+        let client = self.client().await?;
 
-            // Unpaced: --rate-limit only ever reached the body-mining testers.
-            let response = send(self.net.retries, None, || client.get(url))
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to check status for {}: {:?}", url, e))?;
-            let status = response.status();
-            let status_code = status.as_u16();
+        // Unpaced: --rate-limit only ever reached the body-mining testers.
+        let response = send(self.net.retries, None, || client.get(url))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to check status for {}: {:?}", url, e))?;
+        let status = response.status();
+        let status_code = status.as_u16();
 
-            // Check if this status code should be included in results
-            if !self.should_include_status(status_code) {
-                return Ok(vec![]); // Return empty vec if filtered out
-            }
+        // Check if this status code should be included in results
+        if !self.should_include_status(status_code) {
+            return Ok(vec![]); // Return empty vec if filtered out
+        }
 
-            let status_text = format!(
-                "{} {}",
-                status_code,
-                status.canonical_reason().unwrap_or("")
-            );
+        let status_text = format!(
+            "{} {}",
+            status_code,
+            status.canonical_reason().unwrap_or("")
+        );
 
-            let mut data = UrlData::with_status(url.to_string(), status_text);
-            let content_type = header(&response, CONTENT_TYPE);
-            if self.response_meta {
-                // The redirect target is recorded, never followed —
-                // see `client()`.
-                data.location = header(&response, LOCATION);
-                data.content_length = header(&response, CONTENT_LENGTH);
-                data.content_type = content_type.clone();
-            }
-            if self.response_title {
-                data.title = read_title(response, content_type.as_deref()).await;
-            }
-            Ok(vec![data])
-        })
+        let mut data = UrlData::with_status(url.to_string(), status_text);
+        let content_type = header(&response, CONTENT_TYPE);
+        if self.response_meta {
+            // The redirect target is recorded, never followed —
+            // see `client()`.
+            data.location = header(&response, LOCATION);
+            data.content_length = header(&response, CONTENT_LENGTH);
+            data.content_type = content_type.clone();
+        }
+        if self.response_title {
+            data.title = read_title(response, content_type.as_deref()).await;
+        }
+        Ok(vec![data])
     }
 
     fn with_network(&mut self, net: NetConfig) {

@@ -1,8 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
@@ -117,146 +116,124 @@ impl UrlscanProvider {
     }
 }
 
+#[async_trait]
 impl Provider for UrlscanProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        // urlscan.io's public search allows unauthenticated queries
+        // (rate-limited to ~30 req/min per IP), so we always query. When no
+        // API key is configured the request simply omits the API-Key header
+        // (see `fetch_page`); a key only raises the limits and enables
+        // rotation.
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            // urlscan.io's public search allows unauthenticated queries
-            // (rate-limited to ~30 req/min per IP), so we always query. When no
-            // API key is configured the request simply omits the API-Key header
-            // (see `fetch_page`); a key only raises the limits and enables
-            // rotation.
+        // Use the url crate for encoding the domain
+        let encoded_domain =
+            url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
 
-            // Use the url crate for encoding the domain
-            let encoded_domain =
-                url::form_urlencoded::byte_serialize(domain.as_bytes()).collect::<String>();
+        let base_query = format!(
+            "{}/api/v1/search/?q=page.domain:{encoded_domain}&size=100",
+            self.base_url
+        );
 
-            let base_query = format!(
-                "{}/api/v1/search/?q=page.domain:{encoded_domain}&size=100",
-                self.base_url
-            );
+        let client = self.net.http.build_client()?;
 
-            let client = self.net.http.build_client()?;
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
+        // urlscan returns at most 100 results per request and signals more
+        // via `has_more`; the next page is requested by passing the last
+        // result's `sort` values as `search_after`. The previous code never
+        // paginated, silently capping every domain at 100 URLs.
+        let mut all_urls = Vec::new();
+        let mut search_after: Option<String> = None;
+        let mut seen_cursors = HashSet::new();
+        let mut pages = 0;
+
+        loop {
+            pages += 1;
+            if pages > self.page_limit {
+                reporter.mark_partial();
+                break;
             }
 
-            // urlscan returns at most 100 results per request and signals more
-            // via `has_more`; the next page is requested by passing the last
-            // result's `sort` values as `search_after`. The previous code never
-            // paginated, silently capping every domain at 100 URLs.
-            let mut all_urls = Vec::new();
-            let mut search_after: Option<String> = None;
-            let mut seen_cursors = HashSet::new();
-            let mut pages = 0;
+            let url = match &search_after {
+                Some(cursor) => format!("{base_query}&search_after={cursor}"),
+                None => base_query.clone(),
+            };
 
-            loop {
-                pages += 1;
-                if pages > self.page_limit {
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
+            let response = match self.fetch_page(&client, &url).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // A failure on the very first page is fatal; a later
+                    // failure keeps the pages already collected.
+                    if all_urls.is_empty() {
+                        return Err(e);
                     }
+                    // ...and flags them as truncated. Without this the run
+                    // reports a clean ✓ over an incomplete crawl, which is
+                    // indistinguishable from "the domain really has this few
+                    // URLs".
+                    reporter.mark_partial();
                     break;
                 }
+            };
 
-                let url = match &search_after {
-                    Some(cursor) => format!("{base_query}&search_after={cursor}"),
-                    None => base_query.clone(),
-                };
-
-                let response = match self.fetch_page(&client, &url).await {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        // A failure on the very first page is fatal; a later
-                        // failure keeps the pages already collected.
-                        if all_urls.is_empty() {
-                            return Err(e);
-                        }
-                        // ...and flags them as truncated. Without this the run
-                        // reports a clean ✓ over an incomplete crawl, which is
-                        // indistinguishable from "the domain really has this few
-                        // URLs".
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        break;
-                    }
-                };
-
-                if response.results.is_empty() {
-                    if response.has_more {
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                    }
-                    break;
+            if response.results.is_empty() {
+                if response.has_more {
+                    reporter.mark_partial();
                 }
-
-                // Capture the cursor before consuming the results.
-                let next_cursor = response
-                    .results
-                    .last()
-                    .and_then(|r| sort_to_search_after(&r.sort));
-
-                let more = response.has_more;
-                for result in response.results {
-                    all_urls.push(result.page.url);
-                }
-
-                if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", all_urls.len()));
-                    // The run asked us to stop (--max-time elapsed, or
-                    // Ctrl-C). Hand back the pages already walked instead of
-                    // losing them to the hard cancel after the grace window.
-                    if r.stop_requested() {
-                        r.mark_partial();
-                        break;
-                    }
-                }
-
-                if !more {
-                    break;
-                }
-
-                match next_cursor {
-                    Some(cursor) => {
-                        if !seen_cursors.insert(cursor.clone()) {
-                            if let Some(r) = &reporter {
-                                r.mark_partial();
-                            }
-                            break;
-                        }
-                        search_after = Some(cursor);
-                    }
-                    // No usable cursor — can't page further without risking an
-                    // infinite loop re-requesting page one. `has_more` was true,
-                    // so this is a truncated result rather than a clean end.
-                    None => {
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        break;
-                    }
-                }
+                break;
             }
 
-            Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
-        })
+            // Capture the cursor before consuming the results.
+            let next_cursor = response
+                .results
+                .last()
+                .and_then(|r| sort_to_search_after(&r.sort));
+
+            let more = response.has_more;
+            for result in response.results {
+                all_urls.push(result.page.url);
+            }
+
+            reporter.detail(format!("{} URLs…", all_urls.len()));
+            // The run asked us to stop (--max-time elapsed, or
+            // Ctrl-C). Hand back the pages already walked instead of
+            // losing them to the hard cancel after the grace window.
+            if reporter.stop_requested() {
+                reporter.mark_partial();
+                break;
+            }
+
+            if !more {
+                break;
+            }
+
+            match next_cursor {
+                Some(cursor) => {
+                    if !seen_cursors.insert(cursor.clone()) {
+                        reporter.mark_partial();
+                        break;
+                    }
+                    search_after = Some(cursor);
+                }
+                // No usable cursor — can't page further without risking an
+                // infinite loop re-requesting page one. `has_more` was true,
+                // so this is a truncated result rather than a clean end.
+                None => {
+                    reporter.mark_partial();
+                    break;
+                }
+            }
+        }
+
+        Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -525,10 +502,10 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 1;
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -560,11 +537,11 @@ mod tests {
         let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
         provider.base_url = server.url();
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -588,11 +565,11 @@ mod tests {
         let mut provider = UrlscanProvider::new_with_keys(vec!["k".to_string()]);
         provider.base_url = server.url();
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -633,11 +610,11 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 3;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -678,10 +655,10 @@ mod tests {
         provider.base_url = server.url();
         provider.net.retries = 0; // fail fast, don't sleep through back-off
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .expect("page one must survive the continuation's failure"),
         );

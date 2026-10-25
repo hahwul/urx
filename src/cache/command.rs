@@ -83,6 +83,16 @@ pub enum CacheAction {
     },
 }
 
+/// Print `value` as pretty JSON under `-f json`, or as the text `render` makes.
+fn emit<T: Serialize>(json: bool, value: &T, render: impl FnOnce(&T) -> String) -> Result<()> {
+    let text = if json {
+        format!("{}\n", serde_json::to_string_pretty(value)?)
+    } else {
+        render(value)
+    };
+    write_stdout(text.as_bytes())
+}
+
 /// `-f json` / `-f jsonl` switch every subcommand to machine-readable output.
 /// `csv` has no sensible shape for a stats blob, so it — like `plain` and
 /// anything unrecognised — gets the text report.
@@ -106,21 +116,13 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                 admin.location(),
                 admin.size_bytes().await?,
             );
-            if json {
-                write_stdout(format!("{}\n", serde_json::to_string_pretty(&stats)?).as_bytes())?;
-            } else {
-                write_stdout(render_stats(&stats).as_bytes())?;
-            }
+            emit(json, &stats, render_stats)?;
         }
 
         CacheAction::List { domain } => {
             let entries = admin.entries().await?;
             let rows = summarize_domains(&entries, ttl, domain.as_deref());
-            if json {
-                write_stdout(format!("{}\n", serde_json::to_string_pretty(&rows)?).as_bytes())?;
-            } else {
-                write_stdout(render_list(&rows, domain.as_deref()).as_bytes())?;
-            }
+            emit(json, &rows, |v| render_list(v, domain.as_deref()))?;
         }
 
         CacheAction::Prune => {
@@ -135,11 +137,7 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                 remaining: before.len().saturating_sub(pruned),
                 ttl_seconds: ttl,
             };
-            if json {
-                write_stdout(format!("{}\n", serde_json::to_string_pretty(&report)?).as_bytes())?;
-            } else {
-                write_stdout(render_prune(&report, expected).as_bytes())?;
-            }
+            emit(json, &report, |v| render_prune(v, expected))?;
         }
 
         CacheAction::Drop { domains } => {
@@ -171,11 +169,7 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
                     .collect(),
                 unmatched,
             };
-            if json {
-                write_stdout(format!("{}\n", serde_json::to_string_pretty(&report)?).as_bytes())?;
-            } else {
-                write_stdout(render_drop(&report).as_bytes())?;
-            }
+            emit(json, &report, render_drop)?;
         }
 
         CacheAction::Clear { yes } => {
@@ -187,11 +181,7 @@ pub async fn run(args: &Args, action: &CacheAction) -> Result<()> {
             }
             let cleared = admin.clear().await?;
             let report = ClearReport { cleared };
-            if json {
-                write_stdout(format!("{}\n", serde_json::to_string_pretty(&report)?).as_bytes())?;
-            } else {
-                write_stdout(render_clear(&report).as_bytes())?;
-            }
+            emit(json, &report, render_clear)?;
         }
     }
 

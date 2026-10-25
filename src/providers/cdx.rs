@@ -25,11 +25,10 @@
 //! error that names the endpoint, not an empty success.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -165,7 +164,7 @@ pub(crate) struct CdxSession<'a> {
     pub client: &'a Client,
     pub retries: u32,
     pub limiter: Option<&'a RateLimiter>,
-    pub reporter: Option<&'a ProgressReporter>,
+    pub reporter: &'a ProgressReporter,
     /// Origin named in error messages, e.g. `https://web.archive.org`.
     pub endpoint: &'a str,
 }
@@ -181,31 +180,12 @@ impl CdxSession<'_> {
     pub(crate) async fn get(&self, url: &str) -> Option<Result<String>> {
         // The limiter paces every attempt, retries included.
         let fetch = get_with_retry_paced(self.client, url, self.retries, self.limiter);
-        let fetched = match self.reporter {
-            Some(r) => tokio::select! {
-                biased;
-                _ = r.stopped() => None,
-                res = fetch => Some(res),
-            },
-            None => Some(fetch.await),
+        let fetched = tokio::select! {
+            biased;
+            _ = self.reporter.stopped() => None,
+            res = fetch => Some(res),
         };
         fetched.map(|res| res.and_then(|body| reject_html(&body, self.endpoint).map(|()| body)))
-    }
-
-    fn detail(&self, count: usize) {
-        if let Some(r) = self.reporter {
-            r.detail(format!("{count} URLs…"));
-        }
-    }
-
-    fn mark_partial(&self) {
-        if let Some(r) = self.reporter {
-            r.mark_partial();
-        }
-    }
-
-    fn stop_requested(&self) -> bool {
-        self.reporter.is_some_and(|r| r.stop_requested())
     }
 }
 
@@ -273,19 +253,19 @@ pub(crate) async fn walk_resume_key(
                 // We're returning a truncated result. Flag it so the caller can
                 // mark the line partial and warn rather than present an
                 // incomplete crawl as a clean success.
-                session.mark_partial();
+                session.reporter.mark_partial();
                 break;
             }
         };
 
         let (page_records, next_key) = split_page(&text);
         records.extend(page_records);
-        session.detail(records.len());
+        session.reporter.detail(format!("{} URLs…", records.len()));
 
         // The run asked us to stop (--max-time elapsed, or Ctrl-C). Hand back
         // the pages already walked instead of losing them to the hard cancel
         // after the runner's grace window.
-        if session.stop_requested() {
+        if session.reporter.stop_requested() {
             truncated = true;
             break;
         }
@@ -310,7 +290,7 @@ pub(crate) async fn walk_resume_key(
     }
 
     if truncated {
-        session.mark_partial();
+        session.reporter.mark_partial();
     }
 
     Ok(records.into_sorted())
@@ -355,13 +335,13 @@ pub(crate) async fn walk_block_pages(
         // so page 0 alone may be a fraction of the result: say so.
         Some(Err(e)) => {
             if !e.to_string().contains("HTTP error: 404") {
-                session.mark_partial();
+                session.reporter.mark_partial();
             }
             1
         }
         // Stopped before the first row arrived: nothing to keep.
         None => {
-            session.mark_partial();
+            session.reporter.mark_partial();
             return Ok(Vec::new());
         }
     };
@@ -370,7 +350,7 @@ pub(crate) async fn walk_block_pages(
         return Ok(Vec::new());
     }
     if pages > page_limit {
-        session.mark_partial();
+        session.reporter.mark_partial();
     }
     let pages = pages.min(page_limit);
 
@@ -383,20 +363,20 @@ pub(crate) async fn walk_block_pages(
         let page_url = format!("{query_base}&page={page}");
         let Some(result) = session.get(&page_url).await else {
             // Stopped mid-request: keep the pages already walked.
-            session.mark_partial();
+            session.reporter.mark_partial();
             break;
         };
         match result {
             Ok(text) => {
                 consecutive_failures = 0;
                 records.extend(parse_pywb_rows(&text));
-                session.detail(records.len());
+                session.reporter.detail(format!("{} URLs…", records.len()));
                 // The run asked us to stop (--max-time elapsed, or Ctrl-C).
                 // Hand back the pages already walked instead of losing them to
                 // the hard cancel after the runner's grace window.
-                if session.stop_requested() {
+                if session.reporter.stop_requested() {
                     if page + 1 < pages {
-                        session.mark_partial();
+                        session.reporter.mark_partial();
                     }
                     break;
                 }
@@ -412,7 +392,7 @@ pub(crate) async fn walk_block_pages(
                 // abandoning the walk here used to throw away every remaining
                 // page (on a 266-page domain, a single hiccup on page 5
                 // discarded 98% of the result).
-                session.mark_partial();
+                session.reporter.mark_partial();
                 last_error = Some(e);
                 consecutive_failures += 1;
                 if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES {
@@ -595,6 +575,7 @@ impl CdxProvider {
     }
 }
 
+#[async_trait]
 impl Provider for CdxProvider {
     /// A CDX query carries the path scope itself; see
     /// [`super::cdx_url_pattern`].
@@ -606,40 +587,29 @@ impl Provider for CdxProvider {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        let client = self.net.http.build_client()?;
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            let client = self.net.http.build_client()?;
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
+        let dialect = self.effective_dialect(&client, domain).await?;
+        let query_base = self.query_base(dialect, domain);
+        let session = CdxSession {
+            client: &client,
+            retries: self.net.retries,
+            limiter: self.net.rate_limit.as_ref(),
+            reporter: &reporter,
+            endpoint: &self.endpoint,
+        };
 
-            let dialect = self.effective_dialect(&client, domain).await?;
-            let query_base = self.query_base(dialect, domain);
-            let session = CdxSession {
-                client: &client,
-                retries: self.net.retries,
-                limiter: self.net.rate_limit.as_ref(),
-                reporter: reporter.as_ref(),
-                endpoint: &self.endpoint,
-            };
-
-            match dialect {
-                CdxDialect::Classic => walk_resume_key(&session, &query_base).await,
-                CdxDialect::Pywb => walk_block_pages(&session, &query_base, MAX_PAGES).await,
-            }
-        })
+        match dialect {
+            CdxDialect::Classic => walk_resume_key(&session, &query_base).await,
+            CdxDialect::Pywb => walk_block_pages(&session, &query_base, MAX_PAGES).await,
+        }
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -868,12 +838,12 @@ mod tests {
         let origin = server.url();
         let query_base = format!("{origin}/cdx?url=example.com/*&output=json");
         let client = Client::new();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let session = CdxSession {
             client: &client,
             retries: 0,
             limiter: None,
-            reporter: Some(&reporter),
+            reporter: &reporter,
             endpoint: &origin,
         };
 
@@ -922,12 +892,12 @@ mod tests {
         let origin = server.url();
         let query_base = format!("{origin}/cdx?url=example.com/*&output=json");
         let client = Client::new();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let session = CdxSession {
             client: &client,
             retries: 0,
             limiter: None,
-            reporter: Some(&reporter),
+            reporter: &reporter,
             endpoint: &origin,
         };
         let result = walk_block_pages(&session, &query_base, MAX_PAGES).await;
@@ -1120,9 +1090,9 @@ mod tests {
             .await;
 
         let p = provider(&server, Some(CdxDialect::Pywb));
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
-            p.fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            p.fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );

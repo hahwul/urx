@@ -76,7 +76,7 @@ pub(super) async fn send(
 /// globally rather than per worker. `max == 0` is unlimited.
 #[derive(Clone)]
 pub(super) struct FetchBudget {
-    pub(super) max: usize,
+    max: usize,
     fetched: Arc<AtomicUsize>,
 }
 

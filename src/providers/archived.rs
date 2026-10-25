@@ -9,6 +9,7 @@
 use anyhow::Result;
 use reqwest::Client;
 
+use super::record::{clean_field, clean_timestamp};
 use crate::network::client::{get_with_retry, read_body_capped};
 use crate::network::RateLimiter;
 
@@ -149,12 +150,6 @@ pub fn capture_index_url(
     url
 }
 
-/// Treat CDX's `-` null marker, and an empty column, as absent.
-fn field(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty() && value != "-").then(|| value.to_string())
-}
-
 /// Parse one `INDEX_FIELDS` row. A row that does not split into exactly four
 /// columns is not the layout asked for and is rejected rather than read with
 /// its fields shifted.
@@ -169,15 +164,11 @@ fn parse_index_row(line: &str) -> Option<ArchivedCapture> {
     else {
         return None;
     };
-    let timestamp = timestamp.trim();
-    if timestamp.len() != 14 || !timestamp.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
     Some(ArchivedCapture {
         original: original.to_string(),
-        timestamp: timestamp.to_string(),
-        status: field(status),
-        digest: field(digest),
+        timestamp: clean_timestamp(timestamp)?,
+        status: clean_field(status),
+        digest: clean_field(digest),
     })
 }
 
@@ -260,25 +251,6 @@ impl Replay {
     pub fn is_transient(&self) -> bool {
         matches!(self, Replay::Unavailable(s) if *s == 429 || s.is_server_error())
     }
-}
-
-/// Replay `capture` in raw form, reading at most `max_bytes` of body.
-pub async fn replay_capture(
-    client: &Client,
-    origin: &str,
-    capture: &ArchivedCapture,
-    max_bytes: usize,
-    limiter: Option<&RateLimiter>,
-) -> Result<Replay> {
-    replay_at(
-        client,
-        origin,
-        &capture.timestamp,
-        &capture.original,
-        max_bytes,
-        limiter,
-    )
-    .await
 }
 
 /// Replay `url` as it was at `timestamp` (nearest capture), in raw form.
@@ -497,10 +469,12 @@ http://github.com/robots.txt 20070917000000 401 AAA401\n";
         assert_eq!(listing.fetchable.len(), 1);
         assert_eq!(listing.skipped.len(), 1);
 
-        match replay_capture(
+        let fetchable = &listing.fetchable[0];
+        match replay_at(
             &client,
             settings.origin(),
-            &listing.fetchable[0],
+            &fetchable.timestamp,
+            &fetchable.original,
             1024,
             None,
         )
@@ -513,9 +487,17 @@ http://github.com/robots.txt 20070917000000 401 AAA401\n";
             }
             other => panic!("expected a body, got {other:?}"),
         }
-        match replay_capture(&client, settings.origin(), &listing.skipped[0], 1024, None)
-            .await
-            .unwrap()
+        let skipped = &listing.skipped[0];
+        match replay_at(
+            &client,
+            settings.origin(),
+            &skipped.timestamp,
+            &skipped.original,
+            1024,
+            None,
+        )
+        .await
+        .unwrap()
         {
             Replay::Unavailable(status) => assert_eq!(status, 404),
             other => panic!("expected unavailable, got {other:?}"),

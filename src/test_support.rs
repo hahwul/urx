@@ -4,14 +4,13 @@
 //! than inside one test module so `app`, `runner`, and `tester_manager` tests
 //! can share a single `Args` fixture and one set of mocks.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
 use crate::cli::Args;
 use crate::output::UrlData;
+use crate::progress::ProgressReporter;
 use crate::providers::{Provider, UrlRecord};
 use crate::testers::Tester;
 
@@ -130,33 +129,28 @@ impl MockProvider {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for MockProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        let urls = self.urls.clone();
-        let should_fail = self.should_fail;
-        let calls = self.calls.clone();
-        let delay = self.delay_ms;
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        _reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        self.calls.lock().unwrap().push(domain.to_string());
 
-        Box::pin(async move {
-            calls.lock().unwrap().push(domain.to_string());
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
 
-            if delay > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-            }
-
-            if should_fail {
-                Err(anyhow::anyhow!("Mock provider failure"))
-            } else {
-                Ok(urls.into_iter().map(UrlRecord::bare).collect())
-            }
-        })
+        if self.should_fail {
+            Err(anyhow::anyhow!("Mock provider failure"))
+        } else {
+            Ok(self.urls.iter().cloned().map(UrlRecord::bare).collect())
+        }
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -175,16 +169,13 @@ impl MockStatusChecker {
     }
 }
 
+#[async_trait::async_trait]
 impl Tester for MockStatusChecker {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
     }
 
-    fn test_url<'a>(
-        &'a self,
-        _url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        let results = self.results.iter().cloned().map(UrlData::new).collect();
-        Box::pin(async move { Ok(results) })
+    async fn test_url(&self, _url: &str) -> Result<Vec<UrlData>> {
+        Ok(self.results.iter().cloned().map(UrlData::new).collect())
     }
 }

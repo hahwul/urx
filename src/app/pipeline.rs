@@ -12,14 +12,15 @@ use anyhow::{Context, Result};
 
 use crate::cli::{self, Args};
 use crate::filters::{
-    compile_url_regexes, HostValidator, MetaFilter, MetaFilterStats, ScopeMatcher, UrlFilter,
+    compile_url_regexes, ExtractedLinkFilter, HostValidator, MetaFilter, MetaFilterStats,
+    ScopeMatcher, UrlFilter,
 };
 use crate::network::{NetworkScope, NetworkSettings};
 use crate::output;
 use crate::progress::ProgressManager;
 use crate::readers::read_urls_from_file;
 use crate::runner::ProviderRunResult;
-use crate::tester_manager::{self, apply_network_settings_to_tester};
+use crate::tester_manager::apply_network_settings_to_tester;
 use crate::testers::{
     ArchiveBodyExtractor, ArchiveBodyStats, ArchiveCapture, BodyArchive, JsEndpointExtractor,
     LinkExtractor, SpecExpander, StatusChecker, Tester,
@@ -843,7 +844,7 @@ pub fn build_stream_sink(
 pub fn build_extracted_link_filter(
     args: &Args,
     domains: &[String],
-) -> Result<Option<Arc<tester_manager::ExtractedLinkFilter>>> {
+) -> Result<Option<Arc<ExtractedLinkFilter>>> {
     if !args.extract_links && !args.extract_js_endpoints && !args.archive_body && !args.expand_specs
     {
         return Ok(None);
@@ -855,7 +856,7 @@ pub fn build_extracted_link_filter(
     } else {
         None
     };
-    Ok(Some(Arc::new(tester_manager::ExtractedLinkFilter::new(
+    Ok(Some(Arc::new(ExtractedLinkFilter::new(
         build_url_filter(args)?,
         build_url_transformer(args),
         host_validator,
@@ -957,20 +958,18 @@ pub fn build_testers(args: &Args, network_settings: &NetworkSettings) -> Vec<Box
     if args.extract_js_endpoints {
         verbose_print(args, "Extracting endpoints from JavaScript content");
 
-        let mut js_extractor = JsEndpointExtractor::new();
-        apply_network_settings_to_tester(&mut js_extractor, network_settings);
+        let mut js_extractor = JsEndpointExtractor::new(args.max_js_files);
         // --rate-limit arrives with the network settings: this tester
         // re-requests a large slice of the result set from the target.
-        js_extractor.with_max_files(args.max_js_files);
+        apply_network_settings_to_tester(&mut js_extractor, network_settings);
         testers.push(Box::new(js_extractor));
     }
 
     if args.expand_specs {
         verbose_print(args, "Expanding endpoints from API specification documents");
 
-        let mut spec_expander = SpecExpander::new();
+        let mut spec_expander = SpecExpander::new(args.max_spec_files);
         apply_network_settings_to_tester(&mut spec_expander, network_settings);
-        spec_expander.with_max_files(args.max_spec_files);
         testers.push(Box::new(spec_expander));
     }
 
@@ -1968,12 +1967,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(extractor.expands_specs());
-    }
-
-    #[test]
-    fn test_max_spec_files_defaults_match_the_expander() {
-        let args = Args::parse_from(["urx", "example.com"]);
-        assert_eq!(args.max_spec_files, SpecExpander::DEFAULT_MAX_FILES);
     }
     /// Write `text` to a temp file and return the handle, which must outlive the
     /// use — dropping it deletes the file.

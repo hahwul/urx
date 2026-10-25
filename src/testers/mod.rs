@@ -1,6 +1,5 @@
 use anyhow::Result;
-use std::future::Future;
-use std::pin::Pin;
+use async_trait::async_trait;
 
 use crate::output::UrlData;
 
@@ -23,16 +22,14 @@ pub use status_checker::StatusChecker;
 ///
 /// This trait defines common operations for classes that test URLs by fetching
 /// or analyzing them and returning results.
+#[async_trait]
 pub trait Tester: Send + Sync {
     /// Create a boxed clone of this tester
     fn clone_box(&self) -> Box<dyn Tester>;
 
     /// Test a URL: the status checker returns the URL with its status, the
     /// extractors the URLs they found in its body.
-    fn test_url<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>>;
+    async fn test_url(&self, url: &str) -> Result<Vec<UrlData>>;
 
     /// Apply proxy, timeout, TLS, retries, rate limit and the user's `-H`
     /// headers. A no-op by default, for the test doubles that make no request.

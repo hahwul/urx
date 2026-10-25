@@ -32,12 +32,7 @@ impl SqliteCache {
 
     /// Initialize the database schema
     async fn initialize_db(&self) -> Result<()> {
-        let db_path = self.db_path.clone();
-
-        task::spawn_blocking(move || {
-            let conn = Connection::open(&db_path).context("Failed to open SQLite database")?;
-            conn.busy_timeout(std::time::Duration::from_secs(5))?;
-
+        self.with_connection(|conn| {
             conn.execute(
                 r#"
                 CREATE TABLE IF NOT EXISTS url_cache (
@@ -88,11 +83,9 @@ impl SqliteCache {
                 .context("Failed to add baseline column")?;
             }
 
-            Ok::<(), anyhow::Error>(())
+            Ok(())
         })
-        .await??;
-
-        Ok(())
+        .await
     }
 
     /// Execute a database operation in a blocking task

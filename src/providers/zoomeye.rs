@@ -1,8 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
@@ -95,153 +94,137 @@ impl ZoomEyeProvider {
     }
 }
 
+#[async_trait]
 impl Provider for ZoomEyeProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        if !self.api_key_rotator.has_keys() {
+            return Ok(Vec::new());
+        }
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            if !self.api_key_rotator.has_keys() {
-                return Ok(Vec::new());
-            }
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
+        let dork = self.build_dork(domain);
+        let qbase64 = STANDARD.encode(dork.as_bytes());
 
-            let dork = self.build_dork(domain);
-            let qbase64 = STANDARD.encode(dork.as_bytes());
+        let api_url = format!("{}/v2/search", self.base_url);
+        let client = self.net.http.build_client()?;
 
-            let api_url = format!("{}/v2/search", self.base_url);
-            let client = self.net.http.build_client()?;
+        let mut all_urls: Vec<String> = Vec::new();
+        let mut page: u32 = 1;
+        let pagesize: u32 = 100;
+        // Rows actually received, counted before we drop the ones without a
+        // `url`. Progress against `total` must be measured from what the
+        // server sent, not from the page size we asked for — see the stop
+        // condition at the bottom of the loop.
+        let mut rows_received: u64 = 0;
 
-            let mut all_urls: Vec<String> = Vec::new();
-            let mut page: u32 = 1;
-            let pagesize: u32 = 100;
-            // Rows actually received, counted before we drop the ones without a
-            // `url`. Progress against `total` must be measured from what the
-            // server sent, not from the page size we asked for — see the stop
-            // condition at the bottom of the loop.
-            let mut rows_received: u64 = 0;
+        loop {
+            let request_body = ZoomEyeRequest {
+                qbase64: qbase64.clone(),
+                page,
+                pagesize,
+                sub_type: "web".to_string(),
+            };
 
-            loop {
-                let request_body = ZoomEyeRequest {
-                    qbase64: qbase64.clone(),
-                    page,
-                    pagesize,
-                    sub_type: "web".to_string(),
-                };
-
-                let fetched = send_with_retry(
-                    self.net.retries,
-                    self.net.rate_limit.as_ref(),
-                    |_| true,
-                    || {
-                        // Rotate the key per attempt so a rate-limited/quota-hit
-                        // key is retried with a different one when several are
-                        // configured.
-                        let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-                        client
-                            .post(&api_url)
-                            .header("API-KEY", api_key)
-                            .json(&request_body)
-                    },
-                    |_, body| {
-                        serde_json::from_str::<ZoomEyeResponse>(&body)
-                            .map_err(|e| anyhow::anyhow!("Failed to parse ZoomEye response: {e}"))
-                    },
-                )
-                .await
-                .and_then(|response| {
-                    // A 200 with a non-success code is an API error (rejected
-                    // key, quota, bad query) — don't mistake it for an empty
-                    // result set.
-                    if response.code != ZOOMEYE_SUCCESS_CODE {
-                        anyhow::bail!("{}", api_error_message(&response));
-                    }
-                    Ok(response)
-                });
-
-                let response = match fetched {
-                    Ok(response) => response,
-                    // Best effort: a page that failed after all its retries
-                    // must not discard the pages already collected. Only a
-                    // failure with nothing collected is fatal, matching every
-                    // other paginating provider.
-                    Err(e) if all_urls.is_empty() => return Err(e),
-                    Err(_) => {
-                        // We're returning a truncated result. Flag it so the
-                        // runner marks the line partial and warns instead of
-                        // presenting an incomplete crawl as a clean success.
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        break;
-                    }
-                };
-                let total = response.total;
-                let page_rows = response.data.len() as u64;
-
-                // A page that returned no rows means the data is exhausted even
-                // if `total` claims otherwise — stop rather than loop on a stale
-                // count. Judged on the rows the server sent, not on the URLs we
-                // kept: a page whose rows all lack a `url` is still a page of
-                // data, and treating it as the end truncated the walk.
-                let page_was_empty = page_rows == 0;
-                rows_received += page_rows;
-                all_urls.extend(
-                    response
-                        .data
-                        .into_iter()
-                        .map(|entry| entry.url)
-                        .filter(|url| !url.is_empty()),
-                );
-
-                if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", all_urls.len()));
-                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
-                    // Hand back the pages already walked instead of losing them
-                    // to the hard cancel after the runner's grace window.
-                    if r.stop_requested() {
-                        r.mark_partial();
-                        break;
-                    }
+            let fetched = send_with_retry(
+                self.net.retries,
+                self.net.rate_limit.as_ref(),
+                |_| true,
+                || {
+                    // Rotate the key per attempt so a rate-limited/quota-hit
+                    // key is retried with a different one when several are
+                    // configured.
+                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                    client
+                        .post(&api_url)
+                        .header("API-KEY", api_key)
+                        .json(&request_body)
+                },
+                |_, body| {
+                    serde_json::from_str::<ZoomEyeResponse>(&body)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse ZoomEye response: {e}"))
+                },
+            )
+            .await
+            .and_then(|response| {
+                // A 200 with a non-success code is an API error (rejected
+                // key, quota, bad query) — don't mistake it for an empty
+                // result set.
+                if response.code != ZOOMEYE_SUCCESS_CODE {
+                    anyhow::bail!("{}", api_error_message(&response));
                 }
+                Ok(response)
+            });
 
-                // Check if there are more pages. `rows_received` is what the
-                // server actually returned; the old code assumed every page held
-                // exactly `pagesize` rows, so a server that clamps the page size
-                // below what we asked for (plan limits, or its own cap) made urx
-                // believe it had seen `page * 100` results and stop after a
-                // fraction of them.
-                if page_was_empty || rows_received >= total {
+            let response = match fetched {
+                Ok(response) => response,
+                // Best effort: a page that failed after all its retries
+                // must not discard the pages already collected. Only a
+                // failure with nothing collected is fatal, matching every
+                // other paginating provider.
+                Err(e) if all_urls.is_empty() => return Err(e),
+                Err(_) => {
+                    // We're returning a truncated result. Flag it so the
+                    // runner marks the line partial and warns instead of
+                    // presenting an incomplete crawl as a clean success.
+                    reporter.mark_partial();
                     break;
                 }
+            };
+            let total = response.total;
+            let page_rows = response.data.len() as u64;
 
-                if page >= self.page_limit {
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
-                    break;
-                }
+            // A page that returned no rows means the data is exhausted even
+            // if `total` claims otherwise — stop rather than loop on a stale
+            // count. Judged on the rows the server sent, not on the URLs we
+            // kept: a page whose rows all lack a `url` is still a page of
+            // data, and treating it as the end truncated the walk.
+            let page_was_empty = page_rows == 0;
+            rows_received += page_rows;
+            all_urls.extend(
+                response
+                    .data
+                    .into_iter()
+                    .map(|entry| entry.url)
+                    .filter(|url| !url.is_empty()),
+            );
 
-                page += 1;
+            reporter.detail(format!("{} URLs…", all_urls.len()));
+            // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+            // Hand back the pages already walked instead of losing them
+            // to the hard cancel after the runner's grace window.
+            if reporter.stop_requested() {
+                reporter.mark_partial();
+                break;
             }
 
-            Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
-        })
+            // Check if there are more pages. `rows_received` is what the
+            // server actually returned; the old code assumed every page held
+            // exactly `pagesize` rows, so a server that clamps the page size
+            // below what we asked for (plan limits, or its own cap) made urx
+            // believe it had seen `page * 100` results and stop after a
+            // fraction of them.
+            if page_was_empty || rows_received >= total {
+                break;
+            }
+
+            if page >= self.page_limit {
+                reporter.mark_partial();
+                break;
+            }
+
+            page += 1;
+        }
+
+        Ok(all_urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -513,10 +496,10 @@ mod tests {
         provider.base_url = mock_server.url();
         provider.net.retries = 0; // fail fast, don't sleep through back-off
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .expect("page one must survive a later page's failure"),
         );
@@ -610,11 +593,11 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 1;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );

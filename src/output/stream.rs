@@ -8,9 +8,10 @@
 //! matches as soon as the first provider answers, rather than after the slowest
 //! one finishes.
 //!
-//! Every URL still passes the same filters as a batch run — [`StreamSink`] holds
+//! Every URL still passes the same filters as a batch run — [`StreamSink`] runs
 //! the very same [`UrlFilter`], [`UrlTransformer`], and [`HostValidator`] the
-//! batch path builds, so the two cannot drift apart. What differs is ordering:
+//! batch path builds, through the [`ExtractedLinkFilter`] that gates extracted
+//! links, so the two cannot drift apart. What differs is ordering:
 //! streamed output arrives in provider-completion order and is therefore
 //! unsorted, where batch output is sorted.
 
@@ -21,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use super::{Format, UrlData};
-use crate::filters::{HostValidator, UrlFilter};
+use crate::filters::{ExtractedLinkFilter, HostValidator, UrlFilter};
 use crate::providers::UrlRecord;
 use crate::utils::UrlTransformer;
 
@@ -30,9 +31,7 @@ use crate::utils::UrlTransformer;
 /// Cloneable state lives behind mutexes so the concurrent per-provider tasks in
 /// [`crate::runner::process_domains`] can all emit into it.
 pub struct StreamSink {
-    filter: UrlFilter,
-    transformer: UrlTransformer,
-    host_validator: Option<HostValidator>,
+    links: ExtractedLinkFilter,
     /// URLs already written, in post-transform form — this is what makes the
     /// stream deduplicated despite never holding the full result set.
     seen: Mutex<HashSet<String>>,
@@ -63,9 +62,7 @@ impl StreamSink {
         writer: Box<dyn Write + Send>,
     ) -> Result<Self> {
         let sink = StreamSink {
-            filter,
-            transformer,
-            host_validator,
+            links: ExtractedLinkFilter::new(filter, transformer, host_validator),
             seen: Mutex::new(HashSet::new()),
             writer: Mutex::new(writer),
             format,
@@ -129,18 +126,7 @@ impl StreamSink {
 
         {
             let mut seen = self.lock_seen();
-            for url in records.iter().map(|r| &r.url) {
-                if !self.filter.matches(url) {
-                    continue;
-                }
-                if let Some(v) = &self.host_validator {
-                    if !v.is_valid_host(url) {
-                        continue;
-                    }
-                }
-                let Some(transformed) = self.transformer.transform_one(url) else {
-                    continue;
-                };
+            for transformed in records.iter().filter_map(|r| self.links.accept(&r.url)) {
                 if seen.insert(transformed.clone()) {
                     batch.push(UrlData::new(transformed));
                 }

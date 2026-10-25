@@ -25,7 +25,7 @@ use std::collections::{BTreeSet, HashMap};
 
 /// CDX writes a field it has no value for as a single dash. Treat that, and an
 /// empty string, as "absent" rather than letting `"-"` reach the output.
-fn clean_field(value: &str) -> Option<String> {
+pub(super) fn clean_field(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() || value == "-" {
         None
@@ -39,7 +39,7 @@ fn clean_field(value: &str) -> Option<String> {
 /// `first_seen`/`last_seen`, and the comparison that picks the most recent
 /// MIME type — compares these as plain strings, which is only correct while
 /// every value has the same width and alphabet.
-fn clean_timestamp(value: &str) -> Option<String> {
+pub(super) fn clean_timestamp(value: &str) -> Option<String> {
     let value = clean_field(value)?;
     if value.len() == 14 && value.bytes().all(|b| b.is_ascii_digit()) {
         Some(value)

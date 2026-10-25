@@ -1,27 +1,18 @@
 use anyhow::{Context, Result};
-use flate2::read::MultiGzDecoder;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
-use super::{StopOnDecodeError, MAX_FILE_BYTES, MAX_FILE_URLS};
-use crate::utils::stderr_line;
+use super::{MAX_FILE_BYTES, MAX_FILE_URLS};
 
-/// Read URL lines from `src`, bounded by the given caps. URLTeam lines can
-/// carry timestamps or status columns alongside the URL, so extraction picks
-/// the first http(s) token rather than taking the whole line.
-fn collect_lines<R: Read>(
-    src: R,
-    max_urls: usize,
-    max_bytes: u64,
-) -> std::io::Result<(Vec<String>, bool, bool, bool, bool)> {
-    super::collect_capped(src, max_urls, max_bytes, |line| {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            return None;
-        }
-        extract_url_from_line(trimmed)
-    })
+/// The URL on one URLTeam line. Lines can carry timestamps or status columns
+/// alongside the URL, so extraction picks the first http(s) token rather than
+/// taking the whole line.
+fn url_of_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    extract_url_from_line(trimmed)
 }
 
 /// Read a URLTeam file (typically gzip-compressed), one URL per line.
@@ -47,37 +38,9 @@ fn read_urls_capped(file_path: &Path, max_urls: usize, max_bytes: u64) -> Result
         );
     }
 
-    let (urls, url_capped, byte_capped, _, line_capped) = if magic.starts_with(super::GZIP_MAGIC) {
-            // File is gzip compressed: bound the *decompressed* stream.
-            //
-            // MultiGzDecoder, not GzDecoder: gzip members concatenate, and both
-            // `.warc.gz` (one member per record) and any `cat a.gz b.gz` archive
-            // are made that way. GzDecoder stops after the first member, so urx
-            // returned the first record's URLs and silently dropped the rest.
-            let mut src = StopOnDecodeError::new(MultiGzDecoder::new(file));
-            let collected = collect_lines(&mut src, max_urls, max_bytes);
-            let decode_error = src.error;
-            collected.map(
-                |(mut urls, url_capped, byte_capped, final_fragment_url, line_capped)| {
-                if let Some(error) = decode_error {
-                    stderr_line(&format!(
-                        "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
-                        file_path.display()
-                    ));
-                    // A URL without its terminating newline may be the partial
-                    // record at the damaged end of the compressed stream.
-                    if final_fragment_url {
-                        urls.pop();
-                    }
-                }
-                    (urls, url_capped, byte_capped, false, line_capped)
-                },
-            )
-        } else {
-            // File is not compressed, read as plain text.
-            collect_lines(file, max_urls, max_bytes)
-        }
-        .with_context(|| format!("Failed to read URLTeam file: {}", file_path.display()))?;
+    let (urls, url_capped, byte_capped, _, line_capped) =
+        super::collect_maybe_gzip(file, &magic, file_path, max_urls, max_bytes, url_of_line)
+            .with_context(|| format!("Failed to read URLTeam file: {}", file_path.display()))?;
 
     super::warn_if_truncated(
         file_path,
@@ -108,9 +71,10 @@ fn extract_url_from_line(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::readers::{collect_capped, StopOnDecodeError};
     use flate2::write::GzEncoder;
     use flate2::Compression;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -357,7 +321,7 @@ mod tests {
             interrupts_left: 0,
         });
 
-        let (urls, _, _, _, _) = collect_lines(&mut src, MAX_FILE_URLS, 1 << 20)
+        let (urls, _, _, _, _) = collect_capped(&mut src, MAX_FILE_URLS, 1 << 20, url_of_line)
             .expect("a decode failure must not surface as an error");
         assert_eq!(
             urls,
@@ -426,7 +390,7 @@ mod tests {
         temp_file.flush()?;
 
         let (urls, url_capped, byte_capped, _, _) =
-            collect_lines(File::open(temp_file.path())?, 1000, 1024)?;
+            collect_capped(File::open(temp_file.path())?, 1000, 1024, url_of_line)?;
         assert_eq!(urls.len(), 2);
         assert!(!url_capped);
         assert!(!byte_capped);

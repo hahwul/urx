@@ -26,9 +26,8 @@
 //! from `-v` output rather than showing up as "BeVigil found nothing".
 
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::BTreeSet;
-use std::future::Future;
-use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
@@ -130,78 +129,68 @@ impl BeVigilProvider {
     }
 }
 
+#[async_trait]
 impl Provider for BeVigilProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        if !self.api_key_rotator.has_keys() {
+            return Ok(Vec::new());
+        }
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            if !self.api_key_rotator.has_keys() {
-                return Ok(Vec::new());
-            }
+        let client = self.net.http.build_client()?;
+        let url = self.request_url(domain);
 
-            let client = self.net.http.build_client()?;
-            let url = self.request_url(domain);
+        reporter.detail("fetching…");
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
-
-            // A rejected key is worth retrying only when there is another key
-            // to rotate to; with one key it is deterministic (see `parse`).
-            let rotate_on_reject = self.api_key_rotator.has_alternatives();
-            let body = send_with_retry(
-                self.net.retries,
-                self.net.rate_limit.as_ref(),
-                |status| {
-                    status == 429
-                        || status.is_server_error()
-                        || (rotate_on_reject && matches!(status.as_u16(), 401 | 403))
-                },
-                || {
-                    // Rotate per attempt so a throttled key is retried with a
-                    // different one when several are configured.
-                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-                    client
-                        .get(&url)
-                        .header("X-Access-Token", api_key)
-                        .header("Accept", "application/json")
-                },
-                |status, body| match status.as_u16() {
-                    200..=299 => Ok(Some(body)),
-                    // The API's own word for "no such domain in the index".
-                    // Assumed, like the schema: a 404 here is treated as an
-                    // empty result rather than a failure.
-                    404 => Ok(None),
-                    // A bad or expired token is deterministic; retrying with
-                    // the same keys only burns requests.
-                    401 | 403 => Err(anyhow::anyhow!(
-                        "BeVigil rejected the API key (HTTP {status}); check --bevigil-api-key / URX_BEVIGIL_API_KEY"
-                    )),
-                    _ => Err(anyhow::anyhow!("HTTP error: {status}")),
-                },
-            )
-            .await?;
-            // Parsed outside the retry: a body of the wrong shape is
-            // deterministic, and asking again only burns requests.
-            let urls = match body {
-                Some(body) => parse_response(&body)?,
-                None => Vec::new(),
-            };
-            Ok(urls.into_iter().map(UrlRecord::bare).collect())
-        })
+        // A rejected key is worth retrying only when there is another key
+        // to rotate to; with one key it is deterministic (see `parse`).
+        let rotate_on_reject = self.api_key_rotator.has_alternatives();
+        let body = send_with_retry(
+            self.net.retries,
+            self.net.rate_limit.as_ref(),
+            |status| {
+                status == 429
+                    || status.is_server_error()
+                    || (rotate_on_reject && matches!(status.as_u16(), 401 | 403))
+            },
+            || {
+                // Rotate per attempt so a throttled key is retried with a
+                // different one when several are configured.
+                let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                client
+                    .get(&url)
+                    .header("X-Access-Token", api_key)
+                    .header("Accept", "application/json")
+            },
+            |status, body| match status.as_u16() {
+                200..=299 => Ok(Some(body)),
+                // The API's own word for "no such domain in the index".
+                // Assumed, like the schema: a 404 here is treated as an
+                // empty result rather than a failure.
+                404 => Ok(None),
+                // A bad or expired token is deterministic; retrying with
+                // the same keys only burns requests.
+                401 | 403 => Err(anyhow::anyhow!(
+                    "BeVigil rejected the API key (HTTP {status}); check --bevigil-api-key / URX_BEVIGIL_API_KEY"
+                )),
+                _ => Err(anyhow::anyhow!("HTTP error: {status}")),
+            },
+        )
+        .await?;
+        // Parsed outside the retry: a body of the wrong shape is
+        // deterministic, and asking again only burns requests.
+        let urls = match body {
+            Some(body) => parse_response(&body)?,
+            None => Vec::new(),
+        };
+        Ok(urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, _include: bool) {

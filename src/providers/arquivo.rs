@@ -1,6 +1,5 @@
 use anyhow::Result;
-use std::future::Future;
-use std::pin::Pin;
+use async_trait::async_trait;
 
 use super::cdx::{parse_pywb_rows, CdxSession, PYWB_FIELDS};
 use super::filters::{ArchiveFilters, CdxDialect};
@@ -92,6 +91,7 @@ impl ArquivoProvider {
     }
 }
 
+#[async_trait]
 impl Provider for ArquivoProvider {
     /// A CDX query carries the path scope itself; see
     /// [`super::cdx_url_pattern`].
@@ -103,134 +103,117 @@ impl Provider for ArquivoProvider {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        let client = self.net.http.build_client()?;
+        let query_base = self.query_base(domain);
+        let session = CdxSession {
+            client: &client,
+            retries: self.net.retries,
+            limiter: self.net.rate_limit.as_ref(),
+            reporter: &reporter,
+            endpoint: &self.base_url,
+        };
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            let client = self.net.http.build_client()?;
-            let query_base = self.query_base(domain);
-            let session = CdxSession {
-                client: &client,
-                retries: self.net.retries,
-                limiter: self.net.rate_limit.as_ref(),
-                reporter: reporter.as_ref(),
-                endpoint: &self.base_url,
+        reporter.detail("fetching…");
+
+        // Walk the `page=` cursor. Arquivo accepts `page` but was measured
+        // to ignore it, so in practice this loop runs once — and that is the
+        // point of the explicit `limit`: a page holding fewer rows than we
+        // asked for is provably the complete result set, so we stop without
+        // spending a second request re-downloading the identical body. Only
+        // a page the server truncated is worth a follow-up, and if that
+        // follow-up adds nothing then `page` is not advancing and the rest
+        // of the result set is unreachable — a partial, not a clean, crawl.
+        //
+        // `seen` is the single source of truth: it dedups across pages and
+        // its growth drives the no-progress stop condition.
+        let row_limit = self.row_limit;
+        // Arquivo returns one row per *capture* (its `collapse=urlkey` is
+        // ignored), so this is where thousands of rows for one URL become
+        // one record — and what keeps a page's rows from accumulating.
+        let mut seen = RecordSet::new();
+        let mut page = 0usize;
+        let mut truncated = false;
+
+        loop {
+            if page >= MAX_PAGES {
+                // Only reachable after a truncated page, i.e. with rows the
+                // server still has and we have not read.
+                truncated = true;
+                break;
+            }
+
+            let url = format!("{query_base}&limit={row_limit}&page={page}");
+
+            // The session races the request against the stop signal, for
+            // the same reason wayback does: one page is large enough that a
+            // deadline landing mid-request would otherwise go unnoticed
+            // until after the runner's grace window had closed and thrown
+            // the buffer away.
+            let Some(result) = session.get(&url).await else {
+                // Stopped mid-request: keep the pages already walked.
+                truncated = true;
+                break;
+            };
+            let text = match result {
+                Ok(text) => text,
+                Err(e) => {
+                    // Best effort: a mid-walk failure shouldn't discard the
+                    // pages we already pulled. Only a failure on the very
+                    // first request (nothing collected) is fatal.
+                    if seen.is_empty() {
+                        return Err(e);
+                    }
+                    // We're returning a truncated result. Flag it so the
+                    // caller can mark the line partial and warn rather than
+                    // present an incomplete crawl as a clean success.
+                    reporter.mark_partial();
+                    break;
+                }
             };
 
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
+            // Row count, not URL count: rows the server sent that we could
+            // not parse, or that were duplicate captures of a URL we already
+            // have, still count against `limit`. Only the raw row total says
+            // whether the server truncated us.
+            let rows = text.lines().filter(|l| !l.trim().is_empty()).count();
+            let before = seen.len();
+            seen.extend(parse_pywb_rows(&text));
+
+            reporter.detail(format!("{} URLs…", seen.len()));
+            // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+            // Hand back the pages already walked instead of losing them
+            // to the hard cancel after the runner's grace window.
+            if reporter.stop_requested() {
+                truncated = true;
+                break;
             }
 
-            // Walk the `page=` cursor. Arquivo accepts `page` but was measured
-            // to ignore it, so in practice this loop runs once — and that is the
-            // point of the explicit `limit`: a page holding fewer rows than we
-            // asked for is provably the complete result set, so we stop without
-            // spending a second request re-downloading the identical body. Only
-            // a page the server truncated is worth a follow-up, and if that
-            // follow-up adds nothing then `page` is not advancing and the rest
-            // of the result set is unreachable — a partial, not a clean, crawl.
-            //
-            // `seen` is the single source of truth: it dedups across pages and
-            // its growth drives the no-progress stop condition.
-            let row_limit = self.row_limit;
-            // Arquivo returns one row per *capture* (its `collapse=urlkey` is
-            // ignored), so this is where thousands of rows for one URL become
-            // one record — and what keeps a page's rows from accumulating.
-            let mut seen = RecordSet::new();
-            let mut page = 0usize;
-            let mut truncated = false;
-
-            loop {
-                if page >= MAX_PAGES {
-                    // Only reachable after a truncated page, i.e. with rows the
-                    // server still has and we have not read.
-                    truncated = true;
-                    break;
-                }
-
-                let url = format!("{query_base}&limit={row_limit}&page={page}");
-
-                // The session races the request against the stop signal, for
-                // the same reason wayback does: one page is large enough that a
-                // deadline landing mid-request would otherwise go unnoticed
-                // until after the runner's grace window had closed and thrown
-                // the buffer away.
-                let Some(result) = session.get(&url).await else {
-                    // Stopped mid-request: keep the pages already walked.
-                    truncated = true;
-                    break;
-                };
-                let text = match result {
-                    Ok(text) => text,
-                    Err(e) => {
-                        // Best effort: a mid-walk failure shouldn't discard the
-                        // pages we already pulled. Only a failure on the very
-                        // first request (nothing collected) is fatal.
-                        if seen.is_empty() {
-                            return Err(e);
-                        }
-                        // We're returning a truncated result. Flag it so the
-                        // caller can mark the line partial and warn rather than
-                        // present an incomplete crawl as a clean success.
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        break;
-                    }
-                };
-
-                // Row count, not URL count: rows the server sent that we could
-                // not parse, or that were duplicate captures of a URL we already
-                // have, still count against `limit`. Only the raw row total says
-                // whether the server truncated us.
-                let rows = text.lines().filter(|l| !l.trim().is_empty()).count();
-                let before = seen.len();
-                seen.extend(parse_pywb_rows(&text));
-
-                if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", seen.len()));
-                    // The run asked us to stop (--max-time elapsed, or Ctrl-C).
-                    // Hand back the pages already walked instead of losing them
-                    // to the hard cancel after the runner's grace window.
-                    if r.stop_requested() {
-                        truncated = true;
-                        break;
-                    }
-                }
-
-                // Short page ⇒ the server gave us everything it had for this
-                // query. Done, and complete.
-                if rows < row_limit {
-                    break;
-                }
-
-                // The page was capped, so rows remain. Adding no new URLs means
-                // `page` did not move us past them and never will.
-                if seen.len() == before {
-                    truncated = true;
-                    break;
-                }
-
-                page += 1;
+            // Short page ⇒ the server gave us everything it had for this
+            // query. Done, and complete.
+            if rows < row_limit {
+                break;
             }
 
-            if truncated {
-                if let Some(r) = &reporter {
-                    r.mark_partial();
-                }
+            // The page was capped, so rows remain. Adding no new URLs means
+            // `page` did not move us past them and never will.
+            if seen.len() == before {
+                truncated = true;
+                break;
             }
 
-            Ok(seen.into_sorted())
-        })
+            page += 1;
+        }
+
+        if truncated {
+            reporter.mark_partial();
+        }
+
+        Ok(seen.into_sorted())
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -341,9 +324,9 @@ mod tests {
         let mut provider = ArquivoProvider::new();
         provider.base_url = server.url();
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let records = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .fetch_urls_with_progress("example.com", reporter.clone())
             .await
             .unwrap();
 
@@ -437,10 +420,10 @@ mod tests {
         // and the walk keeps going until a short one.
         provider.row_limit = 2;
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -481,10 +464,10 @@ mod tests {
         provider.base_url = server.url();
         provider.row_limit = 2; // both pages come back full ⇒ truncated
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -538,11 +521,10 @@ mod tests {
         provider.base_url = server.url();
         provider.row_limit = 2; // 2 rows == limit ⇒ the page was capped
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop.clone());
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop.clone());
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -578,12 +560,11 @@ mod tests {
 
         let stop = StopSignal::default();
         stop.request_stop();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_stop_signal(stop);
+        let reporter = ProgressReporter::hidden().with_stop_signal(stop);
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter))
+                .fetch_urls_with_progress("example.com", reporter)
                 .await
                 .unwrap(),
         );
@@ -612,10 +593,10 @@ mod tests {
         provider.base_url = server.url();
         provider.row_limit = 10; // 2 rows < 10 ⇒ that was everything
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -735,10 +716,10 @@ mod tests {
         provider.net.retries = 0; // fail fast, don't sleep through back-off
         provider.row_limit = 2; // page 0 comes back full ⇒ page 1 is fetched
 
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );

@@ -148,19 +148,7 @@ impl ProviderKeysConfig {
     /// Parse a provider-config TOML file from `path`. Returns the parsed
     /// struct or an error.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(&path).with_context(|| {
-            format!(
-                "Failed to read provider-config file: {}",
-                path.as_ref().display()
-            )
-        })?;
-        let parsed: ProviderKeysConfig = toml::from_str(&content).with_context(|| {
-            format!(
-                "Failed to parse provider-config file: {}",
-                path.as_ref().display()
-            )
-        })?;
-        Ok(parsed)
+        read_toml(path.as_ref(), "provider-config file")
     }
 
     /// Default lookup path mirrors the main config: ~/.config/urx
@@ -359,11 +347,7 @@ pub struct NotifyConfig {
 impl Config {
     /// Load configuration from a specific file path
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config file: {}", path.as_ref().display()))?;
-
-        let config: Config = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", path.as_ref().display()))?;
+        let config: Config = read_toml(path.as_ref(), "config file")?;
 
         let output_views = [
             ("show_only_host", config.filter.show_only_host),
@@ -819,6 +803,13 @@ fn fill_untyped<T: Clone>(provided: &CliProvided, id: &str, slot: &mut T, config
     if let (false, Some(value)) = (provided.has(id), configured) {
         slot.clone_from(value);
     }
+}
+
+/// Read and parse the TOML file at `path`, naming it `what` in errors.
+fn read_toml<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Result<T> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {what}: {}", path.display()))?;
+    toml::from_str(&content).with_context(|| format!("Failed to parse {what}: {}", path.display()))
 }
 
 /// urx's config directory: `$HOME/.config/urx` (`$XDG_CONFIG_HOME` is not

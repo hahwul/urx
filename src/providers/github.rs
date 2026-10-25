@@ -1,8 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
@@ -101,120 +100,104 @@ pub(crate) fn extract_matching_urls(
     }
 }
 
+#[async_trait]
 impl Provider for GitHubProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        if !self.api_key_rotator.has_keys() {
+            return Ok(Vec::new());
+        }
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            if !self.api_key_rotator.has_keys() {
-                return Ok(Vec::new());
-            }
+        let client = self.net.http.build_client()?;
+        let base = &self.base_url;
 
-            let client = self.net.http.build_client()?;
-            let base = &self.base_url;
+        // Quoted phrase search keeps the result set tight to literal
+        // mentions of the domain rather than partial-token matches.
+        let q = format!("\"{domain}\"");
+        let encoded_q = url::form_urlencoded::byte_serialize(q.as_bytes()).collect::<String>();
 
-            // Quoted phrase search keeps the result set tight to literal
-            // mentions of the domain rather than partial-token matches.
-            let q = format!("\"{domain}\"");
-            let encoded_q = url::form_urlencoded::byte_serialize(q.as_bytes()).collect::<String>();
+        let mut urls: HashSet<String> = HashSet::new();
+        let mut last_error: Option<anyhow::Error> = None;
+        // Set when a page exhausts its retries, so results collected so far
+        // are reported as a truncated/partial crawl rather than a clean run.
+        let mut truncated = false;
 
-            let mut urls: HashSet<String> = HashSet::new();
-            let mut last_error: Option<anyhow::Error> = None;
-            // Set when a page exhausts its retries, so results collected so far
-            // are reported as a truncated/partial crawl rather than a clean run.
-            let mut truncated = false;
+        for page in 1..=MAX_PAGES {
+            let url = format!("{base}/search/code?q={encoded_q}&per_page={PER_PAGE}&page={page}");
 
-            for page in 1..=MAX_PAGES {
-                let url =
-                    format!("{base}/search/code?q={encoded_q}&per_page={PER_PAGE}&page={page}");
-
-                let fetched = send_with_retry(
-                    self.net.retries,
-                    self.net.rate_limit.as_ref(),
-                    // 422 from search/code typically means we ran past the
-                    // result set — the natural end, not something to retry.
-                    |status| status != 422,
-                    || {
-                        // Rotate the token per attempt so a rate-limited/
-                        // secondary-limited token is retried with a different
-                        // one when several are configured.
-                        let api_key = self.api_key_rotator.next_key().unwrap_or_default();
-                        client
-                            .get(&url)
-                            .header("Authorization", format!("Bearer {api_key}"))
-                            .header("Accept", "application/vnd.github.v3.text-match+json")
-                            .header("X-GitHub-Api-Version", "2022-11-28")
-                    },
-                    |status, body| {
-                        if status == 422 {
-                            return Ok(SearchResponse::default());
-                        }
-                        serde_json::from_str::<SearchResponse>(&body)
-                            .map_err(|e| anyhow::anyhow!("Failed to parse GitHub response: {e}"))
-                    },
-                )
-                .await;
-                let parsed = match fetched {
-                    Ok(parsed) => parsed,
-                    Err(e) => {
-                        last_error = Some(e);
-                        truncated = true;
-                        break;
+            let fetched = send_with_retry(
+                self.net.retries,
+                self.net.rate_limit.as_ref(),
+                // 422 from search/code typically means we ran past the
+                // result set — the natural end, not something to retry.
+                |status| status != 422,
+                || {
+                    // Rotate the token per attempt so a rate-limited/
+                    // secondary-limited token is retried with a different
+                    // one when several are configured.
+                    let api_key = self.api_key_rotator.next_key().unwrap_or_default();
+                    client
+                        .get(&url)
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .header("Accept", "application/vnd.github.v3.text-match+json")
+                        .header("X-GitHub-Api-Version", "2022-11-28")
+                },
+                |status, body| {
+                    if status == 422 {
+                        return Ok(SearchResponse::default());
                     }
-                };
-                if parsed.items.is_empty() {
-                    // No more results — stop paginating.
-                    break;
-                }
-                for item in parsed.items {
-                    for m in item.text_matches {
-                        extract_matching_urls(
-                            &m.fragment,
-                            domain,
-                            self.include_subdomains,
-                            &mut urls,
-                        );
-                    }
-                }
-                // The run asked us to stop (--max-time elapsed, or Ctrl-C).
-                // Keep the pages already walked instead of losing them to the
-                // hard cancel after the grace window.
-                if reporter.as_ref().is_some_and(|r| r.stop_requested()) {
+                    serde_json::from_str::<SearchResponse>(&body)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse GitHub response: {e}"))
+                },
+            )
+            .await;
+            let parsed = match fetched {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    last_error = Some(e);
                     truncated = true;
                     break;
                 }
+            };
+            if parsed.items.is_empty() {
+                // No more results — stop paginating.
+                break;
             }
-
-            if urls.is_empty() {
-                if let Some(e) = last_error {
-                    return Err(e);
-                }
-            } else if truncated {
-                // We collected some URLs but a later page exhausted its retries,
-                // so this is a partial result — flag it instead of presenting a
-                // truncated crawl as a clean success.
-                if let Some(r) = &reporter {
-                    r.mark_partial();
+            for item in parsed.items {
+                for m in item.text_matches {
+                    extract_matching_urls(&m.fragment, domain, self.include_subdomains, &mut urls);
                 }
             }
+            // The run asked us to stop (--max-time elapsed, or Ctrl-C).
+            // Keep the pages already walked instead of losing them to the
+            // hard cancel after the grace window.
+            if reporter.stop_requested() {
+                truncated = true;
+                break;
+            }
+        }
 
-            let mut out: Vec<String> = urls.into_iter().collect();
-            out.sort();
-            Ok(out.into_iter().map(UrlRecord::bare).collect())
-        })
+        if urls.is_empty() {
+            if let Some(e) = last_error {
+                return Err(e);
+            }
+        } else if truncated {
+            // We collected some URLs but a later page exhausted its retries,
+            // so this is a partial result — flag it instead of presenting a
+            // truncated crawl as a clean success.
+            reporter.mark_partial();
+        }
+
+        let mut out: Vec<String> = urls.into_iter().collect();
+        out.sort();
+        Ok(out.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, include: bool) {
@@ -381,7 +364,7 @@ mod tests {
             ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ".to_string());
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Cache key that uniquely identifies a scan configuration
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     pub domain: String,
     pub providers: Vec<String>,
@@ -71,7 +71,7 @@ impl std::fmt::Display for CacheKey {
 /// [`Default`] is derived deliberately — it means a new option can be added to
 /// this struct without having to touch every construction site, so the "we
 /// forgot to put the new flag in the cache key" bug can't come back quietly.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct CacheFilters {
     pub subs: bool,
     pub extensions: Vec<String>,
@@ -105,13 +105,10 @@ pub struct CacheFilters {
     /// `--cdx-endpoint` URLs and `--cdx-dialect`. The provider id names only
     /// the endpoint's host, so two collections on one server — or one server
     /// read in two dialects — would otherwise share an entry.
-    #[serde(default)]
     pub cdx_endpoints: Vec<String>,
-    #[serde(default)]
     pub cdx_dialect: Option<String>,
     /// `--archived-discovery-limit`, when archived discovery is on and the
     /// limit is not the default.
-    #[serde(default)]
     pub archived_discovery_limit: Option<usize>,
 }
 
@@ -210,17 +207,10 @@ impl CacheEntry {
         }
     }
 
-    /// Check if the cache entry is expired
-    ///
-    /// A negative age — the entry was written by a machine whose clock is ahead,
-    /// or this one's went backwards — is not expiry. Casting it straight to
-    /// `u64` wrapped it to ~1.8e19 seconds, so any such entry looked ancient and
-    /// was deleted on sight.
+    /// Check if the cache entry is expired. See [`super::admin::is_expired`]
+    /// for the clock-skew rule.
     pub fn is_expired(&self, ttl_seconds: u64) -> bool {
-        let elapsed = Utc::now()
-            .signed_duration_since(self.timestamp)
-            .num_seconds();
-        elapsed >= 0 && (elapsed as u64) >= ttl_seconds
+        super::admin::is_expired(self.timestamp, ttl_seconds)
     }
 }
 

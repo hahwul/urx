@@ -173,6 +173,42 @@ pub(crate) fn collect_capped<R: Read>(
     ))
 }
 
+/// [`collect_capped`] over `file`, through a gzip decoder when `magic` says it
+/// is one, bounding the *decompressed* stream.
+///
+/// MultiGzDecoder, not GzDecoder: gzip members concatenate, and both
+/// `.warc.gz` (one member per record) and any `cat a.gz b.gz` archive are made
+/// that way. GzDecoder stops after the first member, so urx returned the first
+/// record's URLs and silently dropped the rest. A stream that ends early keeps
+/// the URLs decoded so far.
+pub(crate) fn collect_maybe_gzip(
+    file: File,
+    magic: &[u8],
+    file_path: &Path,
+    max_urls: usize,
+    max_bytes: u64,
+    extract: impl FnMut(&str) -> Option<String>,
+) -> std::io::Result<(Vec<String>, bool, bool, bool, bool)> {
+    if !magic.starts_with(GZIP_MAGIC) {
+        return collect_capped(file, max_urls, max_bytes, extract);
+    }
+    let mut src = StopOnDecodeError::new(flate2::read::MultiGzDecoder::new(file));
+    let (mut urls, url_capped, byte_capped, final_fragment_url, line_capped) =
+        collect_capped(&mut src, max_urls, max_bytes, extract)?;
+    if let Some(error) = src.error {
+        stderr_line(&format!(
+            "[urx] {}: gzip stream ended early ({error}); keeping the URLs decoded so far",
+            file_path.display()
+        ));
+        // A URL without its terminating newline may be the partial record at
+        // the damaged end of the compressed stream.
+        if final_fragment_url {
+            urls.pop();
+        }
+    }
+    Ok((urls, url_capped, byte_capped, false, line_capped))
+}
+
 /// Turn a decompression error into EOF while retaining the error for a warning.
 /// This keeps complete records decoded before a damaged gzip trailer.
 pub(crate) struct StopOnDecodeError<R> {

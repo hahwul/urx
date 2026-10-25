@@ -37,10 +37,9 @@
 //!   credentials, internal hostnames. See [`super::body_archive`].
 
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
@@ -379,6 +378,7 @@ fn is_text_like(headers: &reqwest::header::HeaderMap, url: &Url) -> bool {
     }
 }
 
+#[async_trait]
 impl Tester for ArchiveBodyExtractor {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
@@ -389,138 +389,133 @@ impl Tester for ArchiveBodyExtractor {
     /// Returns an empty list — never an error — for a URL that has nothing to
     /// replay, is a duplicate body, falls past the limit, or whose capture the
     /// archive does not serve: none of those are failures of the run.
-    fn test_url<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        Box::pin(async move {
-            // Relative links inside the body resolve against the page the
-            // archive captured, not against the replay URL. Parsed before the
-            // reservation so a bad URL cannot hold a digest and a slot.
-            let base_url =
-                Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
-            let Some(capture) = self.reserve(url) else {
-                return Ok(Vec::new());
-            };
+    async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+        // Relative links inside the body resolve against the page the
+        // archive captured, not against the replay URL. Parsed before the
+        // reservation so a bad URL cannot hold a digest and a slot.
+        let base_url =
+            Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
+        let Some(capture) = self.reserve(url) else {
+            return Ok(Vec::new());
+        };
 
-            let client = self.client().await?;
-            let target = replay_url(&self.origin, &capture.timestamp, url);
+        let client = self.client().await?;
+        let target = replay_url(&self.origin, &capture.timestamp, url);
 
-            let response = match send(self.net.retries, self.net.rate_limit.as_ref(), || {
-                client.get(&target)
-            })
-            .await
-            {
-                Ok(response) if response.status().is_success() => response,
-                // No body was read, so the digest is still unseen content:
-                // release it, or every other URL carrying it is skipped as a
-                // "duplicate" of a body nobody has (a 429 under throttling).
-                // 404 means the Wayback Machine holds no capture of this URL
-                // (the timestamp may have come from another archive). Not an
-                // error; there is simply no body.
-                result => {
-                    self.release(capture);
-                    return result.map(|_| Vec::new()).map_err(|e| {
-                        anyhow::anyhow!("Failed to fetch archived body of {}: {:?}", url, e)
-                    });
-                }
-            };
-            // A replay often redirects to a capture of another URL
-            // (`http`→`https`, `/docs`→`/docs/`). The body's relative links
-            // belong to the URL it was captured at, not the one asked for.
-            let base_url = response
-                .url()
-                .as_str()
-                .strip_prefix(&format!("{}/web/", self.origin))
-                .and_then(|rest| rest.split_once("id_/"))
-                .and_then(|(_, captured)| Url::parse(captured).ok())
-                .unwrap_or(base_url);
-            // Read before `read_bytes_capped` consumes the
-            // response; the index records it verbatim.
-            let content_type = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            // The combination that recovers an API which no longer
-            // exists: the archive still holds the specification
-            // that described it. The replay is `id_`, so the body
-            // and its `Content-Type` are the originals, and the
-            // same two signals decide as on the live path. Checked
-            // before `is_html_like`, which rejects
-            // `application/json` outright.
-            if self.expand_specs {
-                if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
-                    let bytes = read_bytes_capped(response, MAX_BODY_BYTES)
-                        .await
-                        .inspect_err(|_| self.release(capture))?;
-                    self.persist(url, capture, &content_type, &bytes).await;
-                    let body = String::from_utf8_lossy(&bytes);
-                    return Ok(found(expand_spec_body(&base_url, kind, &body)));
-                }
-            }
-
-            // --- archived JS ---
-            // Script is decided before HTML, not after. A `.js`
-            // capture the archive replayed without a
-            // `Content-Type` satisfies `is_html_like` (which
-            // treats an absent type as "might be markup"), so
-            // asking that question first would hand every such
-            // bundle to the HTML parser and mine nothing.
-            let script = self.extract_js_endpoints
-                && classify(response.headers(), &base_url) == BodyKind::Script;
-            let html = is_html_like(response.headers());
-            // A body nothing will read is still worth storing when
-            // the user asked for a corpus — JSON, CSS and plain
-            // text hold the comments and credentials that no
-            // extractor looks for — but an image never is.
-            // `script` is included on its own: `classify` reaches
-            // that verdict for a `.js` served as
-            // `application/octet-stream` (misconfigured static
-            // hosts are full of them), which `is_text_like` refuses
-            // on the strength of the declared type. Mining a body
-            // and then leaving it out of the corpus would lose
-            // exactly the file whose endpoints the run just
-            // reported.
-            let keep = self.body_archive.is_some()
-                && (script || is_text_like(response.headers(), &base_url));
-            if !script && !html && !keep {
-                return Ok(Vec::new());
-            }
-
-            // The corpus keeps the bytes as archived — a Shift_JIS or
-            // windows-1252 page stays greppable in its own encoding and
-            // matches its digest; only the extractors read a lossy decode.
-            let bytes = read_bytes_capped(response, MAX_BODY_BYTES)
-                .await
-                .inspect_err(|_| self.release(capture))?;
-            if keep {
-                self.persist(url, capture, &content_type, &bytes).await;
-            }
-            let body = String::from_utf8_lossy(&bytes);
-
-            if script {
-                return Ok(found(JsEndpointExtractor::extract_endpoints(
-                    &base_url, &body,
-                )));
-            }
-            if !html {
-                return Ok(Vec::new());
-            }
-            let mut links = LinkExtractor::extract_links(&base_url, &body);
-            if self.extract_js_endpoints {
-                // An archived page's inline scripts get the same
-                // treatment the live path gives them, and the two
-                // sources are merged in first-seen order.
-                let mut seen: HashSet<String> = links.iter().cloned().collect();
-                for endpoint in JsEndpointExtractor::extract_inline_endpoints(&base_url, &body) {
-                    if seen.insert(endpoint.clone()) {
-                        links.push(endpoint);
-                    }
-                }
-            }
-            Ok(found(links))
+        let response = match send(self.net.retries, self.net.rate_limit.as_ref(), || {
+            client.get(&target)
         })
+        .await
+        {
+            Ok(response) if response.status().is_success() => response,
+            // No body was read, so the digest is still unseen content:
+            // release it, or every other URL carrying it is skipped as a
+            // "duplicate" of a body nobody has (a 429 under throttling).
+            // 404 means the Wayback Machine holds no capture of this URL
+            // (the timestamp may have come from another archive). Not an
+            // error; there is simply no body.
+            result => {
+                self.release(capture);
+                return result.map(|_| Vec::new()).map_err(|e| {
+                    anyhow::anyhow!("Failed to fetch archived body of {}: {:?}", url, e)
+                });
+            }
+        };
+        // A replay often redirects to a capture of another URL
+        // (`http`→`https`, `/docs`→`/docs/`). The body's relative links
+        // belong to the URL it was captured at, not the one asked for.
+        let base_url = response
+            .url()
+            .as_str()
+            .strip_prefix(&format!("{}/web/", self.origin))
+            .and_then(|rest| rest.split_once("id_/"))
+            .and_then(|(_, captured)| Url::parse(captured).ok())
+            .unwrap_or(base_url);
+        // Read before `read_bytes_capped` consumes the
+        // response; the index records it verbatim.
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        // The combination that recovers an API which no longer
+        // exists: the archive still holds the specification
+        // that described it. The replay is `id_`, so the body
+        // and its `Content-Type` are the originals, and the
+        // same two signals decide as on the live path. Checked
+        // before `is_html_like`, which rejects
+        // `application/json` outright.
+        if self.expand_specs {
+            if let Some(kind) = spec_body_kind(response.headers(), &base_url) {
+                let bytes = read_bytes_capped(response, MAX_BODY_BYTES)
+                    .await
+                    .inspect_err(|_| self.release(capture))?;
+                self.persist(url, capture, &content_type, &bytes).await;
+                let body = String::from_utf8_lossy(&bytes);
+                return Ok(found(expand_spec_body(&base_url, kind, &body)));
+            }
+        }
+
+        // --- archived JS ---
+        // Script is decided before HTML, not after. A `.js`
+        // capture the archive replayed without a
+        // `Content-Type` satisfies `is_html_like` (which
+        // treats an absent type as "might be markup"), so
+        // asking that question first would hand every such
+        // bundle to the HTML parser and mine nothing.
+        let script = self.extract_js_endpoints
+            && classify(response.headers(), &base_url) == BodyKind::Script;
+        let html = is_html_like(response.headers());
+        // A body nothing will read is still worth storing when
+        // the user asked for a corpus — JSON, CSS and plain
+        // text hold the comments and credentials that no
+        // extractor looks for — but an image never is.
+        // `script` is included on its own: `classify` reaches
+        // that verdict for a `.js` served as
+        // `application/octet-stream` (misconfigured static
+        // hosts are full of them), which `is_text_like` refuses
+        // on the strength of the declared type. Mining a body
+        // and then leaving it out of the corpus would lose
+        // exactly the file whose endpoints the run just
+        // reported.
+        let keep =
+            self.body_archive.is_some() && (script || is_text_like(response.headers(), &base_url));
+        if !script && !html && !keep {
+            return Ok(Vec::new());
+        }
+
+        // The corpus keeps the bytes as archived — a Shift_JIS or
+        // windows-1252 page stays greppable in its own encoding and
+        // matches its digest; only the extractors read a lossy decode.
+        let bytes = read_bytes_capped(response, MAX_BODY_BYTES)
+            .await
+            .inspect_err(|_| self.release(capture))?;
+        if keep {
+            self.persist(url, capture, &content_type, &bytes).await;
+        }
+        let body = String::from_utf8_lossy(&bytes);
+
+        if script {
+            return Ok(found(JsEndpointExtractor::extract_endpoints(
+                &base_url, &body,
+            )));
+        }
+        if !html {
+            return Ok(Vec::new());
+        }
+        let mut links = LinkExtractor::extract_links(&base_url, &body);
+        if self.extract_js_endpoints {
+            // An archived page's inline scripts get the same
+            // treatment the live path gives them, and the two
+            // sources are merged in first-seen order.
+            let mut seen: HashSet<String> = links.iter().cloned().collect();
+            for endpoint in JsEndpointExtractor::extract_inline_endpoints(&base_url, &body) {
+                if seen.insert(endpoint.clone()) {
+                    links.push(endpoint);
+                }
+            }
+        }
+        Ok(found(links))
     }
 
     /// Keeps everything but the user's `-H` headers: every request this

@@ -79,12 +79,12 @@ fn seed_notify_urls_from_env(args: &mut Args) -> bool {
 /// together with the bars.
 async fn collect_urls(
     args: &Args,
-    domains: Vec<String>,
+    domains: &[String],
     network_settings: &NetworkSettings,
     progress_manager: &ProgressManager,
     stream_sink: &mut Option<Arc<output::StreamSink>>,
     header: &mut Option<indicatif::ProgressBar>,
-) -> Result<(ProviderRunResult, Vec<String>)> {
+) -> Result<ProviderRunResult> {
     // File input skips provider processing entirely. Every URL is attributed to
     // "file" so downstream `--show-sources` stays consistent.
     let read_started = std::time::Instant::now();
@@ -101,31 +101,25 @@ async fn collect_urls(
                 .or_default()
                 .absorb("file", &providers::CaptureMeta::default());
         }
-        // No domains: the URLs came from files, and the notification names
-        // "file input" instead of a target list.
-        let domains = Vec::new();
-        return Ok((
-            ProviderRunResult {
-                urls: url_map,
-                // `--stats` must not fall silent just because the URLs came from a
-                // file rather than a provider: an explicit flag printing nothing at
-                // all reads as "the run collected nothing". Labelled "file", the
-                // same source name `--show-sources` gives these URLs. `error_count`
-                // is honestly 0 — `read_urls_from_files` propagates the first
-                // failure, so reaching here means every file was read.
-                stats: vec![ProviderStats {
-                    name: "file".to_string(),
-                    url_count,
-                    error_count: 0,
-                    partial_count: 0,
-                    elapsed,
-                    // Reading local files has no deadline to be cut off by.
-                    aborted: false,
-                }],
-                incomplete_domains: Default::default(),
-            },
-            domains,
-        ));
+        return Ok(ProviderRunResult {
+            urls: url_map,
+            // `--stats` must not fall silent just because the URLs came from a
+            // file rather than a provider: an explicit flag printing nothing at
+            // all reads as "the run collected nothing". Labelled "file", the
+            // same source name `--show-sources` gives these URLs. `error_count`
+            // is honestly 0 — `read_urls_from_files` propagates the first
+            // failure, so reaching here means every file was read.
+            stats: vec![ProviderStats {
+                name: "file".to_string(),
+                url_count,
+                error_count: 0,
+                partial_count: 0,
+                elapsed,
+                // Reading local files has no deadline to be cut off by.
+                aborted: false,
+            }],
+            incomplete_domains: Default::default(),
+        });
     }
 
     if domains.is_empty() {
@@ -139,7 +133,7 @@ async fn collect_urls(
     }
 
     if !args.silent {
-        if let Some(note) = app::pipeline::path_scope_note(&domains, args.subs) {
+        if let Some(note) = app::pipeline::path_scope_note(domains, args.subs) {
             eprintln!("{note}");
         }
     }
@@ -148,7 +142,7 @@ async fn collect_urls(
 
     // Built only now, after every check above that can still fail: `-o`
     // truncates its file, and a usage error must not wipe a previous run's.
-    *stream_sink = build_stream_sink(args, &domains)?;
+    *stream_sink = build_stream_sink(args, domains)?;
 
     *header = Some(
         progress_manager.create_header_line(render_header(domains.len(), provider_names.len())),
@@ -157,29 +151,27 @@ async fn collect_urls(
     // Streaming writes as it goes and bypasses the cache entirely (the cache
     // both reads whole domains and writes whole result sets).
     if let Some(sink) = stream_sink {
-        let result = process_domains(
-            domains.clone(),
+        return Ok(process_domains(
+            domains.to_vec(),
             args,
             progress_manager,
             &providers,
             &provider_names,
             Some(Arc::clone(sink)),
         )
-        .await;
-        return Ok((result, domains));
+        .await);
     }
 
     let cache_manager = create_cache_manager(args).await?;
-    let result = process_domains_with_cache(
-        domains.clone(),
+    process_domains_with_cache(
+        domains.to_vec(),
         args,
         progress_manager,
         &providers,
         &provider_names,
         cache_manager.as_ref(),
     )
-    .await?;
-    Ok((result, domains))
+    .await
 }
 
 /// Re-request the surviving URLs when `--check-status`, `--extract-links`,
@@ -446,9 +438,9 @@ async fn run() -> Result<()> {
     };
     let mut stream_sink = None;
     let mut header = None;
-    let (run_result, domains) = collect_urls(
+    let run_result = collect_urls(
         &args,
-        domains,
+        &domains,
         &network_settings,
         &progress_manager,
         &mut stream_sink,
@@ -581,7 +573,7 @@ mod tests {
 
         let err = collect_urls(
             &args,
-            Vec::new(),
+            &[],
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             &mut None,
@@ -616,7 +608,7 @@ mod tests {
         let mut sink = None;
         collect_urls(
             &args,
-            Vec::new(),
+            &[],
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             &mut sink,
@@ -730,14 +722,13 @@ mod tests {
         validate_selection_flags(args)?;
         collect_urls(
             args,
-            Vec::new(),
+            &[],
             &NetworkSettings::default(),
             &ProgressManager::new(true),
             &mut None,
             &mut None,
         )
         .await
-        .map(|(result, _domains)| result)
     }
 
     /// Regression: `--files` short-circuits before `initialize_providers`, so

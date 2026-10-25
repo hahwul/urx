@@ -14,11 +14,10 @@
 //! there names the thing it suppresses and why.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
@@ -508,22 +507,13 @@ pub struct JsEndpointExtractor {
 }
 
 impl JsEndpointExtractor {
-    /// Default cap on scripts fetched per run. Each one is a full request and
-    /// up to 10 MiB of body; an `-e js` list for a large site runs to the
-    /// thousands, and nobody wants that unbounded by accident.
-    pub const DEFAULT_MAX_FILES: usize = 500;
-
-    pub fn new() -> Self {
+    /// Fetch at most `max_files` scripts per run; `0` means no cap.
+    pub fn new(max_files: usize) -> Self {
         JsEndpointExtractor {
             net: NetConfig::default(),
-            budget: FetchBudget::new(Self::DEFAULT_MAX_FILES),
+            budget: FetchBudget::new(max_files),
             client: Arc::new(OnceCell::new()),
         }
-    }
-
-    /// Cap the number of scripts fetched; `0` means no cap.
-    pub fn with_max_files(&mut self, max: usize) {
-        self.budget.max = max;
     }
 
     async fn client(&self) -> Result<&Client> {
@@ -613,59 +603,49 @@ impl JsEndpointExtractor {
     }
 }
 
-impl Default for JsEndpointExtractor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+#[async_trait]
 impl Tester for JsEndpointExtractor {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
     }
 
-    fn test_url<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        Box::pin(async move {
-            let base_url =
-                Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
+    async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+        let base_url =
+            Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
 
-            if !worth_fetching(&base_url) {
-                return Ok(Vec::new());
-            }
-            // The cap is on requests actually made, so it is checked after the
-            // free extension test and before the request.
-            if !self.budget.try_reserve() {
-                return Ok(Vec::new());
-            }
+        if !worth_fetching(&base_url) {
+            return Ok(Vec::new());
+        }
+        // The cap is on requests actually made, so it is checked after the
+        // free extension test and before the request.
+        if !self.budget.try_reserve() {
+            return Ok(Vec::new());
+        }
 
-            let client = self.client().await?;
-            let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
-                client.get(url)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to extract JS endpoints from {}: {:?}", url, e))?;
-            // An error page's inline script is the site's chrome,
-            // not something this URL revealed.
-            if !response.status().is_success() {
-                return Ok(Vec::new());
-            }
-            // Relative endpoints resolve against the URL that served the
-            // body, which a redirect may have moved.
-            let base_url = response.url().clone();
-            let kind = classify(response.headers(), &base_url);
-            if kind == BodyKind::Skip {
-                return Ok(Vec::new());
-            }
-            let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-            Ok(found(match kind {
-                BodyKind::Script => Self::extract_endpoints(&base_url, &body),
-                BodyKind::Html => Self::extract_inline_endpoints(&base_url, &body),
-                BodyKind::Skip => Vec::new(),
-            }))
+        let client = self.client().await?;
+        let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
+            client.get(url)
         })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to extract JS endpoints from {}: {:?}", url, e))?;
+        // An error page's inline script is the site's chrome,
+        // not something this URL revealed.
+        if !response.status().is_success() {
+            return Ok(Vec::new());
+        }
+        // Relative endpoints resolve against the URL that served the
+        // body, which a redirect may have moved.
+        let base_url = response.url().clone();
+        let kind = classify(response.headers(), &base_url);
+        if kind == BodyKind::Skip {
+            return Ok(Vec::new());
+        }
+        let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+        Ok(found(match kind {
+            BodyKind::Script => Self::extract_endpoints(&base_url, &body),
+            BodyKind::Html => Self::extract_inline_endpoints(&base_url, &body),
+            BodyKind::Skip => Vec::new(),
+        }))
     }
 
     fn with_network(&mut self, net: NetConfig) {
@@ -1103,7 +1083,7 @@ mod tests {
             .create_async()
             .await;
 
-        let extractor = JsEndpointExtractor::new();
+        let extractor = JsEndpointExtractor::new(0);
         let got = extractor
             .test_url(&format!("{}/app.js", server.url()))
             .await
@@ -1122,7 +1102,7 @@ mod tests {
             .expect(0)
             .create_async()
             .await;
-        let extractor = JsEndpointExtractor::new();
+        let extractor = JsEndpointExtractor::new(0);
         let got = extractor
             .test_url(&format!("{}/logo.png", server.url()))
             .await
@@ -1150,7 +1130,7 @@ mod tests {
             .with_body(r#"{"url":"/api/from-json"}"#)
             .create_async()
             .await;
-        let extractor = JsEndpointExtractor::new();
+        let extractor = JsEndpointExtractor::new(0);
         for path in ["/gone.js", "/data"] {
             let got = extractor
                 .test_url(&format!("{}{path}", server.url()))
@@ -1171,7 +1151,7 @@ mod tests {
             .with_body(r#"<a href="/about">x</a><script>window.api="/api/inline";</script>"#)
             .create_async()
             .await;
-        let extractor = JsEndpointExtractor::new();
+        let extractor = JsEndpointExtractor::new(0);
         let got = extractor
             .test_url(&format!("{}/index.html", server.url()))
             .await
@@ -1192,8 +1172,7 @@ mod tests {
             .create_async()
             .await;
 
-        let mut extractor = JsEndpointExtractor::new();
-        extractor.with_max_files(2);
+        let extractor = JsEndpointExtractor::new(2);
         let clone = extractor.clone_box();
 
         let first = extractor
@@ -1230,8 +1209,7 @@ mod tests {
             .expect(3)
             .create_async()
             .await;
-        let mut extractor = JsEndpointExtractor::new();
-        extractor.with_max_files(0);
+        let extractor = JsEndpointExtractor::new(0);
         for i in 1..=3 {
             let got = extractor
                 .test_url(&format!("{}/{i}.js", server.url()))

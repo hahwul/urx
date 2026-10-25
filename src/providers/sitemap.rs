@@ -1,9 +1,8 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use roxmltree::Document;
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::network::client::read_body_capped;
 use crate::network::{CustomHeaders, NetConfig, RateLimiter};
@@ -144,43 +143,29 @@ fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
     };
     match parsed {
         Some(doc) => {
-            // Check if this is a sitemap index file
-            if doc.root_element().has_tag_name("sitemapindex") {
-                let children = doc
-                    .descendants()
-                    .filter(|n| n.has_tag_name("sitemap"))
-                    .filter_map(|sitemap_node| {
-                        sitemap_node
-                            .descendants()
+            // The `<loc>` of every `entry` element. Its text is trimmed: XML
+            // lets a pretty-printed `<loc>\n  https://…\n</loc>` carry the
+            // surrounding indentation into the text node, and the newlines
+            // rode along into the emitted URL — which then failed host
+            // validation, so every URL of such a sitemap was silently lost.
+            let locs = |entry: &str| -> Vec<String> {
+                doc.descendants()
+                    .filter(|n| n.has_tag_name(entry))
+                    .filter_map(|node| {
+                        node.descendants()
                             .find(|n| n.has_tag_name("loc"))
                             .and_then(|loc| loc.text())
                             .map(|loc| loc.trim().to_string())
                     })
                     .filter(|loc| !loc.is_empty())
                     .take(MAX_SITEMAP_URLS)
-                    .collect();
-                SitemapDocument::Index(children)
+                    .collect()
+            };
+            // Check if this is a sitemap index file
+            if doc.root_element().has_tag_name("sitemapindex") {
+                SitemapDocument::Index(locs("sitemap"))
             } else {
-                // A regular sitemap file. `<loc>` text is trimmed: XML lets a
-                // pretty-printed `<loc>\n  https://…\n</loc>` carry the
-                // surrounding indentation into the text node, and the
-                // newlines rode along into the emitted URL — which then failed
-                // host validation, so every URL of such a sitemap was silently
-                // lost.
-                let urls = doc
-                    .descendants()
-                    .filter(|n| n.has_tag_name("url"))
-                    .filter_map(|url_node| {
-                        url_node
-                            .descendants()
-                            .find(|n| n.has_tag_name("loc"))
-                            .and_then(|loc| loc.text())
-                            .map(|url| url.trim().to_string())
-                    })
-                    .filter(|url| !url.is_empty())
-                    .take(MAX_SITEMAP_URLS)
-                    .collect();
-                SitemapDocument::Urls(urls)
+                SitemapDocument::Urls(locs("url"))
             }
         }
         None => {
@@ -279,9 +264,9 @@ impl SitemapProvider {
         if depth > MAX_SITEMAP_DEPTH {
             return Ok(Vec::new());
         }
-        // ponytail: silent cap. The live walk has no reporter (fetch_urls takes
-        // none), so a truncated tree reads as complete. Surface it through the
-        // reporter once fetch_urls gets one, as the archived walk already does.
+        // ponytail: silent cap. The live walk doesn't thread the reporter, so a
+        // truncated tree reads as complete. Hand it to `Walk` to surface this,
+        // as the archived walk already does.
         if walk.visited.len() >= MAX_SITEMAP_DOCUMENTS {
             return Ok(Vec::new());
         }
@@ -386,7 +371,7 @@ struct ArchivedWalk<'a> {
     client: &'a Client,
     settings: &'a ArchivedDiscovery,
     limiter: Option<&'a RateLimiter>,
-    reporter: Option<&'a ProgressReporter>,
+    reporter: &'a ProgressReporter,
     domain: &'a str,
     /// Documents this walk may still fetch. Nested sitemaps count: a
     /// `<sitemapindex>` with two hundred children is two hundred requests.
@@ -398,18 +383,6 @@ struct ArchivedWalk<'a> {
 }
 
 impl ArchivedWalk<'_> {
-    fn note(&self, msg: String) {
-        if let Some(r) = self.reporter {
-            r.note(msg);
-        }
-    }
-
-    fn mark_partial(&self) {
-        if let Some(r) = self.reporter {
-            r.mark_partial();
-        }
-    }
-
     /// Replay `sitemap_url` as it was at `timestamp` and collect what it
     /// names, following a `<sitemapindex>` into its children *at the same
     /// timestamp* — the archive replays the nearest capture, which is the
@@ -439,17 +412,17 @@ impl ArchivedWalk<'_> {
             Ok(Replay::Body { text, content_type }) => (text, content_type),
             Ok(replay @ Replay::Unavailable(status)) => {
                 if replay.is_transient() {
-                    self.mark_partial();
+                    self.reporter.mark_partial();
                 }
-                self.note(format!(
+                self.reporter.note(format!(
                     "{}: skipping archived {sitemap_url} from {timestamp} (archive answered {status})",
                     self.domain
                 ));
                 return;
             }
             Err(e) => {
-                self.mark_partial();
-                self.note(format!(
+                self.reporter.mark_partial();
+                self.reporter.note(format!(
                     "{}: failed to replay archived {sitemap_url} from {timestamp}: {e}",
                     self.domain
                 ));
@@ -483,14 +456,14 @@ impl SitemapProvider {
         &self,
         domain: &str,
         settings: &ArchivedDiscovery,
-        reporter: Option<ProgressReporter>,
+        reporter: ProgressReporter,
     ) -> Result<Vec<UrlRecord>> {
         let client = self.build_archive_client()?;
         let mut walk = ArchivedWalk {
             client: &client,
             settings,
             limiter: self.net.rate_limit.as_ref(),
-            reporter: reporter.as_ref(),
+            reporter: &reporter,
             domain,
             budget: settings.limit,
             visited: HashSet::new(),
@@ -502,9 +475,7 @@ impl SitemapProvider {
         let mut last_error = None;
 
         'names: for name in ARCHIVED_SITEMAP_NAMES {
-            if let Some(r) = &reporter {
-                r.detail(format!("listing {name} versions…"));
-            }
+            reporter.detail(format!("listing {name} versions…"));
             let listing = match list_versions(
                 &client,
                 settings,
@@ -516,19 +487,17 @@ impl SitemapProvider {
             {
                 Ok(listing) => listing,
                 Err(e) => {
-                    walk.note(format!(
+                    walk.reporter.note(format!(
                         "{domain}: failed to list archived {name} versions: {e}"
                     ));
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
-                    }
+                    reporter.mark_partial();
                     last_error = Some(e);
                     continue;
                 }
             };
             listed_any = true;
             if !listing.skipped.is_empty() {
-                walk.note(format!(
+                walk.reporter.note(format!(
                     "{domain}: archived {name} captures not worth replaying: {}",
                     describe_skipped(&listing.skipped)
                 ));
@@ -537,18 +506,16 @@ impl SitemapProvider {
             let total = listing.fetchable.len();
             for (i, capture) in listing.fetchable.iter().enumerate() {
                 if walk.budget == 0 {
-                    walk.note(format!(
+                    walk.reporter.note(format!(
                         "{domain}: --archived-discovery-limit reached with archived {name} versions left unread; raise it for the rest"
                     ));
                     break 'names;
                 }
-                if let Some(r) = &reporter {
-                    if r.stop_requested() {
-                        r.mark_partial();
-                        break 'names;
-                    }
-                    r.detail(format!("{name} version {}/{total}…", i + 1));
+                if reporter.stop_requested() {
+                    reporter.mark_partial();
+                    break 'names;
                 }
+                reporter.detail(format!("{name} version {}/{total}…", i + 1));
                 walk.walk(&capture.timestamp, &capture.original, 0).await;
             }
         }
@@ -566,84 +533,72 @@ impl SitemapProvider {
     }
 }
 
+#[async_trait]
 impl Provider for SitemapProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            if let Some(settings) = &self.archived {
-                return self.fetch_archived(domain, settings, None).await;
-            }
-
-            let client = self.net.http.build_client()?;
-            let limiter = self.net.rate_limit.as_ref();
-            let mut urls = Vec::new();
-            // Shared across all candidate locations so a sitemap reachable from
-            // more than one entry point is fetched at most once, and so
-            // reachability is judged over the whole set of probes.
-            let mut walk = Walk::default();
-
-            // Try common sitemap locations
-            let sitemap_urls = vec![
-                format!("https://{}/sitemap.xml", domain),
-                format!("https://{}/sitemap_index.xml", domain),
-                format!("https://{}/sitemap.txt", domain),
-                format!("http://{}/sitemap.xml", domain),
-                format!("http://{}/sitemap_index.xml", domain),
-                format!("http://{}/sitemap.txt", domain),
-            ];
-
-            // `parse_sitemap` does the request itself and reports "nothing here"
-            // for a missing or unreachable location, so probing first would just
-            // fetch every sitemap that *does* exist twice — doubling the requests
-            // aimed at the target and the bytes pulled for a large sitemap.
-            // It also paces each request through the limiter, so this loop's up
-            // to six candidate locations stay rate-limited.
-            for sitemap_url in sitemap_urls {
-                let found =
-                    Self::parse_sitemap(&client, &sitemap_url, 0, &mut walk, limiter).await?;
-                urls.extend(found);
-            }
-
-            // Not one of the candidate locations produced an HTTP response —
-            // DNS failure, refused connection, TLS failure, timeout. That is a
-            // failed scan, and returning `Ok(vec![])` for it made `--stats`
-            // print "Sitemap  0 urls  0 errors", indistinguishable from a host
-            // that simply publishes no sitemap.
-            if !walk.answered {
-                return Err(match walk.failure {
-                    Some(e) => {
-                        anyhow::anyhow!("could not reach {domain} to look for a sitemap: {e}")
-                    }
-                    None => anyhow::anyhow!("could not reach {domain} to look for a sitemap"),
-                });
-            }
-
-            // The https and http candidates are distinct sitemap URLs, so
-            // `visited` doesn't stop a site that serves both from contributing
-            // every URL twice. Every other provider sorts and dedupes its
-            // return; this one didn't.
-            urls.sort();
-            urls.dedup();
-
-            Ok(urls.into_iter().map(UrlRecord::bare).collect())
-        })
-    }
-
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        match &self.archived {
-            Some(settings) => Box::pin(self.fetch_archived(domain, settings, reporter)),
-            None => self.fetch_urls(domain),
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        if let Some(settings) = &self.archived {
+            return self.fetch_archived(domain, settings, reporter).await;
         }
+
+        let client = self.net.http.build_client()?;
+        let limiter = self.net.rate_limit.as_ref();
+        let mut urls = Vec::new();
+        // Shared across all candidate locations so a sitemap reachable from
+        // more than one entry point is fetched at most once, and so
+        // reachability is judged over the whole set of probes.
+        let mut walk = Walk::default();
+
+        // Try common sitemap locations
+        let sitemap_urls = vec![
+            format!("https://{}/sitemap.xml", domain),
+            format!("https://{}/sitemap_index.xml", domain),
+            format!("https://{}/sitemap.txt", domain),
+            format!("http://{}/sitemap.xml", domain),
+            format!("http://{}/sitemap_index.xml", domain),
+            format!("http://{}/sitemap.txt", domain),
+        ];
+
+        // `parse_sitemap` does the request itself and reports "nothing here"
+        // for a missing or unreachable location, so probing first would just
+        // fetch every sitemap that *does* exist twice — doubling the requests
+        // aimed at the target and the bytes pulled for a large sitemap.
+        // It also paces each request through the limiter, so this loop's up
+        // to six candidate locations stay rate-limited.
+        for sitemap_url in sitemap_urls {
+            let found = Self::parse_sitemap(&client, &sitemap_url, 0, &mut walk, limiter).await?;
+            urls.extend(found);
+        }
+
+        // Not one of the candidate locations produced an HTTP response —
+        // DNS failure, refused connection, TLS failure, timeout. That is a
+        // failed scan, and returning `Ok(vec![])` for it made `--stats`
+        // print "Sitemap  0 urls  0 errors", indistinguishable from a host
+        // that simply publishes no sitemap.
+        if !walk.answered {
+            return Err(match walk.failure {
+                Some(e) => {
+                    anyhow::anyhow!("could not reach {domain} to look for a sitemap: {e}")
+                }
+                None => anyhow::anyhow!("could not reach {domain} to look for a sitemap"),
+            });
+        }
+
+        // The https and http candidates are distinct sitemap URLs, so
+        // `visited` doesn't stop a site that serves both from contributing
+        // every URL twice. Every other provider sorts and dedupes its
+        // return; this one didn't.
+        urls.sort();
+        urls.dedup();
+
+        Ok(urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -1492,11 +1447,10 @@ mod tests {
         let provider =
             SitemapProvider::archived(ArchivedDiscovery::new(10).with_origin(server.url()));
         let (manager, notes) = crate::progress::ProgressManager::capturing();
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ")
-            .with_notifier(manager.notifier());
+        let reporter = ProgressReporter::hidden().with_notifier(manager.notifier());
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter))
+                .fetch_urls_with_progress("example.com", reporter)
                 .await
                 .unwrap(),
         );
@@ -1558,9 +1512,9 @@ mod tests {
             retries: 0,
             ..NetConfig::default()
         });
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
         let urls = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .fetch_urls_with_progress("example.com", reporter.clone())
             .await
             .unwrap();
         assert_eq!(urls.len(), 2);

@@ -17,11 +17,10 @@
 //! `serde_json::Value` shape before expansion, so one reader covers both.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use url::Url;
@@ -608,24 +607,13 @@ pub struct SpecExpander {
 }
 
 impl SpecExpander {
-    /// Default cap on specification documents fetched per run.
-    ///
-    /// An order of magnitude below the JS extractor's 500 because the
-    /// candidate set is smaller by construction: [`looks_like_spec`] admits a
-    /// handful of named files per host, not every bundle in the list.
-    pub const DEFAULT_MAX_FILES: usize = 50;
-
-    pub fn new() -> Self {
+    /// Fetch at most `max_files` documents per run; `0` means no cap.
+    pub fn new(max_files: usize) -> Self {
         SpecExpander {
             net: NetConfig::default(),
-            budget: FetchBudget::new(Self::DEFAULT_MAX_FILES),
+            budget: FetchBudget::new(max_files),
             client: Arc::new(OnceCell::new()),
         }
-    }
-
-    /// Cap the number of documents fetched; `0` means no cap.
-    pub fn with_max_files(&mut self, max: usize) {
-        self.budget.max = max;
     }
 
     async fn client(&self) -> Result<&Client> {
@@ -654,54 +642,44 @@ impl SpecExpander {
     }
 }
 
-impl Default for SpecExpander {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+#[async_trait]
 impl Tester for SpecExpander {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
     }
 
-    fn test_url<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        Box::pin(async move {
-            let spec_url =
-                Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
+    async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+        let spec_url =
+            Url::parse(url).map_err(|_| anyhow::anyhow!("Failed to parse URL: {}", url))?;
 
-            if !looks_like_spec(&spec_url) {
-                return Ok(Vec::new());
-            }
-            // The cap is on requests actually made, so it is checked after the
-            // free name test and before the request.
-            if !self.budget.try_reserve() {
-                return Ok(Vec::new());
-            }
+        if !looks_like_spec(&spec_url) {
+            return Ok(Vec::new());
+        }
+        // The cap is on requests actually made, so it is checked after the
+        // free name test and before the request.
+        if !self.budget.try_reserve() {
+            return Ok(Vec::new());
+        }
 
-            let client = self.client().await?;
-            let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
-                client.get(url)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to expand API specification {}: {:?}", url, e))?;
-            // An error page under `/swagger.json` describes
-            // nothing; only a served document does.
-            if !response.status().is_success() {
-                return Ok(Vec::new());
-            }
-            // A relative `servers` entry resolves against where the document
-            // was actually served from, which a redirect may have moved.
-            let spec_url = response.url().clone();
-            let Some(kind) = spec_body_kind(response.headers(), &spec_url) else {
-                return Ok(Vec::new());
-            };
-            let body = read_body_capped(response, MAX_BODY_BYTES).await?;
-            Ok(found(expand_spec_body(&spec_url, kind, &body)))
+        let client = self.client().await?;
+        let response = send(self.net.retries, self.net.rate_limit.as_ref(), || {
+            client.get(url)
         })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to expand API specification {}: {:?}", url, e))?;
+        // An error page under `/swagger.json` describes
+        // nothing; only a served document does.
+        if !response.status().is_success() {
+            return Ok(Vec::new());
+        }
+        // A relative `servers` entry resolves against where the document
+        // was actually served from, which a redirect may have moved.
+        let spec_url = response.url().clone();
+        let Some(kind) = spec_body_kind(response.headers(), &spec_url) else {
+            return Ok(Vec::new());
+        };
+        let body = read_body_capped(response, MAX_BODY_BYTES).await?;
+        Ok(found(expand_spec_body(&spec_url, kind, &body)))
     }
 
     fn with_network(&mut self, net: NetConfig) {
@@ -1226,7 +1204,7 @@ glob: /assets/*
             .with_body(r#"{"swagger":"2.0","basePath":"/v1","paths":{"/a":{},"/b/{id}":{}}}"#)
             .create_async()
             .await;
-        let expander = SpecExpander::new();
+        let expander = SpecExpander::new(0);
         let mut got = expander
             .test_url(&format!("{}/swagger.json", server.url()))
             .await
@@ -1274,7 +1252,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let expander = SpecExpander::new();
+        let expander = SpecExpander::new(0);
         for path in [
             "/app.json",
             "/v3/api-docs",
@@ -1311,7 +1289,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let expander = SpecExpander::new();
+        let expander = SpecExpander::new(0);
         for (path, expected) in [
             ("/v3/api-docs", "/sniffed-json"),
             ("/openapi", "/sniffed-yaml"),
@@ -1343,8 +1321,7 @@ glob: /assets/*
             .create_async()
             .await;
 
-        let mut expander = SpecExpander::new();
-        expander.with_max_files(2);
+        let expander = SpecExpander::new(2);
         let clone = expander.clone_box();
 
         for (n, tester) in [(1, &expander as &dyn Tester), (2, clone.as_ref())] {

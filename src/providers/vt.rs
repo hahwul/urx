@@ -1,8 +1,7 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 
 use super::ApiKeyRotator;
 use super::{Provider, UrlRecord};
@@ -131,109 +130,91 @@ impl VirusTotalProvider {
     }
 }
 
+#[async_trait]
 impl Provider for VirusTotalProvider {
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
     }
 
-    fn fetch_urls<'a>(
-        &'a self,
-        domain: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        self.fetch_urls_with_progress(domain, None)
-    }
+    async fn fetch_urls_with_progress(
+        &self,
+        domain: &str,
+        reporter: ProgressReporter,
+    ) -> Result<Vec<UrlRecord>> {
+        // Skip if no API keys are provided.
+        if !self.api_key_rotator.has_keys() {
+            return Ok(Vec::new());
+        }
 
-    fn fetch_urls_with_progress<'a>(
-        &'a self,
-        domain: &'a str,
-        reporter: Option<ProgressReporter>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlRecord>>> + Send + 'a>> {
-        Box::pin(async move {
-            // Skip if no API keys are provided.
-            if !self.api_key_rotator.has_keys() {
-                return Ok(Vec::new());
+        let client = self.net.http.build_client()?;
+
+        reporter.detail("fetching…");
+
+        // Walk the v3 cursor: each page returns up to VT_PAGE_LIMIT URL
+        // objects plus a `meta.cursor` token for the next page. We rebuild
+        // each request from the trusted base + cursor (never the server's
+        // `links.next` URL). The deprecated v2 `domain/report` returned a
+        // single server-capped, non-paginated slice that silently truncated
+        // large domains.
+        let mut urls = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = HashSet::new();
+        let mut pages = 0usize;
+
+        loop {
+            pages += 1;
+            if pages > self.page_limit {
+                reporter.mark_partial();
+                break;
             }
+            // "First request" tracked explicitly: a clean (HTTP 200) but
+            // empty leading page can still carry a cursor, so emptiness is
+            // not a reliable proxy for "first page".
+            let first_page = pages == 1;
+            let url = self.page_url(domain, cursor.as_deref());
 
-            let client = self.net.http.build_client()?;
-
-            if let Some(r) = &reporter {
-                r.detail("fetching…");
-            }
-
-            // Walk the v3 cursor: each page returns up to VT_PAGE_LIMIT URL
-            // objects plus a `meta.cursor` token for the next page. We rebuild
-            // each request from the trusted base + cursor (never the server's
-            // `links.next` URL). The deprecated v2 `domain/report` returned a
-            // single server-capped, non-paginated slice that silently truncated
-            // large domains.
-            let mut urls = Vec::new();
-            let mut cursor: Option<String> = None;
-            let mut seen_cursors = HashSet::new();
-            let mut pages = 0usize;
-
-            loop {
-                pages += 1;
-                if pages > self.page_limit {
-                    if let Some(r) = &reporter {
-                        r.mark_partial();
+            let page = match self.fetch_page(&client, &url).await {
+                Ok(page) => page,
+                Err(e) => {
+                    // A failure on the very first request is fatal; any
+                    // later failure keeps what we have and flags the result
+                    // partial rather than presenting a truncated crawl as a
+                    // clean success.
+                    if first_page {
+                        return Err(e);
                     }
+                    reporter.mark_partial();
                     break;
                 }
-                // "First request" tracked explicitly: a clean (HTTP 200) but
-                // empty leading page can still carry a cursor, so emptiness is
-                // not a reliable proxy for "first page".
-                let first_page = pages == 1;
-                let url = self.page_url(domain, cursor.as_deref());
+            };
 
-                let page = match self.fetch_page(&client, &url).await {
-                    Ok(page) => page,
-                    Err(e) => {
-                        // A failure on the very first request is fatal; any
-                        // later failure keeps what we have and flags the result
-                        // partial rather than presenting a truncated crawl as a
-                        // clean success.
-                        if first_page {
-                            return Err(e);
-                        }
-                        if let Some(r) = &reporter {
-                            r.mark_partial();
-                        }
-                        break;
-                    }
-                };
-
-                for obj in page.data {
-                    urls.push(obj.attributes.url);
-                }
-                if let Some(r) = &reporter {
-                    r.detail(format!("{} URLs…", urls.len()));
-                    // The run asked us to stop (--max-time elapsed, or
-                    // Ctrl-C). Hand back the pages already walked instead of
-                    // losing them to the hard cancel after the grace window.
-                    if r.stop_requested() {
-                        r.mark_partial();
-                        break;
-                    }
-                }
-
-                match page.meta.cursor {
-                    Some(c) if !c.is_empty() => {
-                        if !seen_cursors.insert(c.clone()) {
-                            if let Some(r) = &reporter {
-                                r.mark_partial();
-                            }
-                            break;
-                        }
-                        cursor = Some(c);
-                    }
-                    _ => break,
-                }
+            for obj in page.data {
+                urls.push(obj.attributes.url);
+            }
+            reporter.detail(format!("{} URLs…", urls.len()));
+            // The run asked us to stop (--max-time elapsed, or
+            // Ctrl-C). Hand back the pages already walked instead of
+            // losing them to the hard cancel after the grace window.
+            if reporter.stop_requested() {
+                reporter.mark_partial();
+                break;
             }
 
-            urls.sort();
-            urls.dedup();
-            Ok(urls.into_iter().map(UrlRecord::bare).collect())
-        })
+            match page.meta.cursor {
+                Some(c) if !c.is_empty() => {
+                    if !seen_cursors.insert(c.clone()) {
+                        reporter.mark_partial();
+                        break;
+                    }
+                    cursor = Some(c);
+                }
+                _ => break,
+            }
+        }
+
+        urls.sort();
+        urls.dedup();
+        Ok(urls.into_iter().map(UrlRecord::bare).collect())
     }
 
     fn with_subdomains(&mut self, _include: bool) {}
@@ -502,11 +483,11 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 1;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -548,11 +529,11 @@ mod tests {
         provider.base_url = server.url();
         provider.page_limit = 3;
         provider.net.retries = 0;
-        let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "test · ");
+        let reporter = ProgressReporter::hidden();
 
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -594,7 +575,7 @@ mod tests {
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
         let urls = urls_of(
             provider
-                .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+                .fetch_urls_with_progress("example.com", reporter.clone())
                 .await
                 .unwrap(),
         );
@@ -633,7 +614,7 @@ mod tests {
 
         let reporter = ProgressReporter::new(indicatif::ProgressBar::hidden(), "t · ");
         let result = provider
-            .fetch_urls_with_progress("example.com", Some(reporter.clone()))
+            .fetch_urls_with_progress("example.com", reporter.clone())
             .await;
         assert!(
             result.is_ok(),
