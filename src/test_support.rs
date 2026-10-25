@@ -4,8 +4,6 @@
 //! than inside one test module so `app`, `runner`, and `tester_manager` tests
 //! can share a single `Args` fixture and one set of mocks.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -172,16 +170,13 @@ impl MockStatusChecker {
     }
 }
 
+#[async_trait::async_trait]
 impl Tester for MockStatusChecker {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
     }
 
-    fn test_url<'a>(
-        &'a self,
-        _url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        let results = self.results.iter().cloned().map(UrlData::new).collect();
-        Box::pin(async move { Ok(results) })
+    async fn test_url(&self, _url: &str) -> Result<Vec<UrlData>> {
+        Ok(self.results.iter().cloned().map(UrlData::new).collect())
     }
 }

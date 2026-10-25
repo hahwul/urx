@@ -1,10 +1,9 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use reqwest::Client;
 use scraper::node::Element;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::OnceCell;
 use url::Url;
@@ -245,48 +244,44 @@ impl LinkExtractor {
     }
 }
 
+#[async_trait]
 impl Tester for LinkExtractor {
     fn clone_box(&self) -> Box<dyn Tester> {
         Box::new(self.clone())
     }
 
     /// Extracts links from a URL by downloading the page and parsing the HTML
-    fn test_url<'a>(
-        &'a self,
-        url: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-        Box::pin(async move {
-            let client = self.client().await?;
+    async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+        let client = self.client().await?;
 
-            // Unpaced: --rate-limit only ever reached the body-mining testers.
-            let response = send(self.net.retries, None, || client.get(url))
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to extract links from {}: {:?}", url, e))?;
-            // Relative links resolve against the URL that served the page,
-            // not the one asked for: `/docs` → 301 → `/docs/` makes
-            // `href="intro"` mean `/docs/intro`, not `/intro`.
-            let base_url = response.url().clone();
+        // Unpaced: --rate-limit only ever reached the body-mining testers.
+        let response = send(self.net.retries, None, || client.get(url))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to extract links from {}: {:?}", url, e))?;
+        // Relative links resolve against the URL that served the page,
+        // not the one asked for: `/docs` → 301 → `/docs/` makes
+        // `href="intro"` mean `/docs/intro`, not `/intro`.
+        let base_url = response.url().clone();
 
-            // An error page still has a body, and its nav/footer is
-            // full of links — mining those would inject the site's
-            // chrome into the results as if it had been discovered.
-            // A non-2xx page has no links worth extracting.
-            if !response.status().is_success() {
-                return Ok(Vec::new());
-            }
+        // An error page still has a body, and its nav/footer is
+        // full of links — mining those would inject the site's
+        // chrome into the results as if it had been discovered.
+        // A non-2xx page has no links worth extracting.
+        if !response.status().is_success() {
+            return Ok(Vec::new());
+        }
 
-            // Nor is there anything to extract from a response that
-            // isn't markup.
-            if !is_html_like(response.headers()) {
-                return Ok(Vec::new());
-            }
+        // Nor is there anything to extract from a response that
+        // isn't markup.
+        if !is_html_like(response.headers()) {
+            return Ok(Vec::new());
+        }
 
-            // Get the HTML content, bounded so one huge page can't
-            // exhaust memory.
-            let html_content = read_body_capped(response, MAX_BODY_BYTES).await?;
+        // Get the HTML content, bounded so one huge page can't
+        // exhaust memory.
+        let html_content = read_body_capped(response, MAX_BODY_BYTES).await?;
 
-            Ok(found(Self::extract_links(&base_url, &html_content)))
-        })
+        Ok(found(Self::extract_links(&base_url, &html_content)))
     }
 
     fn with_network(&mut self, net: NetConfig) {

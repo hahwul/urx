@@ -262,8 +262,6 @@ mod tests {
     use crate::output::UrlData;
     use crate::testers::urls;
     use anyhow::Result;
-    use std::future::Future;
-    use std::pin::Pin;
 
     /// Records the network settings it was handed.
     #[derive(Clone, Default)]
@@ -271,16 +269,14 @@ mod tests {
         net: Option<NetConfig>,
     }
 
+    #[async_trait::async_trait]
     impl Tester for MockTester {
         fn clone_box(&self) -> Box<dyn Tester> {
             Box::new(self.clone())
         }
 
-        fn test_url<'a>(
-            &'a self,
-            _url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-            Box::pin(async { Ok(Vec::new()) })
+        async fn test_url(&self, _url: &str) -> Result<Vec<UrlData>> {
+            Ok(Vec::new())
         }
 
         fn with_network(&mut self, net: NetConfig) {
@@ -292,17 +288,14 @@ mod tests {
     #[derive(Clone, Default)]
     struct FailingTester;
 
+    #[async_trait::async_trait]
     impl Tester for FailingTester {
         fn clone_box(&self) -> Box<dyn Tester> {
             Box::new(self.clone())
         }
 
-        fn test_url<'a>(
-            &'a self,
-            url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-            let url = url.to_string();
-            Box::pin(async move { Err(anyhow::anyhow!("connection refused for {url}")) })
+        async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+            Err(anyhow::anyhow!("connection refused for {url}"))
         }
     }
 
@@ -354,17 +347,14 @@ mod tests {
     #[derive(Clone)]
     struct FixedLinkTester(Vec<String>);
 
+    #[async_trait::async_trait]
     impl Tester for FixedLinkTester {
         fn clone_box(&self) -> Box<dyn Tester> {
             Box::new(self.clone())
         }
 
-        fn test_url<'a>(
-            &'a self,
-            _url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-            let links = self.0.iter().cloned().map(UrlData::new).collect();
-            Box::pin(async move { Ok(links) })
+        async fn test_url(&self, _url: &str) -> Result<Vec<UrlData>> {
+            Ok(self.0.iter().cloned().map(UrlData::new).collect())
         }
     }
 
@@ -629,21 +619,16 @@ mod tests {
     #[derive(Clone)]
     struct OkStatusTester;
 
+    #[async_trait::async_trait]
     impl Tester for OkStatusTester {
         fn clone_box(&self) -> Box<dyn Tester> {
             Box::new(self.clone())
         }
-        fn test_url<'a>(
-            &'a self,
-            url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-            let url = url.to_string();
-            Box::pin(async move {
-                Ok(vec![UrlData {
-                    title: Some("Title".to_string()),
-                    ..UrlData::with_status(url, "200 OK".to_string())
-                }])
-            })
+        async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+            Ok(vec![UrlData {
+                title: Some("Title".to_string()),
+                ..UrlData::with_status(url.to_string(), "200 OK".to_string())
+            }])
         }
     }
 
@@ -693,21 +678,16 @@ mod tests {
     #[derive(Clone)]
     struct RejectOldTester;
 
+    #[async_trait::async_trait]
     impl Tester for RejectOldTester {
         fn clone_box(&self) -> Box<dyn Tester> {
             Box::new(self.clone())
         }
-        fn test_url<'a>(
-            &'a self,
-            url: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<UrlData>>> + Send + 'a>> {
-            let url = url.to_string();
-            Box::pin(async move {
-                Ok(if url.ends_with("/old") {
-                    Vec::new()
-                } else {
-                    vec![UrlData::with_status(url, "200 OK".to_string())]
-                })
+        async fn test_url(&self, url: &str) -> Result<Vec<UrlData>> {
+            Ok(if url.ends_with("/old") {
+                Vec::new()
+            } else {
+                vec![UrlData::with_status(url.to_string(), "200 OK".to_string())]
             })
         }
     }
