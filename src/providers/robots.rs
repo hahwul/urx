@@ -6,7 +6,7 @@ use crate::network::client::read_body_capped;
 use crate::network::{CustomHeaders, NetConfig, RateLimiter};
 use crate::progress::ProgressReporter;
 use crate::providers::archived::{
-    describe_skipped, list_versions, replay_capture, ArchivedDiscovery, Replay,
+    describe_skipped, list_versions, replay_at, ArchivedDiscovery, Replay,
 };
 use crate::providers::{Provider, UrlRecord};
 
@@ -212,10 +212,11 @@ impl RobotsProvider {
                 break;
             }
             reporter.detail(format!("robots.txt version {}/{total}…", i + 1));
-            match replay_capture(
+            match replay_at(
                 &client,
                 settings.origin(),
-                capture,
+                &capture.timestamp,
+                &capture.original,
                 MAX_ROBOTS_BYTES,
                 limiter,
             )

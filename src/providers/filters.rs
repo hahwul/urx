@@ -242,59 +242,26 @@ pub fn normalize_cdx_timestamp(input: &str, end_of_range: bool) -> Option<String
         return None;
     }
 
-    let year: u32 = digits.get(0..4)?.parse().ok()?;
+    let year: u32 = digits[0..4].parse().ok()?;
     if !(1996..=9999).contains(&year) {
         // CDX coverage only starts in 1996; reject anything earlier.
         return None;
     }
+    // Two ASCII digits compare as strings exactly as they do as numbers.
+    let out_of = |range, lo, hi| digits.get(range).is_some_and(|s| !(lo..=hi).contains(&s));
+    if out_of(4..6, "01", "12") || out_of(6..8, "01", "31") {
+        return None;
+    }
 
-    // Pad each segment toward the appropriate end of the range.
-    let month = match digits.get(4..6) {
-        Some(s) => {
-            let m: u32 = s.parse().ok()?;
-            if !(1..=12).contains(&m) {
-                return None;
-            }
-            format!("{m:02}")
-        }
-        None => {
-            if end_of_range {
-                "12".to_string()
-            } else {
-                "01".to_string()
-            }
-        }
+    // Pad the missing tail toward the appropriate end of the range. Widening
+    // `to` to day 31 is intended; CDX clamps impossible dates (e.g. Feb 31)
+    // gracefully rather than rejecting them.
+    let pad = if end_of_range {
+        "1231235959"
+    } else {
+        "0101000000"
     };
-    let day = match digits.get(6..8) {
-        Some(s) => {
-            let d: u32 = s.parse().ok()?;
-            if !(1..=31).contains(&d) {
-                return None;
-            }
-            format!("{d:02}")
-        }
-        None => {
-            if end_of_range {
-                // Widening is intended for `to`; CDX clamps impossible dates
-                // (e.g. Feb 31) gracefully rather than rejecting them.
-                "31".to_string()
-            } else {
-                "01".to_string()
-            }
-        }
-    };
-    let tail = match digits.get(8..14) {
-        Some(s) => s.to_string(),
-        None => {
-            if end_of_range {
-                "235959".to_string()
-            } else {
-                "000000".to_string()
-            }
-        }
-    };
-
-    Some(format!("{year:04}{month}{day}{tail}"))
+    Some(format!("{digits}{}", &pad[digits.len() - 4..]))
 }
 
 /// The `url=` value for a CDX query over `target`, which is a bare host or a

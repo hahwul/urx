@@ -119,10 +119,7 @@ fn preview_text(text: &str) -> String {
     if text.len() <= MAX_PREVIEW_BYTES {
         return text.to_string();
     }
-    let mut end = MAX_PREVIEW_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = text.floor_char_boundary(MAX_PREVIEW_BYTES);
     format!("{}... (truncated)", &text[..end])
 }
 

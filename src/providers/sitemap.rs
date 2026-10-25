@@ -143,43 +143,29 @@ fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
     };
     match parsed {
         Some(doc) => {
-            // Check if this is a sitemap index file
-            if doc.root_element().has_tag_name("sitemapindex") {
-                let children = doc
-                    .descendants()
-                    .filter(|n| n.has_tag_name("sitemap"))
-                    .filter_map(|sitemap_node| {
-                        sitemap_node
-                            .descendants()
+            // The `<loc>` of every `entry` element. Its text is trimmed: XML
+            // lets a pretty-printed `<loc>\n  https://…\n</loc>` carry the
+            // surrounding indentation into the text node, and the newlines
+            // rode along into the emitted URL — which then failed host
+            // validation, so every URL of such a sitemap was silently lost.
+            let locs = |entry: &str| -> Vec<String> {
+                doc.descendants()
+                    .filter(|n| n.has_tag_name(entry))
+                    .filter_map(|node| {
+                        node.descendants()
                             .find(|n| n.has_tag_name("loc"))
                             .and_then(|loc| loc.text())
                             .map(|loc| loc.trim().to_string())
                     })
                     .filter(|loc| !loc.is_empty())
                     .take(MAX_SITEMAP_URLS)
-                    .collect();
-                SitemapDocument::Index(children)
+                    .collect()
+            };
+            // Check if this is a sitemap index file
+            if doc.root_element().has_tag_name("sitemapindex") {
+                SitemapDocument::Index(locs("sitemap"))
             } else {
-                // A regular sitemap file. `<loc>` text is trimmed: XML lets a
-                // pretty-printed `<loc>\n  https://…\n</loc>` carry the
-                // surrounding indentation into the text node, and the
-                // newlines rode along into the emitted URL — which then failed
-                // host validation, so every URL of such a sitemap was silently
-                // lost.
-                let urls = doc
-                    .descendants()
-                    .filter(|n| n.has_tag_name("url"))
-                    .filter_map(|url_node| {
-                        url_node
-                            .descendants()
-                            .find(|n| n.has_tag_name("loc"))
-                            .and_then(|loc| loc.text())
-                            .map(|url| url.trim().to_string())
-                    })
-                    .filter(|url| !url.is_empty())
-                    .take(MAX_SITEMAP_URLS)
-                    .collect();
-                SitemapDocument::Urls(urls)
+                SitemapDocument::Urls(locs("url"))
             }
         }
         None => {
