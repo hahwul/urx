@@ -213,6 +213,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_fresh_misses_and_expiry() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let cache = CacheManager::new_sqlite(temp_dir.path().join("test.db")).await?;
+
+        let key = CacheKey {
+            domain: "example.com".to_string(),
+            providers: vec!["wayback".to_string()],
+            filters_hash: "test_hash".to_string(),
+        };
+
+        // A key that was never stored is a miss.
+        assert!(cache.get_fresh(&key, 3600).await?.is_none());
+
+        // An entry inside the TTL is returned as stored.
+        let entry = CacheEntry::new(vec!["https://example.com/page1".to_string()]);
+        cache.store_urls(&key, &entry).await?;
+        let fresh = cache.get_fresh(&key, 3600).await?.unwrap();
+        assert_eq!(fresh.urls, entry.urls);
+
+        // An expired (non-baseline) entry reads as a miss and is deleted on the
+        // way out, so the backend no longer holds it.
+        let mut aged = entry;
+        aged.timestamp = chrono::Utc::now() - chrono::Duration::hours(2);
+        cache.backend.set(&key, &aged).await?;
+        assert!(cache.get_fresh(&key, 3600).await?.is_none());
+        assert!(cache.backend.get(&key).await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_incremental_scanning() -> Result<()> {
         let temp_dir = tempdir()?;
         let db_path = temp_dir.path().join("test.db");
