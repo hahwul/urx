@@ -1,0 +1,13 @@
+{
+  "name": "urx",
+  "short_name": "urx",
+  "description": "Extracts URLs from OSINT archives for security insights.",
+  "icons": [
+    { "src": "/icons/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/web-app-manifest-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "theme_color": "#0B0B0E",
+  "background_color": "#0B0B0E",
+  "display": "standalone",
+  "start_url": "/"
+}
