@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::keys::{api_keys_mut, KEYED_PROVIDER_IDS};
 use crate::cli::{Args, CliProvided};
+use crate::filters::compile_url_regexes;
 use crate::utils::{split_csv, stderr_line};
 
 /// Keys a config section did not recognise.
@@ -41,9 +42,32 @@ pub struct Config {
     #[serde(default)]
     pub notify: NotifyConfig,
 
+    /// User-defined presets: `[presets.<name>]`, selected with `-p <name>`.
+    #[serde(default)]
+    pub presets: std::collections::BTreeMap<String, CustomPreset>,
+
     /// Anything in this section urx does not know about. See [`UnknownKeys`].
     #[serde(flatten)]
     pub unknown: UnknownKeys,
+}
+
+/// A user-defined preset: a named bundle of the `[filter]` list options.
+///
+/// Selecting one adds its lists to the filter lists the run already has, so a
+/// custom preset has no matching rules of its own to learn or to maintain.
+///
+/// An unknown key is an error here, not the warning it is elsewhere in the
+/// file: a preset whose only key is the typo `extension` would otherwise be
+/// selected, filter nothing, and look like a filter that matched everything.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct CustomPreset {
+    pub extensions: Vec<String>,
+    pub exclude_extensions: Vec<String>,
+    pub patterns: Vec<String>,
+    pub exclude_patterns: Vec<String>,
+    pub match_regex: Vec<String>,
+    pub filter_regex: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -365,6 +389,17 @@ impl Config {
             );
         }
 
+        // Checked here so a bad expression is reported against the preset
+        // that holds it; once expanded it would be blamed on `--match-regex`.
+        for (name, preset) in &config.presets {
+            for (key, raw) in [
+                ("match_regex", &preset.match_regex),
+                ("filter_regex", &preset.filter_regex),
+            ] {
+                compile_url_regexes(raw, &format!("[presets.{name}].{key}"))?;
+            }
+        }
+
         Ok(config)
     }
 
@@ -570,6 +605,28 @@ impl Config {
         args.exclude_patterns.fill(&f.exclude_patterns);
         args.match_regex.fill(&f.match_regex);
         args.filter_regex.fill(&f.filter_regex);
+
+        // [presets.*]: a custom name in --preset stands for the lists it
+        // bundles. Expanded after the fills above, so it adds to those lists
+        // the way a built-in preset adds to `-e`; and expanded away, so the
+        // cache key holds what the preset says today rather than its name.
+        // Looked up before the built-ins and by its exact spelling: a config
+        // that defines `only-php` keeps working if urx later ships one.
+        let custom = &self.presets;
+        args.preset.retain(|name| {
+            let Some(preset) = custom.get(name) else {
+                return true;
+            };
+            args.extensions.extend_from_slice(&preset.extensions);
+            args.exclude_extensions
+                .extend_from_slice(&preset.exclude_extensions);
+            args.patterns.extend_from_slice(&preset.patterns);
+            args.exclude_patterns
+                .extend_from_slice(&preset.exclude_patterns);
+            args.match_regex.extend_from_slice(&preset.match_regex);
+            args.filter_regex.extend_from_slice(&preset.filter_regex);
+            false
+        });
 
         // These flags select one output view. A view explicitly chosen on the
         // CLI must replace the configured view as a whole; otherwise a config
@@ -1488,6 +1545,67 @@ mod tests {
             error.to_string().contains("mutually exclusive"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn test_custom_preset_expands_into_the_lists_it_bundles() {
+        let content = r#"
+            [filter]
+            preset = ["legacy", "no-images"]
+            extensions = ["js"]
+
+            [presets.legacy]
+            extensions = ["php"]
+            exclude_extensions = ["bak"]
+            patterns = ["admin"]
+            exclude_patterns = ["/static/"]
+            match_regex = ["(?i)login"]
+            filter_regex = ["/v[0-9]+/"]
+
+            [presets.unused]
+            extensions = ["asp"]
+        "#;
+        let file = create_temp_config_file(content);
+        let mut args = Args::parse_from(["urx", "example.com"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &CliProvided::default());
+
+        // The custom name is expanded away; the built-in stays for the filter.
+        assert_eq!(args.preset, vec!["no-images"]);
+        // Added to the configured list, as a built-in preset adds to `-e`.
+        assert_eq!(args.extensions, vec!["js", "php"]);
+        assert_eq!(args.exclude_extensions, vec!["bak"]);
+        assert_eq!(args.patterns, vec!["admin"]);
+        assert_eq!(args.exclude_patterns, vec!["/static/"]);
+        assert_eq!(args.match_regex, vec!["(?i)login"]);
+        assert_eq!(args.filter_regex, vec!["/v[0-9]+/"]);
+    }
+
+    #[test]
+    fn test_custom_preset_shadows_a_built_in_of_the_same_name() {
+        // So a config naming a preset `only-php` survives urx shipping one.
+        let file = create_temp_config_file("[presets.only-js]\nextensions = [\"ts\"]\n");
+        let mut args = Args::parse_from(["urx", "example.com", "-p", "only-js"]);
+        Config::from_file(file.path())
+            .unwrap()
+            .apply_to_args(&mut args, &CliProvided::default());
+
+        assert!(args.preset.is_empty());
+        assert_eq!(args.extensions, vec!["ts"]);
+    }
+
+    #[test]
+    fn test_custom_preset_mistakes_fail_at_load() {
+        // A typo'd key would leave a selected preset filtering nothing.
+        let typo = create_temp_config_file("[presets.legacy]\nextension = [\"php\"]\n");
+        let err = format!("{:#}", Config::from_file(typo.path()).unwrap_err());
+        assert!(err.contains("extension"), "{err}");
+
+        // A bad expression is blamed on the preset, not on a flag nobody typed.
+        let regex = create_temp_config_file("[presets.bad]\nmatch_regex = [\"(unclosed\"]\n");
+        let err = format!("{:#}", Config::from_file(regex.path()).unwrap_err());
+        assert!(err.contains("[presets.bad].match_regex"), "{err}");
     }
 
     #[test]

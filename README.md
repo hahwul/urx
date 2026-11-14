@@ -24,7 +24,7 @@ Urx collects URLs for a domain from OSINT archives such as the Wayback Machine a
 * Archive-side filters (`--from`/`--to`, `--archive-status`, `--archive-mime`) run inside the CDX query
 * Client-side metadata filters (`--meta-*`) on capture date, MIME type and status, for every provider
 * Path-scoped targets (`urx example.com/shop`) and bug-bounty scope files (`--scope-file`)
-* Filters by extension, substring, regex (`--match-regex`, `--filter-regex`) and presets (`no-images`, `only-js`, `only-secrets`, `only-backup`, `only-config`, `only-api`, `only-tokens`)
+* Filters by extension, substring, regex (`--match-regex`, `--filter-regex`) and presets (`no-images`, `only-js`, `only-secrets`, `only-backup`, `only-config`, `only-api`, `only-tokens`), plus your own presets defined in the config file
 * Normalization and dedup: `--normalize-url`, `--merge-endpoint`, `--dedup-similar`
 * Output as plain, JSON, JSON Lines, CSV or `wordlist`; `--stream` writes URLs as they arrive
 * Parameter views: `--params`, `--params-by-endpoint`, `--fuzz-placeholder FUZZ` for ffuf or dalfox

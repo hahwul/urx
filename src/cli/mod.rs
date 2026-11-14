@@ -321,7 +321,8 @@ pub struct Args {
     /// extension, so `/.env` and `/index.php~` qualify — and "only-tokens",
     /// URLs carrying a credential themselves (`?access_token=`, `?password=`,
     /// a JWT, a pre-signed storage URL).
-    /// Singular spellings are accepted too. An unknown name is an error.
+    /// Singular spellings are accepted too. A name defined under `[presets]`
+    /// in the config file works as well. An unknown name is an error.
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]
     pub preset: Vec<String>,

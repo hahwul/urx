@@ -74,6 +74,13 @@ max_length = 500                        # Maximum URL length to include
 # meta_status = ["200", "30x"]          # Keep only these recorded status codes
 # meta_exclude_status = ["404"]         # Drop these recorded status codes
 
+# Custom presets: a named bundle of the six [filter] lists above. Select one
+# with `-p legacy`, or by adding "legacy" to `preset`. It does nothing until
+# selected. Its lists are added to the ones the run already has.
+[presets.legacy]
+extensions = ["php", "asp", "aspx", "jsp", "cgi", "pl"]
+exclude_patterns = ["/static/"]
+
 # Network options
 [network]
 network_scope = "all"                   # Options: all, providers, testers, providers,testers
