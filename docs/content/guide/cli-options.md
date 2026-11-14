@@ -752,6 +752,30 @@ Rules:
 strict mode drops the subdomains first. The scope applies to every provider, the
 batch result, the `--stream` output and links found by `--extract-links`.
 
+## Choosing a Status Filter
+
+Three flags filter on a status code. They differ in whose status they read and
+in what it costs:
+
+| | `--archive-status` | `--meta-status` | `--include-status` |
+|---|---|---|---|
+| Status read | the one the archive recorded at crawl time | the one the archive recorded at crawl time | the target's, now |
+| Where it runs | inside the CDX query | locally, after collection | locally, after one request per URL |
+| Extra requests | none | none | one per URL |
+| Covers | CDX providers only. URLs from other providers are not filtered | every provider. A URL with no metadata fails it | every URL |
+| Value | a regex on `wayback` and classic endpoints, a substring on `cc`, `arquivo` and pywb. A list works only on the former | codes and `20x` patterns. Lists work | codes and `20x` patterns. Lists work |
+| With `--stream` | yes | no | no |
+
+- Use `--archive-status` to cut what comes over the network on a large target.
+- Use `--meta-status` when you need a list, or one rule for every provider.
+- Use `--include-status` when you need what answers today.
+
+Each has an exclusion twin: `--archive-exclude-status`, `--meta-exclude-status`
+and `--exclude-status`. MIME types split the same way between `--archive-mime`
+and `--meta-mime`; there is no live MIME filter. The next two sections cover the
+archive flags, and [Live Response Metadata](#live-response-metadata) covers the
+live check.
+
 ## Archive-side Filtering
 
 `--from`, `--to`, `--archive-status`, `--archive-exclude-status`,
