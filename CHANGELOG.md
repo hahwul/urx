@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Filtering
+- New preset `only-tokens`: URLs that carry a credential in the URL itself — token, key and password parameters, pre-signed storage URLs, JWTs and Google API keys
+
 ## 0.11.0
 
 ### Providers

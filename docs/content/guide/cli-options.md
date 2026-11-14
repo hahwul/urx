@@ -80,7 +80,7 @@ Display Options:
       --stats         Print a per-provider summary to stderr at end of run
 
 Filter Options:
-  -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,only-js,only-secrets,only-api")
+  -p, --preset <PRESET>                     Filter Presets (e.g., "no-resources,no-images,only-js,only-secrets,only-api,only-tokens")
   -e, --extensions <EXTENSIONS>              Filter by extensions (e.g., "js,php,aspx")
       --exclude-extensions <EXTENSIONS>      Exclude extensions (e.g., "html,txt")
       --patterns <PATTERNS>                  Include URLs containing patterns
@@ -562,15 +562,48 @@ catches `/.env` (no extension) and `only-backup` catches `/index.php~`.
 | `only-backup` | Backups and archived copies: `*.bak`, `*.old`, `*.orig`, `*.swp`, `*.sql`, `*.dump`, `*.zip`, `*.tar.gz`, `/backup/`, and paths ending in `~` |
 | `only-config` | Configuration files: `*.conf`, `*.config`, `*.ini`, `*.yaml`, `*.yml`, `*.toml`, `*.properties`, `web.config`, `.htaccess`, `.npmrc`, `Dockerfile` |
 | `only-api` | API surfaces: `/api/`, `/v1/` to `/v4/`, `/rest/`, `/graphql`, `/swagger`, `/openapi`, `/wp-json`, `*.wsdl` |
+| `only-tokens` | URLs that carry a credential themselves: `?access_token=`, `?api_key=`, `?password=`, JWTs, pre-signed storage URLs |
 
 Singular and plural spellings both work (`only-secret`, `only-backups`,
-`only-configs`, `only-apis`). Presets combine with OR, so
+`only-configs`, `only-apis`, `only-token`). Presets combine with OR, so
 `-p only-secrets,only-backup` keeps what either one keeps.
 
 ```bash
 urx example.com -p only-secrets
 urx example.com -p only-backup,only-config
+urx example.com -p only-tokens
 ```
+
+`only-tokens` reads parameter names and values instead of the path. It reads
+them from the query and from the fragment, so `#access_token=…` and
+`#/reset?token=…` count. A URL qualifies when:
+
+- the userinfo holds a password: `https://user:password@host/`.
+- a parameter name ends in `token`, `secret`, `apikey`, `accesskey`,
+  `secretkey`, `privatekey`, `authkey`, `subscriptionkey`, `authorization`,
+  `bearer` or `jwt`, or its last word is `auth`. The value must be at least 8
+  characters long and contain a digit, or be at least 20 characters long, so
+  `token=1` and `token=undefined` do not count. `_`, `-`, brackets and letter
+  case in the name are ignored, so `access_token`, `accessToken` and
+  `user[access_token]` are the same name.
+- a parameter name ends in `password`, `passwd`, `pwd` or `passphrase`, or its
+  last word is `pass` (`db_pass`, not `bypass`), with a value that is not a
+  switch such as `1` or `true`.
+- it is a pre-signed storage URL: `X-Amz-Signature`, `X-Goog-Signature`,
+  `AWSAccessKeyId`, `GoogleAccessId`, `Key-Pair-Id`, or an Azure SAS (`sig`
+  together with `sv`).
+- it contains a JWT or a Google API key (`AIza…`) anywhere, including in the
+  path.
+
+A parameter value that is itself a URL (`redirect=https%3A%2F%2F…`) is checked
+the same way. CSRF tokens (`csrf_token`, `_token`, `authenticity_token`, …) and
+pagination cursors (`pageToken`, `nextToken`, `$skiptoken`, …) are skipped, and
+so are session ids, which old sites put on every link. Archived credentials are
+often expired; the preset finds where a site puts them in URLs. It is not a
+secret scanner, so pipe the output to one for vendor token formats.
+
+Like every preset, `only-tokens` combines with `-e` by OR. To narrow it, use
+`--patterns` or `--match-regex`, which apply on top.
 
 ## Scoping a Run to a Path
 
