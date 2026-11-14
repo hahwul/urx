@@ -6,3 +6,6 @@
 
 # Cache files
 *.db
+
+# Written by runs that use example/config.toml (output = "results.txt")
+/results.txt
