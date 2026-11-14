@@ -495,7 +495,7 @@ pub fn validate_presets(presets: &[String]) -> anyhow::Result<()> {
     }
     let ids: Vec<&str> = PRESETS.iter().map(|(_, id, _)| *id).collect();
     Err(anyhow::anyhow!(
-        "Unknown preset(s) in --preset: {}. Allowed values: {}",
+        "Unknown preset(s) in --preset: {}. Allowed values: {}, or a name defined under [presets] in the config file",
         unknown.join(", "),
         ids.join(", ")
     ))

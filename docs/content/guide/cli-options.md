@@ -565,8 +565,8 @@ catches `/.env` (no extension) and `only-backup` catches `/index.php~`.
 | `only-tokens` | URLs that carry a credential themselves: `?access_token=`, `?api_key=`, `?password=`, JWTs, pre-signed storage URLs |
 
 Singular and plural spellings both work (`only-secret`, `only-backups`,
-`only-configs`, `only-apis`, `only-token`). Presets combine with OR, so
-`-p only-secrets,only-backup` keeps what either one keeps.
+`only-configs`, `only-apis`, `only-token`). Built-in presets combine with OR,
+so `-p only-secrets,only-backup` keeps what either one keeps.
 
 ```bash
 urx example.com -p only-secrets
@@ -602,8 +602,23 @@ so are session ids, which old sites put on every link. Archived credentials are
 often expired; the preset finds where a site puts them in URLs. It is not a
 secret scanner, so pipe the output to one for vendor token formats.
 
-Like every preset, `only-tokens` combines with `-e` by OR. To narrow it, use
+Like every built-in preset, `only-tokens` combines with `-e` by OR. To narrow it, use
 `--patterns` or `--match-regex`, which apply on top.
+
+### Custom Presets
+
+`-p` also takes a name you define in the config file. A custom preset is a
+bundle of filter lists, so it narrows like the flags it stands for instead of
+combining with OR. See [Custom Presets](/guide/configuration/#custom-presets).
+
+```toml
+[presets.legacy]
+extensions = ["php", "asp", "aspx", "jsp", "cgi", "pl"]
+```
+
+```bash
+urx example.com -p legacy
+```
 
 ## Scoping a Run to a Path
 

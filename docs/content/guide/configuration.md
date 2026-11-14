@@ -100,6 +100,15 @@ meta_exclude_mime = []            # drop these archived MIME types
 meta_status = []                  # keep only these archived status codes ("20x" / "5xx" patterns)
 meta_exclude_status = []          # drop these archived status codes
 
+# ─── Custom presets ──────────────────────────────────────
+[presets.legacy]                  # select with -p legacy, or preset = ["legacy"]
+extensions = ["php", "asp", "aspx", "jsp", "cgi", "pl"]
+exclude_extensions = []
+patterns = []
+exclude_patterns = ["/static/"]
+match_regex = []
+filter_regex = []
+
 # ─── Network ─────────────────────────────────────────────
 [network]
 network_scope = "all"                  # default; all, providers, testers, or providers,testers
@@ -146,6 +155,43 @@ no_cache = false
 on = "new"                             # default; new, always, or never
 format = "json"                        # default; json, slack, or discord
 ```
+
+### Custom Presets
+
+A `[presets.<name>]` table names a bundle of filter lists. Select it with
+`-p <name>`, alone or next to built-in presets.
+
+```toml
+[presets.legacy]
+extensions = ["php", "asp", "aspx", "jsp", "cgi", "pl"]
+
+[presets.pii]
+match_regex = ["(?i)[?&](e-?mail|phone|ssn|dob)="]
+```
+
+```bash
+urx example.com -p legacy
+urx example.com -p pii,no-images
+```
+
+A preset takes six keys, the same lists as `[filter]`: `extensions`,
+`exclude_extensions`, `patterns`, `exclude_patterns`, `match_regex` and
+`filter_regex`. Any other key is an error, and so is a regular expression that
+does not compile.
+
+Selecting a preset adds its lists to the lists the run already has from flags
+and from `[filter]`. The usual filter rules then apply, which makes custom
+presets combine differently from built-in ones:
+
+- Lists of the same kind widen. `-p legacy` with `-e js` keeps `php` and `js`.
+- Lists of different kinds narrow. `-p legacy,pii` keeps the legacy pages that
+  carry a PII parameter, not every legacy page plus every PII URL.
+
+The name is case-sensitive. A custom preset with the name of a built-in one
+replaces it, so a config that defines `only-php` keeps working if urx later
+ships a preset of that name. A preset that is defined but not selected does
+nothing. Presets live in the config file urx loads, so a file given with `-c`
+brings its own.
 
 ### Minimal Config Examples
 

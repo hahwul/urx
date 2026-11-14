@@ -4,6 +4,7 @@
 
 ### Filtering
 - New preset `only-tokens`: URLs that carry a credential in the URL itself — token, key and password parameters, pre-signed storage URLs, JWTs and Google API keys
+- Custom presets: `[presets.<name>]` in the config file bundles filter lists under a name that `-p <name>` selects
 
 ## 0.11.0
 
