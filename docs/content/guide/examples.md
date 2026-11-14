@@ -428,6 +428,9 @@ urx example.com --incremental
 
 # post to Slack only when something new turned up
 urx example.com --incremental --silent --notify "$SLACK_HOOK" --notify-format slack
+
+# ...or only when a new URL carries a credential
+urx example.com --incremental -p only-tokens --silent --notify "$SLACK_HOOK" --notify-format slack
 ```
 
 ### Inspect and Prune the Cache
