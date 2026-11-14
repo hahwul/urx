@@ -1,3 +1,8 @@
+use std::sync::LazyLock;
+
+use regex::Regex;
+use url::Url;
+
 /// Standard filter presets for common URL filtering scenarios
 #[derive(Clone, Copy)]
 pub enum FilterPreset {
@@ -35,6 +40,8 @@ pub enum FilterPreset {
     OnlyConfig,
     /// Only includes URLs that look like API surfaces
     OnlyApi,
+    /// Only includes URLs that carry a credential in the URL itself
+    OnlyTokens,
 }
 
 /// One "does this URL look interesting?" rule that is *not* expressible as a
@@ -54,6 +61,11 @@ pub enum PathRule {
     /// suffix. Anchored at the end of the path rather than the end of the
     /// whole URL so a query string (`/index.php~?v=1`) does not defeat it.
     PathEndsWith(String),
+    /// Matches when the URL itself carries a credential — see
+    /// [`carries_credential`]. Not a substring rule: it needs the parameter
+    /// *names* and the original letter case, neither of which survives the
+    /// lower-cased haystack the two rules above search.
+    CredentialInUrl,
 }
 
 fn rules(contains: &[&str], ends_with: &[&str]) -> Vec<PathRule> {
@@ -269,12 +281,177 @@ fn api_path_rules() -> Vec<PathRule> {
     )
 }
 
+/// Query parameter names that carry a token, key or signature, compared as a
+/// *suffix* of the name reduced to its lower-cased ASCII letters and digits —
+/// so `access_token`, `accessToken`, `access-token` and `user[access_token]`
+/// are all `…accesstoken`.
+///
+/// The last five are the distinctive parameters of a pre-signed cloud storage
+/// URL (S3 v4 and v2, GCS, CloudFront). A bare `signature` is deliberately
+/// absent: image CDNs sign every thumbnail URL with one.
+const TOKEN_PARAM_SUFFIXES: &[&str] = &[
+    "token",
+    "secret",
+    "apikey",
+    "accesskey",
+    "secretkey",
+    "privatekey",
+    "authkey",
+    "subscriptionkey",
+    "authorization",
+    "bearer",
+    "jwt",
+    "amzsignature",
+    "googsignature",
+    "accesskeyid",
+    "keypairid",
+    "googleaccessid",
+];
+
+/// `…token` names that are not credentials: anti-CSRF nonces and pagination
+/// cursors. Left in, they would be most of what the preset returns.
+// ponytail: a suffix list, so `fb_page_token` is lost to `pagetoken`. Split
+// names into words if a real credential turns up under one of these.
+const NOT_TOKEN_SUFFIXES: &[&str] = &[
+    "csrftoken",
+    "xsrftoken",
+    "csrfmiddlewaretoken",
+    "authenticitytoken",
+    "requestverificationtoken",
+    "forgerytoken",
+    "formtoken",
+    "securitytoken",
+    "edittoken",
+    "pagetoken",
+    "nexttoken",
+    "continuationtoken",
+    "paginationtoken",
+    "skiptoken",
+    "synctoken",
+];
+
+const PASSWORD_PARAM_SUFFIXES: &[&str] = &["password", "passwd", "pwd", "passphrase"];
+
+/// Values that make a password-named parameter a switch (`show_password=1`).
+const FLAG_VALUES: &[&str] = &["0", "1", "true", "false", "yes", "no", "on", "off"];
+
+/// Shortest value taken for a token: `token=1` and `auth=true` are flags.
+const MIN_TOKEN_LEN: usize = 8;
+
+/// A token shorter than this must contain a digit. A random string that short
+/// without one is rare; `undefined`, `facebook` and `YOUR_API_KEY` are not.
+const LONG_TOKEN_LEN: usize = 20;
+
+/// Credentials recognisable by their own shape, wherever they sit in the URL:
+/// a JWT (as often a path segment — `/verify/eyJ…` — as a parameter) and a
+/// Google API key (which travels as a plain `key=`, a name far too generic to
+/// list above). Case-sensitive, so it is run on the URL as collected.
+// ponytail: two shapes, the ones a parameter name cannot catch. Not a secret
+// scanner — pipe the output to trufflehog/gitleaks for vendor token formats.
+static TOKEN_SHAPES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.|AIza[0-9A-Za-z_-]{35}")
+        .expect("TOKEN_SHAPES is a valid regex")
+});
+
+/// The last word of a parameter name, lower-cased: `db_pass`, `userPass` and
+/// `user[pass]` all end in `pass`, and `bypass` does not.
+fn last_word(name: &str) -> String {
+    let name = name.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+    let (mut start, mut after_lower) = (0, false);
+    for (i, c) in name.char_indices() {
+        if !c.is_ascii_alphanumeric() {
+            start = i + c.len_utf8();
+        } else if c.is_ascii_uppercase() && after_lower {
+            start = i;
+        }
+        after_lower = c.is_ascii_lowercase();
+    }
+    name[start..].to_ascii_lowercase()
+}
+
+/// Whether one decoded `name=value` pair is a credential.
+fn is_credential_param(name: &str, value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    // Laravel and Symfony call their CSRF field `_token` / `form[_token]`,
+    // which the squashing below would turn into a plain `token`.
+    let unbracketed = name.trim_end_matches(']');
+    if unbracketed
+        .strip_suffix("_token")
+        .is_some_and(|rest| rest.is_empty() || rest.ends_with('['))
+    {
+        return false;
+    }
+
+    let squashed: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let ends_with_any = |suffixes: &[&str]| suffixes.iter().any(|s| squashed.ends_with(s));
+    // `pass` and `auth` are whole words: as suffixes they are `bypass` and `oauth`.
+    let word = last_word(name);
+
+    if word == "pass" || ends_with_any(PASSWORD_PARAM_SUFFIXES) {
+        // A password has no shape worth assuming, beyond not being a switch.
+        return !FLAG_VALUES.contains(&value.to_ascii_lowercase().as_str());
+    }
+    let len = value.chars().count();
+    len >= MIN_TOKEN_LEN
+        && (len >= LONG_TOKEN_LEN || value.contains(|c: char| c.is_ascii_digit()))
+        && (word == "auth" || ends_with_any(TOKEN_PARAM_SUFFIXES))
+        && !ends_with_any(NOT_TOKEN_SUFFIXES)
+}
+
+/// Whether `url` carries a credential in the URL itself — the `only-tokens`
+/// preset.
+///
+/// Four things qualify: a password in the userinfo (`https://user:pw@host/`),
+/// a parameter whose *name* says credential (`access_token=…`, `api_key=…`,
+/// `password=…`, `X-Amz-Signature=…`), an Azure SAS signature (`sig=`
+/// alongside `sv=`; `sig` alone signs thumbnails), and a value with a
+/// credential's shape under any name ([`TOKEN_SHAPES`]).
+/// Parameters are read from the query *and* the fragment: the OAuth implicit
+/// flow returns `#access_token=…`, and SPAs route `#/reset?token=…`. A value
+/// that is itself a URL (`redirect=https%3A%2F%2F…%3Ftoken%3D…`) is searched
+/// the same way.
+pub fn carries_credential(url: &str) -> bool {
+    if TOKEN_SHAPES.is_match(url) {
+        return true;
+    }
+    if url.contains('@')
+        && Url::parse(url).is_ok_and(|u| u.password().is_some_and(|p| !p.is_empty()))
+    {
+        return true;
+    }
+    let (mut sas_sig, mut sas_version) = (false, false);
+    for part in url.split(['?', '#']).skip(1) {
+        for (name, value) in url::form_urlencoded::parse(part.as_bytes()) {
+            // Decoding only ever shortens, so the recursion terminates.
+            if is_credential_param(&name, &value)
+                || (value.contains(['?', '#']) && carries_credential(&value))
+            {
+                return true;
+            }
+            // Archived hrefs are often HTML-escaped: `&amp;sig=` reads as `amp;sig`.
+            let plain = name.strip_prefix("amp;").unwrap_or(&name);
+            if plain.eq_ignore_ascii_case("sig") {
+                sas_sig |= !value.is_empty();
+            } else if plain.eq_ignore_ascii_case("sv") {
+                sas_version = true;
+            }
+        }
+    }
+    sas_sig && sas_version
+}
+
 /// Every preset with its canonical `--preset` name and the other spelling it
 /// accepts, in the order `--help` should list them.
 ///
 /// Both singular and plural spellings are accepted for every preset, so
 /// `only-image` and `only-images` mean the same thing.
-const PRESETS: [(FilterPreset, &str, &str); 17] = [
+const PRESETS: [(FilterPreset, &str, &str); 18] = [
     (FilterPreset::NoResources, "no-resources", "no-resource"),
     (FilterPreset::NoImages, "no-images", "no-image"),
     (FilterPreset::NoFonts, "no-fonts", "no-font"),
@@ -296,6 +473,7 @@ const PRESETS: [(FilterPreset, &str, &str); 17] = [
     (FilterPreset::OnlyBackup, "only-backup", "only-backups"),
     (FilterPreset::OnlyConfig, "only-config", "only-configs"),
     (FilterPreset::OnlyApi, "only-api", "only-apis"),
+    (FilterPreset::OnlyTokens, "only-tokens", "only-token"),
 ];
 
 /// Reject `--preset` values that name nothing.
@@ -375,6 +553,7 @@ impl FilterPreset {
             OnlyBackup => (&[], BACKUP_EXTENSIONS, backup_path_rules()),
             OnlyConfig => (&[], CONFIG_EXTENSIONS, config_path_rules()),
             OnlyApi => (&[], API_EXTENSIONS, api_path_rules()),
+            OnlyTokens => (&[], &[], vec![PathRule::CredentialInUrl]),
         }
     }
 
@@ -672,6 +851,7 @@ mod tests {
             ("only-backup", "only-backups"),
             ("only-config", "only-configs"),
             ("only-api", "only-apis"),
+            ("only-tokens", "only-token"),
         ] {
             let a = FilterPreset::from_str(name).unwrap_or_else(|| panic!("{name}"));
             let b = FilterPreset::from_str(alias).unwrap_or_else(|| panic!("{alias}"));
@@ -694,6 +874,7 @@ mod tests {
             FilterPreset::OnlyBackup,
             FilterPreset::OnlyConfig,
             FilterPreset::OnlyApi,
+            FilterPreset::OnlyTokens,
         ] {
             assert!(preset.get_exclude_extensions().is_empty());
             assert!(!preset.get_path_rules().is_empty());
@@ -712,6 +893,7 @@ mod tests {
                     | FilterPreset::OnlyBackup
                     | FilterPreset::OnlyConfig
                     | FilterPreset::OnlyApi
+                    | FilterPreset::OnlyTokens
             );
             assert_eq!(!preset.get_path_rules().is_empty(), is_new, "{id}");
         }
@@ -725,6 +907,7 @@ mod tests {
             for rule in FilterPreset::from_str(id).expect(id).get_path_rules() {
                 let literal = match &rule {
                     PathRule::Contains(s) | PathRule::PathEndsWith(s) => s.clone(),
+                    PathRule::CredentialInUrl => continue,
                 };
                 assert_eq!(literal, literal.to_lowercase(), "{id}: {literal}");
             }
@@ -785,6 +968,83 @@ mod tests {
                     .contains(&PathRule::Contains(needle.to_string())),
                 "only-api is missing {needle}"
             );
+        }
+    }
+
+    #[test]
+    fn test_carries_credential() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl";
+        let jwt_in_path = format!("https://example.com/verify/{jwt}");
+        let jwt_in_value = format!("https://example.com/sso?state={jwt}");
+        let yes = [
+            // Named parameters, in every spelling of the name.
+            "https://example.com/cb?access_token=ya29.a0AfH6SMBx",
+            "https://example.com/cb?accessToken=ya29.a0AfH6SMBx",
+            "https://example.com/v1/items?page=2&api-key=0123456789abcdef",
+            "https://example.com/reset?user%5Breset_password_token%5D=aB3dE6gH9j",
+            "https://example.com/data.json?auth=Fz8kQm2LxP0wRt5v",
+            "https://example.com/a?x-auth=0123456789abcdef",
+            // No digit, but far too long to be a word.
+            "https://example.com/a?client_secret=QwErTyUiOpAsDfGhJkLzXcVb",
+            // Passwords have no minimum length.
+            "https://example.com/login.php?user=admin&pass=1234",
+            "https://example.com/login?Password=hunter2",
+            "https://example.com/install.php?db_user=root&db_pass=hunter2",
+            "https://example.com/a?userPass=hunter2",
+            // Userinfo.
+            "https://deploy:s3cr3t@git.example.com/repo.git",
+            // Fragments: OAuth implicit flow and hash routes.
+            "https://example.com/cb#access_token=ya29.a0AfH6SMBx&token_type=bearer",
+            "https://example.com/#/reset?token=aB3dE6gH9jK2",
+            // Pre-signed storage URLs.
+            "https://example.com/f.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=0123abcd4567",
+            "https://example.com/f.pdf?AWSAccessKeyId=AKIAIOSFODNN7EXAMPLE&Expires=1&Signature=x",
+            "https://example.com/f.pdf?sv=2020-08-04&se=2030-01-01&sig=dGVzdHNpZw%3D%3D",
+            "https://example.com/f.pdf?sv=2020-08-04&amp;se=2030-01-01&amp;sig=dGVzdHNpZw%3D%3D",
+            // A credential inside a percent-encoded URL value.
+            "https://example.com/go?redirect=https%3A%2F%2Fexample.com%2Fcb%3Faccess_token%3Dya29.a0AfH6SMBx",
+            // Shapes, under a name that says nothing — or no name at all.
+            jwt_in_path.as_str(),
+            jwt_in_value.as_str(),
+            "https://example.com/map?key=AIzaSyA-0123456789abcdefghijklmnopqrstu",
+        ];
+        for url in yes {
+            assert!(carries_credential(url), "should match: {url}");
+        }
+
+        let no = [
+            "https://example.com/",
+            "https://example.com/search?q=token",
+            "https://example.com/tokens/list",
+            // Flags and empty values, not credentials.
+            "https://example.com/a?token=1",
+            "https://example.com/a?auth=true",
+            "https://example.com/a?token=",
+            "https://example.com/a?password=",
+            "https://example.com/a?show_password=1",
+            // Words and placeholders: long enough, but no digit.
+            "https://example.com/a?token=undefined",
+            "https://example.com/a?auth=facebook",
+            "https://example.com/a?api_key=YOUR_API_KEY",
+            // CSRF nonces and pagination cursors.
+            "https://example.com/a?csrf_token=0123456789abcdef",
+            "https://example.com/a?authenticity_token=0123456789abcdef",
+            "https://example.com/logout?_token=Zx9AbCdEfGh1234567",
+            "https://example.com/a?form%5B_token%5D=Zx9AbCdEfGh1234567",
+            "https://example.com/a?nextPageToken=CAESBQj0123456789",
+            "https://example.com/a?$skiptoken=X0123456789abcdef",
+            // A user name alone is not a credential.
+            "https://deploy@git.example.com/repo.git",
+            // Suffix lookalikes.
+            "https://example.com/a?bypass=0123456789abcdef",
+            "https://example.com/a?oauth=facebook-login",
+            // A thumbnail signature is not an Azure SAS.
+            "https://example.com/img.jpg?w=200&sig=0123456789abcdef",
+            // The host is not a parameter.
+            "https://token.example.com/password/reset",
+        ];
+        for url in no {
+            assert!(!carries_credential(url), "should not match: {url}");
         }
     }
 

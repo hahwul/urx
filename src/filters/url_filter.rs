@@ -4,7 +4,7 @@ use anyhow::Context;
 use regex::Regex;
 use url::Url;
 
-use super::preset::{FilterPreset, PathRule};
+use super::preset::{carries_credential, FilterPreset, PathRule};
 use super::scope_file::ScopeMatcher;
 
 /// Normalise one user-supplied extension.
@@ -277,7 +277,7 @@ impl UrlFilter {
 
         if !self.extensions.is_empty() || !self.path_rules.is_empty() {
             let by_extension = self.extensions.iter().any(|ext| has_extension(ext));
-            include = by_extension || self.matches_path_rule(path, &onward);
+            include = by_extension || self.matches_path_rule(url, path, &onward);
         }
 
         if include && !self.patterns.is_empty() {
@@ -295,17 +295,18 @@ impl UrlFilter {
         include
     }
 
-    /// Whether any preset path rule accepts the URL, given its lower-cased
+    /// Whether any preset path rule accepts `url`, given its lower-cased
     /// `path` and everything from the path on (`onward`).
     ///
     /// `Contains` searches `onward`, so a `?file=backup.sql` or a `#/api/…`
     /// hash route still counts; suffix rules anchor on the path, so `~` before
     /// a `?v=1` does too. Neither sees the host: on the whole URL, `/api.`
     /// matched every `https://api.…` host.
-    fn matches_path_rule(&self, path: &str, onward: &str) -> bool {
+    fn matches_path_rule(&self, url: &str, path: &str, onward: &str) -> bool {
         self.path_rules.iter().any(|rule| match rule {
             PathRule::Contains(needle) => onward.contains(needle.as_str()),
             PathRule::PathEndsWith(suffix) => path.ends_with(suffix.as_str()),
+            PathRule::CredentialInUrl => carries_credential(url),
         })
     }
 
@@ -827,6 +828,24 @@ mod tests {
         assert!(filter.matches("https://example.com/Dockerfile"));
 
         assert!(!filter.matches("https://example.com/index.html"));
+    }
+
+    #[test]
+    fn test_only_tokens_keeps_urls_carrying_a_credential() {
+        let mut filter = UrlFilter::new();
+        filter.apply_presets(&["only-tokens".to_string()]);
+
+        assert!(filter.matches("https://example.com/cb?access_token=ya29.a0AfH6SMBx"));
+        assert!(filter.matches("https://example.com/login?user=a&password=hunter2"));
+        assert!(!filter.matches("https://example.com/search?q=shoes"));
+        assert!(!filter.matches("https://example.com/app.js"));
+
+        // ORs with another preset like every path rule does...
+        filter.apply_presets(&["only-js".to_string()]);
+        assert!(filter.matches("https://example.com/app.js"));
+        // ...and an exclusion flag still wins over it.
+        filter.with_exclude_patterns(vec!["/cb".to_string()]);
+        assert!(!filter.matches("https://example.com/cb?access_token=ya29.a0AfH6SMBx"));
     }
 
     #[test]

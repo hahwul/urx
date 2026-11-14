@@ -318,7 +318,9 @@ pub struct Args {
     /// "only-documents", "only-videos", "only-audio", "only-images".
     /// Keep only a security-interesting family: "only-secrets", "only-backup",
     /// "only-config", "only-api" — these match by path shape as well as by
-    /// extension, so `/.env` and `/index.php~` qualify.
+    /// extension, so `/.env` and `/index.php~` qualify — and "only-tokens",
+    /// URLs carrying a credential themselves (`?access_token=`, `?password=`,
+    /// a JWT, a pre-signed storage URL).
     /// Singular spellings are accepted too. An unknown name is an error.
     #[clap(help_heading = "Filter Options")]
     #[clap(short, long, value_delimiter = ',')]

@@ -24,7 +24,7 @@ Urx collects URLs for a domain from OSINT archives such as the Wayback Machine a
 * Archive-side filters (`--from`/`--to`, `--archive-status`, `--archive-mime`) run inside the CDX query
 * Client-side metadata filters (`--meta-*`) on capture date, MIME type and status, for every provider
 * Path-scoped targets (`urx example.com/shop`) and bug-bounty scope files (`--scope-file`)
-* Filters by extension, substring, regex (`--match-regex`, `--filter-regex`) and presets (`no-images`, `only-js`, `only-secrets`, `only-backup`, `only-config`, `only-api`)
+* Filters by extension, substring, regex (`--match-regex`, `--filter-regex`) and presets (`no-images`, `only-js`, `only-secrets`, `only-backup`, `only-config`, `only-api`, `only-tokens`)
 * Normalization and dedup: `--normalize-url`, `--merge-endpoint`, `--dedup-similar`
 * Output as plain, JSON, JSON Lines, CSV or `wordlist`; `--stream` writes URLs as they arrive
 * Parameter views: `--params`, `--params-by-endpoint`, `--fuzz-placeholder FUZZ` for ffuf or dalfox
@@ -181,7 +181,7 @@ Display Options:
 
 Filter Options:
   -p, --preset <PRESET>
-          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style,only-secrets,only-backup,only-config,only-api")
+          Filter Presets (e.g., "no-resources,no-images,no-audio,only-js,only-style,only-secrets,only-backup,only-config,only-api,only-tokens")
   -e, --extensions <EXTENSIONS>
           Filter URLs to only include those with specific extensions (comma-separated, e.g., "js,php,aspx")
       --exclude-extensions <EXCLUDE_EXTENSIONS>
@@ -305,6 +305,7 @@ urx example.com --exclude-extensions html,txt
 urx example.com --patterns api,v1,graphql --exclude-patterns static,images
 urx example.com -p no-images
 urx example.com -p only-secrets          # /.env, /.git/config, id_rsa, *.pem
+urx example.com -p only-tokens           # ?access_token=, ?password=, JWTs, pre-signed URLs
 urx example.com --match-regex '(?i)/api/v[0-9]+/' --filter-regex '/(assets|static)/'
 urx example.com --subs --scope-file scope.txt
 
