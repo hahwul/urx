@@ -183,7 +183,7 @@ pub fn add_provider<T: Provider + 'static>(
         }
 
         if let Some(proxy) = &effective_settings.proxy {
-            config_info.push(format!("  Proxy: {}", proxy));
+            config_info.push(format!("  Proxy: {}", redact_proxy(proxy)));
         }
 
         if effective_settings.random_agent {
@@ -276,6 +276,27 @@ pub struct ProviderRunResult {
 }
 
 /// `host[:port]` without the port, IPv6 brackets kept.
+/// `--proxy` for the `-v` summary, password masked: `http://user:pass@proxy`
+/// carries a credential. Parsed rather than split on `@`, because a password
+/// may hold a raw `/` and reqwest accepts a proxy with no scheme. Anything the
+/// parser cannot read is withheld whole, since it may be all credential.
+fn redact_proxy(proxy: &str) -> String {
+    let with_scheme = if proxy.contains("://") {
+        proxy.to_string()
+    } else {
+        format!("http://{proxy}")
+    };
+    match url::Url::parse(&with_scheme) {
+        Ok(mut url) => {
+            if url.password().is_some() {
+                let _ = url.set_password(Some("***"));
+            }
+            url.to_string()
+        }
+        Err(_) => "(set, not shown)".to_string(),
+    }
+}
+
 fn bare_host(host: &str) -> String {
     url::Url::parse(&format!("http://{host}/"))
         .ok()
@@ -859,6 +880,21 @@ mod tests {
         assert_eq!(bare_host("example.com:8443"), "example.com");
         assert_eq!(bare_host("example.com"), "example.com");
         assert_eq!(bare_host("[::1]:8080"), "[::1]");
+    }
+
+    #[test]
+    fn test_redact_proxy_never_prints_the_password() {
+        assert_eq!(
+            redact_proxy("http://user:hunter2@proxy:8080"),
+            "http://user:***@proxy:8080/"
+        );
+        // reqwest takes a scheme-less proxy as http.
+        assert_eq!(
+            redact_proxy("user:hunter2@proxy:8080"),
+            "http://user:***@proxy:8080/"
+        );
+        assert!(!redact_proxy("http://user:pa/ss@proxy:8080").contains("ss@"));
+        assert_eq!(redact_proxy("socks5://proxy:1080"), "socks5://proxy:1080");
     }
     use crate::filters::UrlFilter;
     use crate::output;

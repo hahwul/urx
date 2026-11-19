@@ -237,7 +237,8 @@ const FORMULA_TRIGGERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
 
 /// Escape a field value for CSV output per RFC 4180.
 ///
-/// A value containing a comma, double-quote, CR or LF is wrapped in
+/// A value containing a comma, semicolon (the list separator Excel uses in
+/// much of Europe), double-quote, CR or LF is wrapped in
 /// double-quotes with any internal double-quotes doubled. CR matters as much as
 /// LF: a bare `\r` in a field splits the row in Excel and in most spreadsheet
 /// importers, so leaving it unquoted corrupts the table.
@@ -252,7 +253,7 @@ const FORMULA_TRIGGERS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
 pub(crate) fn csv_escape(value: &str) -> String {
     let starts_formula = value.starts_with(FORMULA_TRIGGERS);
     let needs_quoting = starts_formula
-        || value.contains(',')
+        || value.contains([',', ';'])
         || value.contains('"')
         || value.contains('\n')
         || value.contains('\r');
@@ -486,6 +487,12 @@ mod tests {
         assert_eq!(csv_escape("=1+1"), "\"'=1+1\"");
         // A trigger anywhere but the start is harmless and left alone.
         assert_eq!(csv_escape("https://a.com/x=1"), "https://a.com/x=1");
+        // Excel in `;`-separator locales splits here, and the cell after the
+        // split starts with `=`. A quoted field is split in neither dialect.
+        assert_eq!(
+            csv_escape("https://a.com/a;=1+1"),
+            "\"https://a.com/a;=1+1\""
+        );
     }
 
     #[test]

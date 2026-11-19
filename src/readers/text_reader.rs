@@ -7,11 +7,19 @@ pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
     let file = File::open(file_path)
         .with_context(|| format!("Failed to open text file: {}", file_path.display()))?;
 
+    let (file, head) = super::peek(file, file_path)?;
+
     // Bounded like every other reader: `--files` takes whatever it is
     // pointed at, and a plain-text list is the densest possible source of
-    // URL lines.
-    let (urls, url_capped, byte_capped, _, line_capped) =
-        super::collect_capped(file, super::MAX_FILE_URLS, super::MAX_FILE_BYTES, |line| {
+    // URL lines. Gzip is decoded by content, not by name: a piped or
+    // extension-less `.gz` list lands here, and as text it is only noise.
+    let (urls, url_capped, byte_capped, _, line_capped) = super::collect_maybe_gzip(
+        file,
+        &head,
+        file_path,
+        super::MAX_FILE_URLS,
+        super::MAX_FILE_BYTES,
+        |line| {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 return None;
@@ -22,8 +30,9 @@ pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
             } else {
                 None
             }
-        })
-        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+        },
+    )
+    .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
     super::warn_if_truncated(
         file_path,

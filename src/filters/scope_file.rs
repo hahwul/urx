@@ -180,6 +180,31 @@ pub struct ScopeMatcher {
     exclude: Vec<HostPattern>,
 }
 
+/// The contents of `path`, read from disk once per process.
+///
+/// A run builds its matcher several times (validation, the batch filter, the
+/// stream sink, the extracted-link filter). A pipe (`--scope-file <(…)`) is
+/// empty on every read after the first, and so is `/dev/stdin < scope.txt` on
+/// macOS, where reopening it shares the drained offset. An empty scope allows
+/// every host, so the `!` exclusions were silently lost. Every path is cached,
+/// since a regular-file check cannot tell the redirected-stdin case apart.
+fn read_once(path: &Path) -> std::io::Result<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static READ: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    let mut read = READ
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(text) = read.get(path) {
+        return Ok(text.clone());
+    }
+    let text = std::fs::read_to_string(path)?;
+    read.insert(path.to_path_buf(), text.clone());
+    Ok(text)
+}
+
 impl ScopeMatcher {
     /// Load every `--scope-file` path, or `None` when the flag wasn't used.
     ///
@@ -192,7 +217,7 @@ impl ScopeMatcher {
         }
         let mut matcher = ScopeMatcher::default();
         for path in paths {
-            let text = std::fs::read_to_string(path)
+            let text = read_once(path)
                 .with_context(|| format!("Failed to read scope file: {}", path.display()))?;
             matcher.extend_from_str(&text, path)?;
         }
@@ -531,6 +556,26 @@ mod tests {
         assert!(m.is_in_scope("https://api.example.com/a"));
         assert!(!m.is_in_scope("https://admin.example.com/a"));
         assert!(!m.is_in_scope("https://db.internal.example.com/a"));
+    }
+
+    /// `--scope-file <(…)`: a run builds its matcher more than once, and a pipe
+    /// is empty on every read after the first.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_is_still_the_scope_on_the_second_read() {
+        use std::os::fd::AsRawFd;
+
+        let (rx, mut tx) = std::io::pipe().unwrap();
+        writeln!(tx, "!admin.example.com").unwrap();
+        drop(tx);
+        let path = [PathBuf::from(format!("/dev/fd/{}", rx.as_raw_fd()))];
+
+        for _ in 0..2 {
+            let m = ScopeMatcher::from_files(&path)
+                .unwrap()
+                .expect("a scope file was given");
+            assert!(!m.is_in_scope("https://admin.example.com/a"));
+        }
     }
 
     #[test]
