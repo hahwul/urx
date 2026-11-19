@@ -37,16 +37,9 @@ fn extract_url_from_line(line: &str) -> Option<String> {
 /// Read URLs from a WARC (Web ARChive) file: `WARC-Target-URI` headers plus
 /// bare URLs in the payload.
 pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
-    let mut file = File::open(file_path)
+    let file = File::open(file_path)
         .with_context(|| format!("Failed to open WARC file: {}", file_path.display()))?;
-    let magic = super::magic(&mut file)?;
-    if &magic == b"BZh" {
-        anyhow::bail!(
-            "{}: bzip2 WARC input is not supported. Decompress it first \
-                 (`bunzip2 -k <file>`) and pass the result to --files.",
-            file_path.display()
-        );
-    }
+    let (file, magic) = super::peek(file, file_path)?;
 
     // WARCs are routinely gigabytes, and this reader used to collect every
     // matching line with no bound at all — unlike the URLTeam and sitemap

@@ -23,20 +23,9 @@ pub fn read_urls(file_path: &Path) -> Result<Vec<String>> {
 /// [`read_urls`] with explicit caps, so tests can exercise the truncation
 /// paths without generating gigabytes of input.
 fn read_urls_capped(file_path: &Path, max_urls: usize, max_bytes: u64) -> Result<Vec<String>> {
-    let mut file = File::open(file_path)
+    let file = File::open(file_path)
         .with_context(|| format!("Failed to open file: {}", file_path.display()))?;
-    let magic = super::magic(&mut file)?;
-
-    // urx has no bzip2 decoder, and reading such a file as text yields
-    // binary noise with no extractable URLs — an empty result that reads
-    // as "this archive had nothing". Tell the user what actually happened.
-    if &magic == b"BZh" {
-        anyhow::bail!(
-            "{}: bzip2 input is not supported. Decompress it first \
-                 (`bunzip2 -k <file>`) and pass the result to --files.",
-            file_path.display()
-        );
-    }
+    let (file, magic) = super::peek(file, file_path)?;
 
     let (urls, url_capped, byte_capped, _, line_capped) =
         super::collect_maybe_gzip(file, &magic, file_path, max_urls, max_bytes, url_of_line)

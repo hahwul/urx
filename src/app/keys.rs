@@ -95,6 +95,14 @@ pub fn seed_api_keys_from_env(args: &mut Args) -> Vec<&'static str> {
         .into_iter()
         .filter(|id| {
             let slot = api_keys_mut(args, id);
+            // `--vt-api-key "$UNSET"` is no key. Kept, it enabled the provider,
+            // shadowed the config files' keys, and every fetch returned nothing.
+            // Trimmed like the env and config keys, so `"$KEY "` still works.
+            *slot = slot
+                .iter()
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+                .collect();
             if slot.is_empty() {
                 *slot = parse_env_api_keys(&api_key_env_var(id));
             }
@@ -174,6 +182,20 @@ mod tests {
         let keys = ApiKeys::resolve(&args);
         assert_eq!(keys.for_provider("vt"), ["vt_key1", "vt_key2"]);
         assert_eq!(keys.for_provider("urlscan"), ["url_key1"]);
+    }
+
+    /// `--vt-api-key "$UNSET"`: a blank key is no key, as it already is in the
+    /// environment and in both config files.
+    #[test]
+    fn test_a_blank_cli_key_is_no_key() {
+        let _env_lock = ENV.lock().unwrap();
+        let _guard = EnvGuard::unset(&["URX_VT_API_KEY"]);
+
+        let mut args = Args::parse_from(["urx", "example.com", "--vt-api-key", ""]);
+        let supplied = seed_api_keys_from_env(&mut args);
+
+        assert!(args.vt_api_key.is_empty());
+        assert!(!supplied.contains(&"vt"));
     }
 
     #[test]

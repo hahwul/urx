@@ -1,7 +1,7 @@
 use crate::utils::stderr_line;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs::File;
-use std::io::{BufRead, Read, Seek};
+use std::io::{BufRead, Read};
 use std::path::Path;
 
 mod text_reader;
@@ -182,7 +182,7 @@ pub(crate) fn collect_capped<R: Read>(
 /// record's URLs and silently dropped the rest. A stream that ends early keeps
 /// the URLs decoded so far.
 pub(crate) fn collect_maybe_gzip(
-    file: File,
+    file: impl Read,
     magic: &[u8],
     file_path: &Path,
     max_urls: usize,
@@ -283,13 +283,40 @@ fn is_http_url(s: &str) -> bool {
     })
 }
 
-/// The file's first three bytes, with the file rewound for the real read. A
-/// short read leaves the tail zeroed, which matches no signature.
-fn magic(file: &mut File) -> std::io::Result<[u8; 3]> {
-    let mut magic = [0u8; 3];
-    let _ = file.read(&mut magic);
-    file.rewind()?;
-    Ok(magic)
+/// `file` with its leading bytes peeked — not consumed, so the read that
+/// follows still starts at byte 0 — after rejecting the compressed formats urx
+/// has no decoder for.
+///
+/// One handle serves both the signature check and the read. Sniffing through a
+/// second `open` works on a regular file, but a pipe (`--files <(…)`,
+/// `/dev/stdin`) hands each byte out once: the six sniffed bytes are exactly
+/// `https:`, so the list's first URL arrived as `//host/…` and was dropped.
+fn peek(mut file: File, file_path: &Path) -> Result<(impl Read, Vec<u8>)> {
+    // `read_to_end`, not one `read`: a pipe can hand over fewer than six bytes
+    // per read, which would slip a gzip or xz stream past the checks below.
+    // A file shorter than six bytes leaves `head` short, matching nothing.
+    let mut head = Vec::with_capacity(6);
+    file.by_ref()
+        .take(6)
+        .read_to_end(&mut head)
+        .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
+    // Read as text, these yield binary noise and no URLs: an empty result
+    // that reads as "the file had nothing". URLTeam releases ship as zip
+    // files of `.xz` dumps, so both are likely to be handed over as-is.
+    for (signature, name) in [
+        (&b"\xfd7zXZ\x00"[..], "xz"),
+        (&b"PK\x03\x04"[..], "zip"),
+        (&b"\x28\xb5\x2f\xfd"[..], "zstd"),
+        (&b"BZh"[..], "bzip2"),
+    ] {
+        if head.starts_with(signature) {
+            anyhow::bail!(
+                "{}: {name} input is not supported. Decompress it first and pass the result to --files.",
+                file_path.display()
+            );
+        }
+    }
+    Ok((std::io::Cursor::new(head.clone()).chain(file), head))
 }
 
 /// Enum representing different file formats
@@ -344,25 +371,6 @@ pub fn detect_file_format(file_path: &Path) -> FileFormat {
 
 /// Read URLs from a file using auto-detected format
 pub fn read_urls_from_file(file_path: &Path) -> Result<Vec<String>> {
-    // Read as text, these yield binary noise and no URLs: an empty result
-    // that reads as "the file had nothing". URLTeam releases ship as zip
-    // files of `.xz` dumps, so both are likely to be handed over as-is.
-    let mut head = [0u8; 6];
-    if let Ok(mut file) = File::open(file_path) {
-        let _ = file.read(&mut head);
-    }
-    for (signature, name) in [
-        (&b"\xfd7zXZ\x00"[..], "xz"),
-        (&b"PK\x03\x04"[..], "zip"),
-        (&b"\x28\xb5\x2f\xfd"[..], "zstd"),
-    ] {
-        if head.starts_with(signature) {
-            anyhow::bail!(
-                "{}: {name} input is not supported. Decompress it first and pass the result to --files.",
-                file_path.display()
-            );
-        }
-    }
     match detect_file_format(file_path) {
         FileFormat::Warc => warc_reader::read_urls(file_path),
         FileFormat::UrlTeam => urlteam_reader::read_urls(file_path),
@@ -386,6 +394,42 @@ mod tests {
             let err = read_urls_from_file(file.path()).unwrap_err().to_string();
             assert!(err.contains(&format!("{name} input")), "{err}");
         }
+        Ok(())
+    }
+
+    /// `--files <(…)` hands urx a `/dev/fd/N` pipe, which gives each byte out
+    /// once: whatever a format sniff reads is gone for the real read.
+    #[cfg(unix)]
+    #[test]
+    fn test_a_pipe_keeps_its_first_url() -> Result<()> {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+
+        let (rx, mut tx) = std::io::pipe()?;
+        tx.write_all(b"https://example.com/first\nhttps://example.com/second\n")?;
+        drop(tx);
+
+        let urls = read_urls_from_file(Path::new(&format!("/dev/fd/{}", rx.as_raw_fd())))?;
+        assert_eq!(
+            urls,
+            ["https://example.com/first", "https://example.com/second"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_gzip_is_read_whatever_the_file_is_called() -> Result<()> {
+        use std::io::Write;
+
+        let file = tempfile::Builder::new().suffix(".txt").tempfile()?;
+        let mut gz = flate2::write::GzEncoder::new(
+            File::create(file.path())?,
+            flate2::Compression::default(),
+        );
+        gz.write_all(b"https://example.com/a\n")?;
+        gz.finish()?;
+
+        assert_eq!(read_urls_from_file(file.path())?, ["https://example.com/a"]);
         Ok(())
     }
 
@@ -617,9 +661,7 @@ mod tests {
 
         assert_eq!(detect_file_format(compressed.path()), FileFormat::Warc);
         let error = read_urls_from_file(compressed.path()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("bzip2 WARC input is not supported"));
+        assert!(error.to_string().contains("bzip2 input is not supported"));
         Ok(())
     }
 
