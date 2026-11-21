@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use anyhow::Context;
 use regex::Regex;
 use url::Url;
@@ -310,10 +308,10 @@ impl UrlFilter {
         })
     }
 
-    /// Apply filters to a set of URLs, returning the survivors sorted.
-    pub fn apply_filters(&self, urls: &HashSet<String>) -> Vec<String> {
+    /// Apply filters to a collection of unique URLs, returning the survivors sorted.
+    pub fn apply_filters<'a>(&self, urls: impl IntoIterator<Item = &'a String>) -> Vec<String> {
         let mut result: Vec<String> = urls
-            .iter()
+            .into_iter()
             .filter(|url| self.matches(url))
             .cloned()
             .collect();

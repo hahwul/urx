@@ -531,10 +531,10 @@ fn host_validation_hint(
 }
 
 /// Apply URL filtering and, in strict mode, host validation to the batch result.
-pub fn apply_url_filters(
+pub fn apply_url_filters<'a>(
     args: &Args,
     domains: &[String],
-    urls: &HashSet<String>,
+    urls: impl IntoIterator<Item = &'a String>,
     progress_manager: &ProgressManager,
 ) -> Result<Vec<String>> {
     let filter_bar = has_url_filters(args).then(|| {
