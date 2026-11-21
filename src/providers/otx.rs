@@ -28,11 +28,9 @@ pub struct OTXProvider {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OTXResult {
-    #[serde(default)]
-    has_next: bool,
+    has_next: Option<bool>,
     #[serde(default)]
     actual_size: i32,
-    #[serde(default = "Vec::new")]
     url_list: Vec<OTXUrlEntry>,
 }
 
@@ -140,10 +138,7 @@ fn parse_otx(text: &str) -> Result<OTXResult> {
         anyhow::anyhow!("Failed to parse url_list entries: {e}. Response preview: {preview}")
     })?;
     Ok(OTXResult {
-        has_next: json_value
-            .get("has_next")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        has_next: json_value.get("has_next").and_then(|v| v.as_bool()),
         actual_size: json_value
             .get("actual_size")
             .and_then(|v| v.as_i64())
@@ -214,7 +209,7 @@ impl Provider for OTXProvider {
                     // "maybe more", so a single trailing empty fetch confirms the
                     // end rather than truncating at page one.
                     let page_full = page_len as u32 >= OTX_RESULTS_LIMIT;
-                    if page_len == 0 || (!has_next && !page_full) {
+                    if page_len == 0 || !has_next.unwrap_or(page_full) {
                         break;
                     }
                 }
@@ -414,7 +409,7 @@ mod tests {
         }"#;
 
         let result: OTXResult = serde_json::from_str(json).unwrap();
-        assert!(result.has_next);
+        assert_eq!(result.has_next, Some(true));
         assert_eq!(result.actual_size, 200);
         assert_eq!(result.url_list.len(), 2);
         assert_eq!(result.url_list[0].url, "https://example.com/page1");
@@ -546,6 +541,50 @@ mod tests {
         page2.assert();
     }
 
+    #[test]
+    fn provider_regression_otx_requires_a_url_list() {
+        let err = parse_otx(r#"{"message":"backend unavailable"}"#).unwrap_err();
+        assert!(err.to_string().contains("missing url_list"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn provider_regression_otx_honors_explicit_end_on_full_page() {
+        let mut server = mockito::Server::new_async().await;
+        let urls =
+            vec![serde_json::json!({"url": "https://example.com/a"}); OTX_RESULTS_LIMIT as usize];
+        let mut provider = OTXProvider::new();
+        provider.base_url = server.url();
+        provider.net.retries = 0;
+        let first = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=1",
+            )
+            .with_body(serde_json::json!({"has_next": false, "url_list": urls}).to_string())
+            .create_async()
+            .await;
+        let extra = server
+            .mock(
+                "GET",
+                "/api/v1/indicators/domain/example.com/url_list?limit=200&page=2",
+            )
+            .with_status(503)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let reporter = ProgressReporter::hidden();
+        let urls = provider
+            .fetch_urls_with_progress("example.com", reporter.clone())
+            .await
+            .unwrap();
+
+        first.assert_async().await;
+        extra.assert_async().await;
+        assert_eq!(urls.len(), OTX_RESULTS_LIMIT as usize);
+        assert!(!reporter.is_partial());
+    }
+
     #[tokio::test]
     async fn test_fetch_urls_empty() {
         let mut server = mockito::Server::new_async().await;
@@ -672,7 +711,7 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let url = server.url();
 
-        // A full page (200 rows) so the walk continues to page 2.
+        // Without has_next, a full page still warrants a follow-up.
         let rows: Vec<String> = (0..OTX_RESULTS_LIMIT)
             .map(|i| format!(r#"{{"url":"http://example.com/{i}"}}"#))
             .collect();
@@ -683,10 +722,7 @@ mod tests {
             )
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{ "has_next": true, "url_list": [{}] }}"#,
-                rows.join(",")
-            ))
+            .with_body(format!(r#"{{ "url_list": [{}] }}"#, rows.join(",")))
             .create();
         // ...and page 2 is permanently broken.
         let _page2 = server
