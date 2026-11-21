@@ -195,12 +195,14 @@ pub fn distinct_versions(text: &str) -> VersionListing {
     // The listing arrives newest first (`sort=reverse`), so a document with
     // more rows than the limit loses its oldest versions, not its newest.
     for capture in text.lines().filter_map(parse_index_row) {
+        let success = capture.is_success();
         if let Some(digest) = &capture.digest {
-            if !seen_digests.insert(digest.clone()) {
+            // A skipped capture must not hide a replayable copy of the same body.
+            if !seen_digests.insert((digest.clone(), success)) {
                 continue;
             }
         }
-        if capture.is_success() {
+        if success {
             listing.fetchable.push(capture);
         } else {
             listing.skipped.push(capture);
@@ -398,6 +400,19 @@ http://github.com/robots.txt 20070917000000 401 AAA401\n";
             describe_skipped(&listing.skipped),
             "3 skipped (401 ×1, 404 ×1, no status ×1)"
         );
+    }
+
+    #[test]
+    fn provider_regression_archive_keeps_successful_capture_for_shared_digest() {
+        let text = "\
+https://example.com/robots.txt 20240301000000 - SHARED\n\
+https://example.com/robots.txt 20230301000000 200 SHARED\n\
+https://example.com/robots.txt 20220301000000 200 SHARED\n";
+        let listing = distinct_versions(text);
+
+        assert_eq!(listing.skipped.len(), 1);
+        assert_eq!(listing.fetchable.len(), 1);
+        assert_eq!(listing.fetchable[0].timestamp, "20230301000000");
     }
 
     #[test]
