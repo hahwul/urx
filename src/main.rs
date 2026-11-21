@@ -463,7 +463,7 @@ async fn run() -> Result<()> {
             &args,
             domains,
             sink.emitted(),
-            &[],
+            Vec::new(),
             &run_result.stats,
             started.elapsed(),
         );
@@ -520,11 +520,10 @@ async fn run() -> Result<()> {
 
     // Last, and never fatal: the result is already on stdout / in --output,
     // so a dead webhook is a warning, not a failed run.
-    let emitted: Vec<String> = final_urls.iter().map(|u| u.url.clone()).collect();
     let summary = notify::RunSummary::new(
         &args,
         domains,
-        &emitted,
+        &final_urls,
         &run_result.stats,
         started.elapsed(),
     );

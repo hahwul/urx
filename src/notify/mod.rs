@@ -25,6 +25,7 @@ use crate::cli::Args;
 use crate::network::client::HttpClientConfig;
 use crate::network::CustomHeaders;
 use crate::network::NetworkSettings;
+use crate::output::UrlData;
 use crate::runner::ProviderStats;
 use crate::utils::stderr_line;
 
@@ -126,11 +127,16 @@ impl RunSummary {
     pub fn new(
         args: &Args,
         domains: Vec<String>,
-        urls: &[String],
+        urls: &[UrlData],
         stats: &[ProviderStats],
         elapsed: std::time::Duration,
     ) -> Self {
-        Self::from_counts(args, domains, urls.len(), urls, stats, elapsed)
+        let sample = urls
+            .iter()
+            .take(SAMPLE_LIMIT)
+            .map(|entry| entry.url.clone())
+            .collect();
+        Self::from_counts(args, domains, urls.len(), sample, stats, elapsed)
     }
 
     /// Like [`RunSummary::new`] but with the count supplied separately, for
@@ -140,11 +146,10 @@ impl RunSummary {
         args: &Args,
         domains: Vec<String>,
         url_count: usize,
-        sample_source: &[String],
+        sample: Vec<String>,
         stats: &[ProviderStats],
         elapsed: std::time::Duration,
     ) -> Self {
-        let sample: Vec<String> = sample_source.iter().take(SAMPLE_LIMIT).cloned().collect();
         Self {
             tool: "urx",
             version: env!("CARGO_PKG_VERSION"),
@@ -521,9 +526,9 @@ mod tests {
         ]
     }
 
-    fn urls(n: usize) -> Vec<String> {
+    fn urls(n: usize) -> Vec<UrlData> {
         (0..n)
-            .map(|i| format!("https://example.com/path/{i}"))
+            .map(|i| UrlData::new(format!("https://example.com/path/{i}")))
             .collect()
     }
 
@@ -615,7 +620,9 @@ mod tests {
         let s = RunSummary::new(
             &build_test_args(),
             vec!["t.com".to_string()],
-            &["http://t.com/<!channel>?a=1&b=@everyone".to_string()],
+            &[UrlData::new(
+                "http://t.com/<!channel>?a=1&b=@everyone".to_string(),
+            )],
             &[],
             Duration::from_millis(1),
         );
