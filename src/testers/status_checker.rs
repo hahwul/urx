@@ -170,7 +170,7 @@ impl Tester for StatusChecker {
     }
 }
 
-/// Most bytes of a response body read while looking for a `<title>`.
+/// Maximum number of body bytes searched for a `<title>`.
 ///
 /// A title lives in the document head, and a status check must not pull a
 /// hundred-megabyte download across the network to find one.
@@ -193,7 +193,7 @@ fn header(response: &Response, name: HeaderName) -> Option<String> {
 
 /// Read the start of the body and pull out its HTML `<title>`.
 ///
-/// Bounded twice: at most [`TITLE_SCAN_LIMIT`] bytes are read, and the read
+/// At most [`TITLE_SCAN_LIMIT`] bytes are scanned, and the read
 /// stops as soon as the closing tag has arrived. A body the server declared as
 /// something other than HTML is not read at all — which also means a redirect,
 /// an image or a JSON API costs no extra bytes here.
@@ -205,12 +205,15 @@ async fn read_title(mut response: Response, content_type: Option<&str>) -> Optio
     let mut body: Vec<u8> = Vec::new();
     while body.len() < TITLE_SCAN_LIMIT {
         match response.chunk().await {
-            Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+            Ok(Some(chunk)) => {
+                let remaining = TITLE_SCAN_LIMIT - body.len();
+                body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
             // End of body, or a read error partway through: parse what arrived
             // rather than throwing away a title we may already hold.
             _ => break,
         }
-        if find_html_tag(&body, b"</title").is_some() {
+        if find_title_end(&body).is_some() {
             break;
         }
     }
@@ -244,6 +247,16 @@ fn find_html_tag(haystack: &[u8], tag: &[u8]) -> Option<usize> {
     None
 }
 
+/// A closing tag can straddle a chunk boundary or the end of the scan window.
+fn find_title_end(body: &[u8]) -> Option<usize> {
+    let tag = b"</title";
+    let start = find_html_tag(body, tag)?;
+    body[start + tag.len()..]
+        .trim_ascii_start()
+        .starts_with(b">")
+        .then_some(start)
+}
+
 /// The text of the first `<title>` element, whitespace collapsed, entities
 /// decoded, cut to [`TITLE_MAX_CHARS`]. `None` when there is no complete title
 /// element or it holds nothing but whitespace.
@@ -252,7 +265,7 @@ fn extract_html_title(body: &[u8]) -> Option<String> {
     // `<title>` may carry attributes, so the text starts after the tag's own
     // closing angle bracket, not at a fixed offset.
     let text_start = open + body[open..].iter().position(|b| *b == b'>')? + 1;
-    let text_end = text_start + find_html_tag(&body[text_start..], b"</title")?;
+    let text_end = text_start + find_title_end(&body[text_start..])?;
 
     let raw = String::from_utf8_lossy(&body[text_start..text_end]);
     let collapsed = decode_entities(&raw)
@@ -663,6 +676,30 @@ mod tests {
         assert_eq!(data.title, None);
         // The status line still made it through the record channel.
         assert_eq!(data.status.as_deref(), Some("200 OK"));
+    }
+
+    #[tokio::test]
+    async fn test_title_scan_limit_requires_the_closing_tag_in_the_prefix() {
+        let mut server = mockito::Server::new_async().await;
+        let mut checker = StatusChecker::new();
+        checker.with_response_title(true);
+
+        let title = "<title>Example</title >";
+        for (path, padding, expected) in [
+            ("/inside", TITLE_SCAN_LIMIT - title.len(), Some("Example")),
+            ("/outside", TITLE_SCAN_LIMIT - title.len() + 1, None),
+        ] {
+            let page = server
+                .mock("GET", path)
+                .with_header("content-type", "text/html")
+                .with_body(format!("{}{title}", " ".repeat(padding)))
+                .create_async()
+                .await;
+            let url = format!("{}{path}", server.url());
+            let result = check(&checker, &url).await;
+            assert_eq!(result.title.as_deref(), expected, "{path}");
+            page.assert_async().await;
+        }
     }
 
     #[test]

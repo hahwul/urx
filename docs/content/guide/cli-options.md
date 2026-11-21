@@ -333,9 +333,9 @@ status:
   and `location` is where the 3xx pointed.
 - With both `--include-status` and `--exclude-status`, only `--include-status`
   applies. Use one or the other.
-- `--check-title` implies `--check-status` and has to read the body. It reads at
-  most 64 KiB (checked between chunks), stops at the closing tag, and skips
-  bodies the server declared as non-HTML. The title is whitespace-collapsed,
+- `--check-title` implies `--check-status`. It searches the first 64 KiB of
+  the body, stops when it finds a complete closing tag, and skips bodies the
+  server declared as non-HTML. The title is whitespace-collapsed,
   entity-decoded and cut to 200 characters (with a trailing `…` when longer).
 
 | Format | Output |
