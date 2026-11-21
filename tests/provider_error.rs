@@ -38,3 +38,24 @@ fn no_valid_providers_error_lists_every_provider() {
         "unexpected stderr: {stderr}"
     );
 }
+
+#[test]
+fn provider_list_rejects_invalid_cdx_endpoints() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_urx"))
+        .args(["--list-providers", "--cdx-endpoint", "invalid"])
+        .arg("--config")
+        .arg(&config)
+        .arg("--provider-config")
+        .arg(&config)
+        .output()?;
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("Invalid --cdx-endpoint"), "{stderr}");
+    Ok(())
+}
