@@ -478,9 +478,8 @@ async fn run() -> Result<()> {
         return every_provider_failed(&run_result.stats);
     }
 
-    // URL-only view for filters (they don't care about sources).
-    let all_urls: std::collections::HashSet<String> = run_result.urls.keys().cloned().collect();
-    let sorted_urls = apply_url_filters(&args, &domains, &all_urls, &progress_manager)?;
+    let sorted_urls =
+        apply_url_filters(&args, &domains, run_result.urls.keys(), &progress_manager)?;
     // Before the transformations: --merge-endpoint and --show-only-* rewrite
     // URLs, and a rewritten URL no longer keys into the run result that holds
     // the capture metadata these filters read.
