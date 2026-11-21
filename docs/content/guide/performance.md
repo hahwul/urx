@@ -160,8 +160,8 @@ urx example.com --stream | httpx -silent
 ```
 
 The progress bar is on stderr and hides itself when stderr is not a terminal.
-`--silent` hides results on stdout too (except under `--stream`), so pair it
-with `-o` or `--notify`.
+`--silent` also hides batch results on stdout. Streamed results and output
+files are still written, and notifications still send.
 
 Batch output is held in memory until the run ends, for `-o` and stdout alike.
 `--stream` writes each provider's URLs as it finishes a domain, and keeps only

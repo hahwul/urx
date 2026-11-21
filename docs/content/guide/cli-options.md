@@ -72,7 +72,7 @@ Discovery Options:
 
 Display Options:
   -v, --verbose       Show verbose output
-      --silent        Silent mode (no output)
+      --silent        Hide progress and omit batch results from stdout. Keep streamed results and file output
       --no-progress   No progress bar
       --no-color      Disable ANSI color (NO_COLOR is also honored)
       --show-sources  Annotate output URLs with the providers that returned them
@@ -174,8 +174,8 @@ export URX_NOTIFY_URL=https://hooks.slack.com/services/...
 urx target.com --incremental --notify-format slack
 ```
 
-`--silent` still sends, but it also hides the URL list on stdout. Add `-o` to
-keep the results.
+`--silent` keeps notifications enabled and hides batch results on stdout.
+Use `-o` to save the results.
 
 ### When it sends
 

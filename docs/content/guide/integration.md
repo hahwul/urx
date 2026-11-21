@@ -22,9 +22,9 @@ domains.
 Results go to stdout. The progress bar, warnings and errors go to stderr, and
 the progress bar hides itself when stderr is not a terminal. In a pipe:
 
-- `--silent` hides all output, results included (except under `--stream`, which
-  still writes results). Use it only with `-o` or `--notify`. To quiet a pipe,
-  use `--no-progress`.
+- `--silent` hides progress and omits batch results from stdout. Streamed results and
+  output files are still written, and notifications still send. To hide only
+  the progress bar, use `--no-progress`.
 - `-v` / `--verbose` writes setup and stage messages to stdout, mixed into the
   URL list (per-provider progress and errors go to stderr). Leave it off in
   pipelines.

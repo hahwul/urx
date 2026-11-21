@@ -172,7 +172,7 @@ Discovery Options:
 
 Display Options:
   -v, --verbose       Show verbose output
-      --silent        Silent mode (no output)
+      --silent        Hide progress and omit batch results from stdout. Keep streamed results and file output
       --no-progress   No progress bar
       --no-color      Disable ANSI color in the progress UI and output (NO_COLOR is also honored)
       --show-sources  Annotate output URLs with the providers that returned them
@@ -287,7 +287,7 @@ Things to know:
 
 * Host validation and path scopes apply to every target, whether it comes from arguments, `--domain-list` or stdin.
 * Filters run on collected URLs before any tester, and again on links the testers discover. `--extract-links -e js` returns nothing, since `-e js` drops the HTML pages first. Filter the output with `grep` instead.
-* `--silent` hides the URL list on stdout too. Pair it with `-o` or `--notify`.
+* `--silent` hides progress and omits batch results from stdout. Streamed results, output files and notifications still work.
 * A failed `-o` or `--output-dir` write is reported even with `--silent` and makes the run exit 1. urx still tries both destinations and any `--notify` webhooks first.
 * `--extract-links` reads every URL-bearing tag (`a`, `script`, `link`, `form`, `iframe`, `img`, `source`, `object`, `embed`, meta refresh). `--extract-js-endpoints` pulls paths and URLs out of script string literals (10 MiB per body, `--max-js-files` files). `--archive-body` runs the same extraction over the Wayback Machine's stored copies.
 
