@@ -275,7 +275,7 @@ pub struct Args {
     pub verbose: bool,
 
     #[clap(help_heading = "Display Options")]
-    /// Silent mode (no output)
+    /// Hide progress and omit batch results from stdout. Keep streamed results and file output
     #[clap(long)]
     pub silent: bool,
 

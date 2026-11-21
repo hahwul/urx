@@ -262,7 +262,9 @@ These flags have no config key. Setting them in the file only produces the "unre
 - testing: `--check-title`
 - `--provider-config` itself
 
-`--silent` also hides the URL list on stdout, so pair it with `-o` or `--notify`. To hide only the progress bar, use `--no-progress`.
+`--silent` hides progress and omits batch results from stdout. Streamed results and
+output files are still written, and notifications still send. To hide only
+the progress bar, use `--no-progress`.
 
 ### Config File Location
 
