@@ -418,8 +418,8 @@ pub(crate) async fn walk_block_pages(
 
 /// Normalise a `--cdx-endpoint` value into the query base it will be used as:
 /// trimmed, and without a dangling `?`/`&`. Rejects anything that is not an
-/// absolute `http(s)` URL with a host, so a typo fails at startup instead of
-/// producing a request to nowhere on every domain.
+/// absolute `http(s)` URL with a host and API path only, so a typo fails at
+/// startup instead of producing a broken request for every domain.
 pub fn normalize_endpoint(raw: &str) -> Result<String> {
     let trimmed = raw.trim().trim_end_matches(['?', '&']);
     let parsed = url::Url::parse(trimmed)
@@ -432,6 +432,11 @@ pub fn normalize_endpoint(raw: &str) -> Result<String> {
     if parsed.query().is_some() {
         return Err(anyhow::anyhow!(
             "Invalid --cdx-endpoint {raw:?}: give the CDX API path only, without a query string"
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(anyhow::anyhow!(
+            "Invalid --cdx-endpoint {raw:?}: give the CDX API path only, without a fragment"
         ));
     }
     Ok(trimmed.to_string())
@@ -653,6 +658,18 @@ mod tests {
         // A query string would be spliced in front of our own `?url=`.
         let err = normalize_endpoint("https://vefsafn.is/cdx?output=json").unwrap_err();
         assert!(err.to_string().contains("without a query string"), "{err}");
+    }
+
+    #[test]
+    fn provider_regression_cdx_rejects_endpoint_fragments() {
+        for endpoint in [
+            "https://archive.example/cdx#note",
+            "https://archive.example/cdx#",
+        ] {
+            let err = normalize_endpoint(endpoint).unwrap_err();
+            assert!(err.to_string().contains("without a fragment"), "{err}");
+        }
+        assert!(normalize_endpoint("https://archive.example/cdx%23part").is_ok());
     }
 
     #[test]
