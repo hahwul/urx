@@ -148,12 +148,16 @@ fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
             // surrounding indentation into the text node, and the newlines
             // rode along into the emitted URL — which then failed host
             // validation, so every URL of such a sitemap was silently lost.
+            let root = doc.root_element();
+            let namespace = root.tag_name().namespace();
             let locs = |entry: &str| -> Vec<String> {
-                doc.descendants()
-                    .filter(|n| n.has_tag_name(entry))
+                root.children()
+                    .filter(|n| n.has_tag_name(entry) && n.tag_name().namespace() == namespace)
                     .filter_map(|node| {
-                        node.descendants()
-                            .find(|n| n.has_tag_name("loc"))
+                        node.children()
+                            .find(|n| {
+                                n.has_tag_name("loc") && n.tag_name().namespace() == namespace
+                            })
                             .and_then(|loc| loc.text())
                             .map(|loc| loc.trim().to_string())
                     })
@@ -162,10 +166,12 @@ fn parse_sitemap_document(content: &str, is_text: bool) -> SitemapDocument {
                     .collect()
             };
             // Check if this is a sitemap index file
-            if doc.root_element().has_tag_name("sitemapindex") {
+            if root.has_tag_name("sitemapindex") {
                 SitemapDocument::Index(locs("sitemap"))
-            } else {
+            } else if root.has_tag_name("urlset") {
                 SitemapDocument::Urls(locs("url"))
+            } else {
+                SitemapDocument::Urls(Vec::new())
             }
         }
         None => {
@@ -1259,6 +1265,21 @@ mod tests {
             "https://example.com/sitemap.xml",
             Some("application/xml")
         ));
+    }
+
+    #[test]
+    fn provider_regression_sitemap_reads_the_entry_loc() {
+        let sitemap = r#"<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+    xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <image:image><image:loc>https://example.com/image.png</image:loc></image:image>
+    <loc>https://example.com/page</loc>
+  </url>
+</urlset>"#;
+        assert_eq!(
+            parse_sitemap_document(sitemap, false),
+            SitemapDocument::Urls(vec!["https://example.com/page".to_string()])
+        );
     }
 
     #[tokio::test]
