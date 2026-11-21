@@ -179,13 +179,14 @@ pub fn missing_api_key_message(id: &str) -> String {
 /// (so the option is discoverable), and any endpoint named on this very
 /// command line is listed underneath with the id it will run as.
 pub fn print_provider_list(args: &Args) -> anyhow::Result<()> {
-    crate::app::shell::write_stdout(render_provider_list(args).as_bytes())
+    crate::app::shell::write_stdout(render_provider_list(args)?.as_bytes())
 }
 
 /// The `--list-providers` text. Separate from the printing so tests can read
 /// it.
-fn render_provider_list(args: &Args) -> String {
+fn render_provider_list(args: &Args) -> Result<String> {
     use std::fmt::Write;
+    let endpoints = cdx_endpoints(args)?;
     let mut out = String::new();
     let _ = writeln!(out, "Available providers:");
     let _ = writeln!(
@@ -213,18 +214,11 @@ fn render_provider_list(args: &Args) -> String {
         "  {:<11}  {:<16}  {:<8}  Any pywb / OutbackCDX / classic CDX server, via --cdx-endpoint URL (see --cdx-dialect)",
         "cdx:<host>", "Custom CDX", "—",
     );
-    match cdx_endpoints(args) {
-        Ok(endpoints) if !endpoints.is_empty() => {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Configured --cdx-endpoint providers:");
-            for (id, endpoint) in endpoints {
-                let _ = writeln!(out, "  {id:<24}  {endpoint}");
-            }
-        }
-        Ok(_) => {}
-        Err(e) => {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "{e}");
+    if !endpoints.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Configured --cdx-endpoint providers:");
+        for (id, endpoint) in endpoints {
+            let _ = writeln!(out, "  {id:<24}  {endpoint}");
         }
     }
     let _ = writeln!(out);
@@ -240,7 +234,7 @@ fn render_provider_list(args: &Args) -> String {
         out,
         "--cdx-endpoint providers are enabled by naming them. --exclude-providers wins on conflict."
     );
-    out
+    Ok(out)
 }
 
 /// Every provider id the CLI accepts, sorted for stable error messages.
@@ -427,7 +421,7 @@ mod tests {
     #[test]
     fn test_list_providers_shows_the_cdx_family_and_configured_endpoints() {
         let mut args = build_test_args();
-        let listing = render_provider_list(&args);
+        let listing = render_provider_list(&args).unwrap();
         assert!(listing.contains("cdx:<host>"), "{listing}");
         assert!(listing.contains("--cdx-endpoint"), "{listing}");
         assert!(
@@ -440,7 +434,7 @@ mod tests {
         }
 
         args.cdx_endpoint = vec!["https://vefsafn.is/cdx".to_string()];
-        let listing = render_provider_list(&args);
+        let listing = render_provider_list(&args).unwrap();
         assert!(listing.contains("Configured --cdx-endpoint"), "{listing}");
         assert!(
             listing.contains("cdx:vefsafn.is") && listing.contains("https://vefsafn.is/cdx"),
