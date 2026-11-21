@@ -264,10 +264,11 @@ async fn run_testers(
 /// The run's entries keyed as the output spells each URL. `--normalize-url`
 /// rewrites URLs after collection and can fold several into one, so their
 /// sources and metadata are folded too, or the rewritten URL would match none.
-fn entries_by_output_url(
-    run_result: &ProviderRunResult,
+fn entries_by_output_url<'a>(
+    run_result: &'a ProviderRunResult,
+    surviving_urls: &[String],
     normalize: bool,
-) -> std::borrow::Cow<'_, HashMap<String, runner::UrlEntry>> {
+) -> std::borrow::Cow<'a, HashMap<String, runner::UrlEntry>> {
     if !normalize {
         return std::borrow::Cow::Borrowed(&run_result.urls);
     }
@@ -276,9 +277,11 @@ fn entries_by_output_url(
         ..Default::default()
     };
     let mut merged = HashMap::new();
-    for (url, entry) in &run_result.urls {
-        let key = normalizer.transform_one(url).unwrap_or_else(|| url.clone());
-        app::caching::merge_entry(&mut merged, key, entry);
+    for url in surviving_urls {
+        if let Some(entry) = run_result.urls.get(url) {
+            let key = normalizer.transform_one(url).unwrap_or_else(|| url.clone());
+            app::caching::merge_entry(&mut merged, key, entry);
+        }
     }
     std::borrow::Cow::Owned(merged)
 }
@@ -482,6 +485,8 @@ async fn run() -> Result<()> {
     // URLs, and a rewritten URL no longer keys into the run result that holds
     // the capture metadata these filters read.
     let sorted_urls = apply_meta_filters(&args, &run_result, sorted_urls, &progress_manager)?;
+    let output_entries = (args.show_sources || wants_meta(&args))
+        .then(|| entries_by_output_url(&run_result, &sorted_urls, args.normalize_url));
     let transformed_urls = apply_url_transformations(&args, sorted_urls, &progress_manager);
 
     let mut final_urls = run_testers(
@@ -494,8 +499,7 @@ async fn run() -> Result<()> {
     )
     .await?;
 
-    if args.show_sources || wants_meta(&args) {
-        let entries = entries_by_output_url(&run_result, args.normalize_url);
+    if let Some(entries) = output_entries {
         if args.show_sources {
             attach_sources(&mut final_urls, &entries);
         }
@@ -688,12 +692,42 @@ mod tests {
         .transform_one("https://example.com/a?b=2&a=1")
         .unwrap();
 
-        let entries = entries_by_output_url(&run_result, true);
+        let surviving = run_result.urls.keys().cloned().collect::<Vec<_>>();
+        let entries = entries_by_output_url(&run_result, &surviving, true);
         let mut final_urls = vec![output::UrlData::new(normalized)];
         attach_sources(&mut final_urls, &entries);
         attach_capture_meta(&mut final_urls, &entries);
         assert_eq!(final_urls[0].sources, ["cc", "wayback"]);
         assert_eq!(final_urls[0].first_seen.as_deref(), Some("20200101000000"));
+    }
+
+    #[test]
+    fn normalized_output_excludes_metadata_from_filtered_urls() {
+        let args = Args::parse_from(["urx", "--normalize-url", "--meta-status", "200"]);
+        let mut run_result = ProviderRunResult::default();
+        for (url, source, date, status) in [
+            ("https://example.com/a/", "wayback", "20240101000000", "200"),
+            ("https://example.com/a", "cc", "20250101000000", "404"),
+        ] {
+            run_result.urls.entry(url.to_string()).or_default().absorb(
+                source,
+                &providers::CaptureMeta::capture(Some(date), None, Some(status), None),
+            );
+        }
+        let progress = ProgressManager::new(true);
+        let collected = run_result.urls.keys().cloned().collect();
+        let surviving = apply_meta_filters(&args, &run_result, collected, &progress).unwrap();
+        let entries = entries_by_output_url(&run_result, &surviving, args.normalize_url);
+        let mut output: Vec<_> = apply_url_transformations(&args, surviving, &progress)
+            .into_iter()
+            .map(output::UrlData::new)
+            .collect();
+        attach_sources(&mut output, &entries);
+        attach_capture_meta(&mut output, &entries);
+
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].sources, ["wayback"]);
+        assert_eq!(output[0].archive_status.as_deref(), Some("200"));
     }
 
     /// Build an `Args` for a `--files` run over a temp file of `urls`.
